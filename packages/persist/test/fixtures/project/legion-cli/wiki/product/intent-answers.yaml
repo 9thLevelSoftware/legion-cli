@@ -1,0 +1,30 @@
+schemaVersion: legion-cli-intent-answers/v1
+rounds:
+  - n: 1
+    questions:
+      - Who is this for, in one sentence?
+      - What are they stuck doing today?
+    answers:
+      - Teammates who keep missing who's in the office.
+      - They ping five chat apps every morning.
+  - n: 2
+    questions:
+      - What must be true when this is done?
+      - What must we not change, and what will we not build?
+    answers:
+      - People can tap in or out on their phone in under five seconds.
+      - No payroll, no badges, no calendar sync in v0.
+mapped:
+  personas:
+    - Teammates who keep missing who's in the office.
+  problem: They ping five chat apps every morning.
+  mustBeTrue:
+    - People can tap in or out on their phone in under five seconds.
+  mustNotChange: []
+  outOfScope:
+    - payroll
+    - badges
+    - calendar sync
+  happyPath: Open the board, tap In, see yourself listed, tap Out, see yourself leave.
+  screens:
+    - board
