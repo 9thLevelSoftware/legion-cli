@@ -1,6 +1,16 @@
-import type { AgentAdapterId } from "./types.js";
+import type { AgentAdapterId, ExtraAdapterId } from "./types.js";
 
-/** Frozen v0 argv. Pointer is substituted at spawn. grok/codex have no spawn argv. */
+export const POINTER_PLACEHOLDER = "{{pointer}}";
+export const DEFAULT_GENERIC_ARGS = [POINTER_PLACEHOLDER] as const;
+export const CLAUDE_FROZEN_ARGV = ["-p", "--output-format", "json"] as const;
+
+/** Assumed PATH names. Not verified vendor CLIs; tests spawn via shim override. */
+export const ASSUMED_EXTRA_BINARIES = {
+  grok: "grok",
+  codex: "codex",
+} as const satisfies Record<ExtraAdapterId, string>;
+
+/** Frozen argv. Extra adapters stay generic-style until vendor flags are verified. */
 export const FROZEN_ARGV_TABLE = {
   fake: { binary: "(in-process)", argv: null, spawnable: true },
   claude: {
@@ -10,19 +20,23 @@ export const FROZEN_ARGV_TABLE = {
   },
   generic: {
     binary: "adapter.generic.binary",
-    argv: ["{{pointer}}"],
+    argv: DEFAULT_GENERIC_ARGS,
     spawnable: true,
   },
-  grok: { binary: "grok", argv: null, spawnable: false },
-  codex: { binary: "codex", argv: null, spawnable: false },
+  grok: {
+    binary: ASSUMED_EXTRA_BINARIES.grok,
+    argv: DEFAULT_GENERIC_ARGS,
+    spawnable: true,
+  },
+  codex: {
+    binary: ASSUMED_EXTRA_BINARIES.codex,
+    argv: DEFAULT_GENERIC_ARGS,
+    spawnable: true,
+  },
 } as const satisfies Record<
   AgentAdapterId,
   { binary: string; argv: readonly string[] | null; spawnable: boolean }
 >;
-
-export const CLAUDE_FROZEN_ARGV = ["-p", "--output-format", "json"] as const;
-export const POINTER_PLACEHOLDER = "{{pointer}}";
-export const DEFAULT_GENERIC_ARGS = [POINTER_PLACEHOLDER] as const;
 
 export function buildClaudeArgv(pointerPrompt: string, extraArgs: readonly string[] = []): string[] {
   return [...CLAUDE_FROZEN_ARGV, ...extraArgs, pointerPrompt];
