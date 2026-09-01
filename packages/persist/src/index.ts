@@ -4,7 +4,19 @@ export {
   PersistError,
   PersistValidationError,
 } from "./errors.js";
-export { commitIngest, commitPaths, gitCheckIgnore, gitHead, gitStatusPorcelain, isGitRepo } from "./git.js";
+export {
+  commitIngest,
+  commitPaths,
+  gitCheckIgnore,
+  gitDiscoverChanges,
+  gitHead,
+  gitPathExistsAtRef,
+  gitRestoreWorktree,
+  gitRmWorktree,
+  gitStatusPorcelain,
+  isGitRepo,
+  tryGitHead,
+} from "./git.js";
 export { ensureGitignore, GITIGNORE_ENTRIES, GITIGNORE_TEMPLATE } from "./gitignore.js";
 export { ingestDocumentStorePath, ingestFiles } from "./ingest.js";
 export type { IngestDocument } from "./ingest.js";

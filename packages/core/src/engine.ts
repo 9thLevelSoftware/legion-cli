@@ -1,11 +1,13 @@
+import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   createLegionStore,
-  ensureGitignore,
+  DECISION_FILE_SCHEMA_VERSION,
   parseMarkdownDocument,
   PathEscapeError,
   PersistError,
+  ensureGitignore,
   WIKI_PAGE_SCHEMA_VERSION,
   type LegionStore,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -26,7 +28,9 @@ import {
   SCHEMA_VERSION,
   type Assumption,
   type ControlMode,
+  type DiscussDecision,
   type IngestReceipt,
+  type IntentAnswersFile,
   type LegionConfig,
   type Phase,
   type ProjectFile,
@@ -41,20 +45,35 @@ import {
 } from "@9thlevelsoftware/legion-cli-schema";
 import { HINT, refuse } from "./errors.js";
 import { assertIngestSourceAllowed } from "./ingest-guard.js";
+import { decisionFileName, templateDecisions } from "./discuss.js";
+import {
+  applyIntentAnswers,
+  emptyIntentAnswers,
+  intentProgress,
+  intentWikiBody,
+  prdBody,
+  specIdFromName,
+} from "./intent.js";
 import { assertCanTransition, assertLegalPhase } from "./phases.js";
 import { evaluateReadiness, filesAllowedFailsPlan } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
+import { optionalSkillSpawn } from "./spawn.js";
+import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
 import { assertTaskStatusTransition } from "./tasks.js";
 import type {
   Actor,
+  DecisionInput,
   ExecuteResult,
   IngestOpts,
   InitOptions,
+  IntentState,
+  LegionEngineOptions,
   QaOptions,
   ReviewResult,
   ShipOptions,
   ShipReceipt,
 } from "./types.js";
+import { palettePresent, renderWireframeIndex, renderWireframeScreen, slugifyScreen } from "./wireframes.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -93,9 +112,13 @@ function peekTaskFrontmatter(frontmatter: unknown): { specId?: string; filesAllo
 
 export class LegionEngine {
   readonly store: LegionStore;
+  readonly #skillsDir?: string;
+  readonly #fakeArtifacts: FakeArtifact[];
 
-  constructor(projectRoot: string, store?: LegionStore) {
+  constructor(projectRoot: string, store?: LegionStore, options?: LegionEngineOptions) {
     this.store = store ?? createLegionStore(projectRoot);
+    this.#skillsDir = options?.skillsDir;
+    this.#fakeArtifacts = options?.fakeArtifacts ?? [];
   }
 
   get projectRoot(): string {
@@ -560,6 +583,226 @@ export class LegionEngine {
     });
   }
 
+  async beginIntent(): Promise<IntentState> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("intent is refused until init", HINT.init);
+      }
+      if (state.phase === "initialized") {
+        assertCanTransition(state.phase, "intent_draft");
+        await this.#writeState({ ...state, phase: "intent_draft" });
+      } else if (state.phase !== "intent_draft") {
+        refuse("intent interview is already finished", HINT.discuss);
+      }
+      return this.#intentState();
+    });
+  }
+
+  async getIntentState(): Promise<IntentState> {
+    const state = await this.#readState();
+    const progress = intentProgress(await this.#loadIntentAnswers());
+    return {
+      phase: state.phase,
+      answers: progress.answers,
+      mapped: progress.answers.mapped,
+      nextQuestions: progress.nextQuestions,
+      readyToConfirm: progress.readyToConfirm,
+      canFinishEarly: progress.canFinishEarly,
+      brief: progress.brief,
+    };
+  }
+
+  async intentTurn(answers: string[]): Promise<IntentState> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("intent is refused until init", HINT.init);
+      }
+      let current = state;
+      if (current.phase === "initialized") {
+        assertCanTransition(current.phase, "intent_draft");
+        current = { ...current, phase: "intent_draft" };
+        await this.#writeState(current);
+      }
+      if (current.phase !== "intent_draft") {
+        refuse("intent interview is already finished", HINT.discuss);
+      }
+      const existing = await this.#loadIntentAnswers();
+      const progress = intentProgress(existing);
+      if (progress.nextQuestions.length === 0) {
+        return this.#intentStateFrom(current, existing);
+      }
+      const trimmed = answers.map((item) => item.trim());
+      if (trimmed.length === 0 || trimmed.every((item) => item.length === 0)) {
+        refuse("intent requires answers", HINT.intent);
+      }
+      const questions = progress.nextQuestions;
+      const applied = applyIntentAnswers(existing, questions, trimmed);
+      await this.store.writeIntentAnswers(applied.file);
+      await this.#applyIntentSideEffects(applied.side);
+      return this.#intentStateFrom(current, applied.file);
+    });
+  }
+
+  async confirmIntent(actor: Actor, opts?: { done?: boolean }): Promise<void> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase !== "intent_draft") {
+        refuse("intent confirmation requires phase intent_draft", HINT.intent);
+      }
+      const answers = await this.#loadIntentAnswers();
+      const progress = intentProgress(answers);
+      const allowed = progress.readyToConfirm || (Boolean(opts?.done) && progress.canFinishEarly);
+      if (!allowed) {
+        refuse("intent confirmation requires rounds 1–4 or --done after round 2", HINT.intentConfirm);
+      }
+      void actor;
+      const project = await this.store.readProject();
+      const specId = specIdFromName(project.data.name);
+      await this.#writeIntentArtifacts(answers, specId);
+      await this.#optionalSpawn("interview", specId, [
+        "Rewrite .legion-cli/specs/*/prd.md from the intent answers.",
+        "Do not ask new questions.",
+        `Intent answers are at .legion-cli/wiki/product/intent-answers.yaml.`,
+      ].join("\n"));
+      assertCanTransition("intent_draft", "intent_ready");
+      await this.#writeState({ ...state, phase: "intent_ready" });
+    });
+  }
+
+  async startDiscuss(): Promise<DiscussDecision[]> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase !== "intent_ready" && state.phase !== "discussing") {
+        refuse("discuss requires intent_ready", HINT.intent);
+      }
+      let current = state;
+      if (current.phase === "intent_ready") {
+        assertCanTransition(current.phase, "discussing");
+        current = { ...current, phase: "discussing" };
+        await this.#writeState(current);
+      }
+      const mapped = (await this.#loadIntentAnswers()).mapped;
+      const context = (await this.store.readContext()).data;
+      let discuss = await this.#loadDiscuss();
+      if (discuss.decisions.length === 0) {
+        discuss = { schemaVersion: SCHEMA_VERSION.discuss, decisions: templateDecisions(mapped, context) };
+        await this.store.writeDiscuss(discuss, "Proposed decisions. Human accepts or rejects each.\n");
+      }
+      const project = await this.store.readProject();
+      const specId = specIdFromName(project.data.name);
+      await this.#optionalSpawn(
+        "discuss",
+        specId,
+        "Propose decisions in .legion-cli/discuss/DISCUSS.md with status proposed. Do not accept them.",
+      );
+      discuss = await this.#loadDiscuss();
+      if (discuss.decisions.length === 0) {
+        discuss = { schemaVersion: SCHEMA_VERSION.discuss, decisions: templateDecisions(mapped, context) };
+        await this.store.writeDiscuss(discuss, "Proposed decisions. Human accepts or rejects each.\n");
+      }
+      return discuss.decisions.filter((item) => item.status === "proposed");
+    });
+  }
+
+  async discuss(decisions: DecisionInput[]): Promise<DiscussDecision[]> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase !== "discussing") {
+        refuse("discuss requires phase discussing", HINT.discuss);
+      }
+      const doc = await this.#loadDiscuss();
+      const byId = new Map(doc.decisions.map((item) => [item.id, item]));
+      for (const input of decisions) {
+        const existing = byId.get(input.id);
+        if (!existing) {
+          refuse(`unknown decision ${input.id}`, HINT.discuss);
+        }
+        const next: DiscussDecision = { ...existing, status: input.status };
+        byId.set(input.id, next);
+        await this.store.writeDecision(
+          decisionFileName(next.id, next.statement),
+          {
+            schemaVersion: DECISION_FILE_SCHEMA_VERSION,
+            id: next.id,
+            status: next.status,
+            summary: next.statement,
+          },
+          `${next.status === "accepted" ? "Accepted" : "Rejected"}: ${next.statement}\n`,
+        );
+      }
+      const merged = doc.decisions.map((item) => byId.get(item.id) ?? item);
+      await this.store.writeDiscuss(
+        { schemaVersion: SCHEMA_VERSION.discuss, decisions: merged },
+        "Decisions captured before planning.\n",
+      );
+      return merged.filter((item) => item.status === "proposed");
+    });
+  }
+
+  async draftSpec(opts?: { skipWireframes?: boolean }): Promise<Spec> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "spec_frozen" || this.#isPostFreeze(state.phase)) {
+        if (opts?.skipWireframes) {
+          refuse("--skip-wireframes is pre-approve only", HINT.skipWireframes);
+        }
+        refuse("spec is already frozen", HINT.specApprove);
+      }
+      if (state.phase !== "discussing" && state.phase !== "spec_draft") {
+        refuse("spec requires decisions captured", HINT.discuss);
+      }
+      const skipWireframes = Boolean(opts?.skipWireframes);
+      const project = await this.store.readProject();
+      const specId = state.activeSpecId ?? specIdFromName(project.data.name);
+      const answers = await this.#loadIntentAnswers();
+      const extraAcceptance = (await this.#listAssumptions())
+        .filter((item) => item.createdIn === "intent" && item.blocking === false)
+        .map((item, i) => ({
+          id: `AC-P1-${String(i + 1).padStart(2, "0")}`,
+          statement: item.statement,
+          kind: "behavior" as const,
+          priority: "P1" as const,
+        }));
+      const spec = buildSpecFromIntent({
+        specId,
+        title: project.data.name,
+        mapped: answers.mapped,
+        extraAcceptance,
+        skipWireframes,
+      });
+      await this.store.writeSpec(spec, specMarkdownBody(spec));
+      await mkdir(join(this.store.paths.specsDir, specId), { recursive: true });
+      await writeFile(join(this.store.paths.specsDir, specId, "prd.md"), prdBody(answers.mapped), "utf8");
+      if (!skipWireframes) {
+        await this.#writeWireframes(spec, answers.mapped.screens);
+      }
+      let current = state;
+      if (current.phase === "discussing") {
+        assertCanTransition(current.phase, "spec_draft");
+        current = { ...current, phase: "spec_draft", activeSpecId: specId };
+        await this.#writeState(current);
+      } else {
+        await this.#writeState({ ...current, activeSpecId: specId });
+      }
+      await this.store.writeProject({ ...project.data, activeSpecId: specId }, project.body);
+      await this.#optionalSpawn(
+        "spec",
+        specId,
+        [
+          `Fill .legion-cli/specs/${specId}/SPEC.md from the intent answers if needed.`,
+          "You may replace inner markup of wireframe HTML files.",
+          "Keep the palette: background #f5f5f0, ink #222, accent #c45c26, muted #888.",
+        ].join("\n"),
+      );
+      if (!skipWireframes) {
+        await this.#ensureWireframePalette(specId, answers.mapped.screens);
+      }
+      return (await this.store.readSpec(specId)).data;
+    });
+  }
+
   async abandon(message: string): Promise<void> {
     return this.#mutate(async () => {
       const state = await this.#readState();
@@ -604,6 +847,180 @@ export class LegionEngine {
 
   async getState(): Promise<StateFile> {
     return this.#readState();
+  }
+
+  #isPostFreeze(phase: Phase): boolean {
+    return (
+      phase === "planning" ||
+      phase === "plan_failed" ||
+      phase === "plan_ready" ||
+      phase === "executing" ||
+      phase === "ready_to_ship" ||
+      phase === "shipped" ||
+      phase === "abandoned"
+    );
+  }
+
+  async #intentState(): Promise<IntentState> {
+    return this.#intentStateFrom(await this.#readState(), await this.#loadIntentAnswers());
+  }
+
+  #intentStateFrom(state: StateFile, answers: IntentAnswersFile): IntentState {
+    const progress = intentProgress(answers);
+    return {
+      phase: state.phase,
+      answers: progress.answers,
+      mapped: progress.answers.mapped,
+      nextQuestions: progress.nextQuestions,
+      readyToConfirm: progress.readyToConfirm,
+      canFinishEarly: progress.canFinishEarly,
+      brief: progress.brief,
+    };
+  }
+
+  async #loadIntentAnswers(): Promise<IntentAnswersFile> {
+    if (!(await this.store.pathExists(".legion-cli/wiki/product/intent-answers.yaml"))) {
+      return emptyIntentAnswers();
+    }
+    return this.store.readIntentAnswers();
+  }
+
+  async #loadDiscuss() {
+    try {
+      return (await this.store.readDiscuss()).data;
+    } catch {
+      return { schemaVersion: SCHEMA_VERSION.discuss, decisions: [] as DiscussDecision[] };
+    }
+  }
+
+  async #applyIntentSideEffects(side: {
+    platforms?: Array<"phone" | "desktop">;
+    failureLines: string[];
+    brand?: string;
+    blockingLines: string[];
+  }): Promise<void> {
+    if (side.platforms) {
+      const context = await this.store.readContext();
+      await this.store.writeContext({ ...context.data, platforms: side.platforms }, context.body);
+    }
+    if (side.brand && !/^(none|no|n\/a|-)$/i.test(side.brand)) {
+      const context = await this.store.readContext();
+      const note = /^https?:\/\//i.test(side.brand)
+        ? `Brand URL recorded but not fetched in v0: ${side.brand}`
+        : `Brand file: ${side.brand}`;
+      const standing = context.data.standingInstructions
+        ? `${context.data.standingInstructions.trim()}\n${note}\n`
+        : `${note}\n`;
+      await this.store.writeContext({ ...context.data, standingInstructions: standing }, context.body);
+    }
+    const lines: Array<{ statement: string; blocking: boolean }> = [
+      ...side.failureLines.map((statement) => ({ statement, blocking: false })),
+      ...side.blockingLines.map((statement) => ({ statement, blocking: true })),
+    ];
+    if (lines.length === 0) return;
+    let n = (await this.#listAssumptions()).length;
+    for (const line of lines) {
+      n += 1;
+      const id = `ASM-${String(n).padStart(4, "0")}`;
+      const assumption: Assumption = {
+        schemaVersion: SCHEMA_VERSION.assumption,
+        id,
+        statement: line.statement,
+        status: "open",
+        blocking: line.blocking,
+        escalatesTo: "user",
+        createdIn: "intent",
+      };
+      await this.store.writeAssumption(assumption, `${line.statement}\n`);
+    }
+  }
+
+  async #writeIntentArtifacts(answers: IntentAnswersFile, specId: string): Promise<void> {
+    await this.store.writeMarkdown(
+      ".legion-cli/wiki/product/intent.md",
+      {
+        schemaVersion: WIKI_PAGE_SCHEMA_VERSION,
+        title: "Intent",
+        aliases: ["intent brief"],
+        tags: ["product"],
+        trust: "reviewed",
+        updated: nowIso(),
+      },
+      intentWikiBody(answers.mapped),
+    );
+    await mkdir(join(this.store.paths.specsDir, specId), { recursive: true });
+    await writeFile(join(this.store.paths.specsDir, specId, "prd.md"), prdBody(answers.mapped), "utf8");
+  }
+
+  async #writeWireframes(spec: Spec, screens: string[]): Promise<void> {
+    const names = screens.length > 0 ? screens : ["home"];
+    const dir = join(this.store.paths.specsDir, spec.id, "wireframes");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "INDEX.html"),
+      renderWireframeIndex({ specTitle: spec.title, specId: spec.id, screens: names }),
+      "utf8",
+    );
+    const used = new Set<string>();
+    for (const screen of names) {
+      let slug = slugifyScreen(screen);
+      if (used.has(slug)) slug = `${slug}-${used.size}`;
+      used.add(slug);
+      await writeFile(
+        join(dir, `${slug}.html`),
+        renderWireframeScreen({ specTitle: spec.title, screen, screens: names }),
+        "utf8",
+      );
+    }
+  }
+
+  async #ensureWireframePalette(specId: string, screens: string[]): Promise<void> {
+    const names = screens.length > 0 ? screens : ["home"];
+    const dir = join(this.store.paths.specsDir, specId, "wireframes");
+    const files = ["INDEX.html", ...names.map((name) => `${slugifyScreen(name)}.html`)];
+    for (const file of files) {
+      const abs = join(dir, file);
+      try {
+        const html = await readFile(abs, "utf8");
+        if (!palettePresent(html)) {
+          const spec = (await this.store.readSpec(specId)).data;
+          await this.#writeWireframes(spec, names);
+          return;
+        }
+      } catch {
+        const spec = (await this.store.readSpec(specId)).data;
+        await this.#writeWireframes(spec, names);
+        return;
+      }
+    }
+  }
+
+  async #optionalSpawn(skillId: "interview" | "discuss" | "spec", specId: string, promptBody: string): Promise<void> {
+    let config: LegionConfig;
+    try {
+      config = await this.#readConfig();
+    } catch {
+      return;
+    }
+    const result = await optionalSkillSpawn({
+      projectRoot: this.projectRoot,
+      config,
+      skillId,
+      specId,
+      promptBody,
+      skillsDir: this.#skillsDir,
+      fakeArtifacts: this.#fakeArtifacts,
+    });
+    if (!result.spawned || !result.revert) return;
+    if (result.revert.incident) {
+      refuse("inspect .git — spawn touched .git/", HINT.intent);
+    }
+    if (result.revert.extrasReverted.length > 0) {
+      refuse(
+        `spawn wrote files outside SkillContract; reverted: ${result.revert.extrasReverted.join(", ")}`,
+        HINT.intent,
+      );
+    }
   }
 
   #parseControlMode(mode: string): ControlMode {
@@ -772,6 +1189,6 @@ export class LegionEngine {
   }
 }
 
-export function createLegionEngine(projectRoot: string): LegionEngine {
-  return new LegionEngine(projectRoot);
+export function createLegionEngine(projectRoot: string, options?: LegionEngineOptions): LegionEngine {
+  return new LegionEngine(projectRoot, undefined, options);
 }

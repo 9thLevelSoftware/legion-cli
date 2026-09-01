@@ -1,4 +1,5 @@
 export { HINT, LegionRefuseError, refuse } from "./errors.js";
+export { SKILL_CONTRACTS, isAllowedPath, isEngineOwned, matchesGlob, skillContract } from "./contracts.js";
 export { createLegionEngine, LegionEngine } from "./engine.js";
 export {
   assertIngestSourceAllowed,
@@ -6,6 +7,20 @@ export {
   isPrivateOrLocalHost,
   isUrlSource,
 } from "./ingest-guard.js";
+export {
+  INTENT_Q,
+  MAX_INTENT_ROUNDS,
+  applyIntentAnswers,
+  emptyIntentAnswers,
+  formatIntentBrief,
+  intentProgress,
+  requiredSlotsFilled,
+  specIdFromName,
+  splitMustNotAndOutOfScope,
+} from "./intent.js";
+export { revertExtras } from "./revert.js";
+export { findSkillsDir, optionalSkillSpawn } from "./spawn.js";
+export { WIREFRAME_PALETTE, palettePresent } from "./wireframes.js";
 export {
   assertCanTransition,
   assertLegalPhase,
@@ -30,11 +45,14 @@ export {
 } from "./tasks.js";
 export type {
   Actor,
+  DecisionInput,
   ExecuteResult,
   IngestOpts,
   IngestReceipt,
   IngestSource,
   InitOptions,
+  IntentState,
+  LegionEngineOptions,
   Phase,
   QaOptions,
   QAScore,

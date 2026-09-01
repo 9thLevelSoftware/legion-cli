@@ -1,8 +1,12 @@
+import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
 import type { SearchHit } from "@9thlevelsoftware/legion-cli-wiki";
 import type {
   AdapterId,
   ControlMode,
+  DiscussDecision,
   IngestReceipt,
+  IntentAnswersFile,
+  IntentMapped,
   Phase,
   QAScore,
   Readiness,
@@ -15,6 +19,28 @@ import type {
 export type Actor = {
   id: string;
 };
+
+export type LegionEngineOptions = {
+  skillsDir?: string;
+  fakeArtifacts?: FakeArtifact[];
+};
+
+export type IntentState = {
+  phase: Phase;
+  answers: IntentAnswersFile;
+  mapped: IntentMapped;
+  nextQuestions: string[];
+  readyToConfirm: boolean;
+  canFinishEarly: boolean;
+  brief: string;
+};
+
+export type DecisionInput = {
+  id: string;
+  status: "accepted" | "rejected";
+};
+
+export type { DiscussDecision };
 
 export type InitOptions = {
   name: string;
