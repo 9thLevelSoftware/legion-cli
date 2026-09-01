@@ -265,6 +265,146 @@ test("nextTasks returns unblocked P0 then oldest", async () => {
   });
 });
 
+test("plan spawn cannot stamp status done", async () => {
+  await withFakeAdapter(async () => {
+    const p0 = makeTask({ status: "done" });
+    await withEngine(
+      async ({ engine, store }) => {
+        await initProject(engine);
+        await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
+        const readiness = await engine.plan("spec-checkin");
+        assert.equal(readiness, "CONCERNS");
+        const task = (await store.readTask("TSK-0001")).data;
+        assert.equal(task.status, "ready");
+        assert.notEqual(task.status, "done");
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0001.md", content: taskMarkdown(p0) }],
+      },
+    );
+  });
+});
+
+test("extra.json is filed even when SkillContract extras are reverted", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedFrozenSpec(store);
+        await writeTask(store, makeTask());
+        await mkdir(join(dir, "src"), { recursive: true });
+        const readiness = await engine.plan("spec-checkin");
+        assert.equal(readiness, "FAIL");
+        assert.equal(existsSync(join(dir, "src", "main.ts")), false);
+        const child = (await store.readTask("TSK-0002")).data;
+        assert.equal(child.parentId, "TSK-0001");
+        assert.deepEqual((await store.readTask("TSK-0001")).data.contract.filesAllowed, ["src/main.ts"]);
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [
+          { path: "src/main.ts", content: "export const leaked = true;\n" },
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "also do settings",
+              parentId: "TSK-0001",
+              filesAllowed: ["src/settings.ts"],
+              verificationCommands: ["pnpm test"],
+            }),
+          },
+        ],
+      },
+    );
+  });
+});
+
+test("extra.json is filed when wait() throws after write", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedFrozenSpec(store);
+        await writeTask(store, makeTask());
+        await mkdir(join(dir, "src"), { recursive: true });
+        const readiness = await engine.plan("spec-checkin");
+        assert.equal(readiness, "FAIL");
+        assert.equal(existsSync(join(dir, "src", "main.ts")), false);
+        const child = (await store.readTask("TSK-0002")).data;
+        assert.equal(child.parentId, "TSK-0001");
+        assert.deepEqual((await store.readTask("TSK-0001")).data.contract.filesAllowed, ["src/main.ts"]);
+      },
+      {
+        skillsDir,
+        fakeThrowAfterWrite: true,
+        fakeArtifacts: [
+          { path: "src/main.ts", content: "export const leaked = true;\n" },
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "also do settings",
+              parentId: "TSK-0001",
+              filesAllowed: ["src/settings.ts"],
+              verificationCommands: ["pnpm test"],
+            }),
+          },
+        ],
+      },
+    );
+  });
+});
+
+test("unblocked ticket is stored ready so next/execute can pick it", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedPlanReady(store);
+    const ticket = await engine.fileTicket({ title: "parked extra" });
+    assert.equal(ticket.parentId, undefined);
+    assert.equal(ticket.status, "ready");
+    const ready = await engine.nextTasks();
+    assert.ok(ready.some((task) => task.id === ticket.id));
+    const blocked = await engine.fileTicket({ title: "child of live task", parentId: "TSK-0001" });
+    assert.equal(blocked.status, "todo");
+    const after = await engine.nextTasks();
+    assert.equal(
+      after.some((task) => task.id === blocked.id),
+      false,
+    );
+  });
+});
+
+test("filesAllowed intersecting implicit forbidden is plan FAIL", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
+      await writeTask(store, makeTask({ contract: { filesAllowed: [".env"], expectedArtifacts: [".env"] } }));
+      const envFail = await engine.plan("spec-checkin");
+      assert.equal(envFail, "FAIL");
+      assert.ok(engine.getLastPlanReport().fails.some((line) => /forbidden path/.test(line)));
+    });
+  });
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
+      await writeTask(
+        store,
+        makeTask({
+          contract: {
+            filesAllowed: [".legion-cli/config.yaml"],
+            expectedArtifacts: [".legion-cli/config.yaml"],
+          },
+        }),
+      );
+      const configFail = await engine.plan("spec-checkin");
+      assert.equal(configFail, "FAIL");
+      assert.ok(engine.getLastPlanReport().fails.some((line) => /forbidden path/.test(line)));
+    });
+  });
+});
+
 test("plan spawn can emit a P0 task via fake fixture", async () => {
   await withFakeAdapter(async () => {
     const p0 = makeTask();

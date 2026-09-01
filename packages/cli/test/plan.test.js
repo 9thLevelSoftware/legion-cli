@@ -124,6 +124,21 @@ test("next lists ready tasks", async () => {
   });
 });
 
+test("ticket create without parent is ready for next", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const created = runCli(["ticket", "create", "--project", dir, "--title", "parked extra"]);
+    assert.equal(created.status, 0, `${created.stdout}\n${created.stderr}`);
+    const engine = createLegionEngine(dir);
+    const ticket = (await engine.store.readTask("TSK-0002")).data;
+    assert.equal(ticket.status, "ready");
+    const next = runCli(["next", "--project", dir]);
+    assert.equal(next.status, 0, next.stderr);
+    assert.match(normalize(next.stdout), /TSK-0002/);
+  });
+});
+
 test("ticket create parks extra work linked to parent", async () => {
   await withTempDir(async (dir) => {
     await seedFrozen(dir);
@@ -146,6 +161,9 @@ test("ticket create parks extra work linked to parent", async () => {
     assert.deepEqual(parent.contract.filesAllowed, ["src/main.ts"]);
     const child = (await engine.store.readTask("TSK-0002")).data;
     assert.equal(child.parentId, "TSK-0001");
+    assert.equal(child.status, "todo");
+    const next = runCli(["next", "--project", dir]);
+    assert.doesNotMatch(normalize(next.stdout), /TSK-0002/);
   });
 });
 

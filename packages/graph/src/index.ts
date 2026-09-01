@@ -1,6 +1,7 @@
 export {
   DEFAULT_FILES_FORBIDDEN,
   filesAllowedFailsPlan,
+  isImplicitForbiddenPath,
   mergeFilesForbidden,
   overlappingFilesAllowed,
 } from "./contract.js";

@@ -9,8 +9,21 @@ export const DEFAULT_FILES_FORBIDDEN = [
   ".env.*",
 ] as const;
 
+/** Same implicit denylist as SkillContract / execute revert. */
+export function isImplicitForbiddenPath(posixPath: string): boolean {
+  if (posixPath === ".git" || posixPath.startsWith(".git/")) return true;
+  if (posixPath === ".legion-cli/config.yaml") return true;
+  if (posixPath.startsWith(".legion-cli/index/") || posixPath === ".legion-cli/index") return true;
+  const base = posixPath.split("/").pop() ?? posixPath;
+  if (base === ".env" || base.startsWith(".env.")) return true;
+  return false;
+}
+
 export function filesAllowedFailsPlan(filesAllowed: readonly string[]): boolean {
-  return filesAllowed.length === 0 || filesAllowed.some((path) => !isConcretePosixRepoRelativePath(path));
+  return (
+    filesAllowed.length === 0 ||
+    filesAllowed.some((path) => !isConcretePosixRepoRelativePath(path) || isImplicitForbiddenPath(path))
+  );
 }
 
 /** v0 serial exclusive: two tasks must not share a filesAllowed path. */

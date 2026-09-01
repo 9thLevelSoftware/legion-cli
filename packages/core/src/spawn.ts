@@ -21,6 +21,7 @@ export type OptionalSpawnResult = {
   spawned: boolean;
   runId: string;
   revert: RevertResult | null;
+  error?: unknown;
 };
 
 export function findSkillsDir(from = process.cwd()): string | undefined {
@@ -134,8 +135,11 @@ export async function optionalSkillSpawn(opts: {
     expectedArtifacts: opts.fakeArtifacts,
   });
   let revert: RevertResult | null = null;
+  let error: unknown;
   try {
     await handle.wait();
+  } catch (err) {
+    error = err;
   } finally {
     revert = await revertExtras({
       projectRoot: opts.projectRoot,
@@ -144,5 +148,5 @@ export async function optionalSkillSpawn(opts: {
       snapshot,
     });
   }
-  return { spawned: true, runId, revert };
+  return { spawned: true, runId, revert, error };
 }

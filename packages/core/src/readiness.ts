@@ -1,4 +1,8 @@
-import { filesAllowedFailsPlan, overlappingFilesAllowed } from "@9thlevelsoftware/legion-cli-graph";
+import {
+  filesAllowedFailsPlan,
+  isImplicitForbiddenPath,
+  overlappingFilesAllowed,
+} from "@9thlevelsoftware/legion-cli-graph";
 import type { Readiness, Spec, Task } from "@9thlevelsoftware/legion-cli-schema";
 
 export type ReadinessReport = {
@@ -32,7 +36,9 @@ export function evaluateReadiness(input: {
     if (task.contract.verificationCommands.length === 0) {
       fails.push(`${task.id} missing verificationCommands`);
     }
-    if (filesAllowedFailsPlan(task.contract.filesAllowed)) {
+    if (task.contract.filesAllowed.some((path) => isImplicitForbiddenPath(path))) {
+      fails.push(`${task.id} filesAllowed includes a forbidden path`);
+    } else if (filesAllowedFailsPlan(task.contract.filesAllowed)) {
       fails.push(`${task.id} filesAllowed must be concrete paths`);
     }
   }
