@@ -294,6 +294,28 @@ test("successful ingest auto-commits wiki pages unless noCommit", async () => {
   });
 });
 
+test("re-ingest of unchanged file preserves reviewed trust and does not commit", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    await writeFile(join(dir, "notes.md"), "# Office notes\n\nDurable fact.\n", "utf8");
+    initGitRepo(dir);
+    const store = new LegionStore(dir);
+    const first = await store.ingest(["notes.md"]);
+    const pagePath = first.pagesCreated[0];
+    const doc = await store.readWikiPage(pagePath);
+    await store.writeWikiPage(pagePath, { ...doc.data, trust: "reviewed" }, doc.body);
+    const headAfterTrust = gitHead(dir);
+
+    const second = await store.ingest(["notes.md"]);
+    assert.ok(second.skipped.includes("notes.md"));
+    assert.equal(second.pagesCreated.length, 0);
+    assert.equal(second.pagesUpdated.length, 0);
+    const after = await store.readWikiPage(pagePath);
+    assert.equal(after.data.trust, "reviewed");
+    assert.equal(gitHead(dir), headAfterTrust);
+  });
+});
+
 test("ingest accepts Windows backslash paths and stores POSIX", async () => {
   await withTempDir(async (dir) => {
     await copyFixtureProject(dir);

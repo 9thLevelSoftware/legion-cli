@@ -32,24 +32,57 @@ function isPrivateIPv4(octets: number[]): boolean {
   return false;
 }
 
+function hextetsToIpv4(hiHex: string, loHex: string): number[] {
+  const hi = Number.parseInt(hiHex, 16);
+  const lo = Number.parseInt(loHex, 16);
+  return [(hi >> 8) & 255, hi & 255, (lo >> 8) & 255, lo & 255];
+}
+
+function normalizeHost(hostname: string): string {
+  return hostname.replace(/^\[|\]$/g, "").toLowerCase();
+}
+
+/** IPv4-mapped (::ffff:…) and IPv4-compatible (::x:x / ::d.d.d.d) embed an IPv4 address. */
+function embeddedIpv4(host: string): number[] | null {
+  const h = normalizeHost(host);
+  const mappedDotted = /(?:^|:)ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(h);
+  if (mappedDotted?.[1]) return ipv4Octets(mappedDotted[1]);
+  const mappedHex = /(?:^|:)ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
+  if (mappedHex?.[1] && mappedHex[2]) return hextetsToIpv4(mappedHex[1], mappedHex[2]);
+  const compatDotted = /^::(\d{1,3}(?:\.\d{1,3}){3})$/.exec(h);
+  if (compatDotted?.[1]) return ipv4Octets(compatDotted[1]);
+  const compatHex = /^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
+  if (compatHex?.[1] && compatHex[2]) return hextetsToIpv4(compatHex[1], compatHex[2]);
+  return null;
+}
+
+function firstHextet(host: string): number | null {
+  const h = normalizeHost(host);
+  if (h === "::1" || h === "0:0:0:0:0:0:0:1") return 0;
+  const head = h.split(":")[0] ?? "";
+  if (head === "") return 0;
+  if (!/^[0-9a-f]{1,4}$/i.test(head)) return null;
+  return Number.parseInt(head, 16);
+}
+
 function isPrivateIPv6(host: string): boolean {
-  const h = host.toLowerCase();
+  const h = normalizeHost(host);
   if (h === "::1" || h === "0:0:0:0:0:0:0:1") return true;
-  if (h.startsWith("fe80:") || h.startsWith("fe80::")) return true;
-  if (h.startsWith("fc") || h.startsWith("fd")) return true;
+  const first = firstHextet(h);
+  if (first === null) return false;
+  // fe80::/10 link-local (not merely the fe80: prefix)
+  if ((first & 0xffc0) === 0xfe80) return true;
+  // fc00::/7 unique local
+  if ((first & 0xfe00) === 0xfc00) return true;
   return false;
 }
 
-function stripMappedIpv6(host: string): string {
-  const h = host.toLowerCase();
-  if (h.startsWith("::ffff:")) return h.slice("::ffff:".length);
-  return host;
-}
-
 export function isPrivateOrLocalHost(hostname: string): boolean {
-  const host = stripMappedIpv6(hostname.replace(/^\[|\]$/g, "")).toLowerCase();
+  const host = normalizeHost(hostname);
   if (PRIVATE_HOSTS.has(host)) return true;
   if (host.endsWith(".localhost") || host.endsWith(".local")) return true;
+  const mapped = embeddedIpv4(host);
+  if (mapped) return isPrivateIPv4(mapped);
   const ipv4 = ipv4Octets(host);
   if (ipv4) return isPrivateIPv4(ipv4);
   if (host.includes(":")) return isPrivateIPv6(host);
