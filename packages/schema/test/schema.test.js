@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import Ajv2020 from "ajv/dist/2020.js";
 import { parse as parseYaml } from "yaml";
 
 import {
@@ -18,6 +19,7 @@ import {
   SkillContractSchema,
   SpecSchema,
   StateFileSchema,
+  TaskSchema,
 } from "../dist/index.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -117,7 +119,7 @@ test("FileContract.filesAllowed rejects globs and .git/", () => {
   assert.equal(
     FileContractSchema.safeParse({
       ...base,
-      filesAllowed: ["src/main.ts", "index.html"],
+      filesAllowed: ["src/main.ts", "index.html", ".gitignore"],
     }).success,
     true,
   );
@@ -129,6 +131,8 @@ test("FileContract.filesAllowed rejects globs and .git/", () => {
     ["**/*.ts"],
     [".git/config"],
     [".git/**"],
+    ["vendor/.git/config"],
+    ["pkg/.git/hooks/pre-commit"],
     ["src\\main.ts"],
     ["/src/main.ts"],
     ["C:/src/main.ts"],
@@ -240,6 +244,47 @@ test("QAScore.pass formula", () => {
   assert.equal(computeQaPass(degraded), false);
   assert.equal(QAScoreSchema.parse(degraded).pass, false);
   assert.equal(QAScoreSchema.safeParse({ ...degraded, pass: true }).success, false);
+
+  assert.equal(
+    QAScoreSchema.parse({
+      ...base,
+      mode: "full",
+      buckets: {
+        p0: { points: 0, max: 40, failed: 1 },
+        p1: { points: 27, max: 30, passRate: 0.9 },
+        p2: { points: 12, max: 15, passRate: 0.8 },
+        visual: { points: 15, max: 15, regressions: 0 },
+      },
+      total: 54,
+      pass: false,
+    }).pass,
+    false,
+  );
+
+  assert.equal(
+    QAScoreSchema.safeParse({
+      ...base,
+      mode: "full",
+      buckets: {
+        p0: { points: 0, max: 40, failed: 0 },
+        p1: { points: 0, max: 30, passRate: 0 },
+        p2: { points: 0, max: 15, passRate: 0 },
+        visual: { points: 0, max: 15, regressions: 0 },
+      },
+      total: 85,
+      pass: true,
+    }).success,
+    false,
+  );
+
+  assert.equal(
+    QAScoreSchema.safeParse({
+      ...passScore,
+      total: 101,
+      pass: true,
+    }).success,
+    false,
+  );
 });
 
 test("LegionConfig requires adapter.default and defaults ingest.autoCommit", () => {
@@ -295,6 +340,40 @@ test("LegionConfig requires adapter.default and defaults ingest.autoCommit", () 
     }).success,
     false,
   );
+
+  assert.equal(
+    LegionConfigSchema.safeParse({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "fake" },
+      qa: { mode: "full", passScore: 70 },
+    }).success,
+    false,
+  );
+});
+
+test("Task.blockedBy and blocks reject empty ids", () => {
+  const task = {
+    schemaVersion: "legion-cli-task/v1",
+    id: "TSK-0002",
+    title: "in/out button",
+    status: "ready",
+    type: "feature",
+    priority: "P0",
+    specId: "spec-checkin",
+    blockedBy: ["TSK-0001"],
+    blocks: [],
+    contract: {
+      filesAllowed: ["src/main.ts"],
+      filesForbidden: [".git/**"],
+      expectedArtifacts: ["src/main.ts"],
+      verificationCommands: ["pnpm test"],
+    },
+    assignee: "agent",
+    notes: "",
+  };
+  assert.equal(TaskSchema.safeParse(task).success, true);
+  assert.equal(TaskSchema.safeParse({ ...task, blockedBy: [""] }).success, false);
+  assert.equal(TaskSchema.safeParse({ ...task, blocks: [""] }).success, false);
 });
 
 test("JSON Schema emit files match runtime schemas", () => {
@@ -311,4 +390,65 @@ test("JSON Schema emit files match runtime schemas", () => {
     assert.deepEqual(file, emitted[name]);
     assert.ok(file.$schema || file.type || file.$defs || file.properties || file.enum);
   }
+});
+
+test("JSON Schema overlays reject .git paths, no-browser pass, and generic without binary", () => {
+  const ajv = new Ajv2020({ strict: false, allErrors: true });
+  const emitted = legionJsonSchemas();
+  const validateFileContract = ajv.compile(emitted["file-contract"]);
+  const validateQa = ajv.compile(emitted["qa-score"]);
+  const validateConfig = ajv.compile(emitted["legion-config"]);
+
+  const contractBase = {
+    filesForbidden: [".git/**"],
+    expectedArtifacts: ["src/main.ts"],
+    verificationCommands: ["pnpm test"],
+  };
+  assert.equal(validateFileContract({ ...contractBase, filesAllowed: ["src/main.ts"] }), true);
+  assert.equal(validateFileContract({ ...contractBase, filesAllowed: [".git/config"] }), false);
+  assert.equal(
+    validateFileContract({ ...contractBase, filesAllowed: ["vendor/.git/config"] }),
+    false,
+  );
+
+  const qaBase = {
+    schemaVersion: "legion-cli-qa/v1",
+    id: "qa-1",
+    specId: "spec-checkin",
+    mode: "no-browser",
+    buckets: {
+      p0: { points: 40, max: 40, failed: 0 },
+      p1: { points: 27, max: 30, passRate: 0.9 },
+      p2: { points: 12, max: 15, passRate: 0.8 },
+      visual: { points: 15, max: 15, regressions: 0 },
+    },
+    total: 70,
+    pass: false,
+    evidencePaths: [],
+    createdAt: "2026-09-01T12:00:00Z",
+  };
+  assert.equal(validateQa(qaBase), true);
+  assert.equal(validateQa({ ...qaBase, pass: true }), false);
+
+  assert.equal(
+    validateConfig({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "fake" },
+    }),
+    true,
+  );
+  assert.equal(
+    validateConfig({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "generic" },
+    }),
+    false,
+  );
+  assert.equal(
+    validateConfig({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "generic", generic: { binary: "claude", args: ["-p"] } },
+    }),
+    true,
+  );
 });

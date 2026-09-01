@@ -121,7 +121,9 @@
       ]
     },
     "total": {
-      "type": "number"
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
     },
     "pass": {
       "type": "boolean"
@@ -147,5 +149,78 @@
     "pass",
     "evidencePaths",
     "createdAt"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "const": "full"
+          },
+          "total": {
+            "minimum": 85
+          },
+          "buckets": {
+            "type": "object",
+            "properties": {
+              "p0": {
+                "type": "object",
+                "properties": {
+                  "failed": {
+                    "const": 0
+                  }
+                },
+                "required": [
+                  "failed"
+                ]
+              },
+              "visual": {
+                "type": "object",
+                "properties": {
+                  "regressions": {
+                    "const": 0
+                  }
+                },
+                "required": [
+                  "regressions"
+                ]
+              }
+            },
+            "required": [
+              "p0",
+              "visual"
+            ]
+          }
+        },
+        "required": [
+          "mode",
+          "total",
+          "buckets"
+        ]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "pass": {
+            "const": true
+          }
+        },
+        "required": [
+          "pass"
+        ]
+      },
+      "else": {
+        "type": "object",
+        "properties": {
+          "pass": {
+            "const": false
+          }
+        },
+        "required": [
+          "pass"
+        ]
+      }
+    }
   ]
 }

@@ -110,7 +110,7 @@ export const LegionConfigSchema = z.object({
   qa: z
     .object({
       mode: z.enum(["full", "no-browser"]).default("full"),
-      passScore: z.number().int().min(0).max(100).default(85),
+      passScore: z.literal(85).default(85),
       unitCommand: z.string().min(1).optional(),
     })
     .default({ mode: "full", passScore: 85 }),
@@ -165,8 +165,8 @@ export const TaskSchema = z.object({
   priority: PrioritySchema,
   specId: z.string().min(1),
   parentId: z.string().min(1).nullable().optional(),
-  blockedBy: z.array(z.string()),
-  blocks: z.array(z.string()),
+  blockedBy: z.array(z.string().min(1)),
+  blocks: z.array(z.string().min(1)),
   contract: FileContractSchema,
   assignee: z.enum(["agent", "human"]),
   notes: z.string(),
@@ -272,6 +272,21 @@ export function computeQaPass(input: {
   );
 }
 
+function qaBucketPointsValid(buckets: QaBuckets): boolean {
+  return (
+    buckets.p0.points === (buckets.p0.failed === 0 ? 40 : 0) &&
+    buckets.p1.points === Math.round(30 * buckets.p1.passRate) &&
+    buckets.p2.points === Math.round(15 * buckets.p2.passRate) &&
+    buckets.visual.points === (buckets.visual.regressions === 0 ? 15 : 0)
+  );
+}
+
+function qaExpectedTotal(mode: "full" | "no-browser", buckets: QaBuckets): number {
+  const sum =
+    buckets.p0.points + buckets.p1.points + buckets.p2.points + buckets.visual.points;
+  return mode === "no-browser" ? Math.min(sum, 70) : sum;
+}
+
 export const QAScoreSchema = z
   .object({
     schemaVersion: z.literal(SCHEMA_VERSION.qa),
@@ -279,10 +294,19 @@ export const QAScoreSchema = z
     specId: z.string().min(1),
     mode: z.enum(["full", "no-browser"]),
     buckets: QaBucketsSchema,
-    total: z.number(),
+    total: z.number().min(0).max(100),
     pass: z.boolean(),
     evidencePaths: z.array(z.string()),
     createdAt: z.string().min(1),
+  })
+  .refine((score) => qaBucketPointsValid(score.buckets), {
+    path: ["buckets"],
+    message:
+      "bucket points must match P0 0-or-40, P1 round(30*passRate), P2 round(15*passRate), visual 0-or-15",
+  })
+  .refine((score) => score.total === qaExpectedTotal(score.mode, score.buckets), {
+    path: ["total"],
+    message: "total must equal the sum of bucket points (capped at 70 when mode is no-browser)",
   })
   .refine((score) => score.pass === computeQaPass(score), {
     path: ["pass"],

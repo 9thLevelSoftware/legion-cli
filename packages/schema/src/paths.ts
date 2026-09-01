@@ -3,17 +3,23 @@ import { z } from "zod";
 const GLOB_OR_BACKSLASH = /[*?[\\]/;
 
 /**
+ * Concrete POSIX repo-relative path: no globs, no `.git` segment, no `.` / `..`,
+ * no absolute or drive-letter paths. Used by Zod and emitted JSON Schema.
+ */
+export const CONCRETE_POSIX_PATH_REGEX =
+  /^(?![A-Za-z]:)(?!\/)(?:(?!\.git(?:\/|$))(?!\.(?:\/|$))(?!\.\.(?:\/|$))[^\\*?[\]/]+)(?:\/(?!\.git(?:\/|$))(?!\.(?:\/|$))(?!\.\.(?:\/|$))[^\\*?[\]/]+)*$/;
+
+/**
  * v0 FileContract.filesAllowed: concrete POSIX repo-relative paths only.
- * Rejects `*`, `**`, `?`, backslashes, absolute paths, and `.git/` .
+ * Rejects `*`, `**`, `?`, backslashes, absolute paths, and any `.git` segment.
  */
 export function isConcretePosixRepoRelativePath(path: string): boolean {
   if (path.length === 0) return false;
   if (path.startsWith("/")) return false;
   if (/^[A-Za-z]:/.test(path)) return false;
   if (GLOB_OR_BACKSLASH.test(path)) return false;
-  if (path === ".git" || path.startsWith(".git/")) return false;
   const segments = path.split("/");
-  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+  if (segments.some((segment) => segment === "" || segment === "." || segment === ".." || segment === ".git")) {
     return false;
   }
   return true;
@@ -36,16 +42,15 @@ export function isPosixRepoRelativeRoot(path: string): boolean {
 export const ConcretePosixPathSchema = z
   .string()
   .min(1)
-  .regex(/^[^\\*?[\]]+$/, "concrete POSIX repo-relative path (no globs)")
+  .regex(CONCRETE_POSIX_PATH_REGEX, "concrete POSIX repo-relative path (no globs, no .git/)")
   .refine(isConcretePosixRepoRelativePath, {
-    message:
-      "filesAllowed entries must be concrete POSIX repo-relative paths (no *, **, ?, or .git/)",
+    message: "concrete POSIX repo-relative path (no globs, no .git/)",
   });
 
 export const PosixAllowedRootSchema = z
   .string()
   .min(1)
-  .regex(/^[^\\]+$/, "POSIX repo-relative path (globs permitted)")
+  .regex(/^[^\\]+$/, "POSIX repo-relative path (globs permitted; no backslashes)")
   .refine(isPosixRepoRelativeRoot, {
-    message: "allowedRoots must be POSIX repo-relative (globs permitted; no backslashes)",
+    message: "POSIX repo-relative path (globs permitted; no backslashes)",
   });
