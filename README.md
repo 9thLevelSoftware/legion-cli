@@ -16,10 +16,12 @@ This is **not** the [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@
 
 ```bash
 pnpm install
-pnpm exec legion-cli
+pnpm exec legion-cli init --name Checkin --adapter fake
+pnpm exec legion-cli status
+pnpm exec legion-cli doctor
 ```
 
-Until a later release implements `init`, that command prints `uninitialized` and exits 0.
+`adapter.default` is required (`--adapter claude|generic|fake`, or a prompt). Brownfield `init` is v1. Supported invocation: `pnpm exec legion-cli`. This package does not register bin `legion`.
 
 ## Install from npm
 

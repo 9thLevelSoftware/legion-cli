@@ -1,0 +1,45 @@
+Legion CLI doctor
+Supported command: pnpm exec legion-cli
+
+ok    Node >= 22 (<version>)
+ok    pnpm (<version>)
+ok    git (<version>)
+ok    adapter.default (fake)
+ok    adapter spawnable (yes)
+
+PATH
+  legion-cli
+    <paths>
+  legion
+    <paths>
+
+Playwright  <playwright>
+Lock        absent
+schemaVersions
+  legion-cli-project/v1
+  legion-cli-state/v1
+  legion-cli-context/v1
+  legion-cli-intent-answers/v1
+  legion-cli-config/v1
+  legion-cli-spec/v1
+  legion-cli-task/v1
+  legion-cli-assumption/v1
+  legion-cli-discuss/v1
+  legion-cli-ingest/v1
+  legion-cli-audit/v1
+  legion-cli-resume/v1
+  legion-cli-qa/v1
+  legion-cli-brief/v1
+
+Adapter
+  default      fake
+  spawnable    yes
+  claude       <detect>
+  generic      (unset)
+  fake         spawnable (LEGION_CLI_ADAPTER=fake)
+  grok         <detect>
+  codex        <detect>
+
+Secrets     none
+
+Doctor passed.

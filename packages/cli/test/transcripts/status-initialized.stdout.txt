@@ -1,0 +1,4 @@
+Checkin  ·  greenfield  ·  phase: initialized
+Next up: interview me about the product.
+Run:  legion-cli intent
+Viewer: http://127.0.0.1:7420  (legion-cli dashboard)
