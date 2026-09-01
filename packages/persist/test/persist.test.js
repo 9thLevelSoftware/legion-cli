@@ -17,6 +17,7 @@ import {
   REBUILD_SQL,
   ensureGitignore,
   gitCheckIgnore,
+  gitDiscoverChanges,
   gitHead,
   queryIndex,
   redactSecrets,
@@ -489,5 +490,18 @@ test("ingest documents write untrusted wiki pages", async () => {
     assert.equal(page.data.trust, "untrusted");
     assert.equal(page.data.source, "https://example.com/guide");
     assert.match(page.body, /Public HTTPS excerpt/);
+  });
+});
+
+test("gitDiscoverChanges lists both paths of a committed rename", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "secret.ts"), "secret\n", "utf8");
+    initGitRepo(dir);
+    const pre = git(dir, ["rev-parse", "HEAD"]);
+    git(dir, ["mv", "secret.ts", "leaked.ts"]);
+    git(dir, ["commit", "-m", "rename"]);
+    const paths = gitDiscoverChanges(dir, pre);
+    assert.ok(paths.includes("secret.ts"), `expected secret.ts in ${JSON.stringify(paths)}`);
+    assert.ok(paths.includes("leaked.ts"), `expected leaked.ts in ${JSON.stringify(paths)}`);
   });
 });
