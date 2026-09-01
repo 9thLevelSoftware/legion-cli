@@ -15,7 +15,19 @@ import {
 
 function normalizeArtifact(entry: string | FakeArtifact): FakeArtifact {
   if (typeof entry === "string") return { path: entry, content: "\n" };
-  return { path: entry.path, content: entry.content ?? "\n", gitAdd: entry.gitAdd };
+  return { path: entry.path, content: entry.content ?? "\n", gitAdd: entry.gitAdd, gitMv: entry.gitMv };
+}
+
+function gitRun(cwd: string, args: string[]): void {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+  });
+  if (result.status !== 0) {
+    throw new AgentError(`fake git ${args.join(" ")} failed: ${(result.stderr || result.stdout).trim()}`);
+  }
 }
 
 function gitCommitPaths(cwd: string, paths: string[]): void {
@@ -106,6 +118,23 @@ export class FakeAdapter implements AgentAdapter {
     const commitPaths: string[] = [];
     for (const artifact of artifacts) {
       const rel = assertRepoRelative(artifact.path.replaceAll("<id>", job.runId));
+      if (artifact.gitMv) {
+        const dest = assertRepoRelative(artifact.gitMv.replaceAll("<id>", job.runId));
+        await mkdir(dirname(join(job.cwd, ...dest.split("/"))), { recursive: true });
+        gitRun(job.cwd, ["mv", "-f", "--", rel, dest]);
+        if (!rel.startsWith(".git/") && rel !== ".git" && !dest.startsWith(".git/") && dest !== ".git") {
+          gitRun(job.cwd, [
+            "-c",
+            "user.name=fake",
+            "-c",
+            "user.email=fake@legion-cli.test",
+            "commit",
+            "-m",
+            "fake adapter commit",
+          ]);
+        }
+        continue;
+      }
       const abs = join(job.cwd, ...rel.split("/"));
       await mkdir(dirname(abs), { recursive: true });
       await writeFile(abs, artifact.content ?? "\n", "utf8");

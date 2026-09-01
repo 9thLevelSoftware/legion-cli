@@ -101,6 +101,63 @@ test("tracked extra is restored from preSpawnRef", async () => {
   });
 });
 
+test("committed git mv of a tracked extra restores the source and removes the dest", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        await mkdir(join(dir, "src"), { recursive: true });
+        await writeFile(join(dir, "src", "secret.ts"), "export const original = true;\n", "utf8");
+        initGitRepo(dir);
+        const pre = gitHead(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        const restored = (await readFile(join(dir, "src", "secret.ts"), "utf8")).replaceAll("\r\n", "\n");
+        assert.equal(restored, "export const original = true;\n");
+        assert.equal(existsSync(join(dir, "src", "leaked.ts")), false);
+        assert.ok(result.tasks[0].extrasReverted.includes("src/secret.ts"));
+        assert.ok(result.tasks[0].extrasReverted.includes("src/leaked.ts"));
+        assert.notEqual(gitHead(dir), pre);
+        assert.equal(git(dir, ["log", "-1", "--format=%s"]), "fake adapter commit");
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+      },
+      {
+        fakeArtifacts: [{ path: "src/secret.ts", gitMv: "src/leaked.ts" }],
+      },
+    );
+  });
+});
+
+test("committed git mv of a tracked extra onto filesAllowed is still a deletion extra", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        await mkdir(join(dir, "src"), { recursive: true });
+        await writeFile(join(dir, "src", "secret.ts"), "export const original = true;\n", "utf8");
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.notEqual(result.status, "done");
+        const restored = (await readFile(join(dir, "src", "secret.ts"), "utf8")).replaceAll("\r\n", "\n");
+        assert.equal(restored, "export const original = true;\n");
+        assert.ok(result.tasks[0].extrasReverted.includes("src/secret.ts"));
+        assert.equal(
+          result.tasks[0].extrasReverted.includes("src/main.ts"),
+          false,
+          "allowed dest is not an extra",
+        );
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+      },
+      {
+        fakeArtifacts: [{ path: "src/secret.ts", gitMv: "src/main.ts" }],
+      },
+    );
+  });
+});
+
 test("committed extra vs preSpawnRef is removed without reset --hard", async () => {
   await withFakeAdapter(async () => {
     await withEngine(
