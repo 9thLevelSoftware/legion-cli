@@ -73,7 +73,12 @@ import type {
   ShipOptions,
   ShipReceipt,
 } from "./types.js";
-import { palettePresent, renderWireframeIndex, renderWireframeScreen, slugifyScreen } from "./wireframes.js";
+import {
+  palettePresent,
+  renderWireframeIndex,
+  renderWireframeScreen,
+  uniqueScreenPages,
+} from "./wireframes.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -114,11 +119,13 @@ export class LegionEngine {
   readonly store: LegionStore;
   readonly #skillsDir?: string;
   readonly #fakeArtifacts: FakeArtifact[];
+  readonly #fakeThrowAfterWrite: boolean;
 
   constructor(projectRoot: string, store?: LegionStore, options?: LegionEngineOptions) {
     this.store = store ?? createLegionStore(projectRoot);
     this.#skillsDir = options?.skillsDir;
     this.#fakeArtifacts = options?.fakeArtifacts ?? [];
+    this.#fakeThrowAfterWrite = Boolean(options?.fakeThrowAfterWrite);
   }
 
   get projectRoot(): string {
@@ -299,6 +306,11 @@ export class LegionEngine {
       }
       const project = await this.store.readProject();
       await this.store.writeProject({ ...project.data, activeSpecId: null }, project.body);
+      await this.store.writeIntentAnswers(emptyIntentAnswers());
+      await this.store.writeDiscuss(
+        { schemaVersion: SCHEMA_VERSION.discuss, decisions: [] },
+        "Decisions are captured here before planning.\n",
+      );
       await this.#writeState({
         ...state,
         phase: "intent_draft",
@@ -659,7 +671,7 @@ export class LegionEngine {
       }
       void actor;
       const project = await this.store.readProject();
-      const specId = specIdFromName(project.data.name);
+      const specId = await this.#allocateSpecId(project.data.name);
       await this.#writeIntentArtifacts(answers, specId);
       await this.#optionalSpawn("interview", specId, [
         "Rewrite .legion-cli/specs/*/prd.md from the intent answers.",
@@ -690,8 +702,9 @@ export class LegionEngine {
         discuss = { schemaVersion: SCHEMA_VERSION.discuss, decisions: templateDecisions(mapped, context) };
         await this.store.writeDiscuss(discuss, "Proposed decisions. Human accepts or rejects each.\n");
       }
+      const priorStatus = new Map(discuss.decisions.map((item) => [item.id, item.status]));
       const project = await this.store.readProject();
-      const specId = specIdFromName(project.data.name);
+      const specId = await this.#allocateSpecId(project.data.name, { allowExistingDraft: true });
       await this.#optionalSpawn(
         "discuss",
         specId,
@@ -700,9 +713,17 @@ export class LegionEngine {
       discuss = await this.#loadDiscuss();
       if (discuss.decisions.length === 0) {
         discuss = { schemaVersion: SCHEMA_VERSION.discuss, decisions: templateDecisions(mapped, context) };
-        await this.store.writeDiscuss(discuss, "Proposed decisions. Human accepts or rejects each.\n");
       }
-      return discuss.decisions.filter((item) => item.status === "proposed");
+      const reset = discuss.decisions.map((item) => {
+        const prior = priorStatus.get(item.id);
+        if (prior === "accepted" || prior === "rejected") return { ...item, status: prior };
+        return { ...item, status: "proposed" as const };
+      });
+      await this.store.writeDiscuss(
+        { schemaVersion: SCHEMA_VERSION.discuss, decisions: reset },
+        "Proposed decisions. Human accepts or rejects each.\n",
+      );
+      return reset.filter((item) => item.status === "proposed");
     });
   }
 
@@ -755,7 +776,7 @@ export class LegionEngine {
       }
       const skipWireframes = Boolean(opts?.skipWireframes);
       const project = await this.store.readProject();
-      const specId = state.activeSpecId ?? specIdFromName(project.data.name);
+      const specId = state.activeSpecId ?? (await this.#allocateSpecId(project.data.name));
       const answers = await this.#loadIntentAnswers();
       const extraAcceptance = (await this.#listAssumptions())
         .filter((item) => item.createdIn === "intent" && item.blocking === false)
@@ -794,12 +815,13 @@ export class LegionEngine {
           `Fill .legion-cli/specs/${specId}/SPEC.md from the intent answers if needed.`,
           "You may replace inner markup of wireframe HTML files.",
           "Keep the palette: background #f5f5f0, ink #222, accent #c45c26, muted #888.",
+          "Do not set status to frozen. The human runs legion-cli spec approve.",
         ].join("\n"),
       );
       if (!skipWireframes) {
         await this.#ensureWireframePalette(specId, answers.mapped.screens);
       }
-      return (await this.store.readSpec(specId)).data;
+      return this.#forceSpecDraft(specId, spec);
     });
   }
 
@@ -952,23 +974,62 @@ export class LegionEngine {
     await writeFile(join(this.store.paths.specsDir, specId, "prd.md"), prdBody(answers.mapped), "utf8");
   }
 
+  async #allocateSpecId(name: string, opts?: { allowExistingDraft?: boolean }): Promise<string> {
+    const base = specIdFromName(name);
+    const ids = [base, ...Array.from({ length: 98 }, (_, i) => `${base}-${i + 2}`)];
+    for (const id of ids) {
+      const storePath = `.legion-cli/specs/${id}/SPEC.md`;
+      if (!(await this.store.pathExists(storePath))) return id;
+      if (!opts?.allowExistingDraft) continue;
+      try {
+        const spec = (await this.store.readSpec(id)).data;
+        if (spec.status === "draft") return id;
+      } catch {
+        return id;
+      }
+    }
+    return `${base}-${Date.now()}`;
+  }
+
+  async #forceSpecDraft(specId: string, fallback: Spec): Promise<Spec> {
+    let data: Spec;
+    let body: string;
+    try {
+      const doc = await this.store.readSpec(specId);
+      data = doc.data;
+      body = doc.body;
+    } catch {
+      const restored = { ...fallback, status: "draft" as const, frozenAt: null, frozenBy: null };
+      await this.store.writeSpec(restored, specMarkdownBody(restored));
+      return restored;
+    }
+    if (data.status !== "draft" || data.frozenAt || data.frozenBy) {
+      const restored = { ...data, status: "draft" as const, frozenAt: null, frozenBy: null };
+      await this.store.writeSpec(restored, body);
+      return restored;
+    }
+    return data;
+  }
+
   async #writeWireframes(spec: Spec, screens: string[]): Promise<void> {
     const names = screens.length > 0 ? screens : ["home"];
+    const pages = uniqueScreenPages(names);
     const dir = join(this.store.paths.specsDir, spec.id, "wireframes");
     await mkdir(dir, { recursive: true });
     await writeFile(
       join(dir, "INDEX.html"),
-      renderWireframeIndex({ specTitle: spec.title, specId: spec.id, screens: names }),
+      renderWireframeIndex({ specTitle: spec.title, specId: spec.id, pages }),
       "utf8",
     );
-    const used = new Set<string>();
-    for (const screen of names) {
-      let slug = slugifyScreen(screen);
-      if (used.has(slug)) slug = `${slug}-${used.size}`;
-      used.add(slug);
+    for (const page of pages) {
       await writeFile(
-        join(dir, `${slug}.html`),
-        renderWireframeScreen({ specTitle: spec.title, screen, screens: names }),
+        join(dir, `${page.slug}.html`),
+        renderWireframeScreen({
+          specTitle: spec.title,
+          screen: page.name,
+          slug: page.slug,
+          pages,
+        }),
         "utf8",
       );
     }
@@ -976,8 +1037,9 @@ export class LegionEngine {
 
   async #ensureWireframePalette(specId: string, screens: string[]): Promise<void> {
     const names = screens.length > 0 ? screens : ["home"];
+    const pages = uniqueScreenPages(names);
     const dir = join(this.store.paths.specsDir, specId, "wireframes");
-    const files = ["INDEX.html", ...names.map((name) => `${slugifyScreen(name)}.html`)];
+    const files = ["INDEX.html", ...pages.map((page) => `${page.slug}.html`)];
     for (const file of files) {
       const abs = join(dir, file);
       try {
@@ -1010,6 +1072,7 @@ export class LegionEngine {
       promptBody,
       skillsDir: this.#skillsDir,
       fakeArtifacts: this.#fakeArtifacts,
+      throwAfterWrite: this.#fakeThrowAfterWrite,
     });
     if (!result.spawned || !result.revert) return;
     if (result.revert.incident) {

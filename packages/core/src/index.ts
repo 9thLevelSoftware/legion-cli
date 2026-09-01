@@ -16,11 +16,12 @@ export {
   intentProgress,
   requiredSlotsFilled,
   specIdFromName,
+  splitLines,
   splitMustNotAndOutOfScope,
 } from "./intent.js";
 export { revertExtras } from "./revert.js";
 export { findSkillsDir, optionalSkillSpawn } from "./spawn.js";
-export { WIREFRAME_PALETTE, palettePresent } from "./wireframes.js";
+export { WIREFRAME_PALETTE, palettePresent, uniqueScreenPages } from "./wireframes.js";
 export {
   assertCanTransition,
   assertLegalPhase,

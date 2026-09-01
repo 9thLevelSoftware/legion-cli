@@ -52,9 +52,13 @@ export async function optionalSkillSpawn(opts: {
   promptBody: string;
   skillsDir?: string;
   fakeArtifacts?: FakeArtifact[];
+  throwAfterWrite?: boolean;
 }): Promise<OptionalSpawnResult> {
   const runId = `${opts.skillId}-${Date.now().toString(36)}`;
-  const adapter = resolveAdapter(opts.config, { artifacts: opts.fakeArtifacts ?? [] });
+  const adapter = resolveAdapter(opts.config, {
+    artifacts: opts.fakeArtifacts ?? [],
+    throwAfterWrite: opts.throwAfterWrite,
+  });
   if (!(await isSpawnable(adapter))) {
     return { spawned: false, runId, revert: null };
   }
@@ -116,13 +120,16 @@ export async function optionalSkillSpawn(opts: {
     env: filterSpawnEnv(),
     expectedArtifacts: opts.fakeArtifacts,
   });
-  await handle.wait();
-
-  const revert = await revertExtras({
-    projectRoot: opts.projectRoot,
-    preSpawnRef,
-    allowedRoots: contract.allowedRoots,
-    snapshot,
-  });
+  let revert: RevertResult | null = null;
+  try {
+    await handle.wait();
+  } finally {
+    revert = await revertExtras({
+      projectRoot: opts.projectRoot,
+      preSpawnRef,
+      allowedRoots: contract.allowedRoots,
+      snapshot,
+    });
+  }
   return { spawned: true, runId, revert };
 }

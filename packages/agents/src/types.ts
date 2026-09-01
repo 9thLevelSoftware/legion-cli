@@ -70,4 +70,5 @@ export type AdapterCreateOptions = {
   extraArgs?: string[];
   generic?: GenericAdapterConfig;
   artifacts?: FakeArtifact[];
+  throwAfterWrite?: boolean;
 };

@@ -46,15 +46,39 @@ export function slugifyScreen(name: string): string {
   return slug || "screen";
 }
 
-export function renderWireframeScreen(opts: { specTitle: string; screen: string; screens: string[] }): string {
-  const current = slugifyScreen(opts.screen);
-  const nav = opts.screens
-    .map((name) => {
-      const slug = slugifyScreen(name);
-      const href = `${slug}.html`;
-      return slug === current
-        ? `<span class="muted">${escapeHtml(name)}</span>`
-        : `<a href="${href}">${escapeHtml(name)}</a>`;
+export type ScreenPage = {
+  name: string;
+  slug: string;
+};
+
+export function uniqueScreenPages(screens: string[]): ScreenPage[] {
+  const used = new Set<string>();
+  const pages: ScreenPage[] = [];
+  for (const name of screens) {
+    let slug = slugifyScreen(name);
+    if (used.has(slug)) {
+      let n = 2;
+      while (used.has(`${slug}-${n}`)) n += 1;
+      slug = `${slug}-${n}`;
+    }
+    used.add(slug);
+    pages.push({ name, slug });
+  }
+  return pages;
+}
+
+export function renderWireframeScreen(opts: {
+  specTitle: string;
+  screen: string;
+  slug: string;
+  pages: ScreenPage[];
+}): string {
+  const nav = opts.pages
+    .map((page) => {
+      const href = `${page.slug}.html`;
+      return page.slug === opts.slug
+        ? `<span class="muted">${escapeHtml(page.name)}</span>`
+        : `<a href="${href}">${escapeHtml(page.name)}</a>`;
     })
     .join(" · ");
   return `<!DOCTYPE html>
@@ -85,12 +109,9 @@ ${WIREFRAME_CSS}
 `;
 }
 
-export function renderWireframeIndex(opts: { specTitle: string; specId: string; screens: string[] }): string {
-  const items = opts.screens
-    .map((name) => {
-      const slug = slugifyScreen(name);
-      return `    <li><a href="${slug}.html">${escapeHtml(name)}</a></li>`;
-    })
+export function renderWireframeIndex(opts: { specTitle: string; specId: string; pages: ScreenPage[] }): string {
+  const items = opts.pages
+    .map((page) => `    <li><a href="${page.slug}.html">${escapeHtml(page.name)}</a></li>`)
     .join("\n");
   return `<!DOCTYPE html>
 <html lang="en">

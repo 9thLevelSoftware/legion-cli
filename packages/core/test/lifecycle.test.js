@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { LegionRefuseError, canTransition, PHASES } from "../dist/index.js";
+import { INTENT_Q, LegionRefuseError, canTransition, PHASES } from "../dist/index.js";
 import {
   initProject,
   makeQaScore,
@@ -220,12 +220,29 @@ test("spec new from shipped", async () => {
     assert.equal((await engine.getState()).phase, "shipped");
     assert.equal((await store.readSpec("spec-checkin")).data.status, "frozen");
 
+    await store.writeIntentAnswers({
+      schemaVersion: "legion-cli-intent-answers/v1",
+      rounds: [{ n: 1, questions: ["old"], answers: ["old"] }],
+      mapped: {
+        personas: ["old persona"],
+        problem: "old problem",
+        mustBeTrue: ["old"],
+        mustNotChange: [],
+        outOfScope: ["old"],
+        happyPath: "old",
+        screens: ["old"],
+      },
+    });
     await engine.newSpec();
     const state = await engine.getState();
     assert.equal(state.phase, "intent_draft");
     assert.equal(state.activeSpecId ?? null, null);
     assert.equal(state.lastReview ?? null, null);
     assert.equal((await store.readSpec("spec-checkin")).data.status, "superseded");
+    const intent = await engine.beginIntent();
+    assert.equal(intent.nextQuestions[0], INTENT_Q.persona);
+    assert.equal(intent.nextQuestions[1], INTENT_Q.problem);
+    assert.deepEqual(intent.mapped.personas, []);
   });
 });
 
