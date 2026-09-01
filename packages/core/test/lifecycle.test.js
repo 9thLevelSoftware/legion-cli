@@ -9,6 +9,7 @@ import {
   makeQaScore,
   makeSpec,
   makeTask,
+  passingVerificationCommand,
   patchState,
   seedFrozenSpec,
   seedPlanReady,
@@ -42,7 +43,7 @@ test("CONCERNS is lastReadiness on plan_ready and execute is allowed", async () 
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
     await seedFrozenSpec(store, { mustNotChange: [] });
-    await writeTask(store, makeTask());
+    await writeTask(store, makeTask({ contract: { verificationCommands: [passingVerificationCommand()] } }));
     const readiness = await engine.plan("spec-checkin");
     assert.equal(readiness, "CONCERNS");
     const state = await engine.getState();
@@ -72,33 +73,36 @@ test("PASS readiness lands in plan_ready", async () => {
 });
 
 test("executing stays until every slice task is done or blocked", async () => {
-  await withEngine(async ({ engine, store }) => {
-    await initProject(engine);
-    await seedPlanReady(store, {
-      extraTasks: [makeTask({ id: "TSK-0002", contract: { filesAllowed: ["src/board.ts"], expectedArtifacts: ["src/board.ts"] } })],
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      const verify = [passingVerificationCommand()];
+      await seedPlanReady(store, {
+        extraTasks: [
+          makeTask({
+            id: "TSK-0002",
+            contract: { filesAllowed: ["src/board.ts"], expectedArtifacts: ["src/board.ts"], verificationCommands: verify },
+          }),
+        ],
+        task: { contract: { verificationCommands: verify } },
+      });
+
+      await engine.execute("TSK-0001");
+      assert.equal((await engine.getState()).phase, "executing");
+      assert.equal((await store.readTask("TSK-0001")).data.status, "done");
+
+      await engine.setTaskStatus("TSK-0002", "blocked");
+      assert.equal((await engine.getState()).phase, "executing");
+
+      const slice = await engine.listSliceTasks();
+      assert.deepEqual(
+        slice.map((task) => `${task.id}:${task.status}`),
+        ["TSK-0001:done", "TSK-0002:blocked"],
+      );
+      const review = await engine.review();
+      assert.equal(review.verdict, "PASS");
+      assert.equal((await engine.getState()).phase, "executing");
     });
-
-    await engine.execute("TSK-0001");
-    assert.equal((await engine.getState()).phase, "executing");
-
-    await engine.setTaskStatus("TSK-0001", "in_progress");
-    await engine.setTaskStatus("TSK-0001", "verifying");
-    await engine.setTaskStatus("TSK-0001", "done");
-    assert.equal((await engine.getState()).phase, "executing");
-
-    await engine.execute("TSK-0002");
-    assert.equal((await engine.getState()).phase, "executing");
-    await engine.setTaskStatus("TSK-0002", "blocked");
-    assert.equal((await engine.getState()).phase, "executing");
-
-    const slice = await engine.listSliceTasks();
-    assert.deepEqual(
-      slice.map((task) => `${task.id}:${task.status}`),
-      ["TSK-0001:done", "TSK-0002:blocked"],
-    );
-    const review = await engine.review();
-    assert.equal(review.verdict, "PASS");
-    assert.equal((await engine.getState()).phase, "executing");
   });
 });
 

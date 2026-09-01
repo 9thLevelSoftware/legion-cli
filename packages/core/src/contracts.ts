@@ -1,4 +1,4 @@
-import type { SkillContract, SkillId } from "@9thlevelsoftware/legion-cli-schema";
+import type { FileContract, SkillContract, SkillId } from "@9thlevelsoftware/legion-cli-schema";
 
 /** Engine-constant SkillContract roots. Globs are allowed here only. */
 export const SKILL_CONTRACTS: Record<SkillId, readonly string[]> = {
@@ -28,6 +28,12 @@ export function skillContract(skillId: SkillId, opts: { runId: string; specId?: 
     root.replaceAll("<id>", opts.runId).replaceAll("<activeSpecId>", opts.specId ?? "*"),
   );
   return { skillId, allowedRoots: roots };
+}
+
+/** Execute allowed = SkillContract cache root ∪ FileContract.filesAllowed ∪ expectedArtifacts. */
+export function executeAllowedRoots(runId: string, contract: FileContract): string[] {
+  const skill = skillContract("execute", { runId });
+  return [...skill.allowedRoots, ...contract.filesAllowed, ...contract.expectedArtifacts];
 }
 
 export function globToRegExp(pattern: string): RegExp {

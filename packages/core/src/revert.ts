@@ -1,4 +1,4 @@
-import { readdir, rm } from "node:fs/promises";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   gitDiscoverChanges,
@@ -9,7 +9,15 @@ import {
   toPosixPath,
   tryGitHead,
 } from "@9thlevelsoftware/legion-cli-persist";
-import { isAllowedPath, isEngineOwned } from "./contracts.js";
+import { isAllowedPath, isEngineOwned, matchesGlob } from "./contracts.js";
+
+export const HEAD_MOVED_WARNING =
+  "agent committed; Legion CLI did not `reset`. `legion-cli ship` is the human commit gate.";
+
+export type GitPolicySnapshot = {
+  config: string | null;
+  hooks: Record<string, string>;
+};
 
 export type RevertResult = {
   extrasReverted: string[];
@@ -48,14 +56,61 @@ async function walk(root: string, rel: string, out: Set<string>): Promise<void> 
   }
 }
 
+export async function snapshotGitPolicy(projectRoot: string): Promise<GitPolicySnapshot> {
+  const hooks: Record<string, string> = {};
+  const hooksDir = join(projectRoot, ".git", "hooks");
+  try {
+    const entries = await readdir(hooksDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const posix = `.git/hooks/${entry.name}`;
+      try {
+        hooks[posix] = await readFile(join(hooksDir, entry.name), "utf8");
+      } catch {
+        hooks[posix] = "";
+      }
+    }
+  } catch {
+    // no .git/hooks
+  }
+  let config: string | null = null;
+  try {
+    config = await readFile(join(projectRoot, ".git", "config"), "utf8");
+  } catch {
+    config = null;
+  }
+  return { config, hooks };
+}
+
+async function gitPolicyIncidents(
+  projectRoot: string,
+  snapshot: GitPolicySnapshot | undefined,
+): Promise<string[]> {
+  if (!snapshot) return [];
+  const now = await snapshotGitPolicy(projectRoot);
+  const incidents: string[] = [];
+  if (now.config !== snapshot.config) incidents.push(".git/config");
+  const names = new Set([...Object.keys(now.hooks), ...Object.keys(snapshot.hooks)]);
+  for (const name of names) {
+    if (now.hooks[name] !== snapshot.hooks[name]) incidents.push(name);
+  }
+  return incidents;
+}
+
+function forbiddenByContract(posixPath: string, filesForbidden: readonly string[] | undefined): boolean {
+  if (!filesForbidden || filesForbidden.length === 0) return false;
+  return filesForbidden.some((pattern) => pattern === posixPath || matchesGlob(pattern, posixPath));
+}
+
 export async function revertExtras(opts: {
   projectRoot: string;
   preSpawnRef: string | null;
   allowedRoots: readonly string[];
+  filesForbidden?: readonly string[];
   snapshot?: Set<string>;
+  gitPolicy?: GitPolicySnapshot;
 }): Promise<RevertResult> {
   const extrasReverted: string[] = [];
-  let incident = false;
   const headNow = tryGitHead(opts.projectRoot);
   const headMoved = Boolean(opts.preSpawnRef && headNow && headNow !== opts.preSpawnRef);
 
@@ -67,12 +122,18 @@ export async function revertExtras(opts: {
     }
   }
 
+  const incidents = await gitPolicyIncidents(opts.projectRoot, opts.gitPolicy);
+  for (const posix of incidents) candidates.add(posix);
+  let incident = incidents.length > 0;
+
   for (const posix of candidates) {
     if (posix.startsWith(".git/") || posix === ".git") {
       incident = true;
       continue;
     }
-    if (isAllowedPath(posix, opts.allowedRoots)) continue;
+    if (isAllowedPath(posix, opts.allowedRoots) && !forbiddenByContract(posix, opts.filesForbidden)) {
+      continue;
+    }
     extrasReverted.push(posix);
     await restoreOne(opts.projectRoot, opts.preSpawnRef, posix);
   }

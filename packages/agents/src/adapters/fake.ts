@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { AgentError } from "../errors.js";
@@ -14,7 +15,38 @@ import {
 
 function normalizeArtifact(entry: string | FakeArtifact): FakeArtifact {
   if (typeof entry === "string") return { path: entry, content: "\n" };
-  return { path: entry.path, content: entry.content ?? "\n" };
+  return { path: entry.path, content: entry.content ?? "\n", gitAdd: entry.gitAdd };
+}
+
+function gitCommitPaths(cwd: string, paths: string[]): void {
+  if (paths.length === 0) return;
+  const add = spawnSync("git", ["add", "--", ...paths], {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+  });
+  if (add.status !== 0) {
+    throw new AgentError(`fake git add failed: ${(add.stderr || add.stdout).trim()}`);
+  }
+  const commit = spawnSync(
+    "git",
+    [
+      "-c",
+      "user.name=fake",
+      "-c",
+      "user.email=fake@legion-cli.test",
+      "commit",
+      "-m",
+      "fake adapter commit",
+      "--",
+      ...paths,
+    ],
+    { cwd, encoding: "utf8", windowsHide: true, shell: false },
+  );
+  if (commit.status !== 0) {
+    throw new AgentError(`fake git commit failed: ${(commit.stderr || commit.stdout).trim()}`);
+  }
 }
 
 class FakeHandle implements AgentHandle {
@@ -71,12 +103,17 @@ export class FakeAdapter implements AgentAdapter {
     }
 
     const artifacts = [...this.#artifacts, ...(job.expectedArtifacts ?? [])].map(normalizeArtifact);
+    const commitPaths: string[] = [];
     for (const artifact of artifacts) {
       const rel = assertRepoRelative(artifact.path.replaceAll("<id>", job.runId));
       const abs = join(job.cwd, ...rel.split("/"));
       await mkdir(dirname(abs), { recursive: true });
       await writeFile(abs, artifact.content ?? "\n", "utf8");
+      if (artifact.gitAdd && !rel.startsWith(".git/") && rel !== ".git") {
+        commitPaths.push(rel);
+      }
     }
+    gitCommitPaths(job.cwd, commitPaths);
 
     if (this.#throwAfterWrite) {
       throw new AgentError("fake adapter throwAfterWrite");

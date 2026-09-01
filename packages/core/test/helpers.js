@@ -1,7 +1,59 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LegionEngine } from "../dist/index.js";
+
+export function quoteArg(value) {
+  return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
+}
+
+export function passingVerificationCommand() {
+  return `${quoteArg(process.execPath)} -e process.exit(0)`;
+}
+
+export function failingVerificationCommand() {
+  return `${quoteArg(process.execPath)} -e process.exit(1)`;
+}
+
+export function git(cwd, args) {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+  });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${(result.stderr || result.stdout).trim()}`);
+  }
+  return result.stdout.trim();
+}
+
+export function gitHead(dir) {
+  return git(dir, ["rev-parse", "HEAD"]);
+}
+
+export function initGitRepo(dir) {
+  git(dir, ["init"]);
+  git(dir, ["config", "user.name", "9thLevelSoftware"]);
+  git(dir, ["config", "user.email", "engineering@9thlevelsoftware.com"]);
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-m", "initial"]);
+  return gitHead(dir);
+}
+
+export function commitAll(dir, message = "seed") {
+  git(dir, ["add", "-A"]);
+  const status = spawnSync("git", ["status", "--porcelain"], {
+    cwd: dir,
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+  });
+  if ((status.stdout ?? "").trim() === "") return gitHead(dir);
+  git(dir, ["commit", "-m", message]);
+  return gitHead(dir);
+}
 
 export async function withEngine(fn, options) {
   const dir = await mkdtemp(join(tmpdir(), "legion-core-"));
