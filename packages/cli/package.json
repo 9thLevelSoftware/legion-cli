@@ -1,0 +1,41 @@
+{
+  "name": "@9thlevelsoftware/legion-cli",
+  "version": "0.0.0",
+  "description": "Legion CLI — Product Engineering lifecycle engine",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "legion-cli": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run build && node --test test/bin.test.js",
+    "prepublishOnly": "pnpm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/9thLevelSoftware/product-engineer-helper.git",
+    "directory": "packages/cli"
+  },
+  "author": {
+    "name": "9thLevelSoftware",
+    "url": "https://github.com/9thLevelSoftware"
+  },
+  "keywords": [
+    "legion",
+    "legion-cli",
+    "product-engineering",
+    "cli"
+  ]
+}
