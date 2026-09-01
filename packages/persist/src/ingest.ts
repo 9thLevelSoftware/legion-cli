@@ -271,7 +271,7 @@ export async function ingestFiles(opts: {
       body,
       updatedAt,
       wikiExists: opts.wikiExists,
-      readWikiPage: alreadyWiki ? opts.readWikiPage : async () => null,
+      readWikiPage: opts.readWikiPage,
       writeWikiPage: opts.writeWikiPage,
     });
     if (result === "created") pagesCreated.push(pagePath);
