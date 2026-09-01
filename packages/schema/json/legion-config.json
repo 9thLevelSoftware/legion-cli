@@ -91,9 +91,8 @@
         },
         "passScore": {
           "default": 85,
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 100
+          "type": "number",
+          "const": 85
         },
         "unitCommand": {
           "type": "string",
@@ -147,5 +146,40 @@
   "required": [
     "schemaVersion",
     "adapter"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "adapter": {
+            "type": "object",
+            "properties": {
+              "default": {
+                "const": "generic"
+              }
+            },
+            "required": [
+              "default"
+            ]
+          }
+        },
+        "required": [
+          "adapter"
+        ]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "adapter": {
+            "type": "object",
+            "required": [
+              "default",
+              "generic"
+            ]
+          }
+        }
+      }
+    }
   ]
 }
