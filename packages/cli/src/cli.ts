@@ -20,6 +20,7 @@ import {
   runDesignSystemInstall,
   runDesignSystemShow,
 } from "./design-system.js";
+import { runMcp } from "./mcp.js";
 import { runNextTasks } from "./next-tasks.js";
 import { runPlan } from "./plan.js";
 import { runSearch } from "./search.js";
@@ -159,6 +160,13 @@ export function createProgram(): Command {
       process.exitCode = code;
     },
   );
+  addGlobalOptions(program.command("mcp").description("Read-only stdio MCP server"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runMcp(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
   addGlobalOptions(program.command("intent").description("Interview me about the product"))
     .option("--resume", "continue an in-progress interview")
     .option("--done", "finish after round 2 (still requires confirm)")
