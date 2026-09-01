@@ -95,6 +95,7 @@ export async function installLocalDir(opts: {
     ...prev,
     packageId: manifest.id,
     craft: prev.craft.length > 0 ? prev.craft : [...CRAFT_SLUGS],
+    brandViolation: false,
   });
 
   return { id: manifest.id, dest, manifest };

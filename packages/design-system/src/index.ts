@@ -25,6 +25,7 @@ export {
   assertNoUrlFetch,
   isGithubInstallSource,
   isRemoteInstallSource,
+  isRemoteLooking,
   resolveLocalDir,
 } from "./source.js";
 export { emptyActive, readActive, writeActive, readPackageManifest } from "./active.js";
