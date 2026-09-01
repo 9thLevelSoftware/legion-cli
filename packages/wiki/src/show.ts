@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { basename } from "node:path";
-import type { LegionStore } from "@9thlevelsoftware/legion-cli-persist";
+import type { LegionReader } from "@9thlevelsoftware/legion-cli-persist";
 import { loadWikiPages, type WikiPageRow } from "./graph.js";
 import { ensureWikiIndex } from "./brief.js";
 
@@ -38,9 +38,13 @@ function matchWiki(pages: WikiPageRow[], ref: string): WikiPageRow | undefined {
   });
 }
 
-export async function showPage(store: LegionStore, pageRef: string): Promise<ShownPage> {
+export async function showPage(
+  store: LegionReader,
+  pageRef: string,
+  opts?: { rebuild?: boolean },
+): Promise<ShownPage> {
   const ref = normalizeRef(pageRef);
-  await ensureWikiIndex(store);
+  await ensureWikiIndex(store, opts);
 
   if (/^TSK-/i.test(ref) || ref.startsWith(".legion-cli/tasks/")) {
     const id = basename(ref).replace(/\.md$/i, "");

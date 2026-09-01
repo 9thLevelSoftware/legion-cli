@@ -4,6 +4,7 @@ export {
   ensureWikiIndex,
   renderSessionBrief,
   SESSION_BRIEF_CHAR_CAP,
+  wikiIndexReady,
 } from "./brief.js";
 export { assertSpawnPathAllowed, isForbiddenSpawnPath } from "./contract.js";
 export {

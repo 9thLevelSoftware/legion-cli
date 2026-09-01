@@ -3,8 +3,19 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { INDEX_DB_BASENAME, LOCK_BASENAME } from "@9thlevelsoftware/legion-cli-persist";
 import { MCP_TOOLS } from "../dist/index.js";
-import { parseTool, withClient, withStore, withTempDir } from "./helpers.js";
+import { copyFixtureProject, parseTool, withClient, withStore, withTempDir } from "./helpers.js";
+
+async function missing(path) {
+  try {
+    await stat(path);
+    return false;
+  } catch (err) {
+    if (err.code === "ENOENT") return true;
+    throw err;
+  }
+}
 
 const WRITE_TOOLS = ["init", "create", "execute", "plan", "ship", "ingest", "trust", "amend"];
 
@@ -111,6 +122,21 @@ test("audit trail reads events.jsonl and is empty when missing", async () => {
   });
 });
 
+async function callAllReadTools(client) {
+  return {
+    status: parseTool(await client.callTool({ name: "legion_cli_status", arguments: {} })),
+    brief: parseTool(await client.callTool({ name: "legion_cli_brief", arguments: {} })),
+    search: parseTool(await client.callTool({ name: "legion_cli_search", arguments: { q: "Wiki" } })),
+    show: parseTool(await client.callTool({ name: "legion_cli_show", arguments: { page: "product/intent" } })),
+    graph: parseTool(await client.callTool({ name: "legion_cli_task_graph", arguments: {} })),
+    current: parseTool(await client.callTool({ name: "legion_cli_current_task", arguments: {} })),
+    audit: parseTool(await client.callTool({ name: "legion_cli_audit_trail", arguments: {} })),
+    backlinks: parseTool(
+      await client.callTool({ name: "legion_cli_wiki_backlinks", arguments: { page: "product/intent" } }),
+    ),
+  };
+}
+
 test("tools refuse until init and do not write project state", async () => {
   await withTempDir(async (dir) => {
     await withClient(dir, async (client) => {
@@ -123,31 +149,77 @@ test("tools refuse until init and do not write project state", async () => {
       assert.match(brief.text, /until init/);
     });
   });
+});
 
-  await withStore(async ({ dir }) => {
+test("missing wiki index is not rebuilt and does not take engine.lock", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    const indexDir = join(dir, ".legion-cli", "index");
+    const dbPath = join(indexDir, INDEX_DB_BASENAME);
+    const lockPath = join(indexDir, LOCK_BASENAME);
     const statePath = join(dir, ".legion-cli", "STATE.md");
     const wikiPath = join(dir, ".legion-cli", "wiki", "README.md");
     const beforeState = await readFile(statePath, "utf8");
     const beforeWiki = await readFile(wikiPath, "utf8");
-    const beforeMtime = (await stat(statePath)).mtimeMs;
 
     await withClient(dir, async (client) => {
-      await client.callTool({ name: "legion_cli_status", arguments: {} });
-      await client.callTool({ name: "legion_cli_brief", arguments: {} });
-      await client.callTool({ name: "legion_cli_search", arguments: { q: "Wiki" } });
-      await client.callTool({ name: "legion_cli_show", arguments: { page: "product/intent" } });
-      await client.callTool({ name: "legion_cli_task_graph", arguments: {} });
-      await client.callTool({ name: "legion_cli_current_task", arguments: {} });
-      await client.callTool({ name: "legion_cli_audit_trail", arguments: {} });
-      await client.callTool({
-        name: "legion_cli_wiki_backlinks",
-        arguments: { page: "product/intent" },
-      });
+      const results = await callAllReadTools(client);
+      assert.equal(results.status.isError, false, results.status.text);
+      assert.equal(results.graph.isError, false, results.graph.text);
+      assert.equal(results.current.isError, false, results.current.text);
+      assert.equal(results.audit.isError, false, results.audit.text);
+      assert.equal(results.brief.isError, true);
+      assert.match(results.brief.text, /index rebuild/);
+      assert.equal(results.search.isError, true);
+      assert.match(results.search.text, /index rebuild/);
+      assert.equal(results.show.isError, true);
+      assert.match(results.show.text, /index rebuild/);
+      assert.equal(results.backlinks.isError, true);
+      assert.match(results.backlinks.text, /index rebuild/);
+    });
+
+    assert.equal(await missing(indexDir), true);
+    assert.equal(await missing(dbPath), true);
+    assert.equal(await missing(lockPath), true);
+    assert.equal(await readFile(statePath, "utf8"), beforeState);
+    assert.equal(await readFile(wikiPath, "utf8"), beforeWiki);
+  });
+});
+
+test("prebuilt index is not rewritten and lock is not taken", async () => {
+  await withStore(async ({ dir }) => {
+    const statePath = join(dir, ".legion-cli", "STATE.md");
+    const wikiPath = join(dir, ".legion-cli", "wiki", "README.md");
+    const tasksPath = join(dir, ".legion-cli", "tasks", "TSK-0002.md");
+    const dbPath = join(dir, ".legion-cli", "index", INDEX_DB_BASENAME);
+    const lockPath = join(dir, ".legion-cli", "index", LOCK_BASENAME);
+    const beforeState = await readFile(statePath, "utf8");
+    const beforeWiki = await readFile(wikiPath, "utf8");
+    const beforeTask = await readFile(tasksPath, "utf8");
+    const beforeDb = await readFile(dbPath);
+    const beforeDbMtime = (await stat(dbPath)).mtimeMs;
+    const lockMissingBefore = await missing(lockPath);
+    const beforeLockMtime = lockMissingBefore ? null : (await stat(lockPath)).mtimeMs;
+
+    await withClient(dir, async (client) => {
+      const results = await callAllReadTools(client);
+      assert.equal(results.status.isError, false, results.status.text);
+      assert.equal(results.brief.isError, false, results.brief.text);
+      assert.equal(results.search.isError, false, results.search.text);
+      assert.equal(results.show.isError, false, results.show.text);
+      assert.equal(results.backlinks.isError, false, results.backlinks.text);
     });
 
     assert.equal(await readFile(statePath, "utf8"), beforeState);
     assert.equal(await readFile(wikiPath, "utf8"), beforeWiki);
-    assert.equal((await stat(statePath)).mtimeMs, beforeMtime);
+    assert.equal(await readFile(tasksPath, "utf8"), beforeTask);
+    assert.deepEqual(await readFile(dbPath), beforeDb);
+    assert.equal((await stat(dbPath)).mtimeMs, beforeDbMtime);
+    if (lockMissingBefore) {
+      assert.equal(await missing(lockPath), true);
+    } else {
+      assert.equal((await stat(lockPath)).mtimeMs, beforeLockMtime);
+    }
   });
 });
 
