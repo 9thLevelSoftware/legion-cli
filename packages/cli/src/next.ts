@@ -70,16 +70,11 @@ const NEXT_BY_PHASE: Record<Phase, NextCommand> = {
 };
 
 export function nextCommand(state: StateFile, slice: readonly Task[]): NextCommand {
-  if (state.phase === "executing") {
-    if (state.lastReview === "FAIL") {
-      return { run: "legion-cli review", hint: "re-review after fix tasks." };
+  if (state.phase === "executing" && isSliceTerminal(slice)) {
+    if (state.lastReview === "PASS") {
+      return { run: "legion-cli qa", hint: "score the product (the slice is done)." };
     }
-    if (isSliceTerminal(slice)) {
-      if (state.lastReview === "PASS") {
-        return { run: "legion-cli qa", hint: "score the product (the slice is done)." };
-      }
-      return { run: "legion-cli review", hint: "spec-level review; fix tasks mean FAIL and re-review." };
-    }
+    return { run: "legion-cli review", hint: "spec-level review; fix tasks mean FAIL and re-review." };
   }
   return NEXT_BY_PHASE[state.phase];
 }

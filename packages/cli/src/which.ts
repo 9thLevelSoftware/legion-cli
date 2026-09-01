@@ -62,21 +62,76 @@ export function listOnPath(names: readonly string[]): string[] {
   return uniquePaths(found);
 }
 
+function quoteCmdArg(arg: string): string {
+  if (arg.length === 0) return '""';
+  if (!/[\t\r\n "]/.test(arg)) return arg;
+  return `"${arg.replaceAll('"', '""')}"`;
+}
+
+type SpawnText = {
+  error?: Error;
+  status: number | null;
+  stdout: string;
+  stderr: string;
+};
+
+function asText(result: ReturnType<typeof spawnSync>): SpawnText {
+  return {
+    error: result.error,
+    status: result.status,
+    stdout: String(result.stdout ?? ""),
+    stderr: String(result.stderr ?? ""),
+  };
+}
+
+function spawnDirect(command: string, args: string[], cwd: string | undefined): SpawnText {
+  return asText(
+    spawnSync(command, args, {
+      cwd,
+      encoding: "utf8",
+      windowsHide: true,
+      shell: false,
+    }),
+  );
+}
+
+function spawnCmdFile(command: string, args: string[], cwd: string | undefined): SpawnText {
+  const line = [command, ...args].map(quoteCmdArg).join(" ");
+  return asText(
+    spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", line], {
+      cwd,
+      encoding: "utf8",
+      windowsHide: true,
+      shell: false,
+      windowsVerbatimArguments: true,
+    }),
+  );
+}
+
 export function runTool(
   name: string,
   args: string[],
   cwd?: string,
 ): { status: number; stdout: string; stderr: string } {
-  const win = process.platform === "win32";
-  // Windows PATH shims are .cmd; those need a shell. Bare name first so git.exe wins.
-  const candidates = win ? [name, `${name}.cmd`, `${name}.exe`] : [name];
+  if (process.platform !== "win32") {
+    const result = spawnDirect(name, args, cwd);
+    if (result.error) return { status: 1, stdout: "", stderr: "not found" };
+    return {
+      status: result.status ?? 1,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+    };
+  }
+
+  const resolved = listOnPath([name, `${name}.cmd`, `${name}.exe`]);
+  const candidates = [...resolved, name, `${name}.exe`, `${name}.cmd`];
+  const seen = new Set<string>();
   for (const cmd of candidates) {
-    const result = spawnSync(cmd, args, {
-      cwd,
-      encoding: "utf8",
-      windowsHide: true,
-      shell: win && cmd.endsWith(".cmd"),
-    });
+    const key = cmd.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const viaCmd = /\.(cmd|bat)$/i.test(cmd);
+    const result = viaCmd ? spawnCmdFile(cmd, args, cwd) : spawnDirect(cmd, args, cwd);
     if (result.error) continue;
     return {
       status: result.status ?? 1,
