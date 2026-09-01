@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "od-design-system-project/v1",
+  "id": "acme",
+  "name": "Acme",
+  "category": "Productivity & SaaS",
+  "description": "A concise English catalog summary.",
+  "source": {
+    "type": "bundled",
+    "origin": "OpenDesign curated bundled fixture"
+  },
+  "files": {
+    "design": "DESIGN.md",
+    "tokens": "tokens.css"
+  },
+  "usage": "USAGE.md"
+}

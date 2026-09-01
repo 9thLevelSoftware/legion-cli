@@ -3,7 +3,7 @@
 - Product: **Legion CLI**. Binary: **`legion-cli`**. On-disk dir: **`.legion-cli/`**.
 - npm org: `@9thlevelsoftware`.
 - CLI package: `@9thlevelsoftware/legion-cli` (public, bin `legion-cli`).
-- Libraries (later PRs): `@9thlevelsoftware/legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard}`.
+- Libraries (later PRs): `@9thlevelsoftware/legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard,design-system}`.
 - Task DAG / file-contract queries: `@9thlevelsoftware/legion-cli-graph`. CLI verbs: `plan`, `next`, `ticket create`, `task amend`.
 - Workspace **root** is `"private": true`. Do not publish the root.
 - Workspace packages are public under `@9thlevelsoftware`.

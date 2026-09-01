@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, CommanderError } from "commander";
 import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
+import { DesignSystemError } from "@9thlevelsoftware/legion-cli-design-system";
 import { runBrief } from "./brief.js";
 import { runDiscuss } from "./discuss.js";
 import { runDoctor } from "./doctor.js";
@@ -11,6 +12,12 @@ import { runIngest } from "./ingest.js";
 import { runInit } from "./init.js";
 import { runIntent } from "./intent.js";
 import { printRefuse, resolveOpts, writeErr } from "./io.js";
+import {
+  runDesignSystemGenerate,
+  runDesignSystemImportOd,
+  runDesignSystemInstall,
+  runDesignSystemShow,
+} from "./design-system.js";
 import { runNextTasks } from "./next-tasks.js";
 import { runPlan } from "./plan.js";
 import { runSearch } from "./search.js";
@@ -261,6 +268,57 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
+  const designSystem = addGlobalOptions(
+    program.command("design-system").description("Show, install, import, or generate a design-system package"),
+  )
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runDesignSystemShow(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(designSystem.command("show").description("Show the active design-system package"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runDesignSystemShow(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(designSystem.command("install").description("Copy a local design-system directory"))
+    .argument("<dir>", "local directory (github: rejected)")
+    .allowExcessArguments(false)
+    .action(async (dir: string, _opts, cmd: Command) => {
+      const code = await runDesignSystemInstall(resolveOpts(cmd), dir);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(designSystem.command("import-od").description("One-way OpenDesign importer"))
+    .argument("<dir>", "OpenDesign folder with od-design-system-project/v1")
+    .allowExcessArguments(false)
+    .action(async (dir: string, _opts, cmd: Command) => {
+      const code = await runDesignSystemImportOd(resolveOpts(cmd), dir);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(designSystem.command("generate").description("Generate a design system from a brief"))
+    .option("--name <name>", "package name")
+    .option("--work-type <type>", "work type")
+    .option("--platforms <platforms>", "phone, desktop, or both")
+    .option("--wcag <level>", "A | AA | AAA")
+    .option("--brand <path>", "brand file path or none")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as {
+        name?: string;
+        workType?: string;
+        platforms?: string;
+        wcag?: string;
+        brand?: string;
+      };
+      const code = await runDesignSystemGenerate(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+
   program.addHelpCommand(false);
   program
     .command("help")
@@ -296,7 +354,7 @@ export async function runCli(argv: string[]): Promise<number> {
     await program.parseAsync(argv);
     return process.exitCode ?? 0;
   } catch (err) {
-    if (err instanceof LegionRefuseError) {
+    if (err instanceof LegionRefuseError || err instanceof DesignSystemError) {
       printRefuse(err, json);
       return 1;
     }

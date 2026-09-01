@@ -67,17 +67,21 @@ export async function writeRunPrompt(opts: {
   projectRoot: string;
   runId: string;
   body: string;
+  /** When compose already included DESIGN.md / package files. */
+  skipDesignAppend?: boolean;
 }): Promise<string> {
   const paths = runCachePaths(opts.projectRoot, opts.runId);
   await mkdir(paths.runDir, { recursive: true });
   let body = opts.body.endsWith("\n") ? opts.body : `${opts.body}\n`;
-  const designPath = join(opts.projectRoot, ".legion-cli", "design", "DESIGN.md");
-  try {
-    const design = await readFile(designPath, "utf8");
-    const text = design.endsWith("\n") ? design : `${design}\n`;
-    body += `\n## DESIGN.md\n\n${text}`;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  if (!opts.skipDesignAppend) {
+    const designPath = join(opts.projectRoot, ".legion-cli", "design", "DESIGN.md");
+    try {
+      const design = await readFile(designPath, "utf8");
+      const text = design.endsWith("\n") ? design : `${design}\n`;
+      body += `\n## DESIGN.md\n\n${text}`;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
   }
   await writeFile(paths.promptPath, body, "utf8");
   return paths.promptPath;

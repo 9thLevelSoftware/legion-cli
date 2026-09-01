@@ -8,6 +8,7 @@ import { parse as parseYaml } from "yaml";
 
 import {
   computeQaPass,
+  DesignSystemPackageSchema,
   FileContractSchema,
   JSON_SCHEMA_FILES,
   LegionConfigSchema,
@@ -101,6 +102,31 @@ test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.resume, "legion-cli-resume/v1");
   assert.equal(SCHEMA_VERSION.qa, "legion-cli-qa/v1");
   assert.equal(SCHEMA_VERSION.brief, "legion-cli-brief/v1");
+  assert.equal(SCHEMA_VERSION.designSystem, "legion-cli-design-system/v1");
+  assert.equal(SCHEMA_VERSION.designActive, "legion-cli-design-active/v1");
+});
+
+test("DesignSystemPackage is legion-cli-design-system/v1", () => {
+  const pkg = DesignSystemPackageSchema.parse({
+    schemaVersion: "legion-cli-design-system/v1",
+    id: "acme",
+    name: "Acme",
+    description: "Brand",
+    source: { type: "local", origin: "/tmp/acme" },
+    files: { design: "DESIGN.md", tokens: "tokens.css" },
+  });
+  assert.equal(pkg.schemaVersion, "legion-cli-design-system/v1");
+  assert.equal(
+    DesignSystemPackageSchema.safeParse({
+      schemaVersion: "od-design-system-project/v1",
+      id: "acme",
+      name: "Acme",
+      description: "Brand",
+      source: { type: "local", origin: "/tmp/acme" },
+      files: { design: "DESIGN.md", tokens: "tokens.css" },
+    }).success,
+    false,
+  );
 });
 
 test("plan_concerns is not a phase", () => {

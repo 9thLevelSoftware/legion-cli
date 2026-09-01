@@ -12,6 +12,7 @@ import {
   writeRunPrompt,
   type FakeArtifact,
 } from "@9thlevelsoftware/legion-cli-agents";
+import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
 import { SCHEMA_VERSION, type LegionConfig, type SkillId } from "@9thlevelsoftware/legion-cli-schema";
 import { skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
@@ -103,7 +104,20 @@ export async function optionalSkillSpawn(opts: {
       ? join(opts.projectRoot, ".legion-cli", "design", "craft")
       : undefined,
   });
-  const promptPath = await writeRunPrompt({ projectRoot: opts.projectRoot, runId, body: prompt });
+  const active = await readActive(opts.projectRoot);
+  let promptBody = prompt;
+  let skipDesignAppend = false;
+  if (active?.packageId) {
+    const composed = await composeDesignContext({ projectRoot: opts.projectRoot, skillBody: prompt });
+    promptBody = composed.text;
+    skipDesignAppend = true;
+  }
+  const promptPath = await writeRunPrompt({
+    projectRoot: opts.projectRoot,
+    runId,
+    body: promptBody,
+    skipDesignAppend,
+  });
   const preSpawnRef = recordPreSpawnRef(opts.projectRoot);
   const snapshot = preSpawnRef ? undefined : await snapshotPaths(opts.projectRoot);
   const resumeDir = join(opts.projectRoot, ".legion-cli", "cache", "runs", runId);

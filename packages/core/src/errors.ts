@@ -32,6 +32,7 @@ export const HINT = {
   show: "legion-cli show <page>",
   controlMode: "guarded or surgical",
   greenfield: "greenfield, or wait for v1",
+  designGenerate: "legion-cli design-system generate",
   ticket: (taskId: string) => `legion-cli ticket create --parent ${taskId}`,
 } as const;
 
