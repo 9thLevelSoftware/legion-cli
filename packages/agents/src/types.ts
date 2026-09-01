@@ -2,14 +2,15 @@ import type { SkillId } from "@9thlevelsoftware/legion-cli-schema";
 
 export type { SkillId };
 
-/** Includes detect-only ids. Config `adapter.default` is only fake | generic | claude. */
+/** Config `adapter.default` remains fake | generic | claude until schema unlocks extra ids. */
 export type AgentAdapterId = "fake" | "generic" | "claude" | "grok" | "codex";
-
-export type SpawnableAdapterId = "fake" | "generic" | "claude";
+export type ExtraAdapterId = "grok" | "codex";
+export type SpawnableAdapterId = AgentAdapterId;
 
 export const DETECT_ADAPTER_IDS = ["fake", "generic", "claude", "grok", "codex"] as const;
-export const SPAWNABLE_ADAPTER_IDS = ["fake", "generic", "claude"] as const;
-export const DETECT_ONLY_ADAPTER_IDS = ["grok", "codex"] as const;
+export const SPAWNABLE_ADAPTER_IDS = ["fake", "generic", "claude", "grok", "codex"] as const;
+export const EXTRA_ADAPTER_IDS = ["grok", "codex"] as const;
+export const DETECT_ONLY_ADAPTER_IDS = [] as const satisfies readonly AgentAdapterId[];
 
 export const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 export const ABORT_GRACE_MS = 5_000;
@@ -66,9 +67,17 @@ export type GenericAdapterConfig = {
   args: string[];
 };
 
+/** Override assumed PATH name and fill generic-style argv (vendor flags unverified). */
+export type ExtraAdapterConfig = {
+  binary?: string;
+  args?: string[];
+};
+
 export type AdapterCreateOptions = {
   extraArgs?: string[];
   generic?: GenericAdapterConfig;
+  grok?: ExtraAdapterConfig;
+  codex?: ExtraAdapterConfig;
   artifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
 };

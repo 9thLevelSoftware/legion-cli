@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ASSUMED_EXTRA_BINARIES,
   CLAUDE_FROZEN_ARGV,
   DEFAULT_GENERIC_ARGS,
+  EXTRA_ADAPTER_IDS,
   FROZEN_ARGV_TABLE,
   POINTER_PLACEHOLDER,
   POINTER_PROMPT_MAX_CHARS,
+  SPAWNABLE_ADAPTER_IDS,
   argsIncludePointer,
   buildClaudeArgv,
   buildGenericArgv,
@@ -67,11 +70,16 @@ test("pointer prompt includes run/skill paths and forbids git commit", () => {
   assert.match(prompt, /\.legion-cli\/cache\/runs\/abc\/summary\.md/);
 });
 
-test("frozen argv table marks grok and codex detect-only", () => {
-  assert.equal(FROZEN_ARGV_TABLE.grok.spawnable, false);
-  assert.equal(FROZEN_ARGV_TABLE.codex.spawnable, false);
-  assert.equal(FROZEN_ARGV_TABLE.grok.argv, null);
-  assert.equal(FROZEN_ARGV_TABLE.codex.argv, null);
+test("frozen argv table marks grok and codex spawnable with fillable generic-style argv", () => {
+  assert.deepEqual([...EXTRA_ADAPTER_IDS], ["grok", "codex"]);
+  assert.deepEqual(ASSUMED_EXTRA_BINARIES, { grok: "grok", codex: "codex" });
+  for (const id of EXTRA_ADAPTER_IDS) {
+    assert.equal(FROZEN_ARGV_TABLE[id].spawnable, true);
+    assert.equal(FROZEN_ARGV_TABLE[id].binary, ASSUMED_EXTRA_BINARIES[id]);
+    assert.deepEqual([...FROZEN_ARGV_TABLE[id].argv], [...DEFAULT_GENERIC_ARGS]);
+    assert.equal(argsIncludePointer(FROZEN_ARGV_TABLE[id].argv), true);
+    assert.ok(SPAWNABLE_ADAPTER_IDS.includes(id));
+  }
   assert.equal(FROZEN_ARGV_TABLE.fake.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.claude.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.generic.spawnable, true);

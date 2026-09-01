@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { lstatSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  AdapterNotEnabled,
   AgentError,
+  EXTRA_ADAPTER_IDS,
   GenericAdapter,
   buildPointerPrompt,
   createAdapter,
@@ -143,19 +144,72 @@ test("filterSpawnEnv keeps allowlisted keys and inherits SSH_AUTH_SOCK", () => {
   assert.equal(noSock.SSH_AUTH_SOCK, undefined);
 });
 
-test("createAdapter grok spawn still throws without a job cwd", async () => {
-  await assert.rejects(
-    () => createAdapter("grok").spawn({
-      runId: "x",
-      skillId: "qa",
-      promptPath: "p",
-      pointerPrompt: "ptr",
-      cwd: ".",
-      timeoutMs: 1,
-      env: {},
-    }),
-    AdapterNotEnabled,
-  );
+function extraShim(id, script) {
+  return createAdapter(id, {
+    [id]: {
+      binary: process.execPath,
+      args: [join(fixturesDir, script), "{{pointer}}"],
+    },
+  });
+}
+
+test("grok and codex conformance: pointer prompt after skill staging copy", async () => {
+  for (const id of EXTRA_ADAPTER_IDS) {
+    await withTempDir(async (dir) => {
+      const runId = `run-${id}`;
+      const pointer = buildPointerPrompt(runId, "plan");
+      const { job, paths } = await setupRun(dir, { runId, pointerPrompt: pointer });
+      assert.equal(lstatSync(paths.skillDir).isSymbolicLink(), false);
+      assert.equal(lstatSync(paths.skillMd).isSymbolicLink(), false);
+      assert.equal(lstatSync(paths.skillMd).isFile(), true);
+      assert.match(await readFile(paths.skillMd, "utf8"), /# skill/);
+      const adapter = extraShim(id, "echo-argv.js");
+      assert.equal(adapter.id, id);
+      const handle = await adapter.spawn(job);
+      const result = await handle.wait();
+      assert.equal(result.exitCode, 0, await readFile(result.stderrPath, "utf8"));
+      const argv = JSON.parse(await readFile(join(dir, "argv.json"), "utf8"));
+      assert.equal(argv.at(-1), pointer);
+      assert.match(argv.at(-1), /Do not `git add` or `git commit`/);
+      assert.match(argv.at(-1), new RegExp(`\\.legion-cli/cache/skills/${runId}/SKILL\\.md`));
+      assert.match(argv.at(-1), new RegExp(`\\.legion-cli/cache/runs/${runId}/prompt\\.md`));
+    });
+  }
+});
+
+test("grok and codex process-group abort kills the spawn tree", async () => {
+  for (const id of EXTRA_ADAPTER_IDS) {
+    await withTempDir(async (dir) => {
+      const { job } = await setupRun(dir, { runId: `abort-${id}`, timeoutMs: 20_000 });
+      const adapter = extraShim(id, "sleep-tree.js");
+      const handle = await adapter.spawn(job);
+      const started = Date.now();
+      const childPidPath = join(dir, "child-pid.txt");
+      await waitUntil(
+        async () => {
+          try {
+            await readFile(childPidPath, "utf8");
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        5000,
+        "grandchild pid file was not written",
+      );
+      const childPid = Number((await readFile(childPidPath, "utf8")).trim());
+      assert.ok(Number.isInteger(childPid) && childPid > 0);
+      assert.equal(pidAlive(handle.pid), true);
+      assert.equal(pidAlive(childPid), true);
+      const waiting = handle.wait();
+      await handle.abort();
+      const result = await waiting;
+      assert.ok(Date.now() - started < 12_000);
+      assert.equal(result.aborted, true);
+      assert.equal(result.timedOut, false);
+      await waitUntil(() => !pidAlive(handle.pid) && !pidAlive(childPid), 3000, "process group still alive");
+    });
+  }
 });
 
 test("unwrapCmdShim resolves npm .cmd shims to node + JS entry", () => {

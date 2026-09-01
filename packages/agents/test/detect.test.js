@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AdapterConfigError,
-  AdapterNotEnabled,
+  ASSUMED_EXTRA_BINARIES,
   DETECT_ADAPTER_IDS,
+  DETECT_ONLY_ADAPTER_IDS,
+  EXTRA_ADAPTER_IDS,
   FAKE_ADAPTER_ENV,
   createAdapter,
   detectMatrix,
@@ -42,13 +44,41 @@ test("fake detect is ok only when LEGION_CLI_ADAPTER=fake", async () => {
   }
 });
 
-test("grok and codex are detect-only and spawn throws AdapterNotEnabled", async () => {
-  for (const id of ["grok", "codex"]) {
+test("grok and codex detect assumed PATH binaries and are no longer detect-only", async () => {
+  assert.deepEqual([...DETECT_ONLY_ADAPTER_IDS], []);
+  for (const id of EXTRA_ADAPTER_IDS) {
     const adapter = createAdapter(id);
-    assert.equal(isDetectOnly(id), true);
-    assert.equal(await isSpawnable(adapter), false);
+    assert.equal(adapter.id, id);
+    assert.equal(adapter.binary, ASSUMED_EXTRA_BINARIES[id]);
+    assert.equal(isDetectOnly(id), false);
     const detected = await adapter.detect();
     assert.equal(typeof detected.ok, "boolean");
+    assert.equal(await isSpawnable(adapter), detected.ok);
+    if (!detected.ok) {
+      assert.match(detected.reason ?? "", /is not on PATH/);
+    }
+  }
+});
+
+test("grok and codex with a node shim binary are spawnable", async () => {
+  for (const id of EXTRA_ADAPTER_IDS) {
+    const adapter = createAdapter(id, {
+      [id]: { binary: process.execPath, args: ["{{pointer}}"] },
+    });
+    const detected = await adapter.detect();
+    assert.equal(detected.ok, true, detected.reason);
+    assert.equal(await isSpawnable(adapter), true);
+  }
+});
+
+test("grok and codex args that omit {{pointer}} are not spawnable and spawn throws", async () => {
+  for (const id of EXTRA_ADAPTER_IDS) {
+    const adapter = createAdapter(id, {
+      [id]: { binary: process.execPath, args: ["-p"] },
+    });
+    const detected = await adapter.detect();
+    assert.equal(detected.ok, false);
+    assert.match(detected.reason ?? "", /\{\{pointer\}\}/);
     await assert.rejects(
       () =>
         adapter.spawn({
@@ -60,7 +90,7 @@ test("grok and codex are detect-only and spawn throws AdapterNotEnabled", async 
           timeoutMs: 1000,
           env: {},
         }),
-      (err) => err instanceof AdapterNotEnabled && err.id === id && err.name === "AdapterNotEnabled",
+      (err) => err instanceof AdapterConfigError && /pointer/.test(err.message),
     );
   }
 });
