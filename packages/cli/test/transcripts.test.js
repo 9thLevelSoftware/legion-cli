@@ -73,6 +73,23 @@ test("init --mode brownfield refuses (golden)", async () => {
   });
 });
 
+test("unknown verb is not parsed as status args (golden)", async () => {
+  await withTempDir(async (dir) => {
+    const result = runCli(["intent", "--project", dir]);
+    assert.equal(result.status, 1);
+    await assertTranscript(result.stderr, "unknown-intent.stderr.txt");
+    assert.doesNotMatch(normalize(result.stderr), /too many arguments/);
+  });
+});
+
+test("bare legion-cli --blockers still runs status", async () => {
+  await withTempDir(async (dir) => {
+    const result = runCli(["--project", dir, "--blockers"]);
+    assert.equal(result.status, 0, result.stderr);
+    await assertTranscript(result.stdout, "status-blockers-none.stdout.txt");
+  });
+});
+
 test("init requires adapter when non-interactive (golden)", async () => {
   await withTempDir(async (dir) => {
     const result = runCli(["init", "--project", dir, "--name", "Checkin"]);
@@ -177,6 +194,16 @@ test("doctor fails when fake adapter is not spawnable", async () => {
     assert.equal(result.status, 1);
     assert.match(normalize(result.stdout), /Doctor failed/);
     assert.match(normalize(result.stdout), /adapter spawnable/);
+  });
+});
+
+test("doctor stderr does not contain DEP0190", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const result = runCli(["doctor", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.doesNotMatch(normalize(result.stderr), /DEP0190/);
   });
 });
 

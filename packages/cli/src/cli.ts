@@ -21,21 +21,50 @@ function addGlobalOptions(cmd: Command): Command {
     .option("--verbose", "verbose logging");
 }
 
+function addStatusOptions(cmd: Command): Command {
+  return cmd.option("--blockers", "list blocked work").option("--plain", "compact output");
+}
+
+function printUnknownCommand(name: string): void {
+  writeErr(`unknown command '${name}'\n(run legion-cli help --all)`);
+}
+
 export function createProgram(): Command {
   const program = new Command();
   addGlobalOptions(program);
+  addStatusOptions(program);
   program
     .name("legion-cli")
     .description(
       "Product Engineering lifecycle engine.\nSupported invocation: pnpm exec legion-cli\nDoes not register bin legion.",
     )
     .version(pkg.version)
-    .showHelpAfterError("(run legion-cli help for commands)")
-    .exitOverride();
+    .showSuggestionAfterError(false)
+    .showHelpAfterError(false)
+    .exitOverride()
+    .allowExcessArguments(true)
+    .configureOutput({
+      outputError: (str, write) => {
+        const match = /unknown command '([^']+)'/.exec(str);
+        if (match) {
+          printUnknownCommand(match[1]);
+          return;
+        }
+        write(str);
+      },
+    })
+    .action(async (_opts, cmd: Command) => {
+      const extra = cmd.args.filter((arg) => arg.length > 0);
+      if (extra.length > 0) {
+        printUnknownCommand(extra[0]);
+        process.exitCode = 1;
+        return;
+      }
+      const code = await runStatus(resolveOpts(cmd));
+      process.exitCode = code;
+    });
 
-  addGlobalOptions(program.command("status", { isDefault: true }).description("Where am I? What next?"))
-    .option("--blockers", "list blocked work")
-    .option("--plain", "compact output")
+  addStatusOptions(addGlobalOptions(program.command("status").description("Where am I? What next?")))
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
       const code = await runStatus(resolveOpts(cmd));
@@ -81,7 +110,7 @@ export function createProgram(): Command {
       if (command) {
         const sub = program.commands.find((entry) => entry.name() === command);
         if (!sub) {
-          writeErr(`unknown command '${command}'\n(run legion-cli help --all)`);
+          printUnknownCommand(command);
           process.exitCode = 1;
           return;
         }
