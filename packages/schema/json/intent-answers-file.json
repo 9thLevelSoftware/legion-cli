@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-intent-answers/v1"
+    },
+    "rounds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "answers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "n",
+          "questions",
+          "answers"
+        ]
+      }
+    },
+    "mapped": {
+      "type": "object",
+      "properties": {
+        "personas": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "problem": {
+          "type": "string"
+        },
+        "mustBeTrue": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mustNotChange": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "outOfScope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "happyPath": {
+          "type": "string"
+        },
+        "screens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "personas",
+        "problem",
+        "mustBeTrue",
+        "mustNotChange",
+        "outOfScope",
+        "happyPath",
+        "screens"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "rounds",
+    "mapped"
+  ]
+}

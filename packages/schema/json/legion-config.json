@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-config/v1"
+    },
+    "adapter": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "generic",
+            "fake"
+          ]
+        },
+        "claude": {
+          "type": "object",
+          "properties": {
+            "extraArgs": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "generic": {
+          "type": "object",
+          "properties": {
+            "binary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "binary",
+            "args"
+          ]
+        }
+      },
+      "required": [
+        "default"
+      ]
+    },
+    "ingest": {
+      "default": {
+        "autoCommit": true
+      },
+      "type": "object",
+      "properties": {
+        "autoCommit": {
+          "default": true,
+          "type": "boolean"
+        }
+      }
+    },
+    "control_mode": {
+      "default": "guarded",
+      "type": "string",
+      "enum": [
+        "guarded",
+        "surgical",
+        "advisory"
+      ]
+    },
+    "qa": {
+      "default": {
+        "mode": "full",
+        "passScore": 85
+      },
+      "type": "object",
+      "properties": {
+        "mode": {
+          "default": "full",
+          "type": "string",
+          "enum": [
+            "full",
+            "no-browser"
+          ]
+        },
+        "passScore": {
+          "default": 85,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "unitCommand": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "dashboard": {
+      "default": {
+        "port": 7420,
+        "bind": "127.0.0.1"
+      },
+      "type": "object",
+      "properties": {
+        "port": {
+          "default": 7420,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "bind": {
+          "default": "127.0.0.1",
+          "type": "string",
+          "const": "127.0.0.1"
+        }
+      }
+    },
+    "flags": {
+      "default": {
+        "mcpApps": false,
+        "webmcp": false,
+        "parallelExecute": false
+      },
+      "type": "object",
+      "properties": {
+        "mcpApps": {
+          "default": false,
+          "type": "boolean"
+        },
+        "webmcp": {
+          "default": false,
+          "type": "boolean"
+        },
+        "parallelExecute": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "adapter"
+  ]
+}

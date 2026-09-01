@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-audit/v1"
+    },
+    "ts": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "uninitialized",
+        "initialized",
+        "intent_draft",
+        "intent_ready",
+        "discussing",
+        "spec_draft",
+        "spec_frozen",
+        "planning",
+        "plan_failed",
+        "plan_ready",
+        "executing",
+        "ready_to_ship",
+        "shipped",
+        "abandoned"
+      ]
+    },
+    "taskId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "data": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {}
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "ts",
+    "type",
+    "phase",
+    "actor",
+    "data"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "skillId": {
+      "type": "string",
+      "enum": [
+        "interview",
+        "discuss",
+        "spec",
+        "ingest",
+        "plan",
+        "execute",
+        "verify",
+        "review",
+        "qa"
+      ]
+    },
+    "allowedRoots": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^\\\\]+$"
+      }
+    }
+  },
+  "required": [
+    "skillId",
+    "allowedRoots"
+  ]
+}

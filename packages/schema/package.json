@@ -1,0 +1,54 @@
+{
+  "name": "@9thlevelsoftware/legion-cli-schema",
+  "version": "0.0.0",
+  "description": "Legion CLI domain schemas (Zod + JSON Schema)",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./json/*": "./json/*"
+  },
+  "files": [
+    "dist",
+    "json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node dist/emit-json-schema.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run build && node --test test/schema.test.js",
+    "prepublishOnly": "pnpm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/9thLevelSoftware/product-engineer-helper.git",
+    "directory": "packages/schema"
+  },
+  "author": {
+    "name": "9thLevelSoftware",
+    "url": "https://github.com/9thLevelSoftware"
+  },
+  "keywords": [
+    "legion",
+    "legion-cli",
+    "schema",
+    "zod"
+  ],
+  "dependencies": {
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "yaml": "^2.9.0"
+  }
+}

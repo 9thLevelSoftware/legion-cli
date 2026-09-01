@@ -1,0 +1,23 @@
+---
+schemaVersion: legion-cli-spec/v1
+id: spec-checkin
+title: Office check-in
+status: draft
+mustBeTrue:
+  - People can tap in or out on their phone in under five seconds
+mustNotChange: []
+outOfScope:
+  - payroll
+  - badges
+  - calendar sync
+acceptance:
+  - id: AC-01
+    statement: Tap in or out on a phone completes in under five seconds
+    kind: behavior
+    priority: P0
+personas:
+  - teammates who miss who is in the office
+happyPath: Open the board, tap In, see yourself listed, tap Out, see yourself leave.
+---
+
+Office check-in for teammates who keep missing who's in.

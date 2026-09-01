@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "legion-cli-project/v1",
+  "name": "Checkin",
+  "mode": "greenfield",
+  "controlMode": "guarded",
+  "activeSpecId": "spec-checkin"
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-assumption/v1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "statement": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "confirmed",
+        "rejected"
+      ]
+    },
+    "blocking": {
+      "type": "boolean"
+    },
+    "evidence": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "escalatesTo": {
+      "type": "string",
+      "enum": [
+        "user",
+        "engineer"
+      ]
+    },
+    "createdIn": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "id",
+    "statement",
+    "status",
+    "blocking",
+    "escalatesTo",
+    "createdIn"
+  ]
+}
