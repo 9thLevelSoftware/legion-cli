@@ -153,17 +153,18 @@ async function upsertWikiPage(opts: {
     existing = null;
   }
 
+  if (existing && sameBody(existing.body, body)) return "skipped";
+
   const page: WikiPage = {
     schemaVersion: WIKI_PAGE_SCHEMA_VERSION,
     title: opts.title.trim() || titleFromSource(opts.source, body),
     aliases: existing?.data.aliases ?? [],
     tags: existing?.data.tags ?? [],
-    trust: existing?.data.trust ?? "untrusted",
-    updated: existing && sameBody(existing.body, body) ? existing.data.updated : opts.updatedAt,
+    // New or changed bytes are untrusted until a human re-runs wiki trust.
+    trust: "untrusted",
+    updated: opts.updatedAt,
     source: existing?.data.source ?? opts.source,
   };
-
-  if (existing && sameBody(existing.body, body)) return "skipped";
 
   const existed = existing !== null || (await opts.wikiExists(opts.pagePath));
   await opts.writeWikiPage(opts.pagePath, page, body);

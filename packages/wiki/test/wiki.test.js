@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   assembleSessionBrief,
   backlinks,
+  buildSessionBrief,
   fetchPublicHttps,
   hubs,
   isForbiddenSpawnPath,
@@ -165,5 +166,32 @@ test("show and wiki trust round-trip a page", async () => {
     await trustWikiPage(store, path);
     const after = await showPage(store, path);
     assert.equal(after.trust, "reviewed");
+  });
+});
+
+test("changed re-ingest after wiki trust is untrusted in brief and default search", async () => {
+  await withStore(async ({ dir, store }) => {
+    await writeFile(join(dir, "notes.md"), "# Office notes\n\nDurable fact.\n", "utf8");
+    const first = await store.ingest(["notes.md"], { noCommit: true });
+    const path = first.pagesCreated[0];
+    await trustWikiPage(store, path);
+    assert.equal((await showPage(store, path)).trust, "reviewed");
+
+    await writeFile(join(dir, "notes.md"), "# Office notes\n\nCHANGED_UNTRUSTED_BODY now lives here.\n", "utf8");
+    const second = await store.ingest(["notes.md"], { noCommit: true });
+    assert.ok(second.pagesUpdated.includes(path));
+    assert.equal((await showPage(store, path)).trust, "untrusted");
+
+    const brief = await buildSessionBrief(store);
+    const entry = brief.wiki.find((page) => page.path === path);
+    assert.ok(entry);
+    assert.equal(entry.trust, "untrusted");
+    assert.equal(entry.summary ?? null, null);
+    assert.doesNotMatch(renderSessionBrief(brief), /CHANGED_UNTRUSTED_BODY/);
+
+    const hidden = searchWiki(store.projectRoot, "CHANGED_UNTRUSTED_BODY");
+    assert.equal(hidden.length, 0);
+    const shown = searchWiki(store.projectRoot, "CHANGED_UNTRUSTED_BODY", { includeUntrusted: true });
+    assert.ok(shown.some((hit) => hit.snippet.includes("CHANGED_UNTRUSTED_BODY")));
   });
 });
