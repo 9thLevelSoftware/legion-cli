@@ -237,6 +237,14 @@ const cases = [
     },
   },
   {
+    name: "ingest of github: source is v1",
+    hint: /save markdown and ingest the file/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.ingest(["github:pr:123"], { noCommit: true }),
+  },
+  {
     name: "control_mode autonomous",
     hint: /guarded or surgical/,
     setup: async () => {},

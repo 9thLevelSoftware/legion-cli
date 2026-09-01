@@ -1,3 +1,4 @@
+import type { SearchHit } from "@9thlevelsoftware/legion-cli-wiki";
 import type {
   AdapterId,
   ControlMode,
@@ -6,6 +7,7 @@ import type {
   QAScore,
   Readiness,
   ReviewVerdict,
+  SessionBrief,
   Spec,
   Task,
 } from "@9thlevelsoftware/legion-cli-schema";
@@ -51,4 +53,10 @@ export type ShipReceipt = {
 
 export type IngestSource = string;
 
-export type { IngestReceipt, Phase, QAScore, Readiness, ReviewVerdict, Spec, Task };
+export type IngestOpts = {
+  noCommit?: boolean;
+  transcript?: string;
+  diff?: string;
+};
+
+export type { IngestReceipt, Phase, QAScore, Readiness, ReviewVerdict, SearchHit, SessionBrief, Spec, Task };

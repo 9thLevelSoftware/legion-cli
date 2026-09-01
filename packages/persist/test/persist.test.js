@@ -19,6 +19,7 @@ import {
   gitCheckIgnore,
   gitHead,
   queryIndex,
+  redactSecrets,
   toPosixPath,
   toProjectRelativePosix,
   toStorePath,
@@ -403,5 +404,47 @@ test("project containment compares canonical realpaths", async () => {
     const store = new LegionStore(alias);
     const receipt = await store.ingest(["docs/notes.md"], { noCommit: true });
     assert.equal(receipt.pagesCreated[0], ".legion-cli/wiki/ingested/docs/notes.md");
+  });
+});
+
+test("ingest redacts secrets before wiki write", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    await writeFile(
+      join(dir, "leaked.md"),
+      "# Leaked\n\nAKIAIOSFODNN7EXAMPLE key sk-abcdefghijklmnopqrstuvwxyz ghp_abcdefghijklmnopqrstuvwxyz\n",
+      "utf8",
+    );
+    const store = new LegionStore(dir);
+    const receipt = await store.ingest(["leaked.md"], { noCommit: true });
+    const page = await store.readWikiPage(receipt.pagesCreated[0]);
+    assert.match(page.body, /\[REDACTED:aws-access-key\]/);
+    assert.match(page.body, /\[REDACTED:sk\]/);
+    assert.match(page.body, /\[REDACTED:ghp\]/);
+    assert.doesNotMatch(page.body, /AKIAIOSFODNN7EXAMPLE/);
+    assert.equal(redactSecrets("xai-abcdefghijklmnopqrstuvwxyz").includes("xai-"), false);
+  });
+});
+
+test("ingest documents write untrusted wiki pages", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    const store = new LegionStore(dir);
+    const receipt = await store.ingest([], {
+      noCommit: true,
+      documents: [
+        {
+          source: "https://example.com/guide",
+          title: "Guide",
+          body: "Public HTTPS excerpt.\n",
+        },
+      ],
+    });
+    assert.equal(receipt.pagesCreated.length, 1);
+    assert.ok(receipt.pagesCreated[0].startsWith(".legion-cli/wiki/ingested/"));
+    const page = await store.readWikiPage(receipt.pagesCreated[0]);
+    assert.equal(page.data.trust, "untrusted");
+    assert.equal(page.data.source, "https://example.com/guide");
+    assert.match(page.body, /Public HTTPS excerpt/);
   });
 });

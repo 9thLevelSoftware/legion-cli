@@ -1,6 +1,11 @@
 export { HINT, LegionRefuseError, refuse } from "./errors.js";
 export { createLegionEngine, LegionEngine } from "./engine.js";
-export { assertIngestSourceAllowed, isPrivateOrLocalHost, isUrlSource } from "./ingest-guard.js";
+export {
+  assertIngestSourceAllowed,
+  isGithubSource,
+  isPrivateOrLocalHost,
+  isUrlSource,
+} from "./ingest-guard.js";
 export {
   assertCanTransition,
   assertLegalPhase,
@@ -26,6 +31,7 @@ export {
 export type {
   Actor,
   ExecuteResult,
+  IngestOpts,
   IngestReceipt,
   IngestSource,
   InitOptions,
@@ -35,6 +41,8 @@ export type {
   Readiness,
   ReviewResult,
   ReviewVerdict,
+  SearchHit,
+  SessionBrief,
   ShipOptions,
   ShipReceipt,
   Spec,
