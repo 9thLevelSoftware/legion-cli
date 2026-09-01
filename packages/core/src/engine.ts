@@ -467,19 +467,26 @@ export class LegionEngine {
         });
         runId = result.runId;
         if (result.revert?.incident) {
+          await this.#fileExtrasFromRun(runId, id);
           refuse("inspect .git — spawn touched .git/", HINT.plan);
         }
         if (result.revert && result.revert.extrasReverted.length > 0) {
           spawnFails.push(
             `plan spawn wrote files outside SkillContract; reverted: ${result.revert.extrasReverted.join(", ")}`,
           );
-        } else if (runId) {
-          await this.#fileExtrasFromRun(runId, id);
+        }
+        if (result.error) {
+          spawnFails.push(result.error instanceof Error ? result.error.message : String(result.error));
         }
       } catch (err) {
         if (err instanceof LegionRefuseError) throw err;
         spawnFails.push(err instanceof Error ? err.message : String(err));
       }
+      if (runId) {
+        await this.#fileExtrasFromRun(runId, id);
+      }
+
+      await this.#clampPlanTaskStatuses(id);
 
       const spec = (await this.store.readSpec(id)).data;
       const entries = await this.#loadTaskEntries();
@@ -1047,10 +1054,49 @@ export class LegionEngine {
         );
       }
     }
+    const promoted = await this.#promoteTicketIfReady(id, specId);
     if (state.lastReview === "PASS") {
       await this.#writeState({ ...state, lastReview: "FAIL" });
     }
-    return ticket;
+    return promoted;
+  }
+
+  async #clampPlanTaskStatuses(specId: string): Promise<void> {
+    const slice = sliceTasks(await this.#listTasks(), specId);
+    for (const task of slice) {
+      if (task.status === "todo" || task.status === "ready") continue;
+      const doc = await this.store.readTask(task.id);
+      await this.store.writeTask({ ...doc.data, status: "todo" }, doc.body);
+    }
+  }
+
+  async #promoteTicketIfReady(taskId: string, specId: string): Promise<Task> {
+    const doc = await this.store.readTask(taskId);
+    const state = await this.#readState();
+    let controlMode: ControlMode = "guarded";
+    try {
+      controlMode = (await this.#readConfig()).control_mode;
+    } catch {
+      // missing config
+    }
+    const slice = sliceTasks(await this.#listTasks(), specId);
+    const current = slice.find((task) => task.id === taskId) ?? doc.data;
+    if (
+      isTaskReady(current, {
+        phase: state.phase,
+        controlMode,
+        tasks: slice,
+        assumptions: await this.#listAssumptions(),
+      })
+    ) {
+      if (doc.data.status !== "ready") {
+        assertTaskStatusTransition(doc.data.status, "ready");
+        const ready = { ...doc.data, status: "ready" as const };
+        await this.store.writeTask(ready, doc.body);
+        return ready;
+      }
+    }
+    return doc.data;
   }
 
   async #promoteReadyTasks(specId: string, phase: Phase, controlMode: ControlMode): Promise<void> {
@@ -1278,6 +1324,9 @@ export class LegionEngine {
         `spawn wrote files outside SkillContract; reverted: ${result.revert.extrasReverted.join(", ")}`,
         HINT.intent,
       );
+    }
+    if (result.error) {
+      throw result.error;
     }
   }
 

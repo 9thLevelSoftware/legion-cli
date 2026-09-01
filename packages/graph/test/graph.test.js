@@ -45,12 +45,16 @@ function ctx(tasks, extra = {}) {
   };
 }
 
-test("filesAllowedFailsPlan rejects empty, globs, and .git", () => {
+test("filesAllowedFailsPlan rejects empty, globs, .git, and implicit forbidden", () => {
   assert.equal(filesAllowedFailsPlan([]), true);
   assert.equal(filesAllowedFailsPlan(["src/**"]), true);
   assert.equal(filesAllowedFailsPlan(["src/*.ts"]), true);
   assert.equal(filesAllowedFailsPlan(["src/foo?.ts"]), true);
   assert.equal(filesAllowedFailsPlan([".git/config"]), true);
+  assert.equal(filesAllowedFailsPlan([".env"]), true);
+  assert.equal(filesAllowedFailsPlan([".env.local"]), true);
+  assert.equal(filesAllowedFailsPlan([".legion-cli/config.yaml"]), true);
+  assert.equal(filesAllowedFailsPlan([".legion-cli/index/engine.lock"]), true);
   assert.equal(filesAllowedFailsPlan(["src/main.ts"]), false);
 });
 
