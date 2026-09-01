@@ -316,6 +316,27 @@ test("re-ingest of unchanged file preserves reviewed trust and does not commit",
   });
 });
 
+test("re-ingest of changed file resets trust to untrusted", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    await writeFile(join(dir, "notes.md"), "# Office notes\n\nDurable fact.\n", "utf8");
+    initGitRepo(dir);
+    const store = new LegionStore(dir);
+    const first = await store.ingest(["notes.md"]);
+    const pagePath = first.pagesCreated[0];
+    const doc = await store.readWikiPage(pagePath);
+    await store.writeWikiPage(pagePath, { ...doc.data, trust: "reviewed" }, doc.body);
+
+    await writeFile(join(dir, "notes.md"), "# Office notes\n\nCHANGED_UNTRUSTED_BODY now lives here.\n", "utf8");
+    const second = await store.ingest(["notes.md"]);
+    assert.ok(second.pagesUpdated.includes(pagePath));
+    assert.equal(second.pagesCreated.length, 0);
+    const after = await store.readWikiPage(pagePath);
+    assert.equal(after.data.trust, "untrusted");
+    assert.match(after.body, /CHANGED_UNTRUSTED_BODY/);
+  });
+});
+
 test("ingest accepts Windows backslash paths and stores POSIX", async () => {
   await withTempDir(async (dir) => {
     await copyFixtureProject(dir);
