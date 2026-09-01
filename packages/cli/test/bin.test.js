@@ -31,5 +31,9 @@ test("help --all lists the v0 command surface", () => {
   assert.match(out, /Available now:/);
   assert.match(out, /Full v0 command surface:/);
   assert.match(out, /legion-cli intent/);
+  assert.match(out, /legion-cli plan/);
+  assert.match(out, /legion-cli next/);
+  assert.match(out, /legion-cli ticket create/);
+  assert.match(out, /legion-cli task amend/);
   assert.match(out, /pnpm exec legion-cli/);
 });

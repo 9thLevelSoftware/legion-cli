@@ -13,6 +13,7 @@ import {
   seedFrozenSpec,
   seedPlanReady,
   withEngine,
+  withFakeAdapter,
   writeSpec,
   writeTask,
 } from "./helpers.js";
@@ -32,6 +33,7 @@ test("init writes initialized greenfield project", async () => {
 });
 
 test("CONCERNS is lastReadiness on plan_ready and execute is allowed", async () => {
+  await withFakeAdapter(async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
     await seedFrozenSpec(store, { mustNotChange: [] });
@@ -47,17 +49,20 @@ test("CONCERNS is lastReadiness on plan_ready and execute is allowed", async () 
     assert.equal(result.phase, "executing");
     assert.equal((await engine.getState()).phase, "executing");
   });
+  });
 });
 
 test("PASS readiness lands in plan_ready", async () => {
-  await withEngine(async ({ engine, store }) => {
-    await initProject(engine);
-    await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
-    await writeFile(join(store.paths.specsDir, "spec-checkin", "stories.yaml"), "stories: []\n", "utf8");
-    await writeTask(store, makeTask());
-    const readiness = await engine.plan("spec-checkin");
-    assert.equal(readiness, "PASS");
-    assert.equal((await engine.getState()).phase, "plan_ready");
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
+      await writeFile(join(store.paths.specsDir, "spec-checkin", "stories.yaml"), "stories: []\n", "utf8");
+      await writeTask(store, makeTask());
+      const readiness = await engine.plan("spec-checkin");
+      assert.equal(readiness, "PASS");
+      assert.equal((await engine.getState()).phase, "plan_ready");
+    });
   });
 });
 
@@ -293,6 +298,7 @@ test("canTransition has no plan_concerns edge", () => {
 });
 
 test("plan walks spec_frozen → planning → plan_ready and transition cannot skip readiness", async () => {
+  await withFakeAdapter(async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
     await seedFrozenSpec(store);
@@ -322,6 +328,7 @@ test("plan walks spec_frozen → planning → plan_ready and transition cannot s
     const again = await engine.plan("spec-checkin");
     assert.equal(again, "CONCERNS");
     assert.equal((await engine.getState()).phase, "plan_ready");
+  });
   });
 });
 
