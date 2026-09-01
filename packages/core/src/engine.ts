@@ -1,5 +1,11 @@
 import { isSpawnable, resolveAdapter, type FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
-import { isTaskReady, mergeFilesForbidden, overlappingFilesAllowed, readyTasks } from "@9thlevelsoftware/legion-cli-graph";
+import {
+  isTaskReady,
+  mergeFilesForbidden,
+  overlappingFilesAllowed,
+  pickNextTask,
+  readyTasks,
+} from "@9thlevelsoftware/legion-cli-graph";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -61,6 +67,7 @@ import {
 import { assertCanTransition, assertLegalPhase } from "./phases.js";
 import { evaluateReadiness, filesAllowedFailsPlan, type ReadinessReport } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
+import { HEAD_MOVED_WARNING } from "./revert.js";
 import { findSkillsDir, optionalSkillSpawn } from "./spawn.js";
 import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
 import { assertTaskStatusTransition } from "./tasks.js";
@@ -69,8 +76,10 @@ import type {
   Actor,
   AmendTaskOptions,
   DecisionInput,
+  ExecuteOptions,
   ExecuteResult,
   IngestOpts,
+  ExecuteTaskResult,
   InitOptions,
   IntentState,
   LegionEngineOptions,
@@ -80,6 +89,7 @@ import type {
   ShipOptions,
   ShipReceipt,
 } from "./types.js";
+import { runVerificationCommands } from "./verify.js";
 import {
   palettePresent,
   renderWireframeIndex,
@@ -604,56 +614,43 @@ export class LegionEngine {
     });
   }
 
-  async execute(taskId: string | "auto" = "auto"): Promise<ExecuteResult> {
+  async execute(taskId: string | "auto" = "auto", opts?: ExecuteOptions): Promise<ExecuteResult> {
     return this.#mutate(async () => {
-      const state = await this.#readState();
       const config = await this.#readConfig();
       if (config.control_mode === "advisory") {
         refuse("execute is refused in advisory mode", HINT.advisory);
       }
-      if (state.phase === "plan_failed") {
-        refuse("execute is refused after readiness FAIL", HINT.planRetry);
-      }
-      if (state.phase !== "plan_ready" && state.phase !== "executing") {
-        refuse("execute requires plan_ready or executing", HINT.plan);
-      }
-
-      const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
-      let task: Task | undefined;
-      if (taskId === "auto") {
-        task = slice.find((candidate) => candidate.status === "ready");
-        if (!task) {
-          refuse("no ready task in the active spec slice", HINT.blockers);
+      const outcomes: ExecuteTaskResult[] = [];
+      const warnings: string[] = [];
+      let nextId: string | "auto" = taskId;
+      while (true) {
+        const outcome = await this.#executeOneLocked(nextId, { fix: Boolean(opts?.fix), config });
+        outcomes.push(outcome);
+        if (outcome.headMoved && !warnings.includes(HEAD_MOVED_WARNING)) {
+          warnings.push(HEAD_MOVED_WARNING);
         }
-      } else {
-        task = slice.find((candidate) => candidate.id === taskId);
-        if (!task) {
-          try {
-            const loaded = (await this.store.readTask(taskId)).data;
-            if (loaded.specId !== state.activeSpecId) {
-              refuse(`task ${taskId} is not in the active spec slice`, HINT.blockers);
-            }
-            task = loaded;
-          } catch {
-            refuse(`unknown task ${taskId}`, HINT.blockers);
-          }
-        }
+        if (outcome.status === "blocked" || outcome.incident) break;
+        if (!opts?.untilBlocked) break;
+        const state = await this.#readState();
+        const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+        const ready = pickNextTask({
+          phase: state.phase,
+          controlMode: config.control_mode,
+          tasks: slice,
+          assumptions: await this.#listAssumptions(),
+        });
+        if (!ready) break;
+        nextId = ready.id;
       }
-
-      if (task.status !== "ready") {
-        refuse(`task ${task.id} is ${task.status}, not ready`, HINT.blockers);
-      }
-      if (task.contract.filesAllowed.length === 0 || task.contract.verificationCommands.length === 0) {
-        refuse("execute requires a FileContract with filesAllowed and verificationCommands", HINT.plan);
-      }
-
-      const nextPhase: Phase = "executing";
-      await this.#writeState({
-        ...state,
-        phase: nextPhase,
-        currentTaskId: task.id,
-      });
-      return { taskId: task.id, phase: nextPhase };
+      const state = await this.#readState();
+      const last = outcomes.at(-1);
+      return {
+        taskId: last?.taskId ?? "",
+        phase: state.phase,
+        status: last?.status ?? "blocked",
+        tasks: outcomes,
+        warnings,
+      };
     });
   }
 
@@ -997,6 +994,224 @@ export class LegionEngine {
 
   async getState(): Promise<StateFile> {
     return this.#readState();
+  }
+
+  async #executeOneLocked(
+    taskId: string | "auto",
+    opts: { fix: boolean; config: LegionConfig },
+  ): Promise<ExecuteTaskResult> {
+    const state = await this.#readState();
+    if (state.phase === "plan_failed") {
+      refuse("execute is refused after readiness FAIL", HINT.planRetry);
+    }
+    if (state.phase !== "plan_ready" && state.phase !== "executing") {
+      refuse("execute requires plan_ready or executing", HINT.plan);
+    }
+
+    const task = await this.#resolveExecuteTask(taskId, state, opts.config);
+    if (task.contract.filesAllowed.length === 0 || task.contract.verificationCommands.length === 0) {
+      refuse("execute requires a FileContract with filesAllowed and verificationCommands", HINT.plan);
+    }
+
+    await this.#assertExecuteSpawnable(opts.config);
+    if (state.phase !== "executing") {
+      assertCanTransition(state.phase, "executing");
+    }
+
+    const extraAllowed = [...task.contract.filesAllowed, ...task.contract.expectedArtifacts];
+    const promptBody = [
+      `Task: ${task.id} ${task.title}`,
+      `Priority: ${task.priority}`,
+      opts.fix ? "This is a fix run. Keep the reproducing test. Do not delete tests." : "",
+      `Read .legion-cli/specs/${task.specId}/SPEC.md.`,
+      "Write only the files listed in FileContract. Do not git add or git commit.",
+      "Copy AC.priority into new test names as @p0/@p1/@p2.",
+      "",
+      "## FileContract",
+      "filesAllowed:",
+      ...task.contract.filesAllowed.map((path) => `- ${path}`),
+      "expectedArtifacts:",
+      ...task.contract.expectedArtifacts.map((path) => `- ${path}`),
+      "verificationCommands:",
+      ...task.contract.verificationCommands.map((cmd) => `- ${cmd}`),
+      "filesForbidden:",
+      ...task.contract.filesForbidden.map((path) => `- ${path}`),
+    ]
+      .filter((line) => line !== "")
+      .join("\n");
+
+    const result = await optionalSkillSpawn({
+      projectRoot: this.projectRoot,
+      config: opts.config,
+      skillId: "execute",
+      specId: task.specId,
+      taskId: task.id,
+      promptBody,
+      extraAllowedRoots: extraAllowed,
+      filesForbidden: task.contract.filesForbidden,
+      skillsDir: this.#skillsDir,
+      fakeArtifacts: this.#fakeArtifacts,
+      throwAfterWrite: this.#fakeThrowAfterWrite,
+      required: true,
+    });
+
+    const revert = result.revert;
+    const extras = revert?.extrasReverted ?? [];
+    const incident = Boolean(revert?.incident);
+    const headMoved = Boolean(revert?.headMoved);
+    const runId = result.runId;
+
+    if (runId) {
+      await this.#fileExtrasFromRun(runId, task.specId);
+    }
+
+    if (incident || extras.length > 0) {
+      let ticketId: string | undefined;
+      if (extras.length > 0) {
+        const ticket = await this.#fileTicketLocked(
+          {
+            title:
+              extras.length === 1
+                ? `FileContract extra: ${extras[0]}`
+                : `FileContract extras: ${extras.join(", ")}`,
+            parentId: task.id,
+            fromAgent: true,
+            type: "bug",
+            notes: "type: scope. Spawn wrote paths outside FileContract; extras were reverted.",
+          },
+          task.specId,
+        );
+        ticketId = ticket.id;
+      }
+      await this.#transitionTaskTo(task.id, "blocked");
+      await this.#writeState({
+        ...(await this.#readState()),
+        phase: "executing",
+        currentTaskId: task.id,
+      });
+      return {
+        taskId: task.id,
+        status: "blocked",
+        runId,
+        extrasReverted: extras,
+        incident,
+        headMoved,
+        ticketId,
+      };
+    }
+
+    if (result.error) {
+      await this.#transitionTaskTo(task.id, "blocked");
+      return {
+        taskId: task.id,
+        status: "blocked",
+        runId,
+        extrasReverted: extras,
+        incident,
+        headMoved,
+      };
+    }
+
+    await this.#transitionTaskTo(task.id, "verifying");
+
+    const verification = runVerificationCommands(this.projectRoot, task.contract.verificationCommands);
+    const verificationPass = verification.length > 0 && verification.every((run) => run.ok);
+
+    if (verificationPass) {
+      await this.#transitionTaskTo(task.id, "done");
+      await this.#promoteReadyTasks(task.specId, "executing", opts.config.control_mode);
+    } else {
+      await this.#transitionTaskTo(task.id, "blocked");
+    }
+
+    await this.#writeState({
+      ...(await this.#readState()),
+      phase: "executing",
+      currentTaskId: task.id,
+    });
+
+    return {
+      taskId: task.id,
+      status: verificationPass ? "done" : "blocked",
+      runId,
+      extrasReverted: extras,
+      incident,
+      headMoved,
+      verificationPass,
+    };
+  }
+
+  async #resolveExecuteTask(taskId: string | "auto", state: StateFile, config: LegionConfig): Promise<Task> {
+    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    if (taskId === "auto") {
+      const picked = pickNextTask({
+        phase: state.phase,
+        controlMode: config.control_mode,
+        tasks: slice,
+        assumptions: await this.#listAssumptions(),
+      });
+      if (!picked) {
+        refuse("no ready task in the active spec slice", HINT.blockers);
+      }
+      return (await this.store.readTask(picked.id)).data;
+    }
+
+    let task = slice.find((candidate) => candidate.id === taskId);
+    if (!task) {
+      try {
+        const loaded = (await this.store.readTask(taskId)).data;
+        if (loaded.specId !== state.activeSpecId) {
+          refuse(`task ${taskId} is not in the active spec slice`, HINT.blockers);
+        }
+        task = loaded;
+      } catch {
+        refuse(`unknown task ${taskId}`, HINT.blockers);
+      }
+    }
+    if (task.status !== "ready") {
+      refuse(`task ${task.id} is ${task.status}, not ready`, HINT.blockers);
+    }
+    return task;
+  }
+
+  async #transitionTaskTo(taskId: string, to: TaskStatus): Promise<void> {
+    const forward: TaskStatus[] = ["todo", "ready", "in_progress", "verifying", "done"];
+    let doc = await this.store.readTask(taskId);
+    if (doc.data.status === to) return;
+    if (to === "blocked") {
+      assertTaskStatusTransition(doc.data.status, "blocked");
+      await this.store.writeTask({ ...doc.data, status: "blocked" }, doc.body);
+      return;
+    }
+    let currentIdx = forward.indexOf(doc.data.status);
+    const targetIdx = forward.indexOf(to);
+    if (currentIdx === -1 || targetIdx === -1 || currentIdx > targetIdx) {
+      assertTaskStatusTransition(doc.data.status, to);
+      await this.store.writeTask({ ...doc.data, status: to }, doc.body);
+      return;
+    }
+    while (currentIdx < targetIdx) {
+      const next = forward[currentIdx + 1];
+      if (!next) break;
+      doc = await this.store.readTask(taskId);
+      assertTaskStatusTransition(doc.data.status, next);
+      await this.store.writeTask({ ...doc.data, status: next }, doc.body);
+      currentIdx += 1;
+    }
+  }
+
+  async #assertExecuteSpawnable(config: LegionConfig): Promise<void> {
+    const adapter = resolveAdapter(config, {
+      artifacts: this.#fakeArtifacts,
+      throwAfterWrite: this.#fakeThrowAfterWrite,
+    });
+    if (!(await isSpawnable(adapter))) {
+      refuse("execute requires a spawnable adapter", HINT.doctor);
+    }
+    const skillsDir = this.#skillsDir ?? findSkillsDir();
+    if (!skillsDir || !existsSync(join(skillsDir, "execute", "SKILL.md"))) {
+      refuse("execute requires skills/execute/SKILL.md", HINT.execute);
+    }
   }
 
   async #assertPlanSpawnable(config: LegionConfig): Promise<void> {

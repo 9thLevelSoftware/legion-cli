@@ -16,7 +16,13 @@ import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-d
 import { SCHEMA_VERSION, type LegionConfig, type SkillId } from "@9thlevelsoftware/legion-cli-schema";
 import { skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
-import { recordPreSpawnRef, revertExtras, snapshotPaths, type RevertResult } from "./revert.js";
+import {
+  recordPreSpawnRef,
+  revertExtras,
+  snapshotGitPolicy,
+  snapshotPaths,
+  type RevertResult,
+} from "./revert.js";
 
 export type OptionalSpawnResult = {
   spawned: boolean;
@@ -40,7 +46,8 @@ export function findSkillsDir(from = process.cwd()): string | undefined {
       const candidate = join(dir, "skills");
       if (
         existsSync(join(candidate, "interview", "SKILL.md")) ||
-        existsSync(join(candidate, "plan", "SKILL.md"))
+        existsSync(join(candidate, "plan", "SKILL.md")) ||
+        existsSync(join(candidate, "execute", "SKILL.md"))
       ) {
         return candidate;
       }
@@ -57,7 +64,10 @@ export async function optionalSkillSpawn(opts: {
   config: LegionConfig;
   skillId: SkillId;
   specId?: string;
+  taskId?: string;
   promptBody: string;
+  extraAllowedRoots?: readonly string[];
+  filesForbidden?: readonly string[];
   skillsDir?: string;
   fakeArtifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
@@ -70,7 +80,7 @@ export async function optionalSkillSpawn(opts: {
   });
   if (!(await isSpawnable(adapter))) {
     if (opts.required) {
-      refuse("plan requires a spawnable adapter", HINT.doctor);
+      refuse(`${opts.skillId} requires a spawnable adapter`, HINT.doctor);
     }
     return { spawned: false, runId, revert: null };
   }
@@ -79,19 +89,23 @@ export async function optionalSkillSpawn(opts: {
   const skillDir = skillsDir ? join(skillsDir, opts.skillId) : undefined;
   if (!skillDir || !existsSync(join(skillDir, "SKILL.md"))) {
     if (opts.required) {
-      refuse(`plan requires skills/${opts.skillId}/SKILL.md`, HINT.plan);
+      refuse(
+        `${opts.skillId} requires skills/${opts.skillId}/SKILL.md`,
+        opts.skillId === "execute" ? HINT.execute : HINT.plan,
+      );
     }
     return { spawned: false, runId, revert: null };
   }
 
   const contract = skillContract(opts.skillId, { runId, specId: opts.specId });
+  const allowedRoots = [...contract.allowedRoots, ...(opts.extraAllowedRoots ?? [])];
   const prompt = [
     opts.promptBody.trim(),
     "",
     "## SkillContract",
     `skillId: ${contract.skillId}`,
     "allowedRoots:",
-    ...contract.allowedRoots.map((root) => `- ${root}`),
+    ...allowedRoots.map((root) => `- ${root}`),
     "",
     "Do not write files outside allowedRoots. Do not git add or git commit.",
   ].join("\n");
@@ -120,23 +134,30 @@ export async function optionalSkillSpawn(opts: {
   });
   const preSpawnRef = recordPreSpawnRef(opts.projectRoot);
   const snapshot = preSpawnRef ? undefined : await snapshotPaths(opts.projectRoot);
+  const gitPolicy = await snapshotGitPolicy(opts.projectRoot);
   const resumeDir = join(opts.projectRoot, ".legion-cli", "cache", "runs", runId);
   await mkdir(resumeDir, { recursive: true });
-  await writeFile(
-    join(resumeDir, "resume.json"),
-    `${JSON.stringify(
-      {
-        schemaVersion: SCHEMA_VERSION.resume,
-        runId,
-        skillId: opts.skillId,
-        preSpawnRef: preSpawnRef ?? "UNBORN",
-        startedAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+
+  const writeResume = async (pid: number | null) => {
+    await writeFile(
+      join(resumeDir, "resume.json"),
+      `${JSON.stringify(
+        {
+          schemaVersion: SCHEMA_VERSION.resume,
+          runId,
+          taskId: opts.taskId ?? null,
+          skillId: opts.skillId,
+          preSpawnRef: preSpawnRef ?? "UNBORN",
+          startedAt: new Date().toISOString(),
+          pid,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+  };
+  await writeResume(null);
 
   const handle = await adapter.spawn({
     runId,
@@ -148,6 +169,7 @@ export async function optionalSkillSpawn(opts: {
     env: filterSpawnEnv(),
     expectedArtifacts: opts.fakeArtifacts,
   });
+  await writeResume(handle.pid);
   let revert: RevertResult | null = null;
   let error: unknown;
   try {
@@ -158,8 +180,10 @@ export async function optionalSkillSpawn(opts: {
     revert = await revertExtras({
       projectRoot: opts.projectRoot,
       preSpawnRef,
-      allowedRoots: contract.allowedRoots,
+      allowedRoots,
+      filesForbidden: opts.filesForbidden,
       snapshot,
+      gitPolicy,
     });
   }
   return { spawned: true, runId, revert, error };

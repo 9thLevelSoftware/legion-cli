@@ -17,6 +17,7 @@ const AVAILABLE = [
   ["spec new", "Start the next increment after ship", ""],
   ["plan", "Break into tasks I can see on the board", ""],
   ["next", "What is unblocked?", ""],
+  ["execute [id]", "Do the next ready task", "--fix, --until-blocked"],
   ["ticket create", "Park extra work", "--parent, --title, --from-agent"],
   ["task amend", "Human changes a file contract", "--allow-deps"],
   ["design-system show", "Show the active design-system package", ""],
