@@ -26,8 +26,8 @@ test("intent --done writes IntentAnswersFile and requires confirm", async () => 
         "n",
       ].join("\n") + "\n",
     });
-    assert.equal(noConfirm.status, 1, noConfirm.stdout);
-    assert.match(normalize(noConfirm.stderr), /intent confirmation is required/);
+    assert.equal(noConfirm.status, 1, `${noConfirm.stdout}\n${noConfirm.stderr}`);
+    assert.match(normalize(noConfirm.stderr + noConfirm.stdout), /intent requires answers|Confirm this is what must be true/);
 
     const ok = runCli(["intent", "--project", dir, "--done"], {
       input: "Y\n",

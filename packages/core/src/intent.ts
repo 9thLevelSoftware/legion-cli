@@ -56,6 +56,15 @@ export function emptyIntentAnswers(): IntentAnswersFile {
   };
 }
 
+/** Newlines and numbered/bullet lines only — not commas. */
+export function splitLines(answer: string): string[] {
+  return answer
+    .split(/\r?\n/)
+    .map((item) => item.replace(/^\s*(?:\d+[.)]\s*|[-*]\s*)/u, "").trim())
+    .map((item) => item.replace(/[.]+$/u, "").trim())
+    .filter((item) => item.length > 0);
+}
+
 export function splitList(answer: string): string[] {
   const chunks = answer
     .split(/\r?\n|,/)
@@ -138,13 +147,12 @@ function nextBankQuestions(file: IntentAnswersFile): string[] {
 
 export function intentProgress(file: IntentAnswersFile): IntentProgress {
   const canFinishEarly = round2Filled(file.mapped);
-  const filled = requiredSlotsFilled(file.mapped);
   const atCap = file.rounds.length >= MAX_INTENT_ROUNDS;
-  const nextQuestions = filled || atCap ? [] : nextBankQuestions(file);
+  const nextQuestions = atCap ? [] : nextBankQuestions(file);
   return {
     answers: file,
     nextQuestions,
-    readyToConfirm: filled || atCap,
+    readyToConfirm: nextQuestions.length === 0,
     canFinishEarly,
     brief: formatIntentBrief(file.mapped),
     side: { failureLines: [], blockingLines: [] },
@@ -170,7 +178,7 @@ export function applyIntentAnswers(
     const a = recorded.answers[i] ?? "";
     if (q === INTENT_Q.persona && a) mapped.personas = [a];
     if (q === INTENT_Q.problem) mapped.problem = a;
-    if (q === INTENT_Q.mustBeTrue) mapped.mustBeTrue = splitList(a);
+    if (q === INTENT_Q.mustBeTrue) mapped.mustBeTrue = splitLines(a);
     if (q === INTENT_Q.scope) {
       const split = splitMustNotAndOutOfScope(a);
       if (split.mustNotChange.length > 0) mapped.mustNotChange = split.mustNotChange;

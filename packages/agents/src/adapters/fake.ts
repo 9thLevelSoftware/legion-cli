@@ -40,9 +40,11 @@ export class FakeAdapter implements AgentAdapter {
   readonly id = "fake" as const;
   readonly binary = "(in-process)";
   readonly #artifacts: FakeArtifact[];
+  readonly #throwAfterWrite: boolean;
 
-  constructor(artifacts: FakeArtifact[] = []) {
+  constructor(artifacts: FakeArtifact[] = [], throwAfterWrite = false) {
     this.#artifacts = artifacts;
+    this.#throwAfterWrite = throwAfterWrite;
   }
 
   async detect(): Promise<DetectResult> {
@@ -74,6 +76,10 @@ export class FakeAdapter implements AgentAdapter {
       const abs = join(job.cwd, ...rel.split("/"));
       await mkdir(dirname(abs), { recursive: true });
       await writeFile(abs, artifact.content ?? "\n", "utf8");
+    }
+
+    if (this.#throwAfterWrite) {
+      throw new AgentError("fake adapter throwAfterWrite");
     }
 
     await writeFile(

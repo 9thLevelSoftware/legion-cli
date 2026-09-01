@@ -36,36 +36,44 @@ export async function runIntent(opts: CliOpts, flags: IntentFlags): Promise<numb
     void flags.resume;
 
     let intro = state.answers.rounds.length === 0;
-    while (state.nextQuestions.length > 0) {
-      if (flags.done && state.canFinishEarly && state.answers.rounds.length > 0) break;
-      if (!opts.json) printQuestions(state, intro);
-      intro = false;
-      const answers: string[] = [];
-      for (let i = 0; i < state.nextQuestions.length; i++) {
-        const line = await readLine("> ");
-        if (!line) {
-          refuse("intent requires answers", HINT.intent);
+    let skipRest = Boolean(flags.done);
+    for (;;) {
+      while (state.nextQuestions.length > 0) {
+        if (skipRest && state.canFinishEarly && state.answers.rounds.length > 0) break;
+        if (!opts.json) printQuestions(state, intro);
+        intro = false;
+        const answers: string[] = [];
+        for (let i = 0; i < state.nextQuestions.length; i++) {
+          const line = await readLine("> ");
+          if (!line) {
+            refuse("intent requires answers", HINT.intent);
+          }
+          answers.push(line);
         }
-        answers.push(line);
+        state = await engine.intentTurn(answers);
+        if (skipRest && state.canFinishEarly) break;
       }
-      state = await engine.intentTurn(answers);
-      if (flags.done && state.canFinishEarly) break;
-    }
 
-    if (flags.done && !state.canFinishEarly && !state.readyToConfirm) {
-      refuse("--done is allowed after round 2", HINT.intent);
-    }
+      if (skipRest && !state.canFinishEarly && !state.readyToConfirm) {
+        refuse("--done is allowed after round 2", HINT.intent);
+      }
 
-    if (!opts.json) {
-      writeOut("");
-      writeOut(state.brief);
-      writeOut("Confirm this is what must be true when we are done? [Y/n]");
+      if (!opts.json) {
+        writeOut("");
+        writeOut(state.brief);
+        writeOut("Confirm this is what must be true when we are done? [Y/n]");
+      }
+      const confirm = await readLine("> ");
+      if (isYes(confirm)) {
+        await engine.confirmIntent({ id: "user" }, { done: skipRest });
+        break;
+      }
+      skipRest = false;
+      if (state.nextQuestions.length === 0) {
+        if (!opts.json) writeOut("Not confirmed. Run legion-cli intent when ready.");
+        return 0;
+      }
     }
-    const confirm = await readLine("> ");
-    if (!isYes(confirm)) {
-      refuse("intent confirmation is required", HINT.intentConfirm);
-    }
-    await engine.confirmIntent({ id: "user" }, { done: flags.done });
 
     if (opts.json) {
       const after = await engine.getIntentState();

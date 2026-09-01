@@ -23,6 +23,7 @@ export type Actor = {
 export type LegionEngineOptions = {
   skillsDir?: string;
   fakeArtifacts?: FakeArtifact[];
+  fakeThrowAfterWrite?: boolean;
 };
 
 export type IntentState = {
