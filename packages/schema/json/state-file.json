@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-state/v1"
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "uninitialized",
+        "initialized",
+        "intent_draft",
+        "intent_ready",
+        "discussing",
+        "spec_draft",
+        "spec_frozen",
+        "planning",
+        "plan_failed",
+        "plan_ready",
+        "executing",
+        "ready_to_ship",
+        "shipped",
+        "abandoned"
+      ]
+    },
+    "activeSpecId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "currentTaskId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lastReadiness": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "CONCERNS",
+            "FAIL"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lastReview": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lastQaId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "phase"
+  ]
+}

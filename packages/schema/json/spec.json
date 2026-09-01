@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-spec/v1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "frozen",
+        "superseded"
+      ]
+    },
+    "mustBeTrue": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "mustNotChange": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "outOfScope": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "acceptance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "behavior",
+              "test",
+              "rubric"
+            ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "statement",
+          "kind",
+          "priority"
+        ]
+      }
+    },
+    "personas": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "happyPath": {
+      "type": "string"
+    },
+    "stories": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "wireframesIndex": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "frozenAt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "frozenBy": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "id",
+    "title",
+    "status",
+    "mustBeTrue",
+    "mustNotChange",
+    "outOfScope",
+    "acceptance",
+    "personas",
+    "happyPath"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "string",
+  "enum": [
+    "uninitialized",
+    "initialized",
+    "intent_draft",
+    "intent_ready",
+    "discussing",
+    "spec_draft",
+    "spec_frozen",
+    "planning",
+    "plan_failed",
+    "plan_ready",
+    "executing",
+    "ready_to_ship",
+    "shipped",
+    "abandoned"
+  ]
+}
