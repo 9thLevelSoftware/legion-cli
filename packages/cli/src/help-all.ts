@@ -4,6 +4,11 @@ const AVAILABLE = [
   ["status (default)", "Where am I? What next?", "--blockers, --plain"],
   ["init", "Start a product in this folder", "--name, --adapter claude|generic|fake"],
   ["doctor", "Is my laptop ready?", ""],
+  ["ingest <src…>", "Teach Legion CLI from these files/links", "--transcript, --diff, --no-commit"],
+  ["wiki trust <page>", "I have read this ingested page; treat it as real", ""],
+  ["search <q>", "Search the wiki", "--mentions, --include-untrusted"],
+  ["show <page>", "Open one wiki/spec/task page", ""],
+  ["brief", "Print what the next agent will see", ""],
   ["help", "Commands", "--all"],
 ] as const;
 

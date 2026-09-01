@@ -5,9 +5,21 @@ import {
   ensureGitignore,
   parseMarkdownDocument,
   PathEscapeError,
+  PersistError,
   WIKI_PAGE_SCHEMA_VERSION,
   type LegionStore,
 } from "@9thlevelsoftware/legion-cli-persist";
+import {
+  buildSessionBrief,
+  ensureWikiIndex,
+  isForbiddenSpawnPath,
+  materializeIngestSources,
+  searchWiki,
+  SsrfError,
+  trustWikiPage,
+  wrapUntrustedContent,
+  type SearchHit,
+} from "@9thlevelsoftware/legion-cli-wiki";
 import {
   ControlModeSchema,
   QAScoreSchema,
@@ -21,6 +33,7 @@ import {
   type QAScore,
   type Readiness,
   type ReviewVerdict,
+  type SessionBrief,
   type Spec,
   type StateFile,
   type Task,
@@ -35,6 +48,7 @@ import { assertTaskStatusTransition } from "./tasks.js";
 import type {
   Actor,
   ExecuteResult,
+  IngestOpts,
   InitOptions,
   QaOptions,
   ReviewResult,
@@ -274,22 +288,43 @@ export class LegionEngine {
     });
   }
 
-  async ingest(sources: string[], opts?: { noCommit?: boolean }): Promise<IngestReceipt> {
+  async ingest(sources: string[], opts?: IngestOpts): Promise<IngestReceipt> {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
         refuse("ingest is refused until init", HINT.init);
       }
+      if (sources.length === 0 && !opts?.transcript && !opts?.diff) {
+        refuse("ingest requires a file, URL, --transcript, or --diff", HINT.inRepo);
+      }
       for (const source of sources) {
         assertIngestSourceAllowed(this.projectRoot, source);
+      }
+      if (opts?.transcript) {
+        assertIngestSourceAllowed(this.projectRoot, opts.transcript);
       }
       const phaseBefore = state.phase;
       let receipt: IngestReceipt;
       try {
-        receipt = await this.store.ingest(sources, opts);
+        const materialized = await materializeIngestSources({
+          projectRoot: this.projectRoot,
+          sources,
+          transcript: opts?.transcript,
+          diff: opts?.diff,
+        });
+        receipt = await this.store.ingest(materialized.files, {
+          noCommit: opts?.noCommit,
+          documents: materialized.documents,
+        });
       } catch (err) {
         if (err instanceof PathEscapeError) {
           refuse("ingest of file: outside the workspace is refused", HINT.inRepo);
+        }
+        if (err instanceof SsrfError) {
+          refuse(err.message, HINT.inRepo);
+        }
+        if (err instanceof PersistError && /git repository/.test(err.message)) {
+          refuse("ingest auto-commit requires a git repository", HINT.noCommit);
         }
         throw err;
       }
@@ -299,6 +334,51 @@ export class LegionEngine {
       }
       return receipt;
     });
+  }
+
+  async wikiTrust(pageId: string): Promise<void> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("wiki trust is refused until init", HINT.init);
+      }
+      try {
+        await trustWikiPage(this.store, pageId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        refuse(message, HINT.show);
+      }
+    });
+  }
+
+  async brief(): Promise<SessionBrief> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("brief is refused until init", HINT.init);
+      }
+      return buildSessionBrief(this.store);
+    });
+  }
+
+  async search(q: string, opts?: { includeUntrusted?: boolean; mentions?: boolean }): Promise<SearchHit[]> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("search is refused until init", HINT.init);
+      }
+      await ensureWikiIndex(this.store);
+      return searchWiki(this.projectRoot, q, opts);
+    });
+  }
+
+  /** Execute-spawn helper: wrap untrusted bodies if they are injected at all. */
+  wrapUntrustedForSpawn(source: string, body: string): string {
+    return wrapUntrustedContent(source, body);
+  }
+
+  spawnPathForbidden(path: string): boolean {
+    return isForbiddenSpawnPath(path);
   }
 
   async plan(specId?: string): Promise<Readiness> {

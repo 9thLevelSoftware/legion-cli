@@ -22,6 +22,8 @@ export const HINT = {
   specNew: "legion-cli spec new",
   concretePaths: "concrete paths",
   inRepo: "in-repo path",
+  noCommit: "legion-cli ingest --no-commit",
+  show: "legion-cli show <page>",
   controlMode: "guarded or surgical",
   greenfield: "greenfield, or wait for v1",
   ticket: (taskId: string) => `legion-cli ticket create --parent ${taskId}`,

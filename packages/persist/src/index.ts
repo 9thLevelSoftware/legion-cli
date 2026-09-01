@@ -6,7 +6,8 @@ export {
 } from "./errors.js";
 export { commitIngest, commitPaths, gitCheckIgnore, gitHead, gitStatusPorcelain, isGitRepo } from "./git.js";
 export { ensureGitignore, GITIGNORE_ENTRIES, GITIGNORE_TEMPLATE } from "./gitignore.js";
-export { ingestFiles } from "./ingest.js";
+export { ingestDocumentStorePath, ingestFiles } from "./ingest.js";
+export type { IngestDocument } from "./ingest.js";
 export {
   assumptionPath,
   decisionPath,
@@ -46,6 +47,7 @@ export {
   toProjectRelativePosix,
   toStorePath,
 } from "./paths.js";
+export { hasSecretPattern, redactSecrets } from "./redact.js";
 export { openIndexDb, queryIndex, rebuildIndex, REBUILD_SQL } from "./sqlite.js";
 export { createLegionStore, LegionStore } from "./store.js";
 export type { LegionReader } from "./store.js";
