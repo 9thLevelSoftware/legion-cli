@@ -1,15 +1,45 @@
 import { randomBytes } from "node:crypto";
-import { readdir, realpath, stat } from "node:fs/promises";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { IngestReceiptSchema } from "@9thlevelsoftware/legion-cli-schema";
 import { PathEscapeError } from "./errors.js";
 import { ingestReceiptPath, MAX_INGEST_FILE_BYTES, MAX_INGEST_TREE_BYTES, wikiPageStorePath } from "./layout.js";
-import { parseMarkdownDocument, readTextFile } from "./markdown.js";
+import { parseMarkdownDocument, type MarkdownDoc } from "./markdown.js";
 import { assertInsideProject, resolveProjectPath, toStorePath } from "./paths.js";
 import { WIKI_PAGE_SCHEMA_VERSION, type WikiPage } from "./wiki-page.js";
 
-const SKIP_DIR_NAMES = new Set([".git", "node_modules"]);
+const SKIP_DIR_NAMES = new Set([".git", "node_modules", ".legion-cli"]);
+
+const BINARY_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".ico",
+  ".pdf",
+  ".zip",
+  ".gz",
+  ".tgz",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".eot",
+  ".exe",
+  ".dll",
+  ".so",
+  ".dylib",
+  ".bin",
+  ".wasm",
+  ".mp3",
+  ".mp4",
+  ".webm",
+  ".mov",
+  ".avi",
+  ".sqlite",
+  ".db",
+]);
 
 function newIngestId(): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
@@ -54,14 +84,25 @@ async function walkFiles(dir: string): Promise<string[]> {
   return out;
 }
 
-function looksBinary(buf: string): boolean {
-  return buf.includes("\0");
+function isBinaryExtension(posix: string): boolean {
+  return BINARY_EXTENSIONS.has(extname(posix).toLowerCase());
+}
+
+function looksBinaryBuffer(buf: Buffer): boolean {
+  if (buf.includes(0)) return true;
+  const text = buf.toString("utf8");
+  return !Buffer.from(text, "utf8").equals(buf);
+}
+
+function sameBody(a: string, b: string): boolean {
+  return a.replaceAll("\r\n", "\n").trim() === b.replaceAll("\r\n", "\n").trim();
 }
 
 export async function ingestFiles(opts: {
   projectRoot: string;
   sources: string[];
   wikiExists: (storePath: string) => Promise<boolean>;
+  readWikiPage: (storePath: string) => Promise<MarkdownDoc<WikiPage> | null>;
   writeWikiPage: (storePath: string, data: WikiPage, body: string) => Promise<void>;
   writeReceipt: (storePath: string, data: IngestReceipt, body: string) => Promise<void>;
 }): Promise<IngestReceipt> {
@@ -72,7 +113,7 @@ export async function ingestFiles(opts: {
   const skipped: string[] = [];
   let treeBytes = 0;
 
-  const files: Array<{ abs: string; posix: string }> = [];
+  const files: Array<{ abs: string; posix: string; explicit: boolean }> = [];
 
   for (const source of opts.sources) {
     const posixHint = toStorePath(source);
@@ -86,10 +127,10 @@ export async function ingestFiles(opts: {
         const walked = await walkFiles(real);
         for (const abs of walked) {
           const filePosix = assertInsideProject(opts.projectRoot, await realpath(abs));
-          files.push({ abs, posix: filePosix });
+          files.push({ abs, posix: filePosix, explicit: false });
         }
       } else if (info.isFile()) {
-        files.push({ abs: real, posix });
+        files.push({ abs: real, posix, explicit: true });
       } else {
         skipped.push(posix);
       }
@@ -99,9 +140,33 @@ export async function ingestFiles(opts: {
     }
   }
 
+  const uniqueFiles: typeof files = [];
+  const seenPosix = new Set<string>();
+  for (const file of files) {
+    if (seenPosix.has(file.posix)) continue;
+    seenPosix.add(file.posix);
+    uniqueFiles.push(file);
+  }
+
+  const uniqueSources = [...new Set(sourcePosix)];
   const updatedAt = new Date().toISOString();
 
-  for (const file of files) {
+  for (const file of uniqueFiles) {
+    const underLegion = file.posix === ".legion-cli" || file.posix.startsWith(".legion-cli/");
+    const alreadyWiki = file.posix.startsWith(".legion-cli/wiki/");
+    if (underLegion && !alreadyWiki) {
+      skipped.push(file.posix);
+      continue;
+    }
+    if (alreadyWiki && !file.explicit) {
+      skipped.push(file.posix);
+      continue;
+    }
+    if (isBinaryExtension(file.posix)) {
+      skipped.push(file.posix);
+      continue;
+    }
+
     const info = await stat(file.abs);
     if (info.size > MAX_INGEST_FILE_BYTES) {
       skipped.push(file.posix);
@@ -112,23 +177,20 @@ export async function ingestFiles(opts: {
       skipped.push(file.posix);
       continue;
     }
-    if (file.posix.startsWith(".legion-cli/index/") || file.posix.startsWith(".legion-cli/cache/")) {
-      skipped.push(file.posix);
-      continue;
-    }
-    let raw: string;
+
+    let buf: Buffer;
     try {
-      raw = await readTextFile(file.abs);
+      buf = await readFile(file.abs);
     } catch {
       skipped.push(file.posix);
       continue;
     }
-    if (looksBinary(raw)) {
+    if (looksBinaryBuffer(buf)) {
       skipped.push(file.posix);
       continue;
     }
+    const raw = buf.toString("utf8");
 
-    const alreadyWiki = file.posix.startsWith(".legion-cli/wiki/");
     const pagePath = alreadyWiki ? file.posix : wikiPageStorePath(file.posix);
     const body = excerptBody(raw);
     if (body.trim() === "") {
@@ -136,17 +198,23 @@ export async function ingestFiles(opts: {
       continue;
     }
 
+    const existing = alreadyWiki ? await opts.readWikiPage(pagePath) : null;
     const page: WikiPage = {
       schemaVersion: WIKI_PAGE_SCHEMA_VERSION,
       title: titleFromSource(file.posix, raw),
-      aliases: [],
-      tags: [],
-      trust: "untrusted",
-      updated: updatedAt,
-      source: file.posix,
+      aliases: existing?.data.aliases ?? [],
+      tags: existing?.data.tags ?? [],
+      trust: existing?.data.trust ?? "untrusted",
+      updated: existing && sameBody(existing.body, body) ? existing.data.updated : updatedAt,
+      source: existing?.data.source ?? file.posix,
     };
 
-    const existed = await opts.wikiExists(pagePath);
+    if (existing && sameBody(existing.body, body)) {
+      skipped.push(file.posix);
+      continue;
+    }
+
+    const existed = existing !== null || (await opts.wikiExists(pagePath));
     await opts.writeWikiPage(pagePath, page, body);
     if (existed) pagesUpdated.push(pagePath);
     else pagesCreated.push(pagePath);
@@ -155,7 +223,7 @@ export async function ingestFiles(opts: {
   const receipt = IngestReceiptSchema.parse({
     schemaVersion: "legion-cli-ingest/v1",
     id,
-    sources: sourcePosix.length > 0 ? sourcePosix : opts.sources.map((s) => toStorePath(s)),
+    sources: uniqueSources.length > 0 ? uniqueSources : opts.sources.map((s) => toStorePath(s)),
     pagesCreated,
     pagesUpdated,
     skipped,

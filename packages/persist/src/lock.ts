@@ -25,18 +25,45 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+async function unlinkIfExists(lockPath: string): Promise<void> {
+  try {
+    await unlink(lockPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") throw err;
+  }
+}
+
+function lockPid(raw: string): number | "stale" {
+  const trimmed = raw.trim();
+  if (trimmed === "") return "stale";
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object") return "stale";
+    const pid = (parsed as { pid?: unknown }).pid;
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return "stale";
+    return pid;
+  } catch {
+    return "stale";
+  }
+}
+
 async function maybeRemoveStaleLock(lockPath: string): Promise<void> {
   try {
     const raw = await readFile(lockPath, "utf8");
-    const parsed = JSON.parse(raw) as { pid?: unknown };
-    if (typeof parsed.pid !== "number") return;
-    if (parsed.pid === process.pid) return;
-    if (!isPidAlive(parsed.pid)) {
-      await unlink(lockPath);
+    const pid = lockPid(raw);
+    if (pid === "stale") {
+      await unlinkIfExists(lockPath);
+      return;
+    }
+    if (pid === process.pid) return;
+    if (!isPidAlive(pid)) {
+      await unlinkIfExists(lockPath);
     }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return;
+    await unlinkIfExists(lockPath);
   }
 }
 
@@ -49,8 +76,10 @@ export async function acquireEngineLock(
   await mkdir(dirname(lockPath), { recursive: true });
 
   while (true) {
+    let created = false;
     try {
       const handle = await open(lockPath, "wx");
+      created = true;
       try {
         await handle.writeFile(
           `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
@@ -64,15 +93,14 @@ export async function acquireEngineLock(
         async release() {
           if (released) return;
           released = true;
-          try {
-            await unlink(lockPath);
-          } catch (err) {
-            const code = (err as NodeJS.ErrnoException).code;
-            if (code !== "ENOENT") throw err;
-          }
+          await unlinkIfExists(lockPath);
         },
       };
     } catch (err) {
+      if (created) {
+        await unlinkIfExists(lockPath);
+        throw err;
+      }
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") throw err;
       await maybeRemoveStaleLock(lockPath);

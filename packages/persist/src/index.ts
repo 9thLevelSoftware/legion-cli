@@ -9,6 +9,7 @@ export { ensureGitignore, GITIGNORE_ENTRIES, GITIGNORE_TEMPLATE } from "./gitign
 export { ingestFiles } from "./ingest.js";
 export {
   assumptionPath,
+  decisionPath,
   DEFAULT_LOCK_TIMEOUT_MS,
   INDEX_DB_BASENAME,
   ingestReceiptPath,
@@ -38,6 +39,7 @@ export {
 export type { MarkdownDoc } from "./markdown.js";
 export {
   assertInsideProject,
+  canonicalizePath,
   resolveProjectPath,
   toFsPath,
   toPosixPath,

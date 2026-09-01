@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { PathEscapeError } from "./errors.js";
 
@@ -40,10 +41,24 @@ export function resolveProjectPath(projectRoot: string, input: string): string {
   return resolve(projectRoot, ...parts);
 }
 
+/** Follow junctions/symlinks when the path exists so ingest containment is canonical. */
+export function canonicalizePath(absPath: string): string {
+  try {
+    return realpathSync(absPath);
+  } catch {
+    return resolve(absPath);
+  }
+}
+
 export function toProjectRelativePosix(projectRoot: string, absolutePath: string): string {
-  const rel = relative(resolve(projectRoot), resolve(absolutePath));
+  const root = canonicalizePath(projectRoot);
+  const candidate = canonicalizePath(absolutePath);
+  const rel = relative(root, candidate);
   const posix = toPosixPath(rel);
-  if (posix === "" || posix === "." || posix.startsWith("../") || posix === "..") {
+  if (posix === "" || posix === ".") {
+    return ".";
+  }
+  if (posix.startsWith("../") || posix === "..") {
     throw new PathEscapeError(absolutePath);
   }
   if (/^[A-Za-z]:/.test(posix) || posix.startsWith("/")) {
