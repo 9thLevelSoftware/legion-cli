@@ -74,6 +74,11 @@ export function assumptionPath(id: string): string {
   return `.legion-cli/assumptions/${id}.md`;
 }
 
+export function decisionPath(fileName: string): string {
+  const base = fileName.endsWith(".md") ? fileName : `${fileName}.md`;
+  return `.legion-cli/decisions/${base}`;
+}
+
 export function ingestReceiptPath(id: string): string {
   return `.legion-cli/audit/ingest-${id}.md`;
 }

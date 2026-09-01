@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import {
   GITIGNORE_TEMPLATE,
   LegionStore,
   PathEscapeError,
+  PersistError,
   PersistValidationError,
   REBUILD_SQL,
   ensureGitignore,
@@ -19,6 +20,7 @@ import {
   gitHead,
   queryIndex,
   toPosixPath,
+  toProjectRelativePosix,
   toStorePath,
 } from "../dist/index.js";
 
@@ -127,6 +129,27 @@ test("round-trip .legion-cli markdown and intent-answers.yaml", async () => {
     const config = await store.readConfig();
     assert.equal(config.adapter.default, "fake");
     assert.equal(config.ingest.autoCommit, true);
+
+    const context = await store.readContext();
+    assert.equal(context.data.schemaVersion, "legion-cli-context/v1");
+    await store.writeContext(context.data, context.body);
+    assert.deepEqual((await store.readContext()).data, context.data);
+
+    const discuss = await store.readDiscuss();
+    assert.equal(discuss.data.decisions[0].id, "D-001");
+    await store.writeDiscuss(discuss.data, discuss.body);
+    assert.deepEqual((await store.readDiscuss()).data, discuss.data);
+
+    const assumption = await store.readAssumption("ASM-0001");
+    assert.equal(assumption.data.blocking, true);
+    await store.writeAssumption(assumption.data, assumption.body);
+    assert.deepEqual((await store.readAssumption("ASM-0001")).data, assumption.data);
+
+    const decision = await store.readDecision("0001-mobile-web.md");
+    assert.equal(decision.data.id, "D-001");
+    assert.equal(decision.data.status, "accepted");
+    await store.writeDecision("0001-mobile-web.md", decision.data, decision.body);
+    assert.deepEqual((await store.readDecision("0001-mobile-web.md")).data, decision.data);
   });
 });
 
@@ -156,6 +179,24 @@ test("engine.lock is single-writer and times out", async () => {
     await a.releaseLock();
     await b.acquireLock({ timeoutMs: 200 });
     await b.releaseLock();
+  });
+});
+
+test("empty or invalid engine.lock files are treated as stale", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LegionStore(dir);
+    await mkdir(store.paths.indexDir, { recursive: true });
+    await writeFile(store.paths.lock, "", "utf8");
+    await store.acquireLock({ timeoutMs: 500 });
+    await store.releaseLock();
+
+    await writeFile(store.paths.lock, "not-json\n", "utf8");
+    await store.acquireLock({ timeoutMs: 500 });
+    await store.releaseLock();
+
+    await writeFile(store.paths.lock, JSON.stringify({ pid: "nope" }), "utf8");
+    await store.acquireLock({ timeoutMs: 500 });
+    await store.releaseLock();
   });
 });
 
@@ -277,9 +318,90 @@ test("ingest refuses path traversal outside the workspace", async () => {
     const outside = join(dir, "..", name);
     await writeFile(outside, "nope\n", "utf8");
     try {
-      await assert.rejects(() => store.ingest([`../${name}`]), PathEscapeError);
+      await assert.rejects(() => store.ingest([`../${name}`], { noCommit: true }), PathEscapeError);
     } finally {
       await rm(outside, { force: true });
     }
+  });
+});
+
+test("auto-commit ingest refuses before writes when not a git repo", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    await mkdir(join(dir, "docs"), { recursive: true });
+    await writeFile(join(dir, "docs", "notes.md"), "# Office notes\n\nDurable fact.\n", "utf8");
+    const store = new LegionStore(dir);
+    await assert.rejects(() => store.ingest(["docs/notes.md"]), (err) => {
+      assert.equal(err instanceof PersistError, true);
+      assert.match(err.message, /git repository/);
+      return true;
+    });
+    assert.equal(await store.pathExists(".legion-cli/wiki/ingested/docs/notes.md"), false);
+  });
+});
+
+test("directory ingest skips .legion-cli and does not clobber reviewed wiki", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    await mkdir(join(dir, "docs"), { recursive: true });
+    await writeFile(join(dir, "docs", "notes.md"), "# Office notes\n\nDurable fact.\n", "utf8");
+    const store = new LegionStore(dir);
+    const before = await store.readWikiPage(".legion-cli/wiki/README.md");
+    assert.equal(before.data.trust, "reviewed");
+    const receipt = await store.ingest(["."], { noCommit: true });
+    assert.ok(receipt.pagesCreated.includes(".legion-cli/wiki/ingested/docs/notes.md"));
+    assert.ok(!receipt.pagesCreated.some((p) => p === ".legion-cli/wiki/README.md"));
+    const after = await store.readWikiPage(".legion-cli/wiki/README.md");
+    assert.deepEqual(after.data, before.data);
+    assert.equal(after.body.trim(), before.body.trim());
+  });
+});
+
+test("overlapping ingest sources are deduped to one store path", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    await mkdir(join(dir, "docs"), { recursive: true });
+    await writeFile(join(dir, "docs", "notes.md"), "# Office notes\n\nDurable fact.\n", "utf8");
+    const store = new LegionStore(dir);
+    const receipt = await store.ingest(["docs", "docs/notes.md"], { noCommit: true });
+    const page = ".legion-cli/wiki/ingested/docs/notes.md";
+    const created = receipt.pagesCreated.filter((p) => p === page);
+    const updated = receipt.pagesUpdated.filter((p) => p === page);
+    assert.equal(created.length + updated.length, 1);
+  });
+});
+
+test("ingest skips NUL-less binary files by extension and invalid UTF-8", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    await writeFile(join(dir, "photo.jpg"), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x01, 0x10, 0x4a, 0x46]));
+    await writeFile(join(dir, "blob"), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x01, 0x10]));
+    const store = new LegionStore(dir);
+    const receipt = await store.ingest(["photo.jpg", "blob"], { noCommit: true });
+    assert.ok(receipt.skipped.includes("photo.jpg"));
+    assert.ok(receipt.skipped.includes("blob"));
+    assert.equal(receipt.pagesCreated.length, 0);
+  });
+});
+
+test("project containment compares canonical realpaths", async () => {
+  await withTempDir(async (dir) => {
+    const real = join(dir, "real");
+    const alias = join(dir, "alias");
+    await mkdir(real, { recursive: true });
+    await copyFixtureProject(real);
+    await mkdir(join(real, "docs"), { recursive: true });
+    const file = join(real, "docs", "notes.md");
+    await writeFile(file, "# Office notes\n\nDurable fact.\n", "utf8");
+    try {
+      await symlink(real, alias, process.platform === "win32" ? "junction" : "dir");
+    } catch (err) {
+      if (process.platform === "win32") return;
+      throw err;
+    }
+    assert.equal(toProjectRelativePosix(alias, file), "docs/notes.md");
+    const store = new LegionStore(alias);
+    const receipt = await store.ingest(["docs/notes.md"], { noCommit: true });
+    assert.equal(receipt.pagesCreated[0], ".legion-cli/wiki/ingested/docs/notes.md");
   });
 });

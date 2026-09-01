@@ -25,10 +25,12 @@ import type {
   Task,
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { ZodType } from "zod";
-import { commitIngest } from "./git.js";
+import { PersistError } from "./errors.js";
+import { commitIngest, isGitRepo } from "./git.js";
 import { ingestFiles } from "./ingest.js";
 import {
   assumptionPath,
+  decisionPath,
   ingestReceiptPath,
   legionPaths,
   specPath,
@@ -45,7 +47,7 @@ import {
 } from "./markdown.js";
 import { toFsPath } from "./paths.js";
 import { rebuildIndex } from "./sqlite.js";
-import { WikiPageSchema, type WikiPage } from "./wiki-page.js";
+import { DecisionFileSchema, WikiPageSchema, type DecisionFile, type WikiPage } from "./wiki-page.js";
 
 export interface LegionReader {
   readonly projectRoot: string;
@@ -59,6 +61,7 @@ export interface LegionReader {
   readTask(taskId: string): Promise<MarkdownDoc<Task>>;
   readDiscuss(): Promise<MarkdownDoc<DiscussFile>>;
   readAssumption(id: string): Promise<MarkdownDoc<Assumption>>;
+  readDecision(fileName: string): Promise<MarkdownDoc<DecisionFile>>;
   readWikiPage(storePath: string): Promise<MarkdownDoc<WikiPage>>;
 }
 
@@ -196,6 +199,14 @@ export class LegionStore implements LegionReader {
     return this.writeMarkdown(assumptionPath(data.id), data, body);
   }
 
+  readDecision(fileName: string): Promise<MarkdownDoc<DecisionFile>> {
+    const store = decisionPath(fileName);
+    return readMarkdownFile(toFsPath(this.projectRoot, store), store, DecisionFileSchema);
+  }
+  writeDecision(fileName: string, data: DecisionFile, body: string): Promise<void> {
+    return this.writeMarkdown(decisionPath(fileName), data, body);
+  }
+
   readWikiPage(storePath: string): Promise<MarkdownDoc<WikiPage>> {
     return readMarkdownFile(toFsPath(this.projectRoot, storePath), storePath, WikiPageSchema);
   }
@@ -211,10 +222,20 @@ export class LegionStore implements LegionReader {
 
   ingest(sources: string[], opts?: { noCommit?: boolean }): Promise<IngestReceipt> {
     return this.withLock(async () => {
+      if (!opts?.noCommit && !isGitRepo(this.projectRoot)) {
+        throw new PersistError("ingest auto-commit requires a git repository");
+      }
       const receipt = await ingestFiles({
         projectRoot: this.projectRoot,
         sources,
         wikiExists: (storePath) => this.pathExists(storePath),
+        readWikiPage: async (storePath) => {
+          try {
+            return await this.readWikiPage(storePath);
+          } catch {
+            return null;
+          }
+        },
         writeWikiPage: (storePath, data, body) =>
           writeMarkdownFile(toFsPath(this.projectRoot, storePath), data, body),
         writeReceipt: (storePath, data, body) =>
