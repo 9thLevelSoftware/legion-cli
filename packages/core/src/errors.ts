@@ -14,6 +14,8 @@ export const HINT = {
   specApprove: "legion-cli spec approve",
   plan: "legion-cli plan",
   planRetry: "fix the FAIL list, then legion-cli plan",
+  doctor: "legion-cli doctor",
+  amend: "legion-cli task amend",
   blockers: "legion-cli status --blockers",
   advisory: "legion-cli",
   execute: "legion-cli next / legion-cli execute",

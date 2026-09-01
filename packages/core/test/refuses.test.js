@@ -21,6 +21,7 @@ import {
   seedFrozenSpec,
   seedPlanReady,
   withEngine,
+  withFakeAdapter,
   writeQaFile,
   writeTask,
 } from "./helpers.js";
@@ -342,21 +343,23 @@ test("§2.5 filesAllowed globs are plan FAIL", async () => {
   assert.equal(report.readiness, "FAIL");
   assert.ok(report.fails.some((line) => /concrete paths/.test(line)));
 
-  await withEngine(async ({ engine, store }) => {
-    await initProject(engine);
-    await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
-    await writeFile(join(store.paths.specsDir, "spec-checkin", "stories.yaml"), "stories: []\n", "utf8");
-    await writeTask(store, makeTask());
-    await writeTask(
-      store,
-      makeTask({
-        id: "TSK-glob",
-        contract: { filesAllowed: ["src/**"], expectedArtifacts: ["src/glob.ts"] },
-      }),
-    );
-    const readiness = await engine.plan("spec-checkin");
-    assert.equal(readiness, "FAIL");
-    assert.equal((await engine.getState()).phase, "plan_failed");
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
+      await writeFile(join(store.paths.specsDir, "spec-checkin", "stories.yaml"), "stories: []\n", "utf8");
+      await writeTask(store, makeTask());
+      await writeTask(
+        store,
+        makeTask({
+          id: "TSK-glob",
+          contract: { filesAllowed: ["src/**"], expectedArtifacts: ["src/glob.ts"] },
+        }),
+      );
+      const readiness = await engine.plan("spec-checkin");
+      assert.equal(readiness, "FAIL");
+      assert.equal((await engine.getState()).phase, "plan_failed");
+    });
   });
 });
 
@@ -366,13 +369,15 @@ test("plan_concerns is not a phase", () => {
 });
 
 test("empty verificationCommands is plan FAIL", async () => {
-  await withEngine(async ({ engine, store }) => {
-    await initProject(engine);
-    await seedFrozenSpec(store);
-    await writeTask(store, makeTask({ contract: { verificationCommands: [] } }));
-    const readiness = await engine.plan("spec-checkin");
-    assert.equal(readiness, "FAIL");
-    assert.equal((await engine.getState()).phase, "plan_failed");
-    assert.equal((await engine.getState()).lastReadiness, "FAIL");
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedFrozenSpec(store);
+      await writeTask(store, makeTask({ contract: { verificationCommands: [] } }));
+      const readiness = await engine.plan("spec-checkin");
+      assert.equal(readiness, "FAIL");
+      assert.equal((await engine.getState()).phase, "plan_failed");
+      assert.equal((await engine.getState()).lastReadiness, "FAIL");
+    });
   });
 });

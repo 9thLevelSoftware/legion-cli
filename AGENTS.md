@@ -4,6 +4,7 @@
 - npm org: `@9thlevelsoftware`.
 - CLI package: `@9thlevelsoftware/legion-cli` (public, bin `legion-cli`).
 - Libraries (later PRs): `@9thlevelsoftware/legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard}`.
+- Task DAG / file-contract queries: `@9thlevelsoftware/legion-cli-graph`. CLI verbs: `plan`, `next`, `ticket create`, `task amend`.
 - Workspace **root** is `"private": true`. Do not publish the root.
 - Workspace packages are public under `@9thlevelsoftware`.
 - **Do not register bin `legion`.** That belongs to `@9thlevelsoftware/legion` (plugin installer).

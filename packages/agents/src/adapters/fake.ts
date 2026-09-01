@@ -72,7 +72,7 @@ export class FakeAdapter implements AgentAdapter {
 
     const artifacts = [...this.#artifacts, ...(job.expectedArtifacts ?? [])].map(normalizeArtifact);
     for (const artifact of artifacts) {
-      const rel = assertRepoRelative(artifact.path);
+      const rel = assertRepoRelative(artifact.path.replaceAll("<id>", job.runId));
       const abs = join(job.cwd, ...rel.split("/"));
       await mkdir(dirname(abs), { recursive: true });
       await writeFile(abs, artifact.content ?? "\n", "utf8");

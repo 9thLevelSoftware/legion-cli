@@ -4,10 +4,12 @@ import type {
   AdapterId,
   ControlMode,
   DiscussDecision,
+  FileContract,
   IngestReceipt,
   IntentAnswersFile,
   IntentMapped,
   Phase,
+  Priority,
   QAScore,
   Readiness,
   ReviewVerdict,
@@ -86,4 +88,20 @@ export type IngestOpts = {
   diff?: string;
 };
 
-export type { IngestReceipt, Phase, QAScore, Readiness, ReviewVerdict, SearchHit, SessionBrief, Spec, Task };
+export type NewTicket = {
+  title: string;
+  parentId?: string;
+  fromAgent?: boolean;
+  type?: "feature" | "fix" | "bug";
+  priority?: Priority;
+  notes?: string;
+  contract?: Partial<FileContract>;
+};
+
+export type AmendTaskOptions = {
+  allowDeps?: boolean;
+  blockedBy?: string[];
+  blocks?: string[];
+};
+
+export type { FileContract, IngestReceipt, Phase, Priority, QAScore, Readiness, ReviewVerdict, SearchHit, SessionBrief, Spec, Task };
