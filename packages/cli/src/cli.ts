@@ -4,13 +4,16 @@ import { fileURLToPath } from "node:url";
 import { Command, CommanderError } from "commander";
 import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
 import { runBrief } from "./brief.js";
+import { runDiscuss } from "./discuss.js";
 import { runDoctor } from "./doctor.js";
 import { printHelpAll } from "./help-all.js";
 import { runIngest } from "./ingest.js";
 import { runInit } from "./init.js";
+import { runIntent } from "./intent.js";
 import { printRefuse, resolveOpts, writeErr } from "./io.js";
 import { runSearch } from "./search.js";
 import { runShow } from "./show.js";
+import { runSpecApprove, runSpecDraft, runSpecNew, runSpecShow } from "./spec.js";
 import { runStatus } from "./status.js";
 import { runWikiTrust } from "./wiki.js";
 
@@ -143,6 +146,59 @@ export function createProgram(): Command {
       process.exitCode = code;
     },
   );
+  addGlobalOptions(program.command("intent").description("Interview me about the product"))
+    .option("--resume", "continue an in-progress interview")
+    .option("--done", "finish after round 2 (still requires confirm)")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { resume?: boolean; done?: boolean };
+      const code = await runIntent(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("discuss").description("Capture decisions before planning"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runDiscuss(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  const spec = addGlobalOptions(program.command("spec").description("Write the short contract + wireframes"))
+    .option("--skip-wireframes", "skip HTML wireframes (pre-approve only)")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { skipWireframes?: boolean };
+      const code = await runSpecDraft(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(spec.command("show").description("Show the spec path"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runSpecShow(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(spec.command("approve").description("Freeze the spec"))
+    .option("--message <message>", "note stored with the frozen spec")
+    .option("--skip-wireframes", "refused: pre-approve only")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { message?: string; skipWireframes?: boolean };
+      const inherited = cmd.optsWithGlobals() as { skipWireframes?: boolean };
+      const code = await runSpecApprove(resolveOpts(cmd), {
+        ...flags,
+        skipWireframes: Boolean(flags.skipWireframes || inherited.skipWireframes),
+      });
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(spec.command("new").description("Start the next increment after ship"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runSpecNew(resolveOpts(cmd));
+      process.exitCode = code;
+    });
 
   program.addHelpCommand(false);
   program

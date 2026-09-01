@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LegionEngine } from "../dist/index.js";
 
-export async function withEngine(fn) {
+export async function withEngine(fn, options) {
   const dir = await mkdtemp(join(tmpdir(), "legion-core-"));
   try {
-    const engine = new LegionEngine(dir);
+    const engine = new LegionEngine(dir, undefined, options);
     await fn({ dir, engine, store: engine.store });
   } finally {
     await rm(dir, { recursive: true, force: true });
