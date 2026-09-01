@@ -1,0 +1,4 @@
+# Legion CLI derived index, cache, and lock
+.legion-cli/index/
+.legion-cli/cache/
+.legion-cli/index/engine.lock

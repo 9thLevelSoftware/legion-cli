@@ -1,0 +1,6 @@
+schemaVersion: legion-cli-config/v1
+adapter:
+  default: fake
+ingest:
+  autoCommit: true
+control_mode: guarded
