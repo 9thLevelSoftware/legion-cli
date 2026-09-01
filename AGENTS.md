@@ -8,6 +8,6 @@
 - Workspace packages are public under `@9thlevelsoftware`.
 - **Do not register bin `legion`.** That belongs to `@9thlevelsoftware/legion` (plugin installer).
 - Supported invocation: `pnpm exec legion-cli`.
-- Until `init` exists, the stub prints `uninitialized` and exits 0.
+- CLI skeleton: `init`, `status` (default), `doctor`, `help`. `init` is greenfield only and requires `--adapter` (or a TTY prompt).
 - Node 22+, ESM, pnpm workspaces (`packageManager: pnpm@9`).
 - CI: typecheck + test. Publish: git tag `v*` only; GitHub Actions trusted publisher; `pnpm publish -r --access public` with provenance. No publish from untagged main. No long-lived npm token.

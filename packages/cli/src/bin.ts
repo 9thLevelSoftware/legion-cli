@@ -1,3 +1,6 @@
 #!/usr/bin/env node
 
-process.stdout.write("uninitialized\n");
+import { runCli } from "./cli.js";
+
+const code = await runCli(process.argv);
+process.exit(code);
