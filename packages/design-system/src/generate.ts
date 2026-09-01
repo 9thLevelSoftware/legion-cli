@@ -108,6 +108,7 @@ export async function generateFromBrief(opts: {
   let brandNote = "No existing brand file.";
   if (!/^(none|no|n\/a|-)$/i.test(brandRaw)) {
     const brandPath = resolve(opts.cwd ?? opts.projectRoot, brandRaw);
+    assertNoUrlFetch(brandPath, "design-system generate");
     if (!existsSync(brandPath)) {
       refuse(`brand file not found: ${brandRaw}`, "path or none");
     }

@@ -20,6 +20,44 @@ test("design-system install rejects github:", async () => {
   });
 });
 
+test("design-system install/import-od/generate refuse UNC and protocol-relative paths", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+
+    const githubSlash = runCli(["design-system", "install", "//github.com/acme/brand", "--project", dir]);
+    assert.equal(githubSlash.status, 1);
+    assert.match(normalize(githubSlash.stderr), /github:/);
+
+    const githubUnc = runCli(["design-system", "install", "\\\\github.com\\acme\\brand", "--project", dir]);
+    assert.equal(githubUnc.status, 1);
+    assert.match(normalize(githubUnc.stderr), /github:/);
+
+    const other = runCli(["design-system", "import-od", "//example.com/brand.css", "--project", dir]);
+    assert.equal(other.status, 1);
+    assert.match(normalize(other.stderr), /local directory copy only/);
+
+    const gen = runCli([
+      "design-system",
+      "generate",
+      "--project",
+      dir,
+      "--name",
+      "Checkin",
+      "--work-type",
+      "product UI",
+      "--platforms",
+      "phone",
+      "--wcag",
+      "AA",
+      "--brand",
+      "//example.com/brand.css",
+    ]);
+    assert.equal(gen.status, 1);
+    assert.match(normalize(gen.stderr), /URL fetch/);
+  });
+});
+
 test("design-system import-od then install", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);

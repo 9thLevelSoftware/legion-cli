@@ -16,6 +16,7 @@ import {
   installLocalDir,
   isBrandViolationBlockingFreeze,
   isGithubInstallSource,
+  isRemoteInstallSource,
   mergeCssVars,
   showDesignSystem,
   threeLensReview,
@@ -60,7 +61,27 @@ test("copyShippedCraft writes the five craft files", async () => {
 test("github: sources are rejected", () => {
   assert.equal(isGithubInstallSource("github:acme/brand"), true);
   assert.equal(isGithubInstallSource("https://github.com/acme/brand"), true);
+  assert.equal(isGithubInstallSource("//github.com/acme/brand"), true);
+  assert.equal(isGithubInstallSource("\\\\github.com\\acme\\brand"), true);
   assert.equal(isGithubInstallSource("./brand"), false);
+  assert.equal(isGithubInstallSource("./github.com/brand"), false);
+});
+
+test("protocol-relative, UNC, and URL schemes are remote", () => {
+  for (const source of [
+    "//example.com/brand.css",
+    "\\\\example.com\\brand.css",
+    "file:///tmp/brand",
+    "ftp://example.com/brand",
+    "git://example.com/brand",
+    "ws://example.com/brand",
+    "git@example.com:acme/brand",
+  ]) {
+    assert.equal(isRemoteInstallSource(source), true, source);
+    assert.equal(isGithubInstallSource(source), false, source);
+  }
+  assert.equal(isRemoteInstallSource("C:\\\\Users\\\\brand"), false);
+  assert.equal(isRemoteInstallSource("./brand"), false);
 });
 
 test("install rejects github:", async () => {
@@ -69,6 +90,60 @@ test("install rejects github:", async () => {
     await assert.rejects(
       () => installLocalDir({ projectRoot: dir, source: "github:acme/brand" }),
       (err) => isRefuse(err, /github:/, /local directory/),
+    );
+  });
+});
+
+test("install, import-od, and generate refuse UNC and protocol-relative paths before I/O", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const githubPaths = ["//github.com/acme/brand", "\\\\github.com\\acme\\brand"];
+    const other = "//example.com/brand.css";
+    for (const source of githubPaths) {
+      await assert.rejects(
+        () => installLocalDir({ projectRoot: dir, source }),
+        (err) => isRefuse(err, /github:/, /local directory/),
+      );
+      await assert.rejects(
+        () => importOpenDesign({ projectRoot: dir, source }),
+        (err) => isRefuse(err, /github:/, /local directory/),
+      );
+      await assert.rejects(
+        () =>
+          generateFromBrief({
+            projectRoot: dir,
+            brief: {
+              name: "Checkin",
+              workType: "product UI",
+              platforms: "phone",
+              wcag: "AA",
+              brand: source,
+            },
+          }),
+        (err) => isRefuse(err, /github:/, /path or none/),
+      );
+    }
+    await assert.rejects(
+      () => installLocalDir({ projectRoot: dir, source: other }),
+      (err) => isRefuse(err, /local directory copy only/, /local directory/),
+    );
+    await assert.rejects(
+      () => importOpenDesign({ projectRoot: dir, source: other }),
+      (err) => isRefuse(err, /local directory copy only/, /local directory/),
+    );
+    await assert.rejects(
+      () =>
+        generateFromBrief({
+          projectRoot: dir,
+          brief: {
+            name: "Checkin",
+            workType: "product UI",
+            platforms: "phone",
+            wcag: "AA",
+            brand: other,
+          },
+        }),
+      (err) => isRefuse(err, /URL fetch/, /path or none/),
     );
   });
 });
@@ -182,6 +257,34 @@ test("generate-from-brief writes a package and three-lens review", async () => {
     const shown = await showDesignSystem(dir);
     assert.equal(shown.packageId, "checkin");
     assert.equal(shown.brandViolation, false);
+  });
+});
+
+test("install of a clean package clears prior generate brandViolation", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const brand = join(dir, "brand.md");
+    await writeFile(brand, ":root { --ink: blue; }\nPrimary #ff00aa\n", "utf8");
+    const generated = await generateFromBrief({
+      projectRoot: dir,
+      brief: {
+        name: "Checkin",
+        workType: "product UI",
+        platforms: "phone",
+        wcag: "AA",
+        brand,
+      },
+    });
+    assert.equal(generated.review.brandViolation, true);
+    assert.equal((await showDesignSystem(dir)).brandViolation, true);
+    await installLocalDir({ projectRoot: dir, source: legionFixture });
+    const shown = await showDesignSystem(dir);
+    assert.equal(shown.packageId, "fixture-neutral");
+    assert.equal(shown.brandViolation, false);
+    assert.equal(
+      await isBrandViolationBlockingFreeze(dir, { wireframesIndex: "wireframes/INDEX.html" }, []),
+      false,
+    );
   });
 });
 
