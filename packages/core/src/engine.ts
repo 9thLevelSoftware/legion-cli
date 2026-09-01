@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   createLegionStore,
   ensureGitignore,
+  parseMarkdownDocument,
   PathEscapeError,
   WIKI_PAGE_SCHEMA_VERSION,
   type LegionStore,
@@ -28,7 +29,7 @@ import {
 import { HINT, refuse } from "./errors.js";
 import { assertIngestSourceAllowed } from "./ingest-guard.js";
 import { assertCanTransition, assertLegalPhase } from "./phases.js";
-import { evaluateReadiness } from "./readiness.js";
+import { evaluateReadiness, filesAllowedFailsPlan } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
 import { assertTaskStatusTransition } from "./tasks.js";
 import type {
@@ -59,6 +60,21 @@ async function listMarkdownFiles(dir: string): Promise<string[]> {
     throw err;
   }
   return names.filter((name) => name.toLowerCase().endsWith(".md"));
+}
+
+type LoadedTask =
+  | { ok: true; task: Task }
+  | { ok: false; id: string; specId?: string; filesAllowed?: string[] };
+
+function peekTaskFrontmatter(frontmatter: unknown): { specId?: string; filesAllowed?: string[] } {
+  if (!frontmatter || typeof frontmatter !== "object") return {};
+  const rec = frontmatter as { specId?: unknown; contract?: { filesAllowed?: unknown } };
+  const specId = typeof rec.specId === "string" ? rec.specId : undefined;
+  const allowed = rec.contract?.filesAllowed;
+  const filesAllowed = Array.isArray(allowed)
+    ? allowed.filter((path): path is string => typeof path === "string")
+    : undefined;
+  return { specId, filesAllowed };
 }
 
 export class LegionEngine {
@@ -179,6 +195,9 @@ export class LegionEngine {
       if (target === "spec_frozen") {
         refuse("spec freeze requires legion-cli spec approve", HINT.specApprove);
       }
+      if (target === "plan_ready" || target === "plan_failed") {
+        refuse("plan_ready and plan_failed require legion-cli plan", HINT.plan);
+      }
       assertCanTransition(state.phase, target);
       if (target === "ready_to_ship") {
         await this.#assertReadyToShip(state);
@@ -292,8 +311,24 @@ export class LegionEngine {
       if (!id) {
         refuse("plan requires an active spec", HINT.spec);
       }
+
+      let current: StateFile = { ...state, activeSpecId: id };
+      if (current.phase === "spec_frozen" || current.phase === "plan_failed") {
+        assertCanTransition(current.phase, "planning");
+        current = { ...current, phase: "planning" };
+        await this.#writeState(current);
+      }
+
       const spec = (await this.store.readSpec(id)).data;
-      const tasks = sliceTasks(await this.#listTasks(), id);
+      const entries = await this.#loadTaskEntries();
+      const unreadable = entries.filter(
+        (entry): entry is Extract<LoadedTask, { ok: false }> =>
+          !entry.ok && (entry.specId === id || entry.specId === undefined),
+      );
+      const tasks = sliceTasks(
+        entries.filter((entry): entry is Extract<LoadedTask, { ok: true }> => entry.ok).map((entry) => entry.task),
+        id,
+      );
       const hasStories = await this.store.pathExists(`.legion-cli/specs/${id}/stories.yaml`);
       const skipWireframes = !spec.wireframesIndex;
       const openNonBlockingAssumptions = (await this.#listAssumptions()).some(
@@ -306,14 +341,23 @@ export class LegionEngine {
         skipWireframes,
         openNonBlockingAssumptions,
       });
-      const phase: Phase = report.readiness === "FAIL" ? "plan_failed" : "plan_ready";
+      const fails = [...report.fails];
+      for (const bad of unreadable) {
+        fails.push(`${bad.id} is not a valid task`);
+        if (bad.filesAllowed && filesAllowedFailsPlan(bad.filesAllowed)) {
+          fails.push(`${bad.id} filesAllowed must be concrete paths`);
+        }
+      }
+      const readiness: Readiness = fails.length > 0 ? "FAIL" : report.readiness;
+      const phase: Phase = readiness === "FAIL" ? "plan_failed" : "plan_ready";
+      assertCanTransition("planning", phase);
       await this.#writeState({
-        ...state,
+        ...current,
         phase,
         activeSpecId: id,
-        lastReadiness: report.readiness,
+        lastReadiness: readiness,
       });
-      return report.readiness;
+      return readiness;
     });
   }
 
@@ -449,7 +493,18 @@ export class LegionEngine {
     return this.#mutate(async () => {
       const doc = await this.store.readTask(taskId);
       assertTaskStatusTransition(doc.data.status, status);
+      const state = await this.#readState();
+      const before = sliceTasks(await this.#listTasks(), state.activeSpecId);
+      const wasTerminal = isSliceTerminal(before);
       await this.store.writeTask({ ...doc.data, status }, doc.body);
+      const after = sliceTasks(await this.#listTasks(), state.activeSpecId);
+      if (!wasTerminal || isSliceTerminal(after)) return;
+      const next: StateFile = { ...state };
+      if (state.lastReview === "PASS") next.lastReview = "FAIL";
+      if (state.phase === "ready_to_ship") next.phase = "executing";
+      if (next.lastReview !== state.lastReview || next.phase !== state.phase) {
+        await this.#writeState(next);
+      }
     });
   }
 
@@ -501,18 +556,35 @@ export class LegionEngine {
     return this.store.readConfig();
   }
 
-  async #listTasks(): Promise<Task[]> {
+  async #loadTaskEntries(): Promise<LoadedTask[]> {
     const files = await listMarkdownFiles(this.store.paths.tasksDir);
-    const tasks: Task[] = [];
+    const entries: LoadedTask[] = [];
     for (const file of files) {
       const id = file.replace(/\.md$/i, "");
       try {
-        tasks.push((await this.store.readTask(id)).data);
+        entries.push({ ok: true, task: (await this.store.readTask(id)).data });
       } catch {
-        continue;
+        let specId: string | undefined;
+        let filesAllowed: string[] | undefined;
+        try {
+          const raw = await readFile(join(this.store.paths.tasksDir, file), "utf8");
+          const peeked = peekTaskFrontmatter(parseMarkdownDocument(raw).frontmatter);
+          specId = peeked.specId;
+          filesAllowed = peeked.filesAllowed;
+        } catch {
+          // unreadable even as frontmatter
+        }
+        entries.push({ ok: false, id, specId, filesAllowed });
       }
     }
-    return tasks.sort((a, b) => a.id.localeCompare(b.id));
+    return entries;
+  }
+
+  async #listTasks(): Promise<Task[]> {
+    return (await this.#loadTaskEntries())
+      .filter((entry): entry is { ok: true; task: Task } => entry.ok)
+      .map((entry) => entry.task)
+      .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   async #listAssumptions(): Promise<Assumption[]> {
