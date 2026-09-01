@@ -47,3 +47,13 @@ test("help --all lists dashboard as available now", () => {
   assert.match(out, /dashboard/);
   assert.match(out, /--no-open, --port, --expose/);
 });
+
+test("mcp is a read-only stdio command", () => {
+  const help = runCli(["mcp", "--help"]);
+  assert.equal(help.status, 0, help.stderr);
+  const out = normalize(help.stdout);
+  assert.match(out, /read-only/i);
+  assert.match(out, /stdio/i);
+  const all = runCli(["help", "--all"]);
+  assert.match(normalize(all.stdout), /Available now:[\s\S]*\bmcp\b/);
+});
