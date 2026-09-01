@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { isTaskReady } from "@9thlevelsoftware/legion-cli-graph";
 import {
   createLegionStore,
-  type LegionStore,
+  type LegionReader,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   AuditEventSchema,
@@ -19,11 +19,11 @@ import {
 import {
   backlinks,
   buildSessionBrief,
-  ensureWikiIndex,
   loadWikiLinks,
   loadWikiPages,
   searchWiki,
   showPage,
+  wikiIndexReady,
 } from "@9thlevelsoftware/legion-cli-wiki";
 
 export class McpReadError extends Error {
@@ -80,16 +80,22 @@ async function listMarkdown(dir: string): Promise<string[]> {
   }
 }
 
-export function createReaderStore(projectRoot: string): LegionStore {
+export function createReaderStore(projectRoot: string): LegionReader {
   return createLegionStore(projectRoot);
 }
 
-export async function readState(store: LegionStore): Promise<StateFile> {
+function requireWikiIndex(store: LegionReader): void {
+  if (!wikiIndexReady(store.projectRoot)) {
+    throw new McpReadError("run index rebuild");
+  }
+}
+
+export async function readState(store: LegionReader): Promise<StateFile> {
   if (!(await store.pathExists(".legion-cli/STATE.md"))) return UNINITIALIZED;
   return (await store.readState()).data;
 }
 
-async function assertInitialized(store: LegionStore): Promise<StateFile> {
+async function assertInitialized(store: LegionReader): Promise<StateFile> {
   const state = await readState(store);
   if (state.phase === "uninitialized") {
     throw new McpReadError("mcp is refused until init");
@@ -97,7 +103,7 @@ async function assertInitialized(store: LegionStore): Promise<StateFile> {
   return state;
 }
 
-export async function listTasks(store: LegionStore): Promise<Task[]> {
+export async function listTasks(store: LegionReader): Promise<Task[]> {
   const files = await listMarkdown(store.paths.tasksDir);
   const tasks: Task[] = [];
   for (const file of files) {
@@ -111,12 +117,12 @@ export async function listTasks(store: LegionStore): Promise<Task[]> {
   return tasks.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-async function readOptionalProject(store: LegionStore): Promise<ProjectFile | null> {
+async function readOptionalProject(store: LegionReader): Promise<ProjectFile | null> {
   if (!(await store.pathExists(".legion-cli/PROJECT.md"))) return null;
   return (await store.readProject()).data;
 }
 
-async function readOptionalConfig(store: LegionStore): Promise<LegionConfig | null> {
+async function readOptionalConfig(store: LegionReader): Promise<LegionConfig | null> {
   if (!(await store.pathExists(".legion-cli/config.yaml"))) return null;
   try {
     return await store.readConfig();
@@ -141,7 +147,7 @@ function nextCommand(state: StateFile, slice: readonly Task[]): { run: string; h
   return NEXT_BY_PHASE[state.phase];
 }
 
-export async function readStatus(store: LegionStore) {
+export async function readStatus(store: LegionReader) {
   const state = await readState(store);
   const project = state.phase === "uninitialized" ? null : await readOptionalProject(store);
   const config = await readOptionalConfig(store);
@@ -170,26 +176,26 @@ export async function readStatus(store: LegionStore) {
 }
 
 export async function readSearch(
-  store: LegionStore,
+  store: LegionReader,
   q: string,
   opts?: { includeUntrusted?: boolean; mentions?: boolean },
 ) {
   await assertInitialized(store);
-  await ensureWikiIndex(store);
+  requireWikiIndex(store);
   return searchWiki(store.projectRoot, q, opts);
 }
 
-export async function readShow(store: LegionStore, page: string) {
+export async function readShow(store: LegionReader, page: string) {
   await assertInitialized(store);
-  return showPage(store, page);
+  return showPage(store, page, { rebuild: false });
 }
 
-export async function readBrief(store: LegionStore) {
+export async function readBrief(store: LegionReader) {
   await assertInitialized(store);
-  return buildSessionBrief(store);
+  return buildSessionBrief(store, { rebuild: false });
 }
 
-export async function readCurrentTask(store: LegionStore) {
+export async function readCurrentTask(store: LegionReader) {
   const state = await assertInitialized(store);
   if (!state.currentTaskId) return { currentTask: null };
   try {
@@ -199,7 +205,7 @@ export async function readCurrentTask(store: LegionStore) {
   }
 }
 
-export async function readTaskGraph(store: LegionStore, specId?: string) {
+export async function readTaskGraph(store: LegionReader, specId?: string) {
   const state = await assertInitialized(store);
   const tasks = await listTasks(store);
   const active = specId ?? state.activeSpecId ?? null;
@@ -223,7 +229,7 @@ export async function readTaskGraph(store: LegionStore, specId?: string) {
   };
 }
 
-export async function readAuditTrail(store: LegionStore, limit = 100): Promise<AuditEvent[]> {
+export async function readAuditTrail(store: LegionReader, limit = 100): Promise<AuditEvent[]> {
   await assertInitialized(store);
   const cap = Math.min(Math.max(limit, 1), 1000);
   const abs = join(store.paths.auditDir, "events.jsonl");
@@ -261,9 +267,9 @@ function matchWikiPageId(pages: ReturnType<typeof loadWikiPages>, ref: string): 
   return page?.id ?? needle.replace(/\.md$/i, "");
 }
 
-export async function readWikiBacklinks(store: LegionStore, page: string) {
+export async function readWikiBacklinks(store: LegionReader, page: string) {
   await assertInitialized(store);
-  await ensureWikiIndex(store);
+  requireWikiIndex(store);
   const pages = loadWikiPages(store.projectRoot);
   const links = loadWikiLinks(store.projectRoot);
   const pageId = matchWikiPageId(pages, page);

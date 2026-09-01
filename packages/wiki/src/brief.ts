@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   extractWikiLinks,
   queryIndex,
+  type LegionReader,
   type LegionStore,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
@@ -31,7 +32,7 @@ async function listMarkdown(dir: string): Promise<string[]> {
   return names.filter((name) => name.toLowerCase().endsWith(".md"));
 }
 
-async function loadAssumptions(store: LegionStore): Promise<Assumption[]> {
+async function loadAssumptions(store: LegionReader): Promise<Assumption[]> {
   const files = await listMarkdown(store.paths.assumptionsDir);
   const out: Assumption[] = [];
   for (const file of files) {
@@ -46,7 +47,7 @@ async function loadAssumptions(store: LegionStore): Promise<Assumption[]> {
 }
 
 async function loadAcceptedDecisions(
-  store: LegionStore,
+  store: LegionReader,
 ): Promise<Array<{ id: string; summary: string }>> {
   const files = await listMarkdown(store.paths.decisionsDir);
   const out: Array<{ id: string; summary: string; status: string }> = [];
@@ -64,7 +65,7 @@ async function loadAcceptedDecisions(
     .map(({ id, summary }) => ({ id, summary }));
 }
 
-async function loadLastQa(store: LegionStore, lastQaId: string | null | undefined): Promise<{
+async function loadLastQa(store: LegionReader, lastQaId: string | null | undefined): Promise<{
   total: number;
   pass: boolean;
 } | null> {
@@ -206,16 +207,35 @@ export function assembleSessionBrief(input: {
   return withCount({ ...base, wiki }, rendered);
 }
 
-export async function ensureWikiIndex(store: LegionStore): Promise<void> {
+export function wikiIndexReady(projectRoot: string): boolean {
   try {
-    queryIndex(store.projectRoot, "SELECT 1 FROM pages LIMIT 1");
+    queryIndex(projectRoot, "SELECT 1 FROM pages LIMIT 1");
+    return true;
   } catch {
-    await store.rebuild();
+    return false;
   }
 }
 
-export async function buildSessionBrief(store: LegionStore): Promise<SessionBrief> {
-  await ensureWikiIndex(store);
+export async function ensureWikiIndex(
+  store: LegionReader,
+  opts?: { rebuild?: boolean },
+): Promise<void> {
+  if (wikiIndexReady(store.projectRoot)) return;
+  if (opts?.rebuild === false) {
+    throw new Error("run index rebuild");
+  }
+  const writable = store as LegionStore;
+  if (typeof writable.rebuild !== "function") {
+    throw new Error("run index rebuild");
+  }
+  await writable.rebuild();
+}
+
+export async function buildSessionBrief(
+  store: LegionReader,
+  opts?: { rebuild?: boolean },
+): Promise<SessionBrief> {
+  await ensureWikiIndex(store, opts);
   const project = (await store.readProject()).data;
   const state = (await store.readState()).data;
   const blockers = (await loadAssumptions(store))

@@ -27,11 +27,14 @@ test("package does not depend on core or execute", async () => {
   assert.ok(deps["@9thlevelsoftware/legion-cli-graph"]);
 });
 
-test("source must not import core/execute", async () => {
+test("source must not import core/execute or take the engine lock", async () => {
   const files = await listTs(join(pkgRoot, "src"));
   assert.ok(files.length > 0);
   for (const file of files) {
     const text = await readFile(file, "utf8");
+    assert.doesNotMatch(text, /\.rebuild\s*\(/, file);
+    assert.doesNotMatch(text, /ensureWikiIndex/, file);
+    assert.doesNotMatch(text, /acquireLock|acquireEngineLock|withLock/, file);
     for (const line of text.split(/\r?\n/)) {
       if (!/^\s*import\b/.test(line)) continue;
       assert.doesNotMatch(line, /legion-cli-core/, file);
