@@ -275,6 +275,76 @@ test("canTransition has no plan_concerns edge", () => {
   }
 });
 
+test("plan walks spec_frozen → planning → plan_ready and transition cannot skip readiness", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedFrozenSpec(store);
+    await writeTask(store, makeTask());
+    await assert.rejects(
+      () => engine.transition("plan_ready"),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.nextHint, /legion-cli plan/);
+        return true;
+      },
+    );
+    const readiness = await engine.plan("spec-checkin");
+    assert.equal(readiness, "CONCERNS");
+    assert.equal((await engine.getState()).phase, "plan_ready");
+    assert.equal((await engine.getState()).lastReadiness, "CONCERNS");
+
+    await patchState(store, { phase: "planning", lastReadiness: null });
+    await assert.rejects(
+      () => engine.transition("plan_ready"),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.nextHint, /legion-cli plan/);
+        return true;
+      },
+    );
+    const again = await engine.plan("spec-checkin");
+    assert.equal(again, "CONCERNS");
+    assert.equal((await engine.getState()).phase, "plan_ready");
+  });
+});
+
+test("reopening a blocked slice task after review PASS invalidates lastReview", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedPlanReady(store, {
+      phase: "executing",
+      extraTasks: [
+        makeTask({
+          id: "TSK-0002",
+          priority: "P1",
+          status: "blocked",
+          contract: { filesAllowed: ["src/p1.ts"], expectedArtifacts: ["src/p1.ts"] },
+        }),
+      ],
+      task: { status: "done" },
+    });
+    const review = await engine.review();
+    assert.equal(review.verdict, "PASS");
+    assert.equal((await engine.getState()).lastReview, "PASS");
+
+    await engine.setTaskStatus("TSK-0002", "ready");
+    assert.equal((await engine.getState()).lastReview, "FAIL");
+    assert.equal((await engine.getState()).phase, "executing");
+
+    await engine.setTaskStatus("TSK-0002", "in_progress");
+    await engine.setTaskStatus("TSK-0002", "verifying");
+    await engine.setTaskStatus("TSK-0002", "done");
+    await assert.rejects(
+      () => engine.qa({ score: makeQaScore() }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.nextHint, /legion-cli review/);
+        return true;
+      },
+    );
+  });
+});
+
 test("qa is refused after a review that filed fix tasks until re-review PASS", async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
