@@ -87,3 +87,25 @@ test("generic without a binary is not spawnable", async () => {
   assert.equal(detected.ok, false);
   assert.match(detected.reason ?? "", /adapter\.generic\.binary is missing/);
 });
+
+test("generic args that omit {{pointer}} are not spawnable and spawn throws", async () => {
+  const adapter = createAdapter("generic", {
+    generic: { binary: process.execPath, args: ["-p"] },
+  });
+  const detected = await adapter.detect();
+  assert.equal(detected.ok, false);
+  assert.match(detected.reason ?? "", /\{\{pointer\}\}/);
+  await assert.rejects(
+    () =>
+      adapter.spawn({
+        runId: "r",
+        skillId: "plan",
+        promptPath: "p",
+        pointerPrompt: "x",
+        cwd: process.cwd(),
+        timeoutMs: 1000,
+        env: {},
+      }),
+    (err) => err instanceof AdapterConfigError && /pointer/.test(err.message),
+  );
+});

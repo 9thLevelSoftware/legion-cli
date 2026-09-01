@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CLAUDE_FROZEN_ARGV,
+  DEFAULT_GENERIC_ARGS,
   FROZEN_ARGV_TABLE,
+  POINTER_PLACEHOLDER,
   POINTER_PROMPT_MAX_CHARS,
+  argsIncludePointer,
   buildClaudeArgv,
   buildGenericArgv,
   buildPointerPrompt,
+  genericArgsOrDefault,
 } from "../dist/index.js";
 
 test("frozen claude argv is -p --output-format json pointerPrompt", () => {
@@ -40,6 +44,15 @@ test("generic argv substitutes {{pointer}}", () => {
     "json",
     pointer,
   ]);
+  assert.match(pointer, /Do not `git add` or `git commit`/);
+});
+
+test("empty generic args default to {{pointer}}; explicit args without it are rejected", () => {
+  assert.deepEqual(genericArgsOrDefault([]), [POINTER_PLACEHOLDER]);
+  assert.deepEqual(genericArgsOrDefault([]), [...DEFAULT_GENERIC_ARGS]);
+  assert.equal(argsIncludePointer(genericArgsOrDefault([])), true);
+  assert.equal(argsIncludePointer(["-p", "--output-format", "json"]), false);
+  assert.equal(argsIncludePointer(["-p", "{{pointer}}"]), true);
 });
 
 test("pointer prompt includes run/skill paths and forbids git commit", () => {
