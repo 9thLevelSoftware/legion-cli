@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { Command } from "commander";
-import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
+import type { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
 
 export type CliOpts = {
   project: string;
@@ -36,7 +36,7 @@ export function writeJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-export function printRefuse(err: LegionRefuseError, json: boolean): void {
+export function printRefuse(err: Pick<LegionRefuseError, "message" | "nextHint">, json: boolean): void {
   if (json) {
     writeJson({ error: err.message, next: err.nextHint });
     return;

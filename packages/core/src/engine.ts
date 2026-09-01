@@ -46,6 +46,7 @@ import {
   type Task,
   type TaskStatus,
 } from "@9thlevelsoftware/legion-cli-schema";
+import { copyShippedCraft, isBrandViolationBlockingFreeze } from "@9thlevelsoftware/legion-cli-design-system";
 import { HINT, LegionRefuseError, refuse } from "./errors.js";
 import { assertIngestSourceAllowed } from "./ingest-guard.js";
 import { decisionFileName, templateDecisions } from "./discuss.js";
@@ -168,6 +169,7 @@ export class LegionEngine {
       await mkdir(paths.tasksDir, { recursive: true });
       await mkdir(join(paths.qaDir, "scores"), { recursive: true });
       await mkdir(join(paths.designDir, "craft"), { recursive: true });
+      await copyShippedCraft(join(paths.designDir, "craft"));
       await mkdir(paths.auditDir, { recursive: true });
       await mkdir(paths.wikiDir, { recursive: true });
       await mkdir(join(paths.wikiDir, "product"), { recursive: true });
@@ -277,6 +279,10 @@ export class LegionEngine {
       }
       if (spec.status !== "draft") {
         refuse(`spec ${specId} is ${spec.status}, not draft`, HINT.specApprove);
+      }
+      const answers = await this.#loadIntentAnswers();
+      if (await isBrandViolationBlockingFreeze(this.projectRoot, spec, answers.mapped.screens)) {
+        refuse("brand violation blocks spec freeze for UI work", HINT.designGenerate);
       }
       const frozen: Spec = {
         ...spec,

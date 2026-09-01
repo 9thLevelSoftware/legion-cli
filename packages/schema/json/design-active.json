@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-design-active/v1"
+    },
+    "packageId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "craft": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "brandViolation": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "craft"
+  ]
+}

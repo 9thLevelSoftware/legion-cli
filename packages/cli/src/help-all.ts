@@ -19,6 +19,10 @@ const AVAILABLE = [
   ["next", "What is unblocked?", ""],
   ["ticket create", "Park extra work", "--parent, --title, --from-agent"],
   ["task amend", "Human changes a file contract", "--allow-deps"],
+  ["design-system show", "Show the active design-system package", ""],
+  ["design-system install <dir>", "Copy a local design-system directory", "github: rejected"],
+  ["design-system import-od <dir>", "One-way OpenDesign importer", ""],
+  ["design-system generate", "Generate a design system from a brief", "--name, --work-type, --platforms, --wcag, --brand"],
   ["help", "Commands", "--all"],
 ] as const;
 

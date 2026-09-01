@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-design-system/v1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "bundled",
+            "local",
+            "github"
+          ]
+        },
+        "origin": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "origin"
+      ]
+    },
+    "files": {
+      "type": "object",
+      "properties": {
+        "design": {
+          "type": "string",
+          "const": "DESIGN.md"
+        },
+        "tokens": {
+          "type": "string",
+          "const": "tokens.css"
+        },
+        "usage": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "design",
+        "tokens"
+      ]
+    },
+    "wcag": {
+      "type": "string",
+      "enum": [
+        "A",
+        "AA",
+        "AAA"
+      ]
+    },
+    "integrity": {
+      "type": "object",
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sha256"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "id",
+    "name",
+    "description",
+    "source",
+    "files"
+  ]
+}
