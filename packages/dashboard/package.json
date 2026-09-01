@@ -1,14 +1,19 @@
 {
-  "name": "@9thlevelsoftware/legion-cli",
+  "name": "@9thlevelsoftware/legion-cli-dashboard",
   "version": "0.0.0",
-  "description": "Legion CLI — Product Engineering lifecycle engine",
+  "description": "Legion CLI read-only HTTP dashboard (GET + SSE viewer)",
   "type": "module",
   "license": "MIT",
   "engines": {
     "node": ">=22"
   },
-  "bin": {
-    "legion-cli": "./dist/bin.js"
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "files": [
     "dist"
@@ -19,15 +24,6 @@
     "test": "pnpm run build && node --test test/*.test.js",
     "prepublishOnly": "pnpm run build"
   },
-  "dependencies": {
-    "@9thlevelsoftware/legion-cli-core": "workspace:*",
-    "@9thlevelsoftware/legion-cli-design-system": "workspace:*",
-    "@9thlevelsoftware/legion-cli-dashboard": "workspace:*",
-    "@9thlevelsoftware/legion-cli-persist": "workspace:*",
-    "@9thlevelsoftware/legion-cli-schema": "workspace:*",
-    "@9thlevelsoftware/legion-cli-wiki": "workspace:*",
-    "commander": "^13.1.0"
-  },
   "publishConfig": {
     "access": "public",
     "provenance": true
@@ -35,7 +31,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/9thLevelSoftware/product-engineer-helper.git",
-    "directory": "packages/cli"
+    "directory": "packages/dashboard"
   },
   "author": {
     "name": "9thLevelSoftware",
@@ -44,7 +40,12 @@
   "keywords": [
     "legion",
     "legion-cli",
-    "product-engineering",
-    "cli"
-  ]
+    "dashboard"
+  ],
+  "dependencies": {
+    "@9thlevelsoftware/legion-cli-graph": "workspace:*",
+    "@9thlevelsoftware/legion-cli-persist": "workspace:*",
+    "@9thlevelsoftware/legion-cli-schema": "workspace:*",
+    "@9thlevelsoftware/legion-cli-wiki": "workspace:*"
+  }
 }

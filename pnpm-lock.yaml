@@ -17,6 +17,9 @@ importers:
       '@9thlevelsoftware/legion-cli-core':
         specifier: workspace:*
         version: link:packages/core
+      '@9thlevelsoftware/legion-cli-dashboard':
+        specifier: workspace:*
+        version: link:packages/dashboard
       '@9thlevelsoftware/legion-cli-graph':
         specifier: workspace:*
         version: link:packages/graph
@@ -47,6 +50,9 @@ importers:
       '@9thlevelsoftware/legion-cli-core':
         specifier: workspace:*
         version: link:../core
+      '@9thlevelsoftware/legion-cli-dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
       '@9thlevelsoftware/legion-cli-persist':
         specifier: workspace:*
         version: link:../persist
@@ -65,6 +71,21 @@ importers:
       '@9thlevelsoftware/legion-cli-agents':
         specifier: workspace:*
         version: link:../agents
+      '@9thlevelsoftware/legion-cli-graph':
+        specifier: workspace:*
+        version: link:../graph
+      '@9thlevelsoftware/legion-cli-persist':
+        specifier: workspace:*
+        version: link:../persist
+      '@9thlevelsoftware/legion-cli-schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@9thlevelsoftware/legion-cli-wiki':
+        specifier: workspace:*
+        version: link:../wiki
+
+  packages/dashboard:
+    dependencies:
       '@9thlevelsoftware/legion-cli-graph':
         specifier: workspace:*
         version: link:../graph

@@ -23,6 +23,7 @@ const AVAILABLE = [
   ["design-system install <dir>", "Copy a local design-system directory", "github: rejected"],
   ["design-system import-od <dir>", "One-way OpenDesign importer", ""],
   ["design-system generate", "Generate a design system from a brief", "--name, --work-type, --platforms, --wcag, --brand"],
+  ["dashboard", "Open the visual board (viewer)", "--no-open, --port, --expose"],
   ["help", "Commands", "--all"],
 ] as const;
 

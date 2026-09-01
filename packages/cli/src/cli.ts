@@ -5,6 +5,7 @@ import { Command, CommanderError } from "commander";
 import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
 import { DesignSystemError } from "@9thlevelsoftware/legion-cli-design-system";
 import { runBrief } from "./brief.js";
+import { runDashboard } from "./dashboard.js";
 import { runDiscuss } from "./discuss.js";
 import { runDoctor } from "./doctor.js";
 import { printHelpAll } from "./help-all.js";
@@ -222,6 +223,17 @@ export function createProgram(): Command {
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
       const code = await runNextTasks(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("dashboard").description("Open the visual board (viewer)"))
+    .option("--no-open", "do not open a browser")
+    .option("--port <port>", "port (default 7420)")
+    .option("--expose", "bind 0.0.0.0 (warning)")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { open?: boolean; port?: string; expose?: boolean };
+      const code = await runDashboard(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
 

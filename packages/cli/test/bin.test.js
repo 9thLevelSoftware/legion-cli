@@ -35,5 +35,15 @@ test("help --all lists the v0 command surface", () => {
   assert.match(out, /legion-cli next/);
   assert.match(out, /legion-cli ticket create/);
   assert.match(out, /legion-cli task amend/);
+  assert.match(out, /legion-cli dashboard/);
   assert.match(out, /pnpm exec legion-cli/);
+});
+
+test("help --all lists dashboard as available now", () => {
+  const result = runCli(["help", "--all"]);
+  assert.equal(result.status, 0, result.stderr);
+  const out = normalize(result.stdout);
+  assert.match(out, /Available now:/);
+  assert.match(out, /dashboard/);
+  assert.match(out, /--no-open, --port, --expose/);
 });
