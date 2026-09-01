@@ -4,10 +4,12 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   AdapterNotEnabled,
+  AgentError,
   GenericAdapter,
   buildPointerPrompt,
   createAdapter,
   filterSpawnEnv,
+  unwrapCmdShim,
 } from "../dist/index.js";
 import { fixturesDir, setupRun, withTempDir } from "./helpers.js";
 
@@ -65,6 +67,7 @@ test("generic spawn passes the pointer prompt as argv", async () => {
     assert.equal(result.exitCode, 0, await readFile(result.stderrPath, "utf8"));
     const argv = JSON.parse(await readFile(join(dir, "argv.json"), "utf8"));
     assert.equal(argv.at(-1), pointer);
+    assert.match(argv.at(-1), /Do not `git add` or `git commit`/);
     assert.match(pointer, /runId=run-ptr/);
     assert.equal(result.summaryPath, job.promptPath.replace(/prompt\.md$/, "summary.md"));
   });
@@ -75,7 +78,7 @@ test("process-group abort kills the spawn tree", async () => {
     const { job } = await setupRun(dir, { timeoutMs: 20_000 });
     const adapter = new GenericAdapter({
       binary: process.execPath,
-      args: [join(fixturesDir, "sleep-tree.js")],
+      args: [join(fixturesDir, "sleep-tree.js"), "{{pointer}}"],
     });
     const handle = await adapter.spawn(job);
     const started = Date.now();
@@ -111,7 +114,7 @@ test("timeout aborts the process group", async () => {
     const { job } = await setupRun(dir, { timeoutMs: 400 });
     const adapter = new GenericAdapter({
       binary: process.execPath,
-      args: [join(fixturesDir, "sleep-tree.js")],
+      args: [join(fixturesDir, "sleep-tree.js"), "{{pointer}}"],
     });
     const handle = await adapter.spawn(job);
     const result = await handle.wait();
@@ -153,4 +156,44 @@ test("createAdapter grok spawn still throws without a job cwd", async () => {
     }),
     AdapterNotEnabled,
   );
+});
+
+test("unwrapCmdShim resolves npm .cmd shims to node + JS entry", () => {
+  const unwrapped = unwrapCmdShim(join(fixturesDir, "echo-argv.cmd"));
+  assert.ok(unwrapped);
+  assert.equal(unwrapped.command, process.execPath);
+  assert.equal(unwrapped.prefixArgs.length, 1);
+  assert.match(unwrapped.prefixArgs[0].replaceAll("\\", "/"), /\/echo-argv\.js$/);
+  assert.equal(unwrapCmdShim(join(fixturesDir, "not-a-shim.cmd")), null);
+});
+
+test("windows .cmd shim receives the full multiline pointer", { skip: process.platform !== "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const pointer = buildPointerPrompt("run-cmd", "execute");
+    const { job } = await setupRun(dir, { runId: "run-cmd", pointerPrompt: pointer });
+    const adapter = new GenericAdapter({
+      binary: join(fixturesDir, "echo-argv.cmd"),
+      args: [],
+    });
+    const handle = await adapter.spawn(job);
+    const result = await handle.wait();
+    assert.equal(result.exitCode, 0, await readFile(result.stderrPath, "utf8"));
+    const argv = JSON.parse(await readFile(join(dir, "argv.json"), "utf8"));
+    assert.equal(argv.at(-1), pointer);
+    assert.match(argv.at(-1), /Do not `git add` or `git commit`/);
+    assert.match(argv.at(-1), /\n/);
+    assert.match(argv.at(-1), /BEGIN SHERPA UNTRUSTED CONTENT/);
+  });
+});
+
+test("unwrappable .cmd with a multiline pointer fails closed", { skip: process.platform !== "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const pointer = buildPointerPrompt("run-badcmd", "plan");
+    const { job } = await setupRun(dir, { runId: "run-badcmd", pointerPrompt: pointer });
+    const adapter = new GenericAdapter({
+      binary: join(fixturesDir, "not-a-shim.cmd"),
+      args: ["{{pointer}}"],
+    });
+    await assert.rejects(() => adapter.spawn(job), AgentError);
+  });
 });

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 function uniquePaths(paths: string[]): string[] {
   const seen = new Set<string>();
@@ -157,4 +158,66 @@ export function versionOf(binary: string): string | undefined {
 
 export function quoteCmdArgForSpawn(arg: string): string {
   return quoteCmdArg(arg);
+}
+
+export type UnwrappedCmdShim = {
+  command: string;
+  prefixArgs: string[];
+};
+
+function expandShimVars(value: string, dp0: string): string {
+  const trailing = /[\\/]$/.test(dp0) ? dp0 : `${dp0}\\`;
+  let out = value.replaceAll("%~dp0", trailing).replaceAll("%dp0%", dp0);
+  if (process.platform !== "win32") out = out.replaceAll("\\", "/");
+  return out;
+}
+
+function isNodeBinaryToken(value: string): boolean {
+  const normalized = value.replaceAll("\\", "/").toLowerCase();
+  return normalized === "%_prog%" || normalized === "node" || normalized.endsWith("/node") || normalized.endsWith("/node.exe") || normalized === "node.exe";
+}
+
+/**
+ * npm/pnpm `.cmd` shims are not CreateProcess binaries. Unwrap to node.exe + the
+ * JS entry so multiline argv (the pointer prompt) is not flattened through cmd.exe.
+ */
+export function unwrapCmdShim(cmdPath: string): UnwrappedCmdShim | null {
+  let text: string;
+  try {
+    text = readFileSync(cmdPath, "utf8");
+  } catch {
+    return null;
+  }
+  const dp0 = dirname(resolve(cmdPath));
+  const lines = text.split(/\r?\n/).map((line) => line.trim().replace(/^@+/, "")).filter(Boolean);
+
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (!line) continue;
+    if (!/%\*/.test(line) && !/node(?:\.exe)?/i.test(line)) continue;
+    const quoted = [...line.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    if (quoted.length === 0) continue;
+
+    let script: string | undefined;
+    let nodeFromShim: string | undefined;
+    for (const raw of quoted) {
+      const expanded = resolve(expandShimVars(raw, dp0));
+      if (isNodeBinaryToken(raw) || isNodeBinaryToken(expanded)) {
+        if (!nodeFromShim) nodeFromShim = expanded;
+        continue;
+      }
+      if (existsSync(expanded)) script = expanded;
+    }
+    if (!script) continue;
+
+    const nodeBeside = resolve(dp0, "node.exe");
+    const command =
+      nodeFromShim && existsSync(nodeFromShim)
+        ? nodeFromShim
+        : existsSync(nodeBeside)
+          ? nodeBeside
+          : process.execPath;
+    return { command, prefixArgs: [script] };
+  }
+  return null;
 }

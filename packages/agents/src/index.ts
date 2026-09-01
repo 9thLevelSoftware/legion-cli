@@ -1,4 +1,13 @@
-export { CLAUDE_FROZEN_ARGV, FROZEN_ARGV_TABLE, buildClaudeArgv, buildGenericArgv } from "./argv.js";
+export {
+  CLAUDE_FROZEN_ARGV,
+  DEFAULT_GENERIC_ARGS,
+  FROZEN_ARGV_TABLE,
+  POINTER_PLACEHOLDER,
+  argsIncludePointer,
+  buildClaudeArgv,
+  buildGenericArgv,
+  genericArgsOrDefault,
+} from "./argv.js";
 export { AdapterConfigError, AdapterNotEnabled, AgentError } from "./errors.js";
 export { filterSpawnEnv } from "./env.js";
 export { buildPointerPrompt } from "./pointer.js";
@@ -9,7 +18,7 @@ export { FakeAdapter } from "./adapters/fake.js";
 export { ClaudeAdapter } from "./adapters/claude.js";
 export { GenericAdapter } from "./adapters/generic.js";
 export { DetectOnlyAdapter } from "./adapters/detect-only.js";
-export { isSpawnableBinary, resolveBinary } from "./which.js";
+export { isSpawnableBinary, resolveBinary, unwrapCmdShim } from "./which.js";
 export type { StageSkillOptions } from "./stage.js";
 export type { RunCachePaths } from "./paths.js";
 export type {

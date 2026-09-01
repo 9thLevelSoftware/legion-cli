@@ -3,8 +3,9 @@ import { createWriteStream, type WriteStream } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { AgentError } from "./errors.js";
 import { ABORT_GRACE_MS, DEFAULT_TIMEOUT_MS, type AgentHandle, type AgentJob, type AgentResult } from "./types.js";
-import { quoteCmdArgForSpawn, resolveBinary } from "./which.js";
+import { quoteCmdArgForSpawn, resolveBinary, unwrapCmdShim } from "./which.js";
 
 function openWrite(path: string): Promise<WriteStream> {
   const stream = createWriteStream(path);
@@ -44,6 +45,20 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
   } as const;
 
   if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
+    const unwrapped = unwrapCmdShim(resolved);
+    if (unwrapped) {
+      // Real argv array: cmd.exe would truncate a multiline pointer at the first newline.
+      return spawn(unwrapped.command, [...unwrapped.prefixArgs, ...args], {
+        ...common,
+        stdio: ["ignore", stdout, stderr],
+        detached: false,
+      });
+    }
+    if (args.some((arg) => /[\r\n]/.test(arg))) {
+      throw new AgentError(
+        `Windows .cmd/.bat cannot receive multiline argv (${resolved}); expected an npm node shim`,
+      );
+    }
     const line = [resolved, ...args].map(quoteCmdArgForSpawn).join(" ");
     return spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", line], {
       ...common,
@@ -168,7 +183,16 @@ export async function spawnAgentProcess(opts: {
   await mkdir(dirname(opts.stdoutPath), { recursive: true });
   const stdout = await openWrite(opts.stdoutPath);
   const stderr = await openWrite(opts.stderrPath);
-  const child = spawnCommand(opts.binary, opts.args, opts.job, stdout, stderr);
+  let child: ChildProcess;
+  try {
+    child = spawnCommand(opts.binary, opts.args, opts.job, stdout, stderr);
+  } catch (err) {
+    await Promise.allSettled([
+      new Promise<void>((resolve) => stdout.end(() => resolve())),
+      new Promise<void>((resolve) => stderr.end(() => resolve())),
+    ]);
+    throw err;
+  }
   return new ChildAgentHandle({
     job: opts.job,
     child,
