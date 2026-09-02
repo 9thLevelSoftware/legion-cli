@@ -1,4 +1,4 @@
-import { ASSUMED_EXTRA_BINARIES, type ExtraAdapterId } from "@9thlevelsoftware/legion-cli-schema";
+import { ASSUMED_EXTRA_BINARIES, type ExtraAdapterId, type LegionConfig } from "@9thlevelsoftware/legion-cli-schema";
 import type { AgentAdapterId } from "./types.js";
 
 export { ASSUMED_EXTRA_BINARIES };
@@ -86,4 +86,37 @@ export function extraArgsOrDefault(id: ExtraAdapterId, args: readonly string[] =
 
 export function buildGenericArgv(args: readonly string[], pointerPrompt: string): string[] {
   return args.map((arg) => arg.replaceAll(POINTER_PLACEHOLDER, pointerPrompt));
+}
+
+/** Template argv for resume/audit. `{{pointer}}` is left unexpanded. */
+export function templateArgv(
+  id: AgentAdapterId,
+  config: Pick<LegionConfig, "adapter">,
+): { binary: string; argv: readonly string[] } {
+  switch (id) {
+    case "fake":
+      return { binary: FROZEN_ARGV_TABLE.fake.binary, argv: [] };
+    case "claude":
+      return {
+        binary: FROZEN_ARGV_TABLE.claude.binary,
+        argv: [...CLAUDE_FROZEN_ARGV, ...(config.adapter.claude?.extraArgs ?? []), POINTER_PLACEHOLDER],
+      };
+    case "generic":
+      return {
+        binary: config.adapter.generic?.binary ?? FROZEN_ARGV_TABLE.generic.binary,
+        argv: genericArgsOrDefault(config.adapter.generic?.args ?? []),
+      };
+    case "grok":
+    case "openai":
+    case "codex":
+    case "mimo":
+    case "minimax": {
+      const extra = config.adapter[id];
+      const binary = extra?.binary ?? ASSUMED_EXTRA_BINARIES[id];
+      return {
+        binary,
+        argv: extraArgsOrDefault(id, extra?.args ?? [], binary),
+      };
+    }
+  }
 }
