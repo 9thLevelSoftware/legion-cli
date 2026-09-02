@@ -33,8 +33,15 @@ iframe.wireframes { width:100%; min-height:24rem; border:1px solid var(--ink); b
 .edges { list-style:none; padding:0; }
 `.trim();
 
-function layout(title: string, body: string, opts?: { alert?: string }): string {
+export type DashboardHtmlOpts = {
+  alert?: string;
+  webmcp?: boolean;
+};
+
+function layout(title: string, body: string, opts?: DashboardHtmlOpts): string {
   const banner = opts?.alert ? `<div class="banner">${escapeHtml(opts.alert)}</div>` : "";
+  const script =
+    opts?.webmcp ? `  <script src="/webmcp.js" defer></script>\n` : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -61,7 +68,7 @@ ${CSS}
   <main>
 ${body}
   </main>
-</body>
+${script}</body>
 </html>
 `;
 }
@@ -105,7 +112,7 @@ function alertFor(snapshot: DashboardSnapshot): string | undefined {
   return undefined;
 }
 
-export function renderKanban(snapshot: DashboardSnapshot): string {
+export function renderKanban(snapshot: DashboardSnapshot, opts?: DashboardHtmlOpts): string {
   const name = snapshot.project?.name ?? "(uninitialized)";
   const current = snapshot.currentTask
     ? `${snapshot.currentTask.id} ${snapshot.currentTask.title}`
@@ -143,20 +150,20 @@ export function renderKanban(snapshot: DashboardSnapshot): string {
     <h2>Path</h2>
 ${pathList(snapshot)}
     <h2>Kanban</h2>
-    <div class="board">
+    <div class="board" id="board">
 ${cols}
     </div>
-    <h2>Blockers</h2>
+    <h2 id="blockers">Blockers</h2>
     ${blockers}
-    <h2>Timeline</h2>
+    <h2 id="timeline">Timeline</h2>
     ${timeline}
 `;
-  return layout(`${name} · board`, body, { alert: alertFor(snapshot) });
+  return layout(`${name} · board`, body, { alert: alertFor(snapshot), webmcp: opts?.webmcp });
 }
 
-export function renderSpec(snapshot: DashboardSnapshot): string {
+export function renderSpec(snapshot: DashboardSnapshot, opts?: DashboardHtmlOpts): string {
   if (!snapshot.spec) {
-    return layout("Spec", `<h1>Spec</h1><p class="muted">No active spec yet.</p>`);
+    return layout("Spec", `<h1>Spec</h1><p class="muted">No active spec yet.</p>`, opts);
   }
   const iframe =
     snapshot.wireframesIndex ?
@@ -175,10 +182,10 @@ export function renderSpec(snapshot: DashboardSnapshot): string {
     ${prd}
     ${iframe}
 `;
-  return layout(`Spec · ${snapshot.spec.title}`, body);
+  return layout(`Spec · ${snapshot.spec.title}`, body, opts);
 }
 
-export function renderGraph(snapshot: DashboardSnapshot): string {
+export function renderGraph(snapshot: DashboardSnapshot, opts?: DashboardHtmlOpts): string {
   const nodes =
     snapshot.graph.nodes.length === 0 ?
       `<p class="muted">No tasks yet. Kanban still works once tasks exist (including todo).</p>`
@@ -205,10 +212,10 @@ export function renderGraph(snapshot: DashboardSnapshot): string {
     <h2>Dependencies</h2>
     ${edges}
 `;
-  return layout("Task graph", body);
+  return layout("Task graph", body, opts);
 }
 
-export function renderAudit(snapshot: DashboardSnapshot): string {
+export function renderAudit(snapshot: DashboardSnapshot, opts?: DashboardHtmlOpts): string {
   const rows =
     snapshot.audit.length === 0 ?
       `<p class="muted">No audit events yet. Ship will write events.jsonl; ingest receipts appear here when present.</p>`
@@ -220,11 +227,12 @@ export function renderAudit(snapshot: DashboardSnapshot): string {
           return `<li><span class="muted">${escapeHtml(event.ts)}</span> ${escapeHtml(event.type)} · ${escapeHtml(event.phase)}${task} · ${escapeHtml(event.actor)}</li>`;
         })
         .join("")}</ol>`;
-  return layout("Audit", `<h1>Audit trail</h1>\n    ${rows}`);
+  return layout("Audit", `<h1>Audit trail</h1>\n    ${rows}`, opts);
 }
 
 export function renderWikiIndex(
   pages: Array<{ id: string; title: string; path: string; trust: string }>,
+  opts?: DashboardHtmlOpts,
 ): string {
   const list =
     pages.length === 0 ?
@@ -235,10 +243,10 @@ export function renderWikiIndex(
             `<li><a href="/wiki/${encodeURI(page.id)}">${escapeHtml(page.title)}</a> <span class="muted">${escapeHtml(page.id)} · ${escapeHtml(page.trust)}</span></li>`,
         )
         .join("")}</ul>`;
-  return layout("Wiki", `<h1>Wiki</h1>\n    ${list}`);
+  return layout("Wiki", `<h1>Wiki</h1>\n    ${list}`, opts);
 }
 
-export function renderWikiPage(page: ShownPage, backlinks: string[]): string {
+export function renderWikiPage(page: ShownPage, backlinks: string[], opts?: DashboardHtmlOpts): string {
   const trust = page.trust ? `<p class="muted">trust: ${escapeHtml(page.trust)}</p>` : "";
   const links =
     backlinks.length === 0 ?
@@ -254,9 +262,9 @@ export function renderWikiPage(page: ShownPage, backlinks: string[]): string {
     <h2>Backlinks</h2>
     ${links}
 `;
-  return layout(page.title, body);
+  return layout(page.title, body, opts);
 }
 
-export function renderNotFound(message: string): string {
-  return layout("Not found", `<h1>Not found</h1><p>${escapeHtml(message)}</p>`);
+export function renderNotFound(message: string, opts?: DashboardHtmlOpts): string {
+  return layout("Not found", `<h1>Not found</h1><p>${escapeHtml(message)}</p>`, opts);
 }
