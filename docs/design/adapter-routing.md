@@ -8,14 +8,14 @@
 | **Status** | Draft (rev 3 — doctor resolveAdapter + JSON overlay + brief/status render) |
 | **Product** | Legion CLI (`legion-cli`, npm `@9thlevelsoftware/legion-cli`) |
 | **Audience** | Senior engineers implementing the feature; product leads reviewing scope |
-| **Design of record** | `docs/design/product-engineering-cli.md` (rev 8) |
+| **Design of record** | `docs/design/product-engineering-cli.md` (rev 9 — KD5 extras spawnable; adapter routing) |
 | **Git author** | 9thLevelSoftware / engineering@9thlevelsoftware.com |
 
 ---
 
 ## Overview
 
-Legion CLI already knows how to start a coding-agent program that is installed on the laptop (`claude`, `grok`, `codex`, `mimo`, `mcode`, `generic`, `fake`). It does **not** call OpenAI / xAI / MiniMax HTTP APIs, does **not** store API keys, and does **not** pick a model through a provider table. Today every spawn ignores that richness: `resolveAdapter(config)` in `packages/agents/src/resolve.ts` always uses `config.adapter.default`, and `Task` / `SkillContract` / `LegionConfig` have no route table.
+Legion CLI already knows how to start a coding-agent program that is installed on the laptop (`claude`, `generic`, `fake`, `grok`, `openai`, `codex`, `mimo`, `minimax`). `mcode` is the assumed PATH binary for `minimax`, not an AdapterId. It does **not** call OpenAI / xAI / MiniMax HTTP APIs, does **not** store API keys, and does **not** pick a model through a provider table. Schema already has `adapter.routes` / `adapter.named` / `Task.adapter` (adapter object `.strict()`). Agents already export `resolveAdapterId` (cli > task > route > default) and extras spawn via `ExtraAdapter`. Engine spawn (`optionalSkillSpawn`) still calls `resolveAdapter(config)` default-only; CLI `--adapter` is still init-only. This design is the remaining spawn / CLI / doctor wiring.
 
 This design adds a **second resolution step** that still yields an existing `AdapterId`. The engine then calls the current `createAdapter` / `detect` / `spawn` path unchanged. Routing is how a user gets “task A on Grok CLI, task B on Codex CLI”: Legion chooses **which already-signed-in coding CLI to launch**; that CLI talks to the model. Optional `--model` (or any other vendor flag) stays in per-id `extraArgs` / `args` argv. Existing projects that only set `adapter.default` keep today’s behavior.
 
@@ -27,7 +27,7 @@ This design adds a **second resolution step** that still yields an existing `Ada
 
 ### Why this change is needed
 
-Users already have several subscription coding CLIs on PATH (`grok`, `codex` from a ChatGPT subscription, `mimo`, `mcode`, `claude`). They want to send some work to one CLI and other work to another. That is a **spawn-routing** problem, not a **completions-proxy** problem.
+Users already have several subscription coding CLIs on PATH (`grok`, `codex` from a ChatGPT subscription, `mimo`, `minimax` as `mcode`, `claude`). They want to send some work to one CLI and other work to another. That is a **spawn-routing** problem, not a **completions-proxy** problem.
 
 The product clarification (treat as definition):
 
@@ -35,29 +35,39 @@ The product clarification (treat as definition):
 - Legion starts a program already on the machine. That program is already signed in. It talks to the model.
 - The same user goal (“this task on Grok, that task on MiniMax”) is achieved by routing **which coding CLI to launch**, with optional argv `--model` if the user wants that CLI to pin a model.
 
-### Current state (verified in code)
+### Current state (snapshot 2026-09-02)
+
+Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1) and agents resolver (PR-2) have landed; engine / CLI spawn flags / doctor routing have not.
+
+**Already landed (schema + agents)**
+
+| Surface | Path | What it does |
+| --- | --- | --- |
+| Adapter ids | `packages/schema/src/versions.ts` | `ADAPTER_IDS = claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax`. `EXTRA_ADAPTER_IDS` + `ASSUMED_EXTRA_BINARIES`: grok→`grok`, openai→`codex`, codex→`codex`, mimo→`mimo`, minimax→`mcode`. **`openai` and `codex` share assumed binary `codex`.** `mcode` is not an AdapterId. |
+| Config | `packages/schema/src/schemas.ts` `LegionConfigSchema` | Required `adapter.default`. Per-id knobs: `claude.extraArgs`; `generic.binary`/`args`; `ExtraAdapterConfig { binary?, args? }` for extras. Optional `adapter.routes` / `adapter.named`. **No `model` / `provider` / `apiKey` / `apiBase` field.** Adapter object is **`.strict()`** — those HTTP-router keys fail parse. Generic required when default **or** any route/named target is `generic`. |
+| Task | `TaskSchema` same file | Optional `adapter?: AdapterId`. Fixture `packages/persist/test/fixtures/project/legion-cli/tasks/TSK-0002.md` has no adapter key — **leave it that way.** Task is not `.strict()` (strip-unknown except the enum field). |
+| Resume | `ResumeFileSchema` | Optional `adapterId`, `binary`, `argvSummary` (template), `resolutionSource`. Old resume files without them still parse. |
+| Session brief | `SessionBriefSchema.currentTask` | Optional **raw** `adapter?: AdapterId`. |
+| SkillContract | `SkillContractSchema` + `packages/core/src/contracts.ts` | `skillId` + `allowedRoots` only. Engine-constant write isolation, not a CLI picker. |
+| Resolve | `packages/agents/src/resolve.ts` | `resolveAdapterId` (cli > task > route > default; task ignored unless execute/verify). `resolveAdapter(config, { id? })` then `createAdapter`. Generic without `binary` throws `AdapterConfigError` when the **resolved** id is generic. `isResolvedAdapterSpawnable(config, id?)`. |
+| Detect-only | `packages/agents/src/types.ts` | `DETECT_ONLY_ADAPTER_IDS = []`. Extras **are spawnable** via `ExtraAdapter` (`packages/agents/src/adapters/extra.ts`) with generic-style `{{pointer}}` argv. |
+| Frozen argv | `packages/agents/src/argv.ts` `FROZEN_ARGV_TABLE` + `templateArgv` | Extra adapters spawnable, generic-style argv. Pointer prompt is frozen (`packages/agents/src/pointer.ts`). Adapters build argv **internally**; `AgentHandle` does not expose argv. `templateArgv` leaves `{{pointer}}` unexpanded. |
+| Env allowlist | `packages/agents/src/env.ts` `ENV_ALLOWLIST` | `PATH`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `ComSpec`, `CLAUDE_API_KEY`, `GROK_API_KEY`, `XAI_API_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY`, `TERM`. Windows also inherits `SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`, `PATHEXT`. `SSH_AUTH_SOCK` inherited when present, never injected. |
+| Dashboard writes | `packages/dashboard/src/write.ts` | `ENGINE_WRITE_METHODS = ticket \| wikiTrust \| qaChecklist`. `parseTicket` does not read `adapter`. Viewer may show raw `Task.adapter`. |
+| Wiki brief | `packages/wiki/src/brief.ts` | Depends on persist + schema only — **not** agents. May copy **raw** `Task.adapter`; does not call `resolveAdapterId`. |
+
+**Still to land (this RFC — core / CLI / doctor)**
 
 | Surface | Path | What it does today |
 | --- | --- | --- |
-| Adapter ids | `packages/schema/src/versions.ts` | `ADAPTER_IDS = claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax`. `EXTRA_ADAPTER_IDS` + `ASSUMED_EXTRA_BINARIES`: grok→`grok`, openai→`codex`, codex→`codex`, mimo→`mimo`, minimax→`mcode`. **`openai` and `codex` share assumed binary `codex`.** |
-| Config | `packages/schema/src/schemas.ts` `LegionConfigSchema` | Required `adapter.default`. Per-id knobs: `claude.extraArgs`; `generic.binary`/`args`; `ExtraAdapterConfig { binary?, args? }` for extras. **No model field, no route table.** Zod 3 objects strip unknown keys (no `.strict()`). |
-| Task | `TaskSchema` same file | id, title, status, type, priority, specId, parent/blockedBy/blocks, FileContract, assignee, notes. **No `adapter`.** Fixture `packages/persist/test/fixtures/project/legion-cli/tasks/TSK-0002.md` has no adapter key — **leave it that way.** |
-| SkillContract | `SkillContractSchema` + `packages/core/src/contracts.ts` | `skillId` + `allowedRoots` only. Engine-constant write isolation, not a CLI picker. |
-| Resolve | `packages/agents/src/resolve.ts` `resolveAdapter` | `const id = config.adapter.default` then `createAdapter`. Generic without `binary` throws `AdapterConfigError`. |
-| Detect-only | `packages/agents/src/types.ts` | `DETECT_ONLY_ADAPTER_IDS = []`. Extras **are spawnable** via `ExtraAdapter` (`packages/agents/src/adapters/extra.ts`) with generic-style `{{pointer}}` argv. |
-| Spawn | `packages/core/src/spawn.ts` `optionalSkillSpawn` | Always `resolveAdapter(opts.config)`. Required skills refuse if not spawnable; optional skills return `{ spawned: false }`. Writes `resume.json` **before** spawn (pid null) and again with `handle.pid` **before** `wait()`. |
+| Spawn | `packages/core/src/spawn.ts` `optionalSkillSpawn` | Always `resolveAdapter(opts.config)` (default only). Required skills refuse if not spawnable; optional skills return `{ spawned: false }`. Writes `resume.json` **before** spawn (pid null) and again with `handle.pid` **before** `wait()`. Does not yet persist resume adapter extras. |
 | Engine | `packages/core/src/engine.ts` | `plan(specId?: string)`, `verify(taskId?: string)`, `review()`, `execute(taskId, opts?: ExecuteOptions)`. `#assertExecuteSpawnable` / `#assertPlanSpawnable` / `#assertReviewSpawnable` all call `resolveAdapter(config)` (default only). Plan asserts, **then** writes `phase: planning`, **then** spawns. |
 | Plan prompt | `engine.plan` `promptBody` + `skills/plan/SKILL.md` | Lists required task frontmatter keys. **Does not mention `adapter`.** extra.json example has no `adapter`. |
-| CLI `--adapter` | `packages/cli/src/cli.ts` + `init.ts` | **Init only.** `execute` / `plan` / `review` / `verify` / `fix` have no adapter flag. `legion-cli fix` calls `engine.execute(task.id, { fix: true })` (`packages/cli/src/fix.ts`). |
+| CLI `--adapter` | `packages/cli/src/cli.ts` + `init.ts` | **Init only** (already accepts every AdapterId). `execute` / `plan` / `review` / `verify` / `fix` have no adapter flag. `legion-cli fix` calls `engine.execute(task.id, { fix: true })` (`packages/cli/src/fix.ts`). |
 | Doctor | `packages/cli/src/doctor.ts` | Fail-closed if `adapter.default` missing or PATH-spawnable via sync `adapterSpawnable` (`isSpawnableBinary`). Engine spawnability is `resolveAdapter(config)` → `adapter.detect()` (extras fail if `args` omit `{{pointer}}`). `@9thlevelsoftware/legion-cli` does **not** depend on `@9thlevelsoftware/legion-cli-agents` today (only core does). Matrix detects every id on PATH. Trust warning only for `claude.extraArgs`. Does not list tasks. `runDoctor` is already `async`. |
-| Resume | `ResumeFileSchema` | `runId`, `taskId`, `skillId`, `preSpawnRef`, `startedAt`, `pid`. **Omits adapter.** |
 | Audit | `packages/persist/src/audit.ts` + engine `#audit("execute", …)` | Execute records `{ durationMs, timedOut, status, runId }`. **Omits adapter.** Plan/review/verify do not currently emit spawn audit types. |
-| Frozen argv | `packages/agents/src/argv.ts` `FROZEN_ARGV_TABLE` | Extra adapters spawnable, generic-style argv. Pointer prompt is frozen (`packages/agents/src/pointer.ts`). Adapters build argv **internally**; `AgentHandle` does not expose argv. |
-| Env allowlist | `packages/agents/src/env.ts` `ENV_ALLOWLIST` | `PATH`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `ComSpec`, `CLAUDE_API_KEY`, `GROK_API_KEY`, `XAI_API_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY`, `TERM`. Windows also inherits `SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`, `PATHEXT`. `SSH_AUTH_SOCK` inherited when present, never injected. |
-| Dashboard writes | `packages/dashboard/src/write.ts` | `ENGINE_WRITE_METHODS = ticket \| wikiTrust \| qaChecklist`. `parseTicket` does not read `adapter`. |
-| Wiki brief | `packages/wiki/src/brief.ts` | Depends on persist + schema only — **not** agents. |
 
-**Design-of-record drift (do not re-freeze):** KD5 and §5.1 of `docs/design/product-engineering-cli.md` still say `grok`/`codex` are v0 detect-only and `spawn` throws `AdapterNotEnabled`. Code has `DETECT_ONLY_ADAPTER_IDS` empty; extras spawn. `AdapterNotEnabled` in `packages/agents/src/errors.ts` is now a dead path. This design **does not** put extras back on detect-only. A later docs PR should correct KD5; this feature builds on the spawnable extras that already exist.
+**Design of record (rev 9):** KD5 and §5.1 of `docs/design/product-engineering-cli.md` say extras are **spawnable** (`DETECT_ONLY_ADAPTER_IDS` empty; `AdapterNotEnabled` is a dead path). Pre-rev-9 text said `grok`/`codex` were v0 detect-only. This design **does not** put extras back on detect-only. It builds on the spawnable extras that already exist.
 
 ### Pain points
 
@@ -577,7 +587,7 @@ Do not bump `legion-cli-resume/v1`. `argvSummary` = `redactSecrets(templateArgv(
 | `engine.plan("spec-checkin")` | Still valid. New signature `plan(specId?: string, opts?: { adapter?: AdapterId })`. Same for `verify(taskId?: string, opts?: { adapter?: AdapterId })`. `review(opts?: { adapter?: AdapterId })`. `ExecuteOptions.adapter` on existing execute options bag. |
 | `init --adapter` | Unchanged: writes `adapter.default`, no routes. |
 | Config with unknown HTTP keys (`adapter.apiKey`) | **New:** `.strict()` fails parse. Default-only configs unaffected. |
-| KD5 detect-only text in the old design doc | Stale; extras already spawn. This feature does not freeze them again. |
+| KD5 detect-only text (pre-rev-9 design doc) | Corrected in rev 9. Extras already spawn. This feature does not freeze them again. |
 
 No data migration. No `schemaVersion` bump.
 
@@ -626,7 +636,7 @@ Plan is the same shape with the assert **before** `phase: planning`.
 | Routed extra missing from PATH while default is fine | Med | Doctor fails on **required-skill** route targets via `detect()`. Required refuse names id + source **before** phase write. Optional skills skip. |
 | `generic` route without `adapter.generic.binary` | Low | Config refine + `resolveAdapter` `AdapterConfigError`. |
 | Argv `--model` / extraArgs used to pass secrets | Med | Doctor trust warning. Template `argvSummary` + `redactSecrets`. Never add an `apiKey` field. Wiki secret scan unchanged. Resume does not persist env. |
-| Stale KD5 “detect-only” docs confuse implementers | Low | This document; follow-up PR on `docs/design/product-engineering-cli.md`. Do not re-freeze extras. |
+| Stale KD5 “detect-only” docs confuse implementers | Low | Rev 9 KD5 / §5.1 + this RFC. Do not re-freeze extras. |
 | Named route vs AdapterId confusion | Low | Named keys cannot be AdapterIds. Task stores AdapterId only. Prefer `codex` not `openai` in examples. |
 | `AdapterNotEnabled` dead class | Low | Leave until a cleanup PR; routing must not throw it. |
 | Plan refuse after writing `planning` | Med | KD-R16: assert routed id first. Test in `refuses.test.js`. |
@@ -890,7 +900,7 @@ Alerting: none (local CLI). The refuse message **is** the alert: it names the ro
 4. **CLI flags** after engine accepts `cliAdapter` / `ExecuteOptions.adapter`.
 5. **Doctor** after schema + resolver (`isResolvedAdapterSpawnable` = `resolveAdapter(config, { id })` + `await isSpawnable`). CLI adds agents workspace dep. Independent of execute CLI flags.
 6. **Dashboard viewer** after schema (raw `Task.adapter`). Independent of engine execute outcome fields.
-7. **Docs:** patch KD5 drift in `docs/design/product-engineering-cli.md` in a dedicated PR.
+7. **Docs:** rev 9 KD5 / §5.1 already record extras as spawnable and point here. This RFC is the routing contract.
 
 **Feature flag:** none. Routing is inert without `routes` / `Task.adapter` / `--adapter`. That is the flag.
 
@@ -922,7 +932,7 @@ If product later wants a request-time picker, that is a dashboard write-surface 
 
 ## References
 
-- Design of record: `docs/design/product-engineering-cli.md` (KD5, §5.1 frozen argv, doctor, SkillContract table, PR-06 / PR-23).
+- Design of record: `docs/design/product-engineering-cli.md` (rev 9 — KD5 extras spawnable, §5.1 frozen argv, doctor, SkillContract table, PR-06 / PR-23).
 - Adapter ids and extras: `packages/schema/src/versions.ts` (`openai`/`codex` both → `codex`).
 - Config / Task / Resume: `packages/schema/src/schemas.ts`.
 - Resolve + create: `packages/agents/src/resolve.ts`, `packages/agents/src/types.ts`, `packages/agents/src/adapters/extra.ts`, `packages/agents/src/argv.ts`.
