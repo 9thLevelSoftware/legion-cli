@@ -116,7 +116,6 @@ export function summarizeAuditMetrics(events: readonly AuditEvent[]): LocalMetri
         executeDurationSum += ms;
         executeDurationCount += 1;
       }
-      if (event.data.timedOut === true) timeouts += 1;
       continue;
     }
     if (event.type === "timeout") timeouts += 1;

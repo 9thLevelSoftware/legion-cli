@@ -105,15 +105,25 @@ async function qaScoresFallback(projectRoot: string): Promise<{ runs: number; pa
   return { runs, passes };
 }
 
-function mergeQaFallback(metrics: LocalMetrics, fallback: { runs: number; passes: number }): LocalMetrics {
-  if (metrics.qa.runs > 0 || fallback.runs === 0) return metrics;
+const AUDIT_SOURCE = ".legion-cli/audit/events.jsonl";
+const QA_SCORES_SOURCE = ".legion-cli/qa/scores";
+
+function mergeQaFallback(
+  metrics: LocalMetrics,
+  fallback: { runs: number; passes: number },
+): { metrics: LocalMetrics; qaSource: string | null } {
+  if (metrics.qa.runs > 0) return { metrics, qaSource: AUDIT_SOURCE };
+  if (fallback.runs === 0) return { metrics, qaSource: null };
   return {
-    ...metrics,
-    qa: {
-      runs: fallback.runs,
-      passes: fallback.passes,
-      passRate: fallback.passes / fallback.runs,
+    metrics: {
+      ...metrics,
+      qa: {
+        runs: fallback.runs,
+        passes: fallback.passes,
+        passRate: fallback.passes / fallback.runs,
+      },
     },
+    qaSource: QA_SCORES_SOURCE,
   };
 }
 
@@ -128,12 +138,15 @@ function formatMeanDuration(execute: LocalMetrics["execute"]): string {
   return `${Math.round(execute.meanDurationMs)} ms`;
 }
 
-function formatMetricsLines(metrics: LocalMetrics, phase: Phase | null): string[] {
+function formatMetricsLines(metrics: LocalMetrics, phase: Phase | null, qaSource: string | null): string[] {
   const kinds = Object.keys(metrics.refusesByType).sort();
   const lines = [
     "Local metrics (on disk only; never phones home)",
-    `  Source      .legion-cli/audit/events.jsonl`,
+    `  Source      ${AUDIT_SOURCE}`,
   ];
+  if (qaSource && qaSource !== AUDIT_SOURCE) {
+    lines.push(`  QA source   ${qaSource}`);
+  }
   if (phase) lines.push(`  Phase       ${phase}`);
   if (process.env.DO_NOT_TRACK === "1") {
     lines.push("  DO_NOT_TRACK=1 honored (these metrics are not telemetry)");
@@ -252,9 +265,12 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   const ok = checks.every((check) => check.ok);
   let metrics: LocalMetrics | null = null;
   let metricsPhase: Phase | null = null;
+  let qaSource: string | null = null;
   if (flags.metrics) {
     const events = await readAuditEvents(opts.project);
-    metrics = mergeQaFallback(summarizeAuditMetrics(events), await qaScoresFallback(opts.project));
+    const merged = mergeQaFallback(summarizeAuditMetrics(events), await qaScoresFallback(opts.project));
+    metrics = merged.metrics;
+    qaSource = merged.qaSource;
     try {
       metricsPhase = (await engine.getState()).phase;
     } catch {
@@ -280,7 +296,8 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       ? {
           metrics: {
             telemetry: "off" as const,
-            source: ".legion-cli/audit/events.jsonl",
+            source: AUDIT_SOURCE,
+            qaSource,
             phase: metricsPhase,
             ...metrics,
           },
@@ -323,7 +340,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     for (const warning of warnings) lines.push(`  ${warning}`);
   }
   if (metrics) {
-    lines.push("", ...formatMetricsLines(metrics, metricsPhase));
+    lines.push("", ...formatMetricsLines(metrics, metricsPhase, qaSource));
   }
   lines.push("", ok ? "Doctor passed." : "Doctor failed.");
   writeOut(lines.join("\n"));

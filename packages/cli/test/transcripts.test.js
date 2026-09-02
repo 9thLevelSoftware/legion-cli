@@ -290,8 +290,53 @@ test("doctor --metrics reads local audit and honors DO_NOT_TRACK", async () => {
     const body = JSON.parse(json.stdout);
     assert.equal(body.metrics.telemetry, "off");
     assert.equal(body.metrics.source, ".legion-cli/audit/events.jsonl");
+    assert.equal(body.metrics.qaSource, null);
     assert.equal(body.metrics.refusesByType.plan, 1);
     assert.equal(body.metrics.timeouts, 0);
+  });
+});
+
+test("doctor --metrics falls back to QA score files", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const scoresDir = join(dir, ".legion-cli", "qa", "scores");
+    await mkdir(scoresDir, { recursive: true });
+    await writeFile(
+      join(scoresDir, "qa-1.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-qa/v1",
+        id: "qa-1",
+        specId: "spec-checkin",
+        mode: "full",
+        buckets: {
+          p0: { points: 40, max: 40, failed: 0 },
+          p1: { points: 27, max: 30, passRate: 0.9 },
+          p2: { points: 12, max: 15, passRate: 0.8 },
+          visual: { points: 15, max: 15, regressions: 0 },
+        },
+        total: 94,
+        pass: true,
+        evidencePaths: [".legion-cli/qa/scores/qa-1.json"],
+        createdAt: "2026-09-01T12:00:00Z",
+      })}\n`,
+      "utf8",
+    );
+    const result = runCli(["doctor", "--metrics", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout);
+    assert.match(out, /QA pass rate\s+1\/1 \(100%\)/);
+    assert.match(out, /QA source\s+\.legion-cli\/qa\/scores/);
+    const json = runCli(["doctor", "--metrics", "--json", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    const body = JSON.parse(json.stdout);
+    assert.equal(body.metrics.source, ".legion-cli/audit/events.jsonl");
+    assert.equal(body.metrics.qaSource, ".legion-cli/qa/scores");
+    assert.equal(body.metrics.qa.runs, 1);
+    assert.equal(body.metrics.qa.passes, 1);
+    assert.equal(body.metrics.qa.passRate, 1);
   });
 });
 

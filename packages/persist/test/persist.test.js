@@ -723,7 +723,20 @@ test("summarizeAuditMetrics counts refuses, QA, execute duration, timeouts", () 
   assert.equal(metrics.qa.passRate, 0.5);
   assert.equal(metrics.execute.runs, 2);
   assert.equal(metrics.execute.meanDurationMs, 20);
-  assert.equal(metrics.timeouts, 2);
+  assert.equal(metrics.timeouts, 1);
+  assert.equal(
+    summarizeAuditMetrics([
+      {
+        schemaVersion: "legion-cli-audit/v1",
+        ts: "2026-09-01T12:00:07.000Z",
+        type: "execute",
+        phase: "executing",
+        actor: "agent",
+        data: { durationMs: 5, timedOut: true },
+      },
+    ]).timeouts,
+    0,
+  );
 });
 
 test("git add stages listed paths and not gitignored index/cache", async () => {

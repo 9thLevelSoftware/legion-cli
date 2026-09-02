@@ -186,6 +186,7 @@ export class LegionEngine {
   readonly #skillsDir?: string;
   readonly #fakeArtifacts: FakeArtifact[];
   readonly #fakeThrowAfterWrite: boolean;
+  readonly #fakeTimedOut: boolean;
   #lastPlanReport: ReadinessReport | null = null;
 
   constructor(projectRoot: string, store?: LegionStore, options?: LegionEngineOptions) {
@@ -193,6 +194,7 @@ export class LegionEngine {
     this.#skillsDir = options?.skillsDir;
     this.#fakeArtifacts = options?.fakeArtifacts ?? [];
     this.#fakeThrowAfterWrite = Boolean(options?.fakeThrowAfterWrite);
+    this.#fakeTimedOut = Boolean(options?.fakeTimedOut);
   }
 
   get projectRoot(): string {
@@ -531,6 +533,7 @@ export class LegionEngine {
           skillsDir: this.#skillsDir,
           fakeArtifacts: this.#fakeArtifacts,
           throwAfterWrite: this.#fakeThrowAfterWrite,
+          timedOut: this.#fakeTimedOut,
           required: true,
         });
         runId = result.runId;
@@ -755,6 +758,7 @@ export class LegionEngine {
         skillsDir: this.#skillsDir,
         fakeArtifacts: this.#fakeArtifacts,
         throwAfterWrite: this.#fakeThrowAfterWrite,
+        timedOut: this.#fakeTimedOut,
       });
       if (result.runId) {
         await this.#fileExtrasFromRun(result.runId, specId, { type: "fix", parentId: task?.id });
@@ -811,6 +815,7 @@ export class LegionEngine {
         skillsDir: this.#skillsDir,
         fakeArtifacts: this.#fakeArtifacts,
         throwAfterWrite: this.#fakeThrowAfterWrite,
+        timedOut: this.#fakeTimedOut,
         required: true,
       });
       if (result.runId) {
@@ -1346,6 +1351,7 @@ export class LegionEngine {
       skillsDir: this.#skillsDir,
       fakeArtifacts: this.#fakeArtifacts,
       throwAfterWrite: this.#fakeThrowAfterWrite,
+      timedOut: this.#fakeTimedOut,
       required: true,
     });
 
@@ -1521,6 +1527,7 @@ export class LegionEngine {
     const adapter = resolveAdapter(config, {
       artifacts: this.#fakeArtifacts,
       throwAfterWrite: this.#fakeThrowAfterWrite,
+      timedOut: this.#fakeTimedOut,
     });
     if (!(await isSpawnable(adapter))) {
       refuse("Execute needs a spawnable adapter", HINT.doctor);
@@ -1535,6 +1542,7 @@ export class LegionEngine {
     const adapter = resolveAdapter(config, {
       artifacts: this.#fakeArtifacts,
       throwAfterWrite: this.#fakeThrowAfterWrite,
+      timedOut: this.#fakeTimedOut,
     });
     if (!(await isSpawnable(adapter))) {
       refuse("Plan needs a spawnable adapter", HINT.doctor);
@@ -1549,6 +1557,7 @@ export class LegionEngine {
     const adapter = resolveAdapter(config, {
       artifacts: this.#fakeArtifacts,
       throwAfterWrite: this.#fakeThrowAfterWrite,
+      timedOut: this.#fakeTimedOut,
     });
     if (!(await isSpawnable(adapter))) {
       refuse("Review needs a spawnable adapter", HINT.doctor);
@@ -2004,6 +2013,7 @@ export class LegionEngine {
       skillsDir: this.#skillsDir,
       fakeArtifacts: this.#fakeArtifacts,
       throwAfterWrite: this.#fakeThrowAfterWrite,
+      timedOut: this.#fakeTimedOut,
     });
     if (!result.spawned || !result.revert) return;
     if (result.revert.incident) {
@@ -2300,15 +2310,19 @@ export class LegionEngine {
     data: Record<string, unknown>,
     taskId?: string,
   ): Promise<void> {
-    await appendAuditEvent(this.projectRoot, {
-      schemaVersion: SCHEMA_VERSION.audit,
-      ts: nowIso(),
-      type,
-      phase,
-      taskId: taskId ?? null,
-      actor,
-      data,
-    });
+    try {
+      await appendAuditEvent(this.projectRoot, {
+        schemaVersion: SCHEMA_VERSION.audit,
+        ts: nowIso(),
+        type,
+        phase,
+        taskId: taskId ?? null,
+        actor,
+        data,
+      });
+    } catch {
+      // local metrics are best-effort
+    }
   }
 
   async #auditRefuse(err: LegionRefuseError): Promise<void> {
