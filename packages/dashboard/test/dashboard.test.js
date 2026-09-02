@@ -205,6 +205,15 @@ test("POST /engine/* requires token and origin; ticket/wikiTrust/qaChecklist mut
       const ship = await enginePost(handle, "/engine/ship", {}, { token });
       assert.equal(ship.status, 404);
 
+      const plan = await enginePost(handle, "/engine/plan", {}, { token });
+      assert.equal(plan.status, 404);
+
+      const review = await enginePost(handle, "/engine/review", {}, { token });
+      assert.equal(review.status, 404);
+
+      const qa = await enginePost(handle, "/engine/qa", { mode: "full" }, { token });
+      assert.equal(qa.status, 404);
+
       const ticketRes = await enginePost(handle, "/engine/ticket", { title: "park extra from board" }, { token });
       assert.equal(ticketRes.status, 200, await ticketRes.clone().text());
       assert.equal(ticketRes.headers.get("access-control-allow-origin"), origin);
