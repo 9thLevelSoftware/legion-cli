@@ -85,8 +85,23 @@ export type QaOptions = {
   score?: QAScore;
 };
 
+export type ShipPreview = {
+  staged: string[];
+  added: string[];
+  stagedDisplay: string;
+  diff: string;
+  unrelatedUnchanged: boolean;
+  unrelated: string[];
+};
+
 export type ShipOptions = {
   allowDegradedQa?: boolean;
+  commit?: boolean;
+  pr?: boolean;
+  actor?: string;
+  confirm?: (preview: ShipPreview) => Promise<boolean>;
+  /** Test seam for `gh pr create`. */
+  prCreate?: (input: { cwd: string; title: string; body: string }) => { url?: string; error?: string };
 };
 
 export type ExecuteOptions = {
@@ -131,6 +146,15 @@ export type ShipReceipt = {
   specId: string;
   shippedAt: string;
   phase: "shipped";
+  qaMode: "full" | "no-browser" | null;
+  qaScore: number | null;
+  qaPass: boolean;
+  allowDegradedQa: boolean;
+  staged: string[];
+  committed: boolean;
+  commitSha?: string;
+  prUrl?: string;
+  receiptPath: string;
 };
 
 export type IngestSource = string;

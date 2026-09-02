@@ -57,6 +57,13 @@ export {
 export type { ReadinessReport } from "./readiness.js";
 export { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
 export {
+  displayStagedRoots,
+  isShipAllowedPath,
+  shipAddPaths,
+  unrelatedDirty,
+  unionDoneFilesAllowed,
+} from "./ship.js";
+export {
   assertTaskStatusTransition,
   canTransitionTaskStatus,
   isTerminalTaskStatus,
@@ -96,6 +103,7 @@ export type {
   SessionBrief,
   VerifyResult,
   ShipOptions,
+  ShipPreview,
   ShipReceipt,
   Spec,
   Task,

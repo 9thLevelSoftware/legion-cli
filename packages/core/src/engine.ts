@@ -10,6 +10,9 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  abandonReceiptBody,
+  abandonReceiptPath,
+  appendAuditEvent,
   createLegionStore,
   DECISION_FILE_SCHEMA_VERSION,
   packetPath,
@@ -17,7 +20,19 @@ import {
   PathEscapeError,
   PersistError,
   ensureGitignore,
+  gitAdd,
+  gitCommitIndex,
+  gitDiffCached,
+  gitHasStaged,
+  gitPorcelainPaths,
+  gitRestoreStaged,
+  gitStagedPaths,
+  isGitRepo,
+  shipReceiptBody,
+  shipReceiptPath,
+  toFsPath,
   WIKI_PAGE_SCHEMA_VERSION,
+  writeTextFile,
   type LegionStore,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
@@ -87,6 +102,14 @@ import {
 } from "./fix.js";
 import { nextPacketId, packetFromInput, packetMarkdownBody } from "./packets.js";
 import { nextTaskId, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
+import {
+  displayStagedRoots,
+  ghAvailable,
+  shipAddPaths,
+  tryCreatePullRequest,
+  unionDoneFilesAllowed,
+  unrelatedDirty,
+} from "./ship.js";
 import type {
   Actor,
   AmendTaskOptions,
@@ -108,6 +131,7 @@ import type {
   QaOptions,
   ReviewResult,
   ShipOptions,
+  ShipPreview,
   ShipReceipt,
   VerifyResult,
 } from "./types.js";
@@ -365,6 +389,9 @@ export class LegionEngine {
         lastReadiness: null,
         lastReview: null,
         lastQaId: null,
+      });
+      await this.#audit("spec_new", "intent_draft", "user", {
+        previousSpecId: state.activeSpecId ?? null,
       });
     });
   }
@@ -918,17 +945,37 @@ export class LegionEngine {
   }
 
   async ship(opts: ShipOptions = {}): Promise<ShipReceipt> {
+    if ((opts.commit || opts.pr) && !isGitRepo(this.projectRoot)) {
+      refuse("ship --commit/--pr requires a git repository", HINT.shipCommit);
+    }
+    if (opts.pr && !opts.prCreate && !ghAvailable()) {
+      refuse("gh is required for --pr", HINT.shipPr);
+    }
+
+    const preview = await this.#mutate(async () => {
+      const state = await this.#readState();
+      await this.#assertCanShip(state, opts);
+      return this.#stageShipLocked(state);
+    });
+
+    if (opts.confirm) {
+      let accepted = false;
+      try {
+        accepted = await opts.confirm(preview);
+      } catch (err) {
+        await this.#unstageShip(preview.added);
+        throw err;
+      }
+      if (!accepted) {
+        await this.#unstageShip(preview.added);
+        refuse("ship cancelled", HINT.ship);
+      }
+    }
+
     return this.#mutate(async () => {
       const state = await this.#readState();
       await this.#assertCanShip(state, opts);
-      const specId = state.activeSpecId ?? "";
-      const shippedAt = nowIso();
-      await this.#writeState({
-        ...state,
-        phase: "shipped",
-        currentTaskId: null,
-      });
-      return { specId, shippedAt, phase: "shipped" };
+      return this.#completeShipLocked(state, opts, preview);
     });
   }
 
@@ -1163,11 +1210,27 @@ export class LegionEngine {
   }
 
   async abandon(message: string): Promise<void> {
+    const reason = message.trim();
+    if (!reason) {
+      refuse("abandon requires a message", HINT.abandon);
+    }
     return this.#mutate(async () => {
       const state = await this.#readState();
       assertCanTransition(state.phase, "abandoned");
+      const specId = state.activeSpecId ?? "none";
+      const abandonedAt = nowIso();
+      const receiptPath = abandonReceiptPath(specId);
+      await writeTextFile(
+        toFsPath(this.projectRoot, receiptPath),
+        abandonReceiptBody({ specId, abandonedAt, message: reason, phase: state.phase }),
+      );
       await this.#writeState({ ...state, phase: "abandoned", currentTaskId: null });
-      void message;
+      await this.#audit("abandon", "abandoned", "user", {
+        specId,
+        message: reason,
+        fromPhase: state.phase,
+        receiptPath,
+      });
     });
   }
 
@@ -2055,6 +2118,13 @@ export class LegionEngine {
   }
 
   async #assertCanShip(state: StateFile, opts: ShipOptions): Promise<void> {
+    if (state.phase === "ready_to_ship") {
+      // ok
+    } else if (state.phase === "executing" && opts.allowDegradedQa) {
+      // no-browser QA never sets ready_to_ship; --allow-degraded-qa is the gate
+    } else {
+      refuse("ship requires ready_to_ship (or --allow-degraded-qa)", HINT.qa);
+    }
     const lastQa = await this.#readLastQa(state);
     if (lastQa?.pass !== true && !opts.allowDegradedQa) {
       refuse("ship is refused if last QA pass !== true", HINT.qa);
@@ -2066,6 +2136,130 @@ export class LegionEngine {
     if (p0TasksNotDone(slice).length > 0) {
       refuse("ship is refused if any P0 task is not done", HINT.blockers);
     }
+  }
+
+  async #stageShipLocked(state: StateFile): Promise<ShipPreview> {
+    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    const allowedFiles = unionDoneFilesAllowed(slice);
+    const allowedSet = new Set(allowedFiles);
+    const empty: ShipPreview = {
+      staged: [],
+      added: [],
+      stagedDisplay: "(none)",
+      diff: "",
+      unrelatedUnchanged: true,
+      unrelated: [],
+    };
+    if (!isGitRepo(this.projectRoot)) return empty;
+
+    const addPaths = shipAddPaths(this.projectRoot, allowedFiles);
+    gitAdd(this.projectRoot, addPaths);
+    const staged = gitStagedPaths(this.projectRoot);
+    const dirty = gitPorcelainPaths(this.projectRoot);
+    const unrelated = unrelatedDirty(dirty, allowedSet);
+    const display = displayStagedRoots([".legion-cli", ...addPaths, ...staged]);
+    return {
+      staged,
+      added: addPaths,
+      stagedDisplay: display || "(none)",
+      diff: gitDiffCached(this.projectRoot),
+      unrelatedUnchanged: unrelated.length === 0,
+      unrelated,
+    };
+  }
+
+  async #unstageShip(added: readonly string[]): Promise<void> {
+    if (added.length === 0 || !isGitRepo(this.projectRoot)) return;
+    await this.#mutate(async () => {
+      gitRestoreStaged(this.projectRoot, [...added]);
+    });
+  }
+
+  async #completeShipLocked(
+    state: StateFile,
+    opts: ShipOptions,
+    preview: ShipPreview,
+  ): Promise<ShipReceipt> {
+    const lastQa = await this.#readLastQa(state);
+    const specId = state.activeSpecId ?? "";
+    const shippedAt = nowIso();
+    const receiptPath = specId ? shipReceiptPath(specId) : ".legion-cli/audit/ship.md";
+    const qaMode = lastQa?.mode ?? null;
+    const qaScore = lastQa?.total ?? null;
+    const qaPass = lastQa?.pass === true;
+    const allowDegradedQa = Boolean(opts.allowDegradedQa);
+    const actor = opts.actor ?? "user";
+
+    const receipt: ShipReceipt = {
+      specId,
+      shippedAt,
+      phase: "shipped",
+      qaMode,
+      qaScore,
+      qaPass,
+      allowDegradedQa,
+      staged: preview.staged,
+      committed: false,
+      receiptPath,
+    };
+
+    await this.#writeState({
+      ...state,
+      phase: "shipped",
+      currentTaskId: null,
+    });
+    await writeTextFile(toFsPath(this.projectRoot, receiptPath), shipReceiptBody(receipt));
+    await this.#audit("ship", "shipped", actor, {
+      specId,
+      qaMode,
+      qaScore,
+      qaPass,
+      allowDegradedQa,
+      receiptPath,
+    });
+
+    if (isGitRepo(this.projectRoot)) {
+      gitAdd(this.projectRoot, [".legion-cli", ...preview.added.filter((path) => path !== ".legion-cli")]);
+      receipt.staged = gitStagedPaths(this.projectRoot);
+      if (opts.commit && gitHasStaged(this.projectRoot)) {
+        receipt.commitSha = gitCommitIndex(this.projectRoot, `legion-cli ship: ${specId || "spec"}`);
+        receipt.committed = true;
+      }
+    }
+
+    if (opts.pr) {
+      const title = `legion-cli ship: ${specId || "spec"}`;
+      const body = [
+        `Ship receipt for ${specId || "spec"}.`,
+        `QA mode: ${qaMode ?? "none"}`,
+        `QA score: ${qaScore ?? "none"}`,
+        `QA pass: ${qaPass}`,
+      ].join("\n");
+      const created = opts.prCreate
+        ? opts.prCreate({ cwd: this.projectRoot, title, body })
+        : tryCreatePullRequest(this.projectRoot, title, body);
+      if (created.url) receipt.prUrl = created.url;
+    }
+
+    return receipt;
+  }
+
+  async #audit(
+    type: string,
+    phase: StateFile["phase"],
+    actor: string,
+    data: Record<string, unknown>,
+    taskId?: string,
+  ): Promise<void> {
+    await appendAuditEvent(this.projectRoot, {
+      schemaVersion: SCHEMA_VERSION.audit,
+      ts: nowIso(),
+      type,
+      phase,
+      taskId: taskId ?? null,
+      actor,
+      data,
+    });
   }
 
   async #applyReviewSnapshotsLocked(

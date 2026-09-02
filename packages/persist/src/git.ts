@@ -253,3 +253,49 @@ export function gitWorktreeAdd(cwd: string, worktreePath: string, branch: string
   }
   return abs;
 }
+
+export function gitPorcelainPaths(cwd: string): string[] {
+  if (!isGitRepo(cwd)) return [];
+  return porcelainPaths(cwd);
+}
+
+export function gitAdd(cwd: string, paths: string[]): void {
+  if (paths.length === 0) return;
+  const add = runGit(cwd, ["add", "--", ...paths]);
+  if (add.status !== 0) {
+    throw new PersistError(`git add failed: ${add.stderr.trim() || add.stdout.trim()}`);
+  }
+}
+
+export function gitDiffCached(cwd: string): string {
+  const result = runGit(cwd, ["diff", "--cached"]);
+  if (result.status !== 0) {
+    throw new PersistError(`git diff --cached failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+  return result.stdout;
+}
+
+export function gitStagedPaths(cwd: string): string[] {
+  return gitLines(cwd, ["diff", "--cached", "--name-only"]);
+}
+
+export function gitHasStaged(cwd: string): boolean {
+  const result = runGit(cwd, ["diff", "--cached", "--quiet"]);
+  return result.status === 1;
+}
+
+export function gitRestoreStaged(cwd: string, paths: string[]): void {
+  if (paths.length === 0) return;
+  const result = runGit(cwd, ["restore", "--staged", "--", ...paths]);
+  if (result.status !== 0) {
+    throw new PersistError(`git restore --staged failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+}
+
+export function gitCommitIndex(cwd: string, message: string): string {
+  const commit = runGit(cwd, ["commit", "-m", message]);
+  if (commit.status !== 0) {
+    throw new PersistError(`git commit failed: ${commit.stderr.trim() || commit.stdout.trim()}`);
+  }
+  return gitHead(cwd);
+}

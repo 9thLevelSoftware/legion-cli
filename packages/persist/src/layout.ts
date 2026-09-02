@@ -93,6 +93,22 @@ export function ingestReceiptPath(id: string): string {
   return `.legion-cli/audit/ingest-${id}.md`;
 }
 
+export function auditEventsPath(): string {
+  return ".legion-cli/audit/events.jsonl";
+}
+
+export function auditDayPath(day: string): string {
+  return `.legion-cli/audit/${day}.md`;
+}
+
+export function shipReceiptPath(specId: string): string {
+  return `.legion-cli/audit/ship-${specId}.md`;
+}
+
+export function abandonReceiptPath(specId: string): string {
+  return `.legion-cli/audit/abandon-${specId || "none"}.md`;
+}
+
 export function wikiPageStorePath(sourcePosix: string): string {
   const trimmed = sourcePosix.replace(/^\/+/, "");
   const withMd = trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`;

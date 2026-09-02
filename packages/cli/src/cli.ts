@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Command, CommanderError } from "commander";
 import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
 import { DesignSystemError } from "@9thlevelsoftware/legion-cli-design-system";
+import { runAbandon } from "./abandon.js";
 import { runBrief } from "./brief.js";
 import { runBrownfield } from "./brownfield.js";
 import { runDashboard } from "./dashboard.js";
@@ -30,6 +31,7 @@ import { runPromote } from "./run.js";
 import { runQa, runQaChecklist } from "./qa.js";
 import { runReview } from "./review.js";
 import { runSearch } from "./search.js";
+import { runShip } from "./ship.js";
 import { runShow } from "./show.js";
 import { runSpecApprove, runSpecDraft, runSpecNew, runSpecShow } from "./spec.js";
 import { runStatus } from "./status.js";
@@ -295,6 +297,26 @@ export function createProgram(): Command {
     .allowExcessArguments(false)
     .action(async (bug: string[], _opts, cmd: Command) => {
       const code = await runFix(resolveOpts(cmd), bug.join(" "));
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("ship").description("Final human review; stage diff"))
+    .option("--allow-degraded-qa", "ship after no-browser QA")
+    .option("--pr", "create a GitHub PR with gh")
+    .option("--commit", "create the git commit after Y/n")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { allowDegradedQa?: boolean; pr?: boolean; commit?: boolean };
+      const code = await runShip(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("abandon").description("Stop this spec without shipping"))
+    .option("--message <message>", "why this spec is abandoned")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { message?: string };
+      const code = await runAbandon(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
 
