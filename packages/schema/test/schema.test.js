@@ -527,6 +527,16 @@ test("adapter routing: generic-if-routed, strict HTTP keys, named keys, optional
     );
   }
 
+  const ajvNamed = new Ajv2020({ strict: false, allErrors: true });
+  const validateNamed = ajvNamed.compile(legionJsonSchemas()["legion-config"]);
+  assert.equal(
+    validateNamed({
+      ...configBase,
+      adapter: { default: "claude", named: { claude: "grok" } },
+    }),
+    false,
+  );
+
   for (const extra of [{ apiKey: "sk" }, { apiBase: "https://api" }, { model: "gpt-4" }, { provider: "openai" }]) {
     assert.equal(
       LegionConfigSchema.safeParse({
@@ -735,5 +745,19 @@ test("JSON Schema overlays reject .git paths, no-browser pass, and generic witho
       adapter: { default: "claude", named: { ui: "generic" } },
     }),
     false,
+  );
+  assert.equal(
+    validateConfig({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "claude", named: { claude: "grok" } },
+    }),
+    false,
+  );
+  assert.equal(
+    validateConfig({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "claude", named: { ui: "grok" } },
+    }),
+    true,
   );
 });

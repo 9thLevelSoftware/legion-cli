@@ -255,7 +255,19 @@
           "type": "object",
           "propertyNames": {
             "type": "string",
-            "pattern": "^[a-z][a-z0-9-]{0,31}$"
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
+            "not": {
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax"
+              ]
+            }
           },
           "additionalProperties": {
             "type": "string",
