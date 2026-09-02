@@ -12,6 +12,7 @@ export {
   allowedLoopbackOrigins,
   echoAllowedOrigin,
   originIsAllowed,
+  writeOriginIsAllowed,
 } from "./origin.js";
 export { startDashboard, resolveDashboardListen } from "./server.js";
 export type { DashboardHandle, DashboardOptions } from "./server.js";

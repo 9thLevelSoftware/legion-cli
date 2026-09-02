@@ -95,6 +95,9 @@ importers:
 
   packages/dashboard:
     dependencies:
+      '@9thlevelsoftware/legion-cli-core':
+        specifier: workspace:*
+        version: link:../core
       '@9thlevelsoftware/legion-cli-graph':
         specifier: workspace:*
         version: link:../graph

@@ -1,4 +1,5 @@
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"]);
+const LOOPBACK_MAPPED_V4 = new Set(["::ffff:127.0.0.1", "::ffff:7f00:1"]);
 
 export const DEFAULT_DASHBOARD_PORT = 7420;
 export const LOOPBACK_BIND = "127.0.0.1";
@@ -6,7 +7,7 @@ export const EXPOSE_BIND = "0.0.0.0";
 
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.replace(/^\[|\]$/g, "").toLowerCase();
-  return LOOPBACK_HOSTS.has(normalized);
+  return LOOPBACK_HOSTS.has(normalized) || LOOPBACK_MAPPED_V4.has(normalized);
 }
 
 export function headerValue(value: string | string[] | undefined): string | undefined {
@@ -39,7 +40,7 @@ function originPort(url: URL, fallback: number): number {
   return fallback;
 }
 
-/** GET/SSE only: loopback origins, or Host-matching origin when --expose. Never CORS *. */
+/** Loopback origins, or Host-matching origin when --expose. Never CORS *. */
 export function originIsAllowed(input: {
   origin: string | undefined;
   hostHeader: string | undefined;
@@ -79,4 +80,15 @@ export function echoAllowedOrigin(origin: string | undefined, allowed: boolean):
   if (!origin || !allowed) return undefined;
   if (origin === "*") return undefined;
   return origin;
+}
+
+/** POSTs require a present, allowlisted Origin. Missing Origin is not a write. */
+export function writeOriginIsAllowed(input: {
+  origin: string | undefined;
+  hostHeader: string | undefined;
+  bind: string;
+  port: number;
+}): boolean {
+  if (!input.origin?.trim()) return false;
+  return originIsAllowed(input);
 }

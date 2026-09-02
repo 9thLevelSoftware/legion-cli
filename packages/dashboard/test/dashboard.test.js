@@ -32,20 +32,45 @@ function originFor(handle) {
   return `http://127.0.0.1:${handle.port}`;
 }
 
-test("package is read-only: no core/execute dependency and no POST export", async () => {
+function tokenFromHtml(html) {
+  const match = /<meta name="legion-cli-token" content="([^"]+)">/.exec(html);
+  assert.ok(match, "expected legion-cli-token meta");
+  return match[1];
+}
+
+async function enginePost(handle, path, body, extra = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(extra.origin !== null ? { Origin: extra.origin ?? originFor(handle) } : {}),
+    ...(extra.token ? { "X-Legion-Cli-Token": extra.token } : {}),
+    ...extra.headers,
+  };
+  return fetch(`${handle.url}${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+test("package writes via LegionEngine and does not expose execute", async () => {
   const pkg = JSON.parse(await readFile(join(pkgRoot, "package.json"), "utf8"));
   assert.equal(pkg.name, "@9thlevelsoftware/legion-cli-dashboard");
-  assert.equal(pkg.dependencies["@9thlevelsoftware/legion-cli-core"], undefined);
+  assert.ok(pkg.dependencies["@9thlevelsoftware/legion-cli-core"]);
   assert.ok(pkg.dependencies["@9thlevelsoftware/legion-cli-persist"]);
   assert.ok(pkg.dependencies["@9thlevelsoftware/legion-cli-graph"]);
   assert.ok(pkg.dependencies["@9thlevelsoftware/legion-cli-wiki"]);
-  const index = await readFile(join(pkgRoot, "src", "index.ts"), "utf8");
+  const write = await readFile(join(pkgRoot, "src", "write.ts"), "utf8");
   const server = await readFile(join(pkgRoot, "src", "server.ts"), "utf8");
-  assert.doesNotMatch(index, /legion-cli-core/);
-  assert.doesNotMatch(server, /createLegionEngine|execute\(/);
+  assert.match(write, /createLegionEngine/);
+  assert.match(write, /fileTicket/);
+  assert.match(write, /wikiTrust/);
+  assert.match(write, /qaChecklist/);
+  assert.doesNotMatch(write, /\.execute\(/);
+  assert.doesNotMatch(server, /\.execute\(/);
+  assert.doesNotMatch(server, /Set-Cookie|set-cookie|cookie=/);
 });
 
-test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, no POST, origin allowlist", async () => {
+test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, origin allowlist, token meta", async () => {
   await withStore(async ({ dir, store }) => {
     await store.writeTask(todoTask(), "Show on the board before execute.\n");
     await withServer(dir, async ({ handle, opened }) => {
@@ -64,15 +89,11 @@ test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, no POST, origin al
       assert.match(html, /data-column="todo"/);
       assert.match(html, /phase:/);
       assert.match(html, /current task:/);
-      assert.match(html, /Read-only/);
-      assert.doesNotMatch(html, /webmcp\.js|modelContext|registerTool/);
+      assert.match(html, /source of truth/);
+      assert.match(html, /<meta name="legion-cli-token" content="[0-9a-f]{64}">/);
       assert.equal(board.headers.get("access-control-allow-origin"), null);
+      assert.equal(board.headers.get("set-cookie"), null);
       assert.equal(board.headers.get("content-security-policy")?.includes("connect-src 'self'"), true);
-      assert.equal(board.headers.get("content-security-policy")?.includes("script-src"), false);
-      assert.equal(board.headers.get("cross-origin-opener-policy"), null);
-      assert.equal(board.headers.get("cross-origin-embedder-policy"), null);
-      const scriptOff = await fetch(`${handle.url}/webmcp.js`);
-      assert.equal(scriptOff.status, 404);
 
       const allowedOrigin = originFor(handle);
       const allowed = await fetch(handle.url, { headers: { Origin: allowedOrigin } });
@@ -84,12 +105,12 @@ test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, no POST, origin al
       assert.equal(denied.status, 403);
       assert.equal(denied.headers.get("access-control-allow-origin"), null);
 
-      const post = await fetch(handle.url, { method: "POST", body: "{}" });
-      assert.equal(post.status, 405);
-      assert.match(post.headers.get("allow") ?? "", /GET/);
+      const rootPost = await fetch(handle.url, { method: "POST", body: "{}" });
+      assert.equal(rootPost.status, 405);
+      assert.match(rootPost.headers.get("allow") ?? "", /GET/);
 
-      const enginePost = await fetch(`${handle.url}/api/state`, { method: "POST", body: "{}" });
-      assert.equal(enginePost.status, 405);
+      const enginePostState = await fetch(`${handle.url}/api/state`, { method: "POST", body: "{}" });
+      assert.equal(enginePostState.status, 405);
 
       const stateRes = await fetch(`${handle.url}/api/state`);
       assert.equal(stateRes.status, 200);
@@ -119,6 +140,104 @@ test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, no POST, origin al
       const wikiHtml = await wiki.text();
       assert.match(wikiHtml, /Intent/);
       assert.match(wikiHtml, /Backlinks/);
+    });
+  });
+});
+
+test("POST /engine/* requires token and origin; ticket/wikiTrust/qaChecklist mutate via engine", async () => {
+  await withStore(async ({ dir, store }) => {
+    await store.writeTask(todoTask(), "Show on the board before execute.\n");
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/notes.md",
+      {
+        schemaVersion: "legion-cli-wiki-page/v1",
+        title: "Notes",
+        aliases: [],
+        tags: ["wiki"],
+        trust: "untrusted",
+        updated: "2026-09-01T12:00:00.000Z",
+      },
+      "A durable fact from notes.\n",
+    );
+    await store.rebuild();
+    await withServer(dir, async ({ handle }) => {
+      const html = await (await fetch(handle.url)).text();
+      const token = tokenFromHtml(html);
+      const origin = originFor(handle);
+
+      const noToken = await enginePost(handle, "/engine/ticket", { title: "park extra" });
+      assert.equal(noToken.status, 403);
+      assert.equal(noToken.headers.get("access-control-allow-origin"), origin);
+      assert.notEqual(noToken.headers.get("access-control-allow-origin"), "*");
+      assert.equal(noToken.headers.get("set-cookie"), null);
+
+      const badToken = await enginePost(handle, "/engine/ticket", { title: "park extra" }, { token: "nope" });
+      assert.equal(badToken.status, 403);
+
+      const cookieOnly = await enginePost(
+        handle,
+        "/engine/ticket",
+        { title: "park extra" },
+        { headers: { Cookie: `legion-cli-token=${token}` } },
+      );
+      assert.equal(cookieOnly.status, 403);
+
+      const noOrigin = await enginePost(
+        handle,
+        "/engine/ticket",
+        { title: "park extra" },
+        { token, origin: null },
+      );
+      assert.equal(noOrigin.status, 403);
+
+      const evil = await enginePost(
+        handle,
+        "/engine/ticket",
+        { title: "park extra" },
+        { token, origin: "http://evil.example" },
+      );
+      assert.equal(evil.status, 403);
+      assert.equal(evil.headers.get("access-control-allow-origin"), null);
+
+      const execute = await enginePost(handle, "/engine/execute", { id: "TSK-0002" }, { token });
+      assert.equal(execute.status, 404);
+
+      const ship = await enginePost(handle, "/engine/ship", {}, { token });
+      assert.equal(ship.status, 404);
+
+      const ticketRes = await enginePost(handle, "/engine/ticket", { title: "park extra from board" }, { token });
+      assert.equal(ticketRes.status, 200, await ticketRes.clone().text());
+      assert.equal(ticketRes.headers.get("access-control-allow-origin"), origin);
+      assert.notEqual(ticketRes.headers.get("access-control-allow-origin"), "*");
+      const ticketBody = await ticketRes.json();
+      assert.equal(ticketBody.ok, true);
+      assert.match(ticketBody.id, /^TSK-\d+$/);
+      const filed = await store.readTask(ticketBody.id);
+      assert.equal(filed.data.title, "park extra from board");
+      assert.equal(filed.data.specId, "spec-checkin");
+
+      const trustRes = await enginePost(
+        handle,
+        "/engine/wikiTrust",
+        { pageId: "ingested/notes" },
+        { token },
+      );
+      assert.equal(trustRes.status, 200, await trustRes.clone().text());
+      const trusted = await store.readWikiPage(".legion-cli/wiki/ingested/notes.md");
+      assert.equal(trusted.data.trust, "reviewed");
+
+      const checklistRes = await enginePost(
+        handle,
+        "/engine/qaChecklist",
+        { ticks: ["AC-01"] },
+        { token },
+      );
+      assert.equal(checklistRes.status, 200, await checklistRes.clone().text());
+      const checklist = JSON.parse(
+        await readFile(join(dir, ".legion-cli", "qa", "checklist.json"), "utf8"),
+      );
+      assert.equal(checklist.specId, "spec-checkin");
+      assert.deepEqual(checklist.ticks, ["AC-01"]);
     });
   });
 });
@@ -178,47 +297,6 @@ test("--expose binds 0.0.0.0 and warns", async () => {
       },
       { host: "0.0.0.0" },
     );
-  });
-});
-
-async function enableWebmcp(dir) {
-  const path = join(dir, ".legion-cli", "config.yaml");
-  const current = await readFile(path, "utf8");
-  await writeFile(path, `${current.trimEnd()}\nflags:\n  webmcp: true\n`, "utf8");
-}
-
-test("flags.webmcp serves COOP/COEP and feature-detects registerTool; page tools are UI-only", async () => {
-  await withStore(async ({ dir, store }) => {
-    await store.writeTask(todoTask(), "Show on the board before execute.\n");
-    await enableWebmcp(dir);
-    await withServer(dir, async ({ handle }) => {
-      const board = await fetch(handle.url);
-      assert.equal(board.status, 200);
-      assert.equal(board.headers.get("cross-origin-opener-policy"), "same-origin");
-      assert.equal(board.headers.get("cross-origin-embedder-policy"), "require-corp");
-      assert.equal(board.headers.get("origin-agent-cluster"), "?1");
-      assert.equal(board.headers.get("content-security-policy")?.includes("script-src 'self'"), true);
-      const html = await board.text();
-      assert.match(html, /Kanban/);
-      assert.match(html, /TSK-0003/);
-      assert.match(html, /id="timeline"/);
-      assert.match(html, /id="blockers"/);
-      assert.match(html, /<script src="\/webmcp\.js" defer><\/script>/);
-      assert.doesNotMatch(html, /modelContext\s*=/);
-
-      const script = await fetch(`${handle.url}/webmcp.js`);
-      assert.equal(script.status, 200);
-      const js = await script.text();
-      assert.match(js, /document\.modelContext/);
-      assert.match(js, /registerTool/);
-      assert.doesNotMatch(js, /polyfill/i);
-      for (const name of ["filter_board", "open_task", "show_timeline", "highlight_blockers"]) {
-        assert.match(js, new RegExp(`name:\\s*"${name}"`));
-      }
-      assert.match(js, /readOnlyHint:\s*true/);
-      assert.match(js, /typeof registerTool !== "function"/);
-      assert.match(js, /catch/);
-    });
   });
 });
 
