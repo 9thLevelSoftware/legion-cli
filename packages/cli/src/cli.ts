@@ -24,6 +24,7 @@ import {
 } from "./design-system.js";
 import { runMcp } from "./mcp.js";
 import { runNextTasks } from "./next-tasks.js";
+import { runPacketNew, runPacketRespond } from "./packet.js";
 import { runPlan } from "./plan.js";
 import { runPromote } from "./run.js";
 import { runQa, runQaChecklist } from "./qa.js";
@@ -305,6 +306,34 @@ export function createProgram(): Command {
     .action(async (opts, cmd: Command) => {
       const flags = opts as { open?: boolean; port?: string; expose?: boolean };
       const code = await runDashboard(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+
+  const packet = addGlobalOptions(program.command("packet").description("PM/designer request without the DAG"));
+  packet.allowExcessArguments(false).action(() => {
+    writeErr("packet requires new or respond\nNext: legion-cli packet new --title <title>");
+    process.exitCode = 1;
+  });
+  addGlobalOptions(packet.command("new").description("File a PM/designer request (review packet back)"))
+    .requiredOption("--title <title>", "request title")
+    .option("--request <text>", "request body")
+    .option("--requester <who>", "pm | designer | human")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { title?: string; request?: string; requester?: string };
+      const code = await runPacketNew(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+  addGlobalOptions(packet.command("respond").description("Spawn tickets from a packet (does not execute)"))
+    .argument("<id>", "packet id")
+    .option("--message <message>", "response written into the packet")
+    .option("--title <title>", "ticket title (defaults to packet title)")
+    .option("--type <type>", "feature | fix | bug")
+    .option("--priority <priority>", "P0 | P1 | P2")
+    .allowExcessArguments(false)
+    .action(async (id: string, opts, cmd: Command) => {
+      const flags = opts as { message?: string; title?: string; type?: string; priority?: string };
+      const code = await runPacketRespond(resolveOpts(cmd), id, flags);
       process.exitCode = code;
     });
 

@@ -11,6 +11,7 @@ import {
   IngestReceiptSchema,
   IntentAnswersFileSchema,
   LegionConfigSchema,
+  PacketSchema,
   ProjectFileSchema,
   QAScoreSchema,
   ResumeFileSchema,
@@ -45,6 +46,7 @@ export const JSON_SCHEMA_FILES = [
   "session-brief",
   "design-system-package",
   "design-active",
+  "packet",
 ] as const;
 
 export type JsonSchemaFileName = (typeof JSON_SCHEMA_FILES)[number];
@@ -72,6 +74,7 @@ const schemaByFile = {
   "session-brief": SessionBriefSchema,
   "design-system-package": DesignSystemPackageSchema,
   "design-active": DesignActiveSchema,
+  packet: PacketSchema,
 } as const satisfies Record<JsonSchemaFileName, z.ZodType>;
 
 export function toLegionJsonSchema(schema: z.ZodType): Record<string, unknown> {

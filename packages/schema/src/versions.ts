@@ -18,6 +18,7 @@ export const SCHEMA_VERSION = {
   brief: "legion-cli-brief/v1",
   designSystem: "legion-cli-design-system/v1",
   designActive: "legion-cli-design-active/v1",
+  packet: "legion-cli-packet/v1",
 } as const;
 
 export type SchemaVersion = (typeof SCHEMA_VERSION)[keyof typeof SCHEMA_VERSION];

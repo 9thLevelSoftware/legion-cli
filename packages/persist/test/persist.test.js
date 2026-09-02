@@ -157,6 +157,24 @@ test("round-trip .legion-cli markdown and intent-answers.yaml", async () => {
     assert.equal(decision.data.status, "accepted");
     await store.writeDecision("0001-mobile-web.md", decision.data, decision.body);
     assert.deepEqual((await store.readDecision("0001-mobile-web.md")).data, decision.data);
+
+    const packet = {
+      schemaVersion: "legion-cli-packet/v1",
+      id: "PKT-0001",
+      title: "Dark mode",
+      status: "open",
+      requester: "pm",
+      request: "Users want a dark theme.",
+      specId: "spec-checkin",
+      ticketIds: [],
+      createdAt: "2026-09-01T12:00:00.000Z",
+      respondedAt: null,
+      response: null,
+    };
+    await store.writePacket(packet, "Requested by pm.\n");
+    const packetDoc = await store.readPacket("PKT-0001");
+    assert.deepEqual(packetDoc.data, packet);
+    assert.match(packetDoc.body, /Requested by pm/);
   });
 });
 

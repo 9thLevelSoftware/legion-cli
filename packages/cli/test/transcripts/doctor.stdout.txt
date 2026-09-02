@@ -33,6 +33,7 @@ schemaVersions
   legion-cli-brief/v1
   legion-cli-design-system/v1
   legion-cli-design-active/v1
+  legion-cli-packet/v1
 
 Adapter
   default      fake

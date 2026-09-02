@@ -12,6 +12,7 @@ import { join } from "node:path";
 import {
   createLegionStore,
   DECISION_FILE_SCHEMA_VERSION,
+  packetPath,
   parseMarkdownDocument,
   PathEscapeError,
   PersistError,
@@ -46,6 +47,7 @@ import {
   type IngestReceipt,
   type IntentAnswersFile,
   type LegionConfig,
+  type Packet,
   type Phase,
   type ProjectFile,
   type QAScore,
@@ -83,6 +85,7 @@ import {
   regressionTestPath,
   regressionVerifyCommand,
 } from "./fix.js";
+import { nextPacketId, packetFromInput, packetMarkdownBody } from "./packets.js";
 import { nextTaskId, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
 import type {
   Actor,
@@ -97,8 +100,11 @@ import type {
   InitOptions,
   IntentState,
   LegionEngineOptions,
+  NewPacket,
   NewTicket,
   PromoteRunResult,
+  PacketRespondInput,
+  PacketResult,
   QaOptions,
   ReviewResult,
   ShipOptions,
@@ -192,6 +198,7 @@ export class LegionEngine {
       await mkdir(paths.specsDir, { recursive: true });
       await mkdir(paths.plansDir, { recursive: true });
       await mkdir(paths.tasksDir, { recursive: true });
+      await mkdir(paths.packetsDir, { recursive: true });
       await mkdir(join(paths.qaDir, "scores"), { recursive: true });
       await mkdir(join(paths.designDir, "craft"), { recursive: true });
       await copyShippedCraft(join(paths.designDir, "craft"));
@@ -590,6 +597,14 @@ export class LegionEngine {
 
   async fileTicket(input: NewTicket): Promise<Task> {
     return this.#mutate(() => this.#fileTicketLocked(input));
+  }
+
+  async newPacket(input: NewPacket): Promise<PacketResult> {
+    return this.#mutate(() => this.#newPacketLocked(input));
+  }
+
+  async respondPacket(input: PacketRespondInput): Promise<PacketResult> {
+    return this.#mutate(() => this.#respondPacketLocked(input));
   }
 
   async amendTask(id: string, contract: FileContract, opts?: AmendTaskOptions): Promise<void> {
@@ -1559,6 +1574,75 @@ export class LegionEngine {
     const promoted = await this.#promoteTicketIfReady(id, specId);
     await this.#failLastReviewLocked();
     return promoted;
+  }
+
+  async #newPacketLocked(input: NewPacket): Promise<PacketResult> {
+    const title = input.title.trim();
+    if (!title) {
+      refuse("packet new requires a title", HINT.packet);
+    }
+    const state = await this.#readState();
+    if (state.phase === "uninitialized") {
+      refuse("packet new is refused until init", HINT.init);
+    }
+    const id = nextPacketId((await this.#listPackets()).map((packet) => packet.id));
+    const packet = packetFromInput(id, { ...input, title }, {
+      specId: state.activeSpecId,
+      createdAt: nowIso(),
+    });
+    await this.store.writePacket(packet, packetMarkdownBody(packet));
+    return { packet, path: packetPath(id), tickets: [] };
+  }
+
+  async #respondPacketLocked(input: PacketRespondInput): Promise<PacketResult> {
+    const id = input.id.trim();
+    if (!id) {
+      refuse("packet respond requires an id", HINT.packetRespond());
+    }
+    const state = await this.#readState();
+    if (state.phase === "uninitialized") {
+      refuse("packet respond is refused until init", HINT.init);
+    }
+    let doc: { data: Packet; body: string };
+    try {
+      doc = await this.store.readPacket(id);
+    } catch {
+      refuse(`unknown packet ${id}`, HINT.packetRespond(id));
+    }
+    if (doc.data.status === "responded") {
+      refuse(`packet ${id} already responded`, HINT.ticket(doc.data.ticketIds[0] ?? "TSK-x"));
+    }
+    const ticketTitle = input.title?.trim() || doc.data.title;
+    const ticket = await this.#fileTicketLocked({
+      title: ticketTitle,
+      type: input.type,
+      priority: input.priority,
+      notes: `Filed from packet ${id}.`,
+    });
+    const packet: Packet = {
+      ...doc.data,
+      status: "responded",
+      response: input.message?.trim() || "Spawned tickets for this request.",
+      ticketIds: [...doc.data.ticketIds, ticket.id],
+      specId: ticket.specId,
+      respondedAt: nowIso(),
+    };
+    await this.store.writePacket(packet, packetMarkdownBody(packet));
+    return { packet, path: packetPath(id), tickets: [ticket] };
+  }
+
+  async #listPackets(): Promise<Packet[]> {
+    const files = await listMarkdownFiles(this.store.paths.packetsDir);
+    const out: Packet[] = [];
+    for (const file of files) {
+      const packetId = file.replace(/\.md$/i, "");
+      try {
+        out.push((await this.store.readPacket(packetId)).data);
+      } catch {
+        continue;
+      }
+    }
+    return out.sort((a, b) => a.id.localeCompare(b.id));
   }
 
   /** Spawn may write tasks/**; only execute + verificationCommands may mark done/blocked. */

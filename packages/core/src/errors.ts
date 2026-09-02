@@ -43,6 +43,8 @@ export const HINT = {
   promote: "legion-cli run promote <id>",
   gitRepo: "git init (brownfield requires a git repository)",
   ticket: (taskId: string) => `legion-cli ticket create --parent ${taskId}`,
+  packet: "legion-cli packet new --title <title>",
+  packetRespond: (id = "<id>") => `legion-cli packet respond ${id}`,
 } as const;
 
 export function refuse(message: string, nextHint: string): never {

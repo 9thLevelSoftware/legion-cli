@@ -173,6 +173,21 @@ export const TaskSchema = z.object({
 });
 export type Task = z.infer<typeof TaskSchema>;
 
+export const PacketSchema = z.object({
+  schemaVersion: z.literal(SCHEMA_VERSION.packet),
+  id: z.string().min(1),
+  title: z.string().min(1),
+  status: z.enum(["open", "responded"]),
+  requester: z.enum(["pm", "designer", "human"]),
+  request: z.string(),
+  specId: z.string().min(1).nullable().optional(),
+  ticketIds: z.array(z.string().min(1)),
+  createdAt: z.string().min(1),
+  respondedAt: z.string().min(1).nullable().optional(),
+  response: z.string().nullable().optional(),
+});
+export type Packet = z.infer<typeof PacketSchema>;
+
 export const AssumptionSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.assumption),
   id: z.string().min(1),
