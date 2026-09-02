@@ -8,6 +8,7 @@ import type {
   IngestReceipt,
   IntentAnswersFile,
   IntentMapped,
+  Packet,
   Phase,
   Priority,
   QAScore,
@@ -150,6 +151,26 @@ export type NewTicket = {
   contract?: Partial<FileContract>;
 };
 
+export type NewPacket = {
+  title: string;
+  request?: string;
+  requester?: "pm" | "designer" | "human";
+};
+
+export type PacketRespondInput = {
+  id: string;
+  message?: string;
+  title?: string;
+  type?: "feature" | "fix" | "bug";
+  priority?: Priority;
+};
+
+export type PacketResult = {
+  packet: Packet;
+  path: string;
+  tickets: Task[];
+};
+
 export type AmendTaskOptions = {
   allowDeps?: boolean;
   blockedBy?: string[];
@@ -157,3 +178,15 @@ export type AmendTaskOptions = {
 };
 
 export type { FileContract, IngestReceipt, Phase, Priority, QAScore, Readiness, ReviewVerdict, SearchHit, SessionBrief, Spec, Task };
+export type {
+  FileContract,
+  IngestReceipt,
+  Packet,
+  Phase,
+  Priority,
+  QAScore,
+  Readiness,
+  ReviewVerdict,
+  Spec,
+  Task,
+};

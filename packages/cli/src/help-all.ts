@@ -33,6 +33,8 @@ const AVAILABLE = [
   ["dashboard", "Open the visual board (viewer)", "--no-open, --port, --expose"],
   ["brownfield", "Audit an existing app (effort 1)", "--effort, --execute, --resume"],
   ["run promote", "Copy brownfield run pages into the wiki", ""],
+  ["packet new", "PM/designer request without the DAG", "--title, --request, --requester"],
+  ["packet respond", "Spawn tickets from a packet (does not execute)", "--message, --title"],
   ["help", "Commands", "--all"],
 ] as const;
 

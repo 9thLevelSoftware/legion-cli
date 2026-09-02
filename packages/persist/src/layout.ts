@@ -24,6 +24,7 @@ export type LegionPaths = {
   discussMd: string;
   plansDir: string;
   tasksDir: string;
+  packetsDir: string;
   qaDir: string;
   designDir: string;
   auditDir: string;
@@ -54,6 +55,7 @@ export function legionPaths(projectRoot: string): LegionPaths {
     discussMd: join(root, "discuss", "DISCUSS.md"),
     plansDir: join(root, "plans"),
     tasksDir: join(root, "tasks"),
+    packetsDir: join(root, "packets"),
     qaDir: join(root, "qa"),
     designDir: join(root, "design"),
     auditDir: join(root, "audit"),
@@ -72,6 +74,10 @@ export function specPath(specId: string): string {
 
 export function taskPath(taskId: string): string {
   return `.legion-cli/tasks/${taskId}.md`;
+}
+
+export function packetPath(packetId: string): string {
+  return `.legion-cli/packets/${packetId}.md`;
 }
 
 export function assumptionPath(id: string): string {
