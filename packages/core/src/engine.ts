@@ -1,4 +1,6 @@
-import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
+import { isSpawnable, resolveAdapter, type FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
+import { isTaskReady, mergeFilesForbidden, overlappingFilesAllowed, readyTasks } from "@9thlevelsoftware/legion-cli-graph";
+import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -37,13 +39,14 @@ import {
   type QAScore,
   type Readiness,
   type ReviewVerdict,
+  type FileContract,
   type SessionBrief,
   type Spec,
   type StateFile,
   type Task,
   type TaskStatus,
 } from "@9thlevelsoftware/legion-cli-schema";
-import { HINT, refuse } from "./errors.js";
+import { HINT, LegionRefuseError, refuse } from "./errors.js";
 import { assertIngestSourceAllowed } from "./ingest-guard.js";
 import { decisionFileName, templateDecisions } from "./discuss.js";
 import {
@@ -55,19 +58,22 @@ import {
   specIdFromName,
 } from "./intent.js";
 import { assertCanTransition, assertLegalPhase } from "./phases.js";
-import { evaluateReadiness, filesAllowedFailsPlan } from "./readiness.js";
+import { evaluateReadiness, filesAllowedFailsPlan, type ReadinessReport } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
-import { optionalSkillSpawn } from "./spawn.js";
+import { findSkillsDir, optionalSkillSpawn } from "./spawn.js";
 import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
 import { assertTaskStatusTransition } from "./tasks.js";
+import { nextTaskId, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
 import type {
   Actor,
+  AmendTaskOptions,
   DecisionInput,
   ExecuteResult,
   IngestOpts,
   InitOptions,
   IntentState,
   LegionEngineOptions,
+  NewTicket,
   QaOptions,
   ReviewResult,
   ShipOptions,
@@ -120,6 +126,7 @@ export class LegionEngine {
   readonly #skillsDir?: string;
   readonly #fakeArtifacts: FakeArtifact[];
   readonly #fakeThrowAfterWrite: boolean;
+  #lastPlanReport: ReadinessReport | null = null;
 
   constructor(projectRoot: string, store?: LegionStore, options?: LegionEngineOptions) {
     this.store = store ?? createLegionStore(projectRoot);
@@ -427,12 +434,59 @@ export class LegionEngine {
         refuse("plan requires an active spec", HINT.spec);
       }
 
+      const config = await this.#readConfig();
+      await this.#assertPlanSpawnable(config);
+
       let current: StateFile = { ...state, activeSpecId: id };
       if (current.phase === "spec_frozen" || current.phase === "plan_failed") {
         assertCanTransition(current.phase, "planning");
         current = { ...current, phase: "planning" };
         await this.#writeState(current);
       }
+
+      const spawnFails: string[] = [];
+      let runId: string | undefined;
+      try {
+        const result = await optionalSkillSpawn({
+          projectRoot: this.projectRoot,
+          config,
+          skillId: "plan",
+          specId: id,
+          promptBody: [
+            `Active spec: ${id}`,
+            `Read .legion-cli/specs/${id}/SPEC.md.`,
+            `Write .legion-cli/plans/${id}.md and .legion-cli/tasks/TSK-*.md with FileContracts.`,
+            "Every task needs verificationCommands and exclusive concrete filesAllowed.",
+            "If you discover extra work, write extra.json in the run cache; do not expand filesAllowed.",
+            "Do not write src/** or other product files.",
+          ].join("\n"),
+          skillsDir: this.#skillsDir,
+          fakeArtifacts: this.#fakeArtifacts,
+          throwAfterWrite: this.#fakeThrowAfterWrite,
+          required: true,
+        });
+        runId = result.runId;
+        if (result.revert?.incident) {
+          await this.#fileExtrasFromRun(runId, id);
+          refuse("inspect .git — spawn touched .git/", HINT.plan);
+        }
+        if (result.revert && result.revert.extrasReverted.length > 0) {
+          spawnFails.push(
+            `plan spawn wrote files outside SkillContract; reverted: ${result.revert.extrasReverted.join(", ")}`,
+          );
+        }
+        if (result.error) {
+          spawnFails.push(result.error instanceof Error ? result.error.message : String(result.error));
+        }
+      } catch (err) {
+        if (err instanceof LegionRefuseError) throw err;
+        spawnFails.push(err instanceof Error ? err.message : String(err));
+      }
+      if (runId) {
+        await this.#fileExtrasFromRun(runId, id);
+      }
+
+      await this.#clampPlanTaskStatuses(id);
 
       const spec = (await this.store.readSpec(id)).data;
       const entries = await this.#loadTaskEntries();
@@ -456,23 +510,91 @@ export class LegionEngine {
         skipWireframes,
         openNonBlockingAssumptions,
       });
-      const fails = [...report.fails];
+      const fails = [...spawnFails, ...report.fails];
       for (const bad of unreadable) {
         fails.push(`${bad.id} is not a valid task`);
         if (bad.filesAllowed && filesAllowedFailsPlan(bad.filesAllowed)) {
           fails.push(`${bad.id} filesAllowed must be concrete paths`);
         }
       }
+      const concerns = fails.length > 0 ? [] : report.concerns;
       const readiness: Readiness = fails.length > 0 ? "FAIL" : report.readiness;
       const phase: Phase = readiness === "FAIL" ? "plan_failed" : "plan_ready";
       assertCanTransition("planning", phase);
+      this.#lastPlanReport = { readiness, fails, concerns };
       await this.#writeState({
         ...current,
         phase,
         activeSpecId: id,
         lastReadiness: readiness,
       });
+      if (readiness !== "FAIL") {
+        await this.#promoteReadyTasks(id, phase, config.control_mode);
+      }
       return readiness;
+    });
+  }
+
+  getLastPlanReport(): ReadinessReport | null {
+    return this.#lastPlanReport;
+  }
+
+  async nextTasks(): Promise<Task[]> {
+    const state = await this.#readState();
+    let controlMode: ControlMode = "guarded";
+    try {
+      controlMode = (await this.#readConfig()).control_mode;
+    } catch {
+      // uninitialized / missing config
+    }
+    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    return readyTasks({
+      phase: state.phase,
+      controlMode,
+      tasks: slice,
+      assumptions: await this.#listAssumptions(),
+    });
+  }
+
+  async fileTicket(input: NewTicket): Promise<Task> {
+    return this.#mutate(() => this.#fileTicketLocked(input));
+  }
+
+  async amendTask(id: string, contract: FileContract, opts?: AmendTaskOptions): Promise<void> {
+    return this.#mutate(async () => {
+      const doc = await this.store.readTask(id);
+      const nextBlockedBy = opts?.blockedBy ?? doc.data.blockedBy;
+      const nextBlocks = opts?.blocks ?? doc.data.blocks;
+      const depsChanged =
+        JSON.stringify(nextBlockedBy) !== JSON.stringify(doc.data.blockedBy) ||
+        JSON.stringify(nextBlocks) !== JSON.stringify(doc.data.blocks);
+      if (depsChanged && !opts?.allowDeps) {
+        refuse("changing blockedBy/blocks requires --allow-deps", HINT.amend);
+      }
+      if (filesAllowedFailsPlan(contract.filesAllowed)) {
+        refuse("filesAllowed must be concrete paths", HINT.concretePaths);
+      }
+      if (contract.verificationCommands.length === 0) {
+        refuse("amend requires verificationCommands", HINT.plan);
+      }
+      const merged: FileContract = {
+        ...contract,
+        filesForbidden: mergeFilesForbidden(contract.filesForbidden),
+      };
+      const others = (await this.#listTasks()).filter((task) => task.id !== id);
+      const overlaps = overlappingFilesAllowed([{ ...doc.data, contract: merged }, ...others]);
+      if (overlaps.length > 0) {
+        refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.amend);
+      }
+      await this.store.writeTask(
+        {
+          ...doc.data,
+          contract: merged,
+          blockedBy: nextBlockedBy,
+          blocks: nextBlocks,
+        },
+        doc.body,
+      );
     });
   }
 
@@ -871,6 +993,125 @@ export class LegionEngine {
     return this.#readState();
   }
 
+  async #assertPlanSpawnable(config: LegionConfig): Promise<void> {
+    const adapter = resolveAdapter(config, {
+      artifacts: this.#fakeArtifacts,
+      throwAfterWrite: this.#fakeThrowAfterWrite,
+    });
+    if (!(await isSpawnable(adapter))) {
+      refuse("plan requires a spawnable adapter", HINT.doctor);
+    }
+    const skillsDir = this.#skillsDir ?? findSkillsDir();
+    if (!skillsDir || !existsSync(join(skillsDir, "plan", "SKILL.md"))) {
+      refuse("plan requires skills/plan/SKILL.md", HINT.plan);
+    }
+  }
+
+  async #fileExtrasFromRun(runId: string, specId: string): Promise<void> {
+    const abs = join(this.projectRoot, ".legion-cli", "cache", "runs", runId, "extra.json");
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readFile(abs, "utf8"));
+    } catch {
+      return;
+    }
+    for (const input of parseExtraJson(raw)) {
+      await this.#fileTicketLocked({ ...input, fromAgent: true }, specId);
+    }
+  }
+
+  async #fileTicketLocked(input: NewTicket, specIdOverride?: string): Promise<Task> {
+    const title = input.title.trim();
+    if (!title) {
+      refuse("ticket requires a title", HINT.ticket(input.parentId ?? "TSK-x"));
+    }
+    const state = await this.#readState();
+    const specId = specIdOverride ?? state.activeSpecId;
+    if (!specId) {
+      refuse("ticket requires an active spec", HINT.spec);
+    }
+    const tasks = await this.#listTasks();
+    let parentId = input.parentId;
+    if (parentId) {
+      const parent = tasks.find((task) => task.id === parentId);
+      if (!parent) {
+        if (input.fromAgent) {
+          parentId = undefined;
+        } else {
+          refuse(`unknown parent ${parentId}`, HINT.ticket(parentId));
+        }
+      }
+    }
+    const id = nextTaskId(tasks.map((task) => task.id));
+    const ticket = ticketFromInput(id, specId, { ...input, title, parentId });
+    await this.store.writeTask(ticket, taskMarkdownBody(ticket));
+    if (parentId) {
+      const parentDoc = await this.store.readTask(parentId);
+      if (!parentDoc.data.blocks.includes(id)) {
+        await this.store.writeTask(
+          { ...parentDoc.data, blocks: [...parentDoc.data.blocks, id] },
+          parentDoc.body,
+        );
+      }
+    }
+    const promoted = await this.#promoteTicketIfReady(id, specId);
+    if (state.lastReview === "PASS") {
+      await this.#writeState({ ...state, lastReview: "FAIL" });
+    }
+    return promoted;
+  }
+
+  async #clampPlanTaskStatuses(specId: string): Promise<void> {
+    const slice = sliceTasks(await this.#listTasks(), specId);
+    for (const task of slice) {
+      if (task.status === "todo" || task.status === "ready") continue;
+      const doc = await this.store.readTask(task.id);
+      await this.store.writeTask({ ...doc.data, status: "todo" }, doc.body);
+    }
+  }
+
+  async #promoteTicketIfReady(taskId: string, specId: string): Promise<Task> {
+    const doc = await this.store.readTask(taskId);
+    const state = await this.#readState();
+    let controlMode: ControlMode = "guarded";
+    try {
+      controlMode = (await this.#readConfig()).control_mode;
+    } catch {
+      // missing config
+    }
+    const slice = sliceTasks(await this.#listTasks(), specId);
+    const current = slice.find((task) => task.id === taskId) ?? doc.data;
+    if (
+      isTaskReady(current, {
+        phase: state.phase,
+        controlMode,
+        tasks: slice,
+        assumptions: await this.#listAssumptions(),
+      })
+    ) {
+      if (doc.data.status !== "ready") {
+        assertTaskStatusTransition(doc.data.status, "ready");
+        const ready = { ...doc.data, status: "ready" as const };
+        await this.store.writeTask(ready, doc.body);
+        return ready;
+      }
+    }
+    return doc.data;
+  }
+
+  async #promoteReadyTasks(specId: string, phase: Phase, controlMode: ControlMode): Promise<void> {
+    const slice = sliceTasks(await this.#listTasks(), specId);
+    const assumptions = await this.#listAssumptions();
+    const readyCtx = { phase, controlMode, tasks: slice, assumptions };
+    for (const task of slice) {
+      if (task.status !== "todo") continue;
+      if (!isTaskReady(task, readyCtx)) continue;
+      const doc = await this.store.readTask(task.id);
+      assertTaskStatusTransition(doc.data.status, "ready");
+      await this.store.writeTask({ ...doc.data, status: "ready" }, doc.body);
+    }
+  }
+
   #isPostFreeze(phase: Phase): boolean {
     return (
       phase === "planning" ||
@@ -1083,6 +1324,9 @@ export class LegionEngine {
         `spawn wrote files outside SkillContract; reverted: ${result.revert.extrasReverted.join(", ")}`,
         HINT.intent,
       );
+    }
+    if (result.error) {
+      throw result.error;
     }
   }
 

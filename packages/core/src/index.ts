@@ -46,14 +46,17 @@ export {
 } from "./tasks.js";
 export type {
   Actor,
+  AmendTaskOptions,
   DecisionInput,
   ExecuteResult,
+  FileContract,
   IngestOpts,
   IngestReceipt,
   IngestSource,
   InitOptions,
   IntentState,
   LegionEngineOptions,
+  NewTicket,
   Phase,
   QaOptions,
   QAScore,

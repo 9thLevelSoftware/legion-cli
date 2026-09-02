@@ -14,12 +14,14 @@ import {
 } from "@9thlevelsoftware/legion-cli-agents";
 import { SCHEMA_VERSION, type LegionConfig, type SkillId } from "@9thlevelsoftware/legion-cli-schema";
 import { skillContract } from "./contracts.js";
+import { HINT, refuse } from "./errors.js";
 import { recordPreSpawnRef, revertExtras, snapshotPaths, type RevertResult } from "./revert.js";
 
 export type OptionalSpawnResult = {
   spawned: boolean;
   runId: string;
   revert: RevertResult | null;
+  error?: unknown;
 };
 
 export function findSkillsDir(from = process.cwd()): string | undefined {
@@ -35,7 +37,12 @@ export function findSkillsDir(from = process.cwd()): string | undefined {
     let dir = start;
     for (let i = 0; i < 10; i++) {
       const candidate = join(dir, "skills");
-      if (existsSync(join(candidate, "interview", "SKILL.md"))) return candidate;
+      if (
+        existsSync(join(candidate, "interview", "SKILL.md")) ||
+        existsSync(join(candidate, "plan", "SKILL.md"))
+      ) {
+        return candidate;
+      }
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
@@ -53,6 +60,7 @@ export async function optionalSkillSpawn(opts: {
   skillsDir?: string;
   fakeArtifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
+  required?: boolean;
 }): Promise<OptionalSpawnResult> {
   const runId = `${opts.skillId}-${Date.now().toString(36)}`;
   const adapter = resolveAdapter(opts.config, {
@@ -60,12 +68,18 @@ export async function optionalSkillSpawn(opts: {
     throwAfterWrite: opts.throwAfterWrite,
   });
   if (!(await isSpawnable(adapter))) {
+    if (opts.required) {
+      refuse("plan requires a spawnable adapter", HINT.doctor);
+    }
     return { spawned: false, runId, revert: null };
   }
 
   const skillsDir = opts.skillsDir ?? findSkillsDir();
   const skillDir = skillsDir ? join(skillsDir, opts.skillId) : undefined;
   if (!skillDir || !existsSync(join(skillDir, "SKILL.md"))) {
+    if (opts.required) {
+      refuse(`plan requires skills/${opts.skillId}/SKILL.md`, HINT.plan);
+    }
     return { spawned: false, runId, revert: null };
   }
 
@@ -121,8 +135,11 @@ export async function optionalSkillSpawn(opts: {
     expectedArtifacts: opts.fakeArtifacts,
   });
   let revert: RevertResult | null = null;
+  let error: unknown;
   try {
     await handle.wait();
+  } catch (err) {
+    error = err;
   } finally {
     revert = await revertExtras({
       projectRoot: opts.projectRoot,
@@ -131,5 +148,5 @@ export async function optionalSkillSpawn(opts: {
       snapshot,
     });
   }
-  return { spawned: true, runId, revert };
+  return { spawned: true, runId, revert, error };
 }

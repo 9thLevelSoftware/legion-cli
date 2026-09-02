@@ -11,10 +11,14 @@ import { runIngest } from "./ingest.js";
 import { runInit } from "./init.js";
 import { runIntent } from "./intent.js";
 import { printRefuse, resolveOpts, writeErr } from "./io.js";
+import { runNextTasks } from "./next-tasks.js";
+import { runPlan } from "./plan.js";
 import { runSearch } from "./search.js";
 import { runShow } from "./show.js";
 import { runSpecApprove, runSpecDraft, runSpecNew, runSpecShow } from "./spec.js";
 import { runStatus } from "./status.js";
+import { runTaskAmend } from "./task.js";
+import { runTicketCreate } from "./ticket.js";
 import { runWikiTrust } from "./wiki.js";
 
 const pkg = JSON.parse(
@@ -197,6 +201,63 @@ export function createProgram(): Command {
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
       const code = await runSpecNew(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("plan").description("Break into tasks I can see on the board"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runPlan(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("next").description("What is unblocked?"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runNextTasks(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  const ticket = addGlobalOptions(program.command("ticket").description("Park extra work"));
+  addGlobalOptions(ticket.command("create").description("Park extra work as a linked ticket"))
+    .requiredOption("--title <title>", "ticket title")
+    .option("--parent <id>", "parent task id")
+    .option("--from-agent", "filed from adapter extra.json")
+    .option("--type <type>", "feature | fix | bug")
+    .option("--priority <priority>", "P0 | P1 | P2")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as {
+        title?: string;
+        parent?: string;
+        fromAgent?: boolean;
+        type?: string;
+        priority?: string;
+      };
+      const code = await runTicketCreate(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+
+  const task = addGlobalOptions(program.command("task").description("Task file contracts"));
+  addGlobalOptions(task.command("amend").description("Human changes a file contract"))
+    .argument("<id>", "task id")
+    .option("--files-allowed <paths...>", "concrete POSIX paths")
+    .option("--verification-commands <cmds...>", "in-process verification commands")
+    .option("--expected-artifacts <paths...>", "expected artifact paths")
+    .option("--blocked-by <ids...>", "dependency task ids")
+    .option("--blocks <ids...>", "downstream task ids")
+    .option("--allow-deps", "allow changing blockedBy/blocks")
+    .allowExcessArguments(false)
+    .action(async (id: string, opts, cmd: Command) => {
+      const flags = opts as {
+        filesAllowed?: string[];
+        verificationCommands?: string[];
+        expectedArtifacts?: string[];
+        blockedBy?: string[];
+        blocks?: string[];
+        allowDeps?: boolean;
+      };
+      const code = await runTaskAmend(resolveOpts(cmd), id, flags);
       process.exitCode = code;
     });
 

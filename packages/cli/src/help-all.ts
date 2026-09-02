@@ -15,6 +15,10 @@ const AVAILABLE = [
   ["spec show", "Show the spec path", ""],
   ["spec approve", "Freeze the spec", "--message"],
   ["spec new", "Start the next increment after ship", ""],
+  ["plan", "Break into tasks I can see on the board", ""],
+  ["next", "What is unblocked?", ""],
+  ["ticket create", "Park extra work", "--parent, --title, --from-agent"],
+  ["task amend", "Human changes a file contract", "--allow-deps"],
   ["help", "Commands", "--all"],
 ] as const;
 

@@ -1,9 +1,9 @@
 import {
-  isConcretePosixRepoRelativePath,
-  type Readiness,
-  type Spec,
-  type Task,
-} from "@9thlevelsoftware/legion-cli-schema";
+  filesAllowedFailsPlan,
+  isImplicitForbiddenPath,
+  overlappingFilesAllowed,
+} from "@9thlevelsoftware/legion-cli-graph";
+import type { Readiness, Spec, Task } from "@9thlevelsoftware/legion-cli-schema";
 
 export type ReadinessReport = {
   readiness: Readiness;
@@ -11,25 +11,7 @@ export type ReadinessReport = {
   concerns: string[];
 };
 
-export function filesAllowedFailsPlan(filesAllowed: readonly string[]): boolean {
-  return filesAllowed.length === 0 || filesAllowed.some((path) => !isConcretePosixRepoRelativePath(path));
-}
-
-export function overlappingFilesAllowed(tasks: readonly Task[]): string[] {
-  const owners = new Map<string, string>();
-  const overlaps: string[] = [];
-  for (const task of tasks) {
-    for (const path of task.contract.filesAllowed) {
-      const previous = owners.get(path);
-      if (previous && previous !== task.id) {
-        overlaps.push(`${path} (${previous}, ${task.id})`);
-      } else {
-        owners.set(path, task.id);
-      }
-    }
-  }
-  return overlaps;
-}
+export { filesAllowedFailsPlan, overlappingFilesAllowed };
 
 export function evaluateReadiness(input: {
   spec: Spec;
@@ -54,7 +36,9 @@ export function evaluateReadiness(input: {
     if (task.contract.verificationCommands.length === 0) {
       fails.push(`${task.id} missing verificationCommands`);
     }
-    if (filesAllowedFailsPlan(task.contract.filesAllowed)) {
+    if (task.contract.filesAllowed.some((path) => isImplicitForbiddenPath(path))) {
+      fails.push(`${task.id} filesAllowed includes a forbidden path`);
+    } else if (filesAllowedFailsPlan(task.contract.filesAllowed)) {
       fails.push(`${task.id} filesAllowed must be concrete paths`);
     }
   }

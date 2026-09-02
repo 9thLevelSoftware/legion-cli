@@ -13,6 +13,17 @@ export async function withEngine(fn, options) {
   }
 }
 
+export async function withFakeAdapter(fn) {
+  const previous = process.env.LEGION_CLI_ADAPTER;
+  process.env.LEGION_CLI_ADAPTER = "fake";
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env.LEGION_CLI_ADAPTER;
+    else process.env.LEGION_CLI_ADAPTER = previous;
+  }
+}
+
 export async function initProject(engine, opts = {}) {
   await engine.init({ name: "Checkin", adapter: "fake", ...opts });
 }
