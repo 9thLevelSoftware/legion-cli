@@ -1,0 +1,53 @@
+{
+  "name": "@9thlevelsoftware/legion-cli-mcp",
+  "version": "0.0.0",
+  "description": "Legion CLI read-only stdio MCP server",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run build && node --test test/*.test.js",
+    "prepublishOnly": "pnpm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/9thLevelSoftware/product-engineer-helper.git",
+    "directory": "packages/mcp"
+  },
+  "author": {
+    "name": "9thLevelSoftware",
+    "url": "https://github.com/9thLevelSoftware"
+  },
+  "keywords": [
+    "legion",
+    "legion-cli",
+    "mcp"
+  ],
+  "dependencies": {
+    "@9thlevelsoftware/legion-cli-graph": "workspace:*",
+    "@9thlevelsoftware/legion-cli-persist": "workspace:*",
+    "@9thlevelsoftware/legion-cli-schema": "workspace:*",
+    "@9thlevelsoftware/legion-cli-wiki": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
+  }
+}

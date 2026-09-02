@@ -52,6 +52,7 @@ import { DecisionFileSchema, WikiPageSchema, type DecisionFile, type WikiPage } 
 export interface LegionReader {
   readonly projectRoot: string;
   readonly paths: LegionPaths;
+  pathExists(storePath: string): Promise<boolean>;
   readProject(): Promise<MarkdownDoc<ProjectFile>>;
   readState(): Promise<MarkdownDoc<StateFile>>;
   readContext(): Promise<MarkdownDoc<ContextFile>>;

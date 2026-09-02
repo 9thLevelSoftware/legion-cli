@@ -9,6 +9,7 @@ const AVAILABLE = [
   ["search <q>", "Search the wiki", "--mentions, --include-untrusted"],
   ["show <page>", "Open one wiki/spec/task page", ""],
   ["brief", "Print what the next agent will see", ""],
+  ["mcp", "Read-only stdio MCP server", ""],
   ["intent", "Interview me about the product", "--resume, --done"],
   ["discuss", "Capture decisions before planning", ""],
   ["spec", "Write the short contract + wireframes", "--skip-wireframes"],
