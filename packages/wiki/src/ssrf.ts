@@ -72,9 +72,16 @@ function firstHextet(host: string): number | null {
   return Number.parseInt(head, 16);
 }
 
+function isUnspecifiedIPv6(host: string): boolean {
+  const h = normalizeHost(host);
+  if (h === "::" || h === "::0") return true;
+  return /^(0+:){7}0+$/.test(h);
+}
+
 function isPrivateIPv6(host: string): boolean {
   const h = normalizeHost(host);
   if (h === "::1" || h === "0:0:0:0:0:0:0:1") return true;
+  if (isUnspecifiedIPv6(h)) return true;
   const first = firstHextet(h);
   if (first === null) return false;
   // fe80::/10 link-local (not merely the fe80: prefix)
@@ -144,6 +151,29 @@ function assertHttpsUrl(source: string): URL {
 
 type Fetched = { body: string; finalUrl: string; contentType: string; status: number };
 
+type LookupCallback = (
+  err: NodeJS.ErrnoException | null,
+  address: string | Array<{ address: string; family: number }>,
+  family?: number,
+) => void;
+
+/** Node 22+ https.request calls lookup with `{ all: true }`; honor that without a second address. */
+function pinnedLookup(
+  address: string,
+  family: number,
+): NonNullable<https.RequestOptions["lookup"]> {
+  return (_hostname, options, callback) => {
+    const cb = (typeof options === "function" ? options : callback) as LookupCallback | undefined;
+    if (!cb) return;
+    const all = typeof options === "object" && options !== null && options.all === true;
+    if (all) {
+      cb(null, [{ address, family }]);
+      return;
+    }
+    cb(null, address, family);
+  };
+}
+
 async function httpsGetPinned(
   url: URL,
   address: string,
@@ -159,15 +189,15 @@ async function httpsGetPinned(
         port: url.port ? Number(url.port) : 443,
         path: `${url.pathname}${url.search}`,
         method: "GET",
+        family,
+        autoSelectFamily: false,
         headers: {
           Host: url.host,
           "User-Agent": "legion-cli",
           Accept: "text/*, application/json, application/xml",
         },
-        lookup(_hostname, _options, callback) {
-          callback(null, address, family);
-        },
-      },
+        lookup: pinnedLookup(address, family),
+      } as https.RequestOptions,
       (res) => {
         const chunks: Buffer[] = [];
         let size = 0;

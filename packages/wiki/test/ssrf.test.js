@@ -35,6 +35,9 @@ const PRIVATE_HOSTS = [
   "foo.local",
   "::1",
   "0:0:0:0:0:0:0:1",
+  "::",
+  "::0",
+  "0:0:0:0:0:0:0:0",
   "fe80::1",
   "fe90::1",
   "feb0::1",
@@ -51,6 +54,8 @@ test("SSRF deny list: loopback, RFC1918, ULA, link-local, metadata, .local", () 
   for (const host of PUBLIC_HOSTS) {
     assert.equal(isPrivateOrLocalHost(host), false, host);
   }
+  assert.equal(isPrivateOrLocalHost(urlHost("https://[::]/")), true);
+  assert.equal(isPrivateOrLocalHost("[::]"), true);
 });
 
 test("SSRF deny list: IPv4-mapped and IPv4-compatible IPv6", () => {
@@ -76,6 +81,8 @@ test("resolvePublicAddress refuses private hosts before DNS", async () => {
   await assert.rejects(() => resolvePublicAddress("192.168.0.9"), SsrfError);
   await assert.rejects(() => resolvePublicAddress("172.16.0.9"), SsrfError);
   await assert.rejects(() => resolvePublicAddress("fd00::1"), SsrfError);
+  await assert.rejects(() => resolvePublicAddress("::"), SsrfError);
+  await assert.rejects(() => resolvePublicAddress(urlHost("https://[::]/")), SsrfError);
   await assert.rejects(() => resolvePublicAddress(urlHost("https://[::ffff:127.0.0.1]/")), SsrfError);
 });
 
@@ -94,6 +101,10 @@ test("DNS rebinding: public hostname that resolves to a private IP is refused", 
   );
   await assert.rejects(
     () => resolvePublicAddress("evil.example", async () => ({ address: "fd00::1", family: 6 })),
+    SsrfError,
+  );
+  await assert.rejects(
+    () => resolvePublicAddress("evil.example", async () => ({ address: "::", family: 6 })),
     SsrfError,
   );
   const publicIp = await resolvePublicAddress("evil.example", async () => ({ address: "8.8.8.8", family: 4 }));
@@ -115,24 +126,21 @@ test("fetchPublicHttps refuses http, file, github, and private URLs without conn
   await assert.rejects(() => fetchPublicHttps("https://169.254.169.254/latest/meta-data"), SsrfError);
   await assert.rejects(() => fetchPublicHttps("https://metadata.google.internal/"), SsrfError);
   await assert.rejects(() => fetchPublicHttps("https://printer.local/doc"), SsrfError);
+  await assert.rejects(() => fetchPublicHttps("https://[::]/"), SsrfError);
   assert.equal(isUrlSource("https://example.com"), true);
   assert.equal(isUrlSource("http://example.com"), true);
   assert.equal(isGithubSource("github:pr:123"), true);
 });
 
 function mockHttpsRequest(t, handler) {
-  const pinnedLookups = [];
+  const requests = [];
   t.mock.method(https, "request", (options, callback) => {
+    requests.push(options);
     const req = new EventEmitter();
     req.setTimeout = () => req;
     req.destroy = () => req;
     req.end = () => {
-      if (typeof options.lookup === "function") {
-        options.lookup("attacker.example", {}, (err, address, family) => {
-          pinnedLookups.push({ err, address, family, host: options.host });
-        });
-      }
-      const result = handler(options, pinnedLookups);
+      const result = handler(options, requests);
       const res = new EventEmitter();
       res.statusCode = result.status ?? 200;
       res.headers = result.headers ?? {};
@@ -144,20 +152,41 @@ function mockHttpsRequest(t, handler) {
     };
     return req;
   });
-  return pinnedLookups;
+  return requests;
+}
+
+function invokePinnedLookup(options, lookupOptions) {
+  assert.equal(typeof options.lookup, "function");
+  let result;
+  options.lookup("attacker.example", lookupOptions, (err, address, family) => {
+    result = { err, address, family };
+  });
+  assert.ok(result, "pinned lookup must invoke the callback");
+  return result;
 }
 
 test("fetchPublicHttps pins the resolved IP (no happy-eyeballs to a second address)", async (t) => {
-  const pinnedLookups = mockHttpsRequest(t, () => ({ status: 200, body: "public doc", headers: {} }));
+  const requests = mockHttpsRequest(t, () => ({ status: 200, body: "public doc", headers: {} }));
   const fetched = await fetchPublicHttps("https://evil.example/doc", {
     lookup: async () => ({ address: "8.8.8.8", family: 4 }),
   });
   assert.equal(fetched.body, "public doc");
-  assert.equal(pinnedLookups.length, 1);
-  assert.equal(pinnedLookups[0].err, null);
-  assert.equal(pinnedLookups[0].address, "8.8.8.8");
-  assert.equal(pinnedLookups[0].family, 4);
-  assert.equal(pinnedLookups[0].host, "evil.example");
+  assert.equal(requests.length, 1);
+  const options = requests[0];
+  assert.equal(options.host, "evil.example");
+  assert.equal(options.family, 4);
+  assert.equal(options.autoSelectFamily, false);
+
+  const all = invokePinnedLookup(options, { all: true });
+  assert.equal(all.err, null);
+  assert.deepEqual(all.address, [{ address: "8.8.8.8", family: 4 }]);
+  assert.equal(all.address.length, 1);
+  assert.equal(all.family, undefined);
+
+  const one = invokePinnedLookup(options, {});
+  assert.equal(one.err, null);
+  assert.equal(one.address, "8.8.8.8");
+  assert.equal(one.family, 4);
 });
 
 test("fetchPublicHttps refuses redirect-to-https that still fails the deny list", async (t) => {
