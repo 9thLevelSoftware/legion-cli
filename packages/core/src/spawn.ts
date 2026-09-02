@@ -48,7 +48,13 @@ export function spawnableAdapterRefuseMessage(skillId: SkillId, resolution: Adap
 /** Persist flag names and {{pointer}} only — never raw argv values (credentials). */
 export function argvSummarySafe(argv: readonly string[]): string {
   return argv
-    .map((arg) => (arg.startsWith("-") || arg.includes("{{pointer}}") ? arg : "<redacted>"))
+    .map((arg) => {
+      if (arg.includes("{{pointer}}")) return arg;
+      if (/^--[A-Za-z][\w-]*$/.test(arg) || /^-[A-Za-z]$/.test(arg)) return arg;
+      const attached = /^(--[A-Za-z][\w-]*)=(.*)$/.exec(arg);
+      if (attached) return `${attached[1]}=<redacted>`;
+      return "<redacted>";
+    })
     .join(" ")
     .slice(0, 240);
 }

@@ -40,7 +40,7 @@ export {
   regressionVerifyCommand,
 } from "./fix.js";
 export { runVerificationCommands, splitCommand } from "./verify.js";
-export { findSkillsDir, optionalSkillSpawn } from "./spawn.js";
+export { argvSummarySafe, findSkillsDir, optionalSkillSpawn } from "./spawn.js";
 export { WIREFRAME_PALETTE, palettePresent, uniqueScreenPages } from "./wireframes.js";
 export {
   assertCanTransition,

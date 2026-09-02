@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { readAuditEvents, summarizeAuditMetrics } from "@9thlevelsoftware/legion-cli-persist";
-import { HEAD_MOVED_WARNING, LegionRefuseError, revertExtras } from "../dist/index.js";
+import { argvSummarySafe, HEAD_MOVED_WARNING, LegionRefuseError, revertExtras } from "../dist/index.js";
 import { snapshotGitPolicy } from "../dist/revert.js";
 import {
   git,
@@ -19,6 +19,15 @@ import {
   withFakeAdapter,
   writeUnspawnableGrok,
 } from "./helpers.js";
+
+test("argvSummarySafe keeps flag names and redacts attached values", () => {
+  assert.equal(
+    argvSummarySafe(["exec", "--model", "grok-4", "{{pointer}}"]),
+    "<redacted> --model <redacted> {{pointer}}",
+  );
+  assert.equal(argvSummarySafe(["--api-key=secret", "-pSECRET", "--header=Authorization:x"]), "--api-key=<redacted> <redacted> --header=<redacted>");
+  assert.equal(argvSummarySafe(["-p", "--output-format", "json"]), "-p --output-format <redacted>");
+});
 
 async function seedExecute(store, opts = {}) {
   const verify = opts.verify ?? [passingVerificationCommand()];

@@ -8,12 +8,6 @@ import {
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { NewTicket } from "./types.js";
 
-function parseAdapterId(value: unknown): AdapterId | undefined {
-  if (typeof value !== "string") return undefined;
-  const parsed = AdapterIdSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
-}
-
 export function nextTaskId(existing: readonly string[]): string {
   let max = 0;
   for (const id of existing) {
@@ -76,7 +70,10 @@ export function parseExtraJson(raw: unknown): NewTicket[] {
       type: rec.type === "fix" || rec.type === "bug" || rec.type === "feature" ? rec.type : undefined,
       priority: rec.priority === "P0" || rec.priority === "P1" || rec.priority === "P2" ? rec.priority : undefined,
       notes: typeof rec.notes === "string" ? rec.notes : undefined,
-      adapter: parseAdapterId(rec.adapter),
+      adapter:
+        typeof rec.adapter === "string" && AdapterIdSchema.safeParse(rec.adapter).success
+          ? (rec.adapter as AdapterId)
+          : undefined,
       contract: {
         filesAllowed: Array.isArray(rec.filesAllowed)
           ? rec.filesAllowed.filter((path): path is string => typeof path === "string")
