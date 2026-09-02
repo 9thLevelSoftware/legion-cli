@@ -134,6 +134,9 @@ importers:
 
   packages/mcp:
     dependencies:
+      '@9thlevelsoftware/legion-cli-dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
       '@9thlevelsoftware/legion-cli-graph':
         specifier: workspace:*
         version: link:../graph
