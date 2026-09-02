@@ -1,8 +1,20 @@
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import type { LegionConfig, ProjectFile, StateFile } from "@9thlevelsoftware/legion-cli-schema";
+import type { AdapterId, LegionConfig, ProjectFile, StateFile } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { collectBlockers, nextCommand, statusExitCode } from "./next.js";
+
+async function readCurrentTaskAdapter(
+  engine: ReturnType<typeof createLegionEngine>,
+  currentTaskId: string | null | undefined,
+): Promise<AdapterId | null> {
+  if (!currentTaskId) return null;
+  try {
+    return (await engine.store.readTask(currentTaskId)).data.adapter ?? null;
+  } catch {
+    return null;
+  }
+}
 
 async function readOptionalProject(engine: ReturnType<typeof createLegionEngine>): Promise<ProjectFile | null> {
   if (!(await engine.store.pathExists(".legion-cli/PROJECT.md"))) return null;
@@ -31,8 +43,9 @@ function formatHuman(input: {
   blockers: { detail: string }[];
   viewer: string;
   blockersOnly: boolean;
+  currentTaskAdapter: AdapterId | null;
 }): string {
-  const { project, state, next, blockers, viewer, blockersOnly } = input;
+  const { project, state, next, blockers, viewer, blockersOnly, currentTaskAdapter } = input;
   if (blockersOnly) {
     if (blockers.length === 0) return "No blockers.";
     return ["Blockers:", ...blockers.map((item) => `  ${item.detail}`)].join("\n");
@@ -48,7 +61,10 @@ function formatHuman(input: {
   }
 
   lines.push(`${project.name}  ·  ${project.mode}  ·  phase: ${state.phase}`);
-  if (state.currentTaskId) lines.push(`Current task: ${state.currentTaskId}`);
+  if (state.currentTaskId) {
+    const adapterBit = currentTaskAdapter ? ` (${currentTaskAdapter})` : "";
+    lines.push(`Current task: ${state.currentTaskId}${adapterBit}`);
+  }
   if (state.lastReadiness) lines.push(`Readiness: ${state.lastReadiness}`);
   if (state.lastReview) lines.push(`Review: ${state.lastReview}`);
   lines.push(`Next up: ${next.hint}`);
@@ -66,6 +82,7 @@ function formatPlain(input: {
   state: StateFile;
   next: { run: string };
   blockers: { detail: string }[];
+  currentTaskAdapter: AdapterId | null;
 }): string {
   const name = input.project?.name ?? "";
   const mode = input.project?.mode ?? "";
@@ -76,6 +93,7 @@ function formatPlain(input: {
     `next\t${input.next.run}`,
   ];
   if (input.state.currentTaskId) lines.push(`currentTask\t${input.state.currentTaskId}`);
+  if (input.currentTaskAdapter) lines.push(`currentTaskAdapter\t${input.currentTaskAdapter}`);
   if (input.state.lastReadiness) lines.push(`readiness\t${input.state.lastReadiness}`);
   if (input.blockers.length > 0) {
     for (const item of input.blockers) lines.push(`blocker\t${item.detail}`);
@@ -93,6 +111,7 @@ export async function runStatus(opts: CliOpts): Promise<number> {
   const blockers = collectBlockers(state.lastReadiness, state.lastReview, slice);
   const viewer = viewerUrl(config);
   const code = statusExitCode(state.lastReadiness, slice);
+  const currentTaskAdapter = await readCurrentTaskAdapter(engine, state.currentTaskId);
 
   if (opts.json) {
     writeJson({
@@ -100,6 +119,7 @@ export async function runStatus(opts: CliOpts): Promise<number> {
       mode: project?.mode ?? null,
       phase: state.phase,
       currentTaskId: state.currentTaskId ?? null,
+      currentTaskAdapter,
       activeSpecId: state.activeSpecId ?? null,
       lastReadiness: state.lastReadiness ?? null,
       lastReview: state.lastReview ?? null,
@@ -111,7 +131,7 @@ export async function runStatus(opts: CliOpts): Promise<number> {
   }
 
   if (opts.plain) {
-    writeOut(formatPlain({ project, state, next, blockers }));
+    writeOut(formatPlain({ project, state, next, blockers, currentTaskAdapter }));
     return code;
   }
 
@@ -123,6 +143,7 @@ export async function runStatus(opts: CliOpts): Promise<number> {
       blockers,
       viewer,
       blockersOnly: opts.blockers,
+      currentTaskAdapter,
     }),
   );
   return code;

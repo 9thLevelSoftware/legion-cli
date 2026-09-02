@@ -113,7 +113,8 @@ export function renderSessionBrief(brief: SessionBrief): string {
   lines.push(`Project: ${brief.project.name} (${brief.project.mode}, ${brief.project.controlMode})`);
   lines.push(`Phase: ${brief.phase}`);
   if (brief.currentTask) {
-    lines.push(`Current task: ${brief.currentTask.id} ${brief.currentTask.title}`);
+    const adapterBit = brief.currentTask.adapter ? ` (${brief.currentTask.adapter})` : "";
+    lines.push(`Current task: ${brief.currentTask.id} ${brief.currentTask.title}${adapterBit}`);
   }
   lines.push("");
   lines.push("Blocking assumptions:");
@@ -248,7 +249,11 @@ export async function buildSessionBrief(
   if (state.currentTaskId) {
     try {
       const task = (await store.readTask(state.currentTaskId)).data;
-      currentTask = { id: task.id, title: task.title };
+      currentTask = {
+        id: task.id,
+        title: task.title,
+        ...(task.adapter ? { adapter: task.adapter } : {}),
+      };
       contract = task.contract;
     } catch {
       currentTask = { id: state.currentTaskId, title: state.currentTaskId };

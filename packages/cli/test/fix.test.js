@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createLegionEngine, regressionTestPath } from "@9thlevelsoftware/legion-cli-core";
-import { normalize, runCli, withTempDir } from "./helpers.js";
+import { normalize, runCli, withTempDir, withUnspawnableGrok } from "./helpers.js";
 
 async function seedExecutingDone(dir) {
   const engine = createLegionEngine(dir);
@@ -105,4 +105,33 @@ test("fix writes a RED test then execute must go GREEN", async () => {
     assert.match(tasks[0].contract.filesAllowed[0], /regression/);
     assert.ok(tasks[0].contract.filesAllowed.includes("src/main.js"));
   });
+});
+
+test("fix --adapter grok forwards into execute and refuses via cli", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedExecutingDone(dir);
+    await engine.store.writeConfig(withUnspawnableGrok(await engine.store.readConfig()));
+    const result = runCli(["fix", "board does not refresh", "--adapter", "grok", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /spawnable adapter \(grok, via cli\)/);
+  });
+});
+
+test("fix --adapter fake prints resolved via line", async () => {
+  await withTempDir(async (dir) => {
+    await seedExecutingDone(dir);
+    const result = runCli(["fix", "board does not refresh", "--adapter", "fake", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(result.stdout), /via fake/);
+  });
+});
+
+test("help lists fix adapter flag", () => {
+  const result = runCli(["help", "fix"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(normalize(result.stdout), /--adapter/);
 });

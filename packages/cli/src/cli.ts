@@ -235,9 +235,11 @@ export function createProgram(): Command {
     });
 
   addGlobalOptions(program.command("plan").description("Break into tasks I can see on the board"))
+    .option("--adapter <id>", ADAPTER_ID_HELP)
     .allowExcessArguments(false)
-    .action(async (_opts, cmd: Command) => {
-      const code = await runPlan(resolveOpts(cmd));
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { adapter?: string };
+      const code = await runPlan(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
 
@@ -252,13 +254,15 @@ export function createProgram(): Command {
     .argument("[id]", "task id")
     .option("--until-blocked", "loop until no ready task remains or one blocks")
     .option("--fix", "fix-run prompt (keep reproducing tests)")
+    .option("--adapter <id>", ADAPTER_ID_HELP)
     .allowExcessArguments(false)
     .action(async (id: string | undefined, opts, cmd: Command) => {
-      const flags = opts as { untilBlocked?: boolean; fix?: boolean };
+      const flags = opts as { untilBlocked?: boolean; fix?: boolean; adapter?: string };
       const code = await runExecute(resolveOpts(cmd), {
         id,
         untilBlocked: Boolean(flags.untilBlocked),
         fix: Boolean(flags.fix),
+        adapter: flags.adapter,
       });
       process.exitCode = code;
     });
@@ -266,16 +270,20 @@ export function createProgram(): Command {
 
   addGlobalOptions(program.command("verify").description("Optional walkthrough notes (not a ship gate)"))
     .argument("[id]", "task id")
+    .option("--adapter <id>", ADAPTER_ID_HELP)
     .allowExcessArguments(false)
-    .action(async (id: string | undefined, _opts, cmd: Command) => {
-      const code = await runVerify(resolveOpts(cmd), { id });
+    .action(async (id: string | undefined, opts, cmd: Command) => {
+      const flags = opts as { adapter?: string };
+      const code = await runVerify(resolveOpts(cmd), { id, adapter: flags.adapter });
       process.exitCode = code;
     });
 
   addGlobalOptions(program.command("review").description("Spec-level review; fix tasks mean FAIL and re-review"))
+    .option("--adapter <id>", ADAPTER_ID_HELP)
     .allowExcessArguments(false)
-    .action(async (_opts, cmd: Command) => {
-      const code = await runReview(resolveOpts(cmd));
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { adapter?: string };
+      const code = await runReview(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
 
@@ -299,9 +307,11 @@ export function createProgram(): Command {
 
   addGlobalOptions(program.command("fix").description("Test first (must stay RED), then fix"))
     .argument("<bug...>", "bug to reproduce then fix")
+    .option("--adapter <id>", ADAPTER_ID_HELP)
     .allowExcessArguments(false)
-    .action(async (bug: string[], _opts, cmd: Command) => {
-      const code = await runFix(resolveOpts(cmd), bug.join(" "));
+    .action(async (bug: string[], opts, cmd: Command) => {
+      const flags = opts as { adapter?: string };
+      const code = await runFix(resolveOpts(cmd), bug.join(" "), flags);
       process.exitCode = code;
     });
 
@@ -371,6 +381,8 @@ export function createProgram(): Command {
     .option("--from-agent", "filed from adapter extra.json")
     .option("--type <type>", "feature | fix | bug")
     .option("--priority <priority>", "P0 | P1 | P2")
+    .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--route <name>", "named adapter route (expanded at write)")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
       const flags = opts as {
@@ -379,6 +391,8 @@ export function createProgram(): Command {
         fromAgent?: boolean;
         type?: string;
         priority?: string;
+        adapter?: string;
+        route?: string;
       };
       const code = await runTicketCreate(resolveOpts(cmd), flags);
       process.exitCode = code;
@@ -393,6 +407,9 @@ export function createProgram(): Command {
     .option("--blocked-by <ids...>", "dependency task ids")
     .option("--blocks <ids...>", "downstream task ids")
     .option("--allow-deps", "allow changing blockedBy/blocks")
+    .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--route <name>", "named adapter route (expanded at write)")
+    .option("--clear-adapter", "omit Task.adapter")
     .allowExcessArguments(false)
     .action(async (id: string, opts, cmd: Command) => {
       const flags = opts as {
@@ -402,6 +419,9 @@ export function createProgram(): Command {
         blockedBy?: string[];
         blocks?: string[];
         allowDeps?: boolean;
+        adapter?: string;
+        route?: string;
+        clearAdapter?: boolean;
       };
       const code = await runTaskAmend(resolveOpts(cmd), id, flags);
       process.exitCode = code;

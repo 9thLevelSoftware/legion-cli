@@ -1,11 +1,13 @@
 import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 
-export async function runVerify(opts: CliOpts, flags: { id?: string }): Promise<number> {
+export async function runVerify(opts: CliOpts, flags: { id?: string; adapter?: string }): Promise<number> {
+  const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
-  const result = await engine.verify(flags.id);
+  const result = await engine.verify(flags.id, adapter ? { adapter } : undefined);
   const state = await engine.getState();
   const slice = await engine.listSliceTasks();
   const next = nextCommand(state, slice);

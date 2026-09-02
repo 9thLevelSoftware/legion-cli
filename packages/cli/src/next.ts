@@ -10,6 +10,13 @@ export type NextCommand = {
   hint: string;
 };
 
+export function formatReadyTaskLine(
+  task: Pick<Task, "id" | "title" | "priority"> & { adapter?: string },
+): string {
+  const adapterBit = task.adapter ? `  ${task.adapter}` : "";
+  return `  ${task.id}  ${task.title}  ${task.priority}${adapterBit}`;
+}
+
 const NEXT_BY_PHASE: Record<Phase, NextCommand> = {
   uninitialized: {
     run: `legion-cli init --name <product> --adapter ${ADAPTER_ID_HELP}`,

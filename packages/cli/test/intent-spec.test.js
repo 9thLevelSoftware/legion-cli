@@ -110,3 +110,22 @@ test("spec --skip-wireframes does not write INDEX.html", async () => {
     );
   });
 });
+
+test("intent discuss spec do not accept --adapter", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    for (const args of [
+      ["intent", "--adapter", "grok", "--project", dir],
+      ["discuss", "--adapter", "grok", "--project", dir],
+      ["spec", "--adapter", "grok", "--project", dir],
+    ]) {
+      const result = runCli(args);
+      assert.equal(result.status, 1, args.join(" "));
+      assert.match(normalize(`${result.stdout}\n${result.stderr}`), /unknown option|--adapter/);
+    }
+    const intentHelp = runCli(["help", "intent"]);
+    assert.doesNotMatch(normalize(intentHelp.stdout), /--adapter/);
+    const discussHelp = runCli(["help", "discuss"]);
+    assert.doesNotMatch(normalize(discussHelp.stdout), /--adapter/);
+  });
+});

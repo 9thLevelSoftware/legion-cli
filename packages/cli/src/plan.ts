@@ -1,11 +1,13 @@
 import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 
-export async function runPlan(opts: CliOpts): Promise<number> {
+export async function runPlan(opts: CliOpts, flags: { adapter?: string } = {}): Promise<number> {
+  const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
-  const readiness = await engine.plan();
+  const readiness = await engine.plan(undefined, adapter ? { adapter } : undefined);
   const state = await engine.getState();
   const report = engine.getLastPlanReport();
   const slice = await engine.listSliceTasks();

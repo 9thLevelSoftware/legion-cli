@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import { normalize, runCli, withTempDir } from "./helpers.js";
+import { normalize, runCli, withTempDir, withUnspawnableGrok } from "./helpers.js";
 
 function makeTask(overrides = {}) {
   const { contract, ...rest } = overrides;
@@ -130,4 +130,40 @@ test("help lists verify and review", async () => {
   const out = normalize(all.stdout);
   assert.match(out, /verify \[id\]/);
   assert.match(out, /review/);
+  assert.match(out, /--adapter/);
+});
+
+test("review --adapter grok refuses via cli when grok is unspawnable", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedExecutingDone(dir);
+    await engine.store.writeConfig(withUnspawnableGrok(await engine.store.readConfig()));
+    const result = runCli(["review", "--adapter", "grok", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /spawnable adapter \(grok, via cli\)/);
+  });
+});
+
+test("verify --adapter grok is accepted as an optional skill", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedExecutingDone(dir, { lastReview: "PASS" });
+    await engine.store.writeConfig(withUnspawnableGrok(await engine.store.readConfig()));
+    const result = runCli(["verify", "--adapter", "grok", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(result.stdout), /not a ship gate/);
+  });
+});
+
+test("verify --adapter bogus refuses", async () => {
+  await withTempDir(async (dir) => {
+    await seedExecutingDone(dir);
+    const result = runCli(["verify", "--adapter", "bogus", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /adapter must be/);
+  });
 });

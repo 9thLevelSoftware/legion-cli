@@ -1,16 +1,29 @@
 import { createLegionEngine, findSkillsDir, isSliceTerminal } from "@9thlevelsoftware/legion-cli-core";
+import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 
+export function startingTaskLine(
+  taskId: string,
+  title: string | undefined,
+  adapterId: string | undefined,
+): string {
+  const titleBit = title ? ` (${title})` : "";
+  const viaBit = adapterId ? ` via ${adapterId}` : "";
+  return `Starting ${taskId}${titleBit}${viaBit}.`;
+}
+
 export async function runExecute(
   opts: CliOpts,
-  flags: { id?: string; untilBlocked?: boolean; fix?: boolean },
+  flags: { id?: string; untilBlocked?: boolean; fix?: boolean; adapter?: string },
 ): Promise<number> {
+  const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
   const result = await engine.execute(flags.id ?? "auto", {
     untilBlocked: Boolean(flags.untilBlocked),
     fix: Boolean(flags.fix),
+    ...(adapter ? { adapter } : {}),
   });
   const state = await engine.getState();
   const slice = await engine.listSliceTasks();
@@ -38,7 +51,7 @@ export async function runExecute(
 
   for (const outcome of result.tasks) {
     const task = slice.find((item) => item.id === outcome.taskId);
-    writeOut(`Starting ${outcome.taskId}${task ? ` (${task.title})` : ""}.`);
+    writeOut(startingTaskLine(outcome.taskId, task?.title, outcome.adapterId));
     if (outcome.incident) {
       writeOut("inspect .git");
     }

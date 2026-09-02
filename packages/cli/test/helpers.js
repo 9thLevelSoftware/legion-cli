@@ -51,3 +51,24 @@ export async function withTempDir(fn) {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+/** Omit {{pointer}} so PATH cannot green-light grok in CLI-override tests. */
+export function withUnspawnableGrok(config) {
+  return {
+    ...config,
+    adapter: {
+      ...config.adapter,
+      grok: { args: ["--model", "grok-4"] },
+    },
+  };
+}
+
+export function withNamedAdapter(config, name, id) {
+  return {
+    ...config,
+    adapter: {
+      ...config.adapter,
+      named: { ...(config.adapter.named ?? {}), [name]: id },
+    },
+  };
+}

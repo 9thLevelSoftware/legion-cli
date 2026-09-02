@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import { normalize, runCli, withTempDir } from "./helpers.js";
+import { normalize, runCli, withTempDir, withUnspawnableGrok } from "./helpers.js";
 
 function quoteArg(value) {
   return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
@@ -96,7 +96,7 @@ test("execute one ready task and stay executing", async () => {
     const result = runCli(["execute", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const out = normalize(result.stdout);
-    assert.match(out, /TSK-0001/);
+    assert.match(out, /Starting TSK-0001 \(in\/out button\) via fake\./);
     assert.match(out, /Verification PASS/);
     assert.match(out, /Dashboard: http:\/\/127\.0\.0\.1:7420/);
     assert.doesNotMatch(out, /OS isolation|sandbox/i);
@@ -150,6 +150,7 @@ test("help lists execute flags", async () => {
   const out = normalize(result.stdout);
   assert.match(out, /until-blocked/);
   assert.match(out, /fix/);
+  assert.match(out, /adapter/);
 });
 
 test("doctor --metrics counts one execute timeout", async () => {
@@ -171,5 +172,81 @@ test("doctor --metrics counts one execute timeout", async () => {
     assert.equal(doctor.status, 0, `${doctor.stdout}\n${doctor.stderr}`);
     const body = JSON.parse(doctor.stdout);
     assert.equal(body.metrics.timeouts, 1);
+  });
+});
+
+test("execute --adapter grok refuses via cli when grok is unspawnable", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedPlanReady(dir);
+    await engine.store.writeConfig(withUnspawnableGrok(await engine.store.readConfig()));
+    const result = runCli(["execute", "--adapter", "grok", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /spawnable adapter \(grok, via cli\)/);
+  });
+});
+
+test("execute --until-blocked --adapter applies the override to the loop", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedPlanReady(dir, {
+      extraTasks: [
+        makeTask({
+          id: "TSK-0002",
+          title: "board",
+          contract: {
+            filesAllowed: ["src/board.ts"],
+            expectedArtifacts: ["src/board.ts"],
+            verificationCommands: [passingVerify()],
+          },
+        }),
+      ],
+    });
+    await engine.store.writeConfig(withUnspawnableGrok(await engine.store.readConfig()));
+    const result = runCli(["execute", "--until-blocked", "--adapter", "grok", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /spawnable adapter \(grok, via cli\)/);
+    assert.equal((await engine.store.readTask("TSK-0001")).data.status, "ready");
+    assert.equal((await engine.store.readTask("TSK-0002")).data.status, "ready");
+  });
+});
+
+test("status shows raw currentTaskAdapter when set", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir, { task: { adapter: "grok" } });
+    const engine = createLegionEngine(dir);
+    const state = await engine.store.readState();
+    await engine.store.writeState(
+      { ...state.data, phase: "executing", currentTaskId: "TSK-0001" },
+      state.body,
+    );
+    const human = runCli(["status", "--project", dir]);
+    assert.equal(human.status, 0, human.stderr);
+    assert.match(normalize(human.stdout), /Current task: TSK-0001 \(grok\)/);
+    const json = runCli(["status", "--json", "--project", dir]);
+    assert.equal(JSON.parse(json.stdout).currentTaskAdapter, "grok");
+    const plain = runCli(["status", "--plain", "--project", dir]);
+    assert.match(normalize(plain.stdout), /currentTaskAdapter\tgrok/);
+  });
+});
+
+test("status omits current-task adapter suffix when Task.adapter is unset", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir);
+    const engine = createLegionEngine(dir);
+    const state = await engine.store.readState();
+    await engine.store.writeState(
+      { ...state.data, phase: "executing", currentTaskId: "TSK-0001" },
+      state.body,
+    );
+    const human = runCli(["status", "--project", dir]);
+    assert.match(normalize(human.stdout), /Current task: TSK-0001$/m);
+    assert.doesNotMatch(normalize(human.stdout), /Current task: TSK-0001 \(/);
+    const json = runCli(["status", "--json", "--project", dir]);
+    assert.equal(JSON.parse(json.stdout).currentTaskAdapter, null);
+    const plain = runCli(["status", "--plain", "--project", dir]);
+    assert.doesNotMatch(normalize(plain.stdout), /currentTaskAdapter/);
   });
 });
