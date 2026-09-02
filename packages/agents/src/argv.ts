@@ -112,9 +112,10 @@ export function templateArgv(
     case "mimo":
     case "minimax": {
       const extra = config.adapter[id];
+      const binary = extra?.binary ?? ASSUMED_EXTRA_BINARIES[id];
       return {
-        binary: extra?.binary ?? ASSUMED_EXTRA_BINARIES[id],
-        argv: extraArgsOrDefault(id, extra?.args ?? []),
+        binary,
+        argv: extraArgsOrDefault(id, extra?.args ?? [], binary),
       };
     }
   }
