@@ -1790,7 +1790,7 @@ Incremental, independently reviewable PRs from an empty repo. **PR-01–PR-16 ar
 
 - **Files/components:** `packages/agents/**`, frozen argv table, process-group abort, skill staging copy, `AgentResult`
 - **Depends on:** PR-05
-- **Description:** `claude` + `generic` + `fake` spawnable. No product-default adapter. `fake` writes expected artifacts for tests. Conformance: detect matrix + spawn pointer prompt. Extra adapters land spawnable in PR-23 (not detect-only).
+- **Description:** `claude` + `generic` + `fake` spawnable. No product-default adapter. `fake` writes expected artifacts for tests. Conformance: detect matrix + spawn pointer prompt. Extras already spawn generic-style (KD5); they are not detect-only. PR-23 is verified vendor argv / conformance, not an unlock from detect-only.
 
 ### PR-07 — Interview, discuss, spec freeze (question bank + optional spawn)
 
@@ -1890,11 +1890,11 @@ Incremental, independently reviewable PRs from an empty repo. **PR-01–PR-16 ar
 - **Depends on:** PR-08, PR-14
 - **Description:** Compact only `done` tasks with no `in_progress` sibling; hold lock.
 
-### PR-23 — Extra adapters (`grok`, `codex`) conformance suite
+### PR-23 — Extra adapters (`grok`, `codex`) verified vendor argv + conformance suite
 
 - **Files/components:** `packages/agents` argv tables once binaries are verified
 - **Depends on:** PR-06
-- **Description:** Unlocks KD5 extras as **spawnable** (`ExtraAdapter`, generic-style argv; `DETECT_ONLY_ADAPTER_IDS` stays empty). `openai` is an alias id for the Codex CLI (assumed binary `codex`); also `mimo` / `minimax` (`mcode`). Per-task / per-skill spawn routing: [`docs/design/adapter-routing.md`](adapter-routing.md).
+- **Description:** Verified vendor argv for extra adapters (`grok`, `codex`, …) plus a conformance suite. Extras already spawn generic-style (KD5); this is not a detect-only unlock. `openai` is an alias id for the Codex CLI (assumed binary `codex`); also `mimo` / `minimax` (`mcode`). Per-task / per-skill spawn routing: [`docs/design/adapter-routing.md`](adapter-routing.md).
 
 ### PR-24 — Optional dashboard write surface
 
