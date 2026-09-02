@@ -2,6 +2,7 @@ import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
 import type { GardenReport, SearchHit } from "@9thlevelsoftware/legion-cli-wiki";
 import type {
   AdapterId,
+  AdapterResolutionSource,
   ControlMode,
   DiscussDecision,
   FileContract,
@@ -108,6 +109,7 @@ export type ShipOptions = {
 export type ExecuteOptions = {
   untilBlocked?: boolean;
   fix?: boolean;
+  adapter?: AdapterId;
 };
 
 export type ExecuteTaskResult = {
@@ -119,6 +121,8 @@ export type ExecuteTaskResult = {
   headMoved: boolean;
   ticketId?: string;
   verificationPass?: boolean;
+  adapterId?: AdapterId;
+  resolutionSource?: AdapterResolutionSource;
 };
 
 export type ExecuteResult = {
@@ -174,6 +178,7 @@ export type NewTicket = {
   priority?: Priority;
   notes?: string;
   contract?: Partial<FileContract>;
+  adapter?: AdapterId;
 };
 
 export type NewPacket = {
@@ -200,6 +205,9 @@ export type AmendTaskOptions = {
   allowDeps?: boolean;
   blockedBy?: string[];
   blocks?: string[];
+  adapter?: AdapterId;
+  /** Mutually exclusive with `adapter`. */
+  clearAdapter?: boolean;
 };
 
 export type CompactedTask = {

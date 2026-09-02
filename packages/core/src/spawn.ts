@@ -7,14 +7,22 @@ import {
   buildPointerPrompt,
   DEFAULT_TIMEOUT_MS,
   filterSpawnEnv,
-  isSpawnable,
+  isResolvedAdapterSpawnable,
   resolveAdapter,
+  resolveAdapterId,
   stageSkill,
+  templateArgv,
   writeRunPrompt,
+  type AdapterResolution,
   type FakeArtifact,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
-import { SCHEMA_VERSION, type LegionConfig, type SkillId } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  SCHEMA_VERSION,
+  type AdapterId,
+  type LegionConfig,
+  type SkillId,
+} from "@9thlevelsoftware/legion-cli-schema";
 import { skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
 import {
@@ -33,6 +41,24 @@ function skillMissingHint(skillId: SkillId): string {
   return HINT.plan;
 }
 
+export function spawnableAdapterRefuseMessage(skillId: SkillId, resolution: AdapterResolution): string {
+  return `${skillId} needs a spawnable adapter (${resolution.id}, via ${resolution.source})`;
+}
+
+/** Persist flag names and {{pointer}} only — never raw argv values (credentials). */
+export function argvSummarySafe(argv: readonly string[]): string {
+  return argv
+    .map((arg) => {
+      if (arg.includes("{{pointer}}")) return "{{pointer}}";
+      if (/^--[A-Za-z][\w-]*$/.test(arg) || /^-[A-Za-z]$/.test(arg)) return arg;
+      const attached = /^(--[A-Za-z][\w-]*)=(.*)$/.exec(arg);
+      if (attached) return `${attached[1]}=<redacted>`;
+      return "<redacted>";
+    })
+    .join(" ")
+    .slice(0, 240);
+}
+
 export type OptionalSpawnResult = {
   spawned: boolean;
   runId: string;
@@ -40,6 +66,9 @@ export type OptionalSpawnResult = {
   error?: unknown;
   timedOut?: boolean;
   durationMs?: number;
+  resolution?: AdapterResolution;
+  binary?: string;
+  argvSummary?: string;
 };
 
 export function findSkillsDir(from = process.cwd()): string | undefined {
@@ -84,18 +113,22 @@ export async function optionalSkillSpawn(opts: {
   throwAfterWrite?: boolean;
   timedOut?: boolean;
   required?: boolean;
+  cliAdapter?: AdapterId;
+  taskAdapter?: AdapterId;
 }): Promise<OptionalSpawnResult> {
   const runId = `${opts.skillId}-${Date.now().toString(36)}`;
-  const adapter = resolveAdapter(opts.config, {
-    artifacts: opts.fakeArtifacts ?? [],
-    throwAfterWrite: opts.throwAfterWrite,
-    timedOut: opts.timedOut,
+  const resolution = resolveAdapterId({
+    config: opts.config,
+    skillId: opts.skillId,
+    taskAdapter: opts.taskAdapter,
+    cliAdapter: opts.cliAdapter,
   });
-  if (!(await isSpawnable(adapter))) {
+
+  if (!(await isResolvedAdapterSpawnable(opts.config, resolution.id))) {
     if (opts.required) {
-      refuse(`${opts.skillId} needs a spawnable adapter (run legion-cli doctor)`, HINT.doctor);
+      refuse(spawnableAdapterRefuseMessage(opts.skillId, resolution), HINT.doctor);
     }
-    return { spawned: false, runId, revert: null };
+    return { spawned: false, runId, revert: null, resolution };
   }
 
   const skillsDir = opts.skillsDir ?? findSkillsDir();
@@ -104,8 +137,17 @@ export async function optionalSkillSpawn(opts: {
     if (opts.required) {
       refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
     }
-    return { spawned: false, runId, revert: null };
+    return { spawned: false, runId, revert: null, resolution };
   }
+
+  const adapter = resolveAdapter(opts.config, {
+    id: resolution.id,
+    artifacts: opts.fakeArtifacts ?? [],
+    throwAfterWrite: opts.throwAfterWrite,
+    timedOut: opts.timedOut,
+  });
+  const tmpl = templateArgv(resolution.id, opts.config);
+  const argvSummary = argvSummarySafe(tmpl.argv);
 
   const contract = skillContract(opts.skillId, { runId, specId: opts.specId });
   const allowedRoots = [...contract.allowedRoots, ...(opts.extraAllowedRoots ?? [])];
@@ -161,6 +203,10 @@ export async function optionalSkillSpawn(opts: {
           preSpawnRef: preSpawnRef ?? "UNBORN",
           startedAt: new Date().toISOString(),
           pid,
+          adapterId: resolution.id,
+          binary: tmpl.binary,
+          argvSummary,
+          resolutionSource: resolution.source,
         },
         null,
         2,
@@ -202,5 +248,15 @@ export async function optionalSkillSpawn(opts: {
       dirtyAtStart,
     });
   }
-  return { spawned: true, runId, revert, error, timedOut, durationMs: Date.now() - started };
+  return {
+    spawned: true,
+    runId,
+    revert,
+    error,
+    timedOut,
+    durationMs: Date.now() - started,
+    resolution,
+    binary: tmpl.binary,
+    argvSummary,
+  };
 }

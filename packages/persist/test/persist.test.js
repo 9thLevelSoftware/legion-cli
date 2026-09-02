@@ -19,6 +19,7 @@ import {
   ensureGitignore,
   appendAuditEvent,
   auditEventsPath,
+  formatAuditDayLine,
   readAuditEvents,
   summarizeAuditMetrics,
   gitAdd,
@@ -635,6 +636,35 @@ test("appendAuditEvent writes events.jsonl and YYYY-MM-DD.md", async () => {
     const day = await readFile(join(dir, ".legion-cli", "audit", "2026-09-01.md"), "utf8");
     assert.match(day, /# 2026-09-01/);
     assert.match(day, /ship phase=shipped/);
+  });
+});
+
+test("formatAuditDayLine appends adapter when data.adapterId is a string", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, ".legion-cli", "audit"), { recursive: true });
+    const line = formatAuditDayLine({
+      schemaVersion: "legion-cli-audit/v1",
+      ts: "2026-09-02T12:00:00.000Z",
+      type: "execute",
+      phase: "executing",
+      taskId: "TSK-0100",
+      actor: "agent",
+      data: { adapterId: "grok" },
+    });
+    assert.equal(
+      line,
+      "- 2026-09-02T12:00:00.000Z execute phase=executing task=TSK-0100 actor=agent adapter=grok\n",
+    );
+    await appendAuditEvent(dir, {
+      ts: "2026-09-02T12:00:00.000Z",
+      type: "execute",
+      phase: "executing",
+      taskId: "TSK-0100",
+      actor: "agent",
+      data: { adapterId: "grok", durationMs: 12 },
+    });
+    const day = await readFile(join(dir, ".legion-cli", "audit", "2026-09-02.md"), "utf8");
+    assert.match(day, /execute phase=executing task=TSK-0100 actor=agent adapter=grok/);
   });
 });
 

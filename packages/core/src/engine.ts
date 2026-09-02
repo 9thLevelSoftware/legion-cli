@@ -1,4 +1,8 @@
-import { isSpawnable, resolveAdapter, type FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
+import {
+  isResolvedAdapterSpawnable,
+  resolveAdapterId,
+  type FakeArtifact,
+} from "@9thlevelsoftware/legion-cli-agents";
 import {
   isTaskReady,
   mergeFilesForbidden,
@@ -58,9 +62,11 @@ import {
   writeChecklist,
 } from "@9thlevelsoftware/legion-cli-qa";
 import {
+  ADAPTER_ID_HELP,
   ControlModeSchema,
   QAScoreSchema,
   SCHEMA_VERSION,
+  type AdapterId,
   type Assumption,
   type ControlMode,
   type DiscussDecision,
@@ -96,7 +102,7 @@ import { assertCanTransition, assertLegalPhase } from "./phases.js";
 import { evaluateReadiness, filesAllowedFailsPlan, type ReadinessReport } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
 import { HEAD_MOVED_WARNING } from "./revert.js";
-import { findSkillsDir, optionalSkillSpawn } from "./spawn.js";
+import { findSkillsDir, optionalSkillSpawn, spawnableAdapterRefuseMessage } from "./spawn.js";
 import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
 import { compactTaskBody, outcomeFromTask } from "./compact.js";
 import { assertTaskStatusTransition } from "./tasks.js";
@@ -554,7 +560,7 @@ export class LegionEngine {
     return isForbiddenSpawnPath(path);
   }
 
-  async plan(specId?: string): Promise<Readiness> {
+  async plan(specId?: string, opts?: { adapter?: AdapterId }): Promise<Readiness> {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase !== "spec_frozen" && state.phase !== "planning" && state.phase !== "plan_failed") {
@@ -566,7 +572,7 @@ export class LegionEngine {
       }
 
       const config = await this.#readConfig();
-      await this.#assertPlanSpawnable(config);
+      await this.#assertSkillSpawnable(config, "plan", { cliAdapter: opts?.adapter });
 
       let current: StateFile = { ...state, activeSpecId: id };
       if (current.phase === "spec_frozen" || current.phase === "plan_failed") {
@@ -588,7 +594,9 @@ export class LegionEngine {
             `Read .legion-cli/specs/${id}/SPEC.md.`,
             `Write .legion-cli/plans/${id}.md and .legion-cli/tasks/TSK-*.md with FileContracts.`,
             "Every task needs verificationCommands and exclusive concrete filesAllowed.",
-            "If you discover extra work, write extra.json in the run cache; do not expand filesAllowed.",
+            `Optional adapter: is an AdapterId (${ADAPTER_ID_HELP}). Set it only when SPEC or DISCUSS names that coding CLI; otherwise omit.`,
+            "Never emit adapter: fake outside tests.",
+            `If you discover extra work, write extra.json in the run cache (may include "adapter": "grok"); do not expand filesAllowed.`,
             "Do not write src/** or other product files.",
           ].join("\n"),
           skillsDir: this.#skillsDir,
@@ -596,6 +604,7 @@ export class LegionEngine {
           throwAfterWrite: this.#fakeThrowAfterWrite,
           timedOut: this.#fakeTimedOut,
           required: true,
+          cliAdapter: opts?.adapter,
         });
         runId = result.runId;
         if (result.revert?.incident) {
@@ -726,9 +735,14 @@ export class LegionEngine {
       if (overlaps.length > 0) {
         refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.amend);
       }
+      if (opts?.clearAdapter && opts.adapter) {
+        refuse("clearAdapter and adapter are mutually exclusive", HINT.amend);
+      }
+      const adapter = opts?.clearAdapter ? undefined : (opts?.adapter ?? doc.data.adapter);
       await this.store.writeTask(
         {
           ...doc.data,
+          adapter,
           contract: merged,
           blockedBy: nextBlockedBy,
           blocks: nextBlocks,
@@ -748,7 +762,11 @@ export class LegionEngine {
       const warnings: string[] = [];
       let nextId: string | "auto" = taskId;
       while (true) {
-        const outcome = await this.#executeOneLocked(nextId, { fix: Boolean(opts?.fix), config });
+        const outcome = await this.#executeOneLocked(nextId, {
+          fix: Boolean(opts?.fix),
+          config,
+          adapter: opts?.adapter,
+        });
         outcomes.push(outcome);
         if (outcome.headMoved && !warnings.includes(HEAD_MOVED_WARNING)) {
           warnings.push(HEAD_MOVED_WARNING);
@@ -778,7 +796,7 @@ export class LegionEngine {
     });
   }
 
-  async verify(taskId?: string): Promise<VerifyResult> {
+  async verify(taskId?: string, opts?: { adapter?: AdapterId }): Promise<VerifyResult> {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
@@ -820,6 +838,8 @@ export class LegionEngine {
         fakeArtifacts: this.#fakeArtifacts,
         throwAfterWrite: this.#fakeThrowAfterWrite,
         timedOut: this.#fakeTimedOut,
+        cliAdapter: opts?.adapter,
+        taskAdapter: task?.adapter,
       });
       if (result.runId) {
         await this.#fileExtrasFromRun(result.runId, specId, { type: "fix", parentId: task?.id });
@@ -846,7 +866,7 @@ export class LegionEngine {
     });
   }
 
-  async review(): Promise<ReviewResult> {
+  async review(opts?: { adapter?: AdapterId }): Promise<ReviewResult> {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
@@ -856,7 +876,7 @@ export class LegionEngine {
         refuse("review requires an active spec", HINT.spec);
       }
       const config = await this.#readConfig();
-      await this.#assertReviewSpawnable(config);
+      await this.#assertSkillSpawnable(config, "review", { cliAdapter: opts?.adapter });
 
       const before = await this.snapshotTaskIds();
       const result = await optionalSkillSpawn({
@@ -878,6 +898,7 @@ export class LegionEngine {
         throwAfterWrite: this.#fakeThrowAfterWrite,
         timedOut: this.#fakeTimedOut,
         required: true,
+        cliAdapter: opts?.adapter,
       });
       if (result.runId) {
         await this.#fileExtrasFromRun(result.runId, specId);
@@ -1361,7 +1382,7 @@ export class LegionEngine {
 
   async #executeOneLocked(
     taskId: string | "auto",
-    opts: { fix: boolean; config: LegionConfig },
+    opts: { fix: boolean; config: LegionConfig; adapter?: AdapterId },
   ): Promise<ExecuteTaskResult> {
     const state = await this.#readState();
     if (state.phase === "plan_failed") {
@@ -1376,7 +1397,10 @@ export class LegionEngine {
       refuse("This task needs a file contract and verification commands", HINT.plan);
     }
 
-    await this.#assertExecuteSpawnable(opts.config);
+    await this.#assertSkillSpawnable(opts.config, "execute", {
+      cliAdapter: opts.adapter,
+      taskAdapter: task.adapter,
+    });
     if (state.phase !== "executing") {
       assertCanTransition(state.phase, "executing");
     }
@@ -1417,6 +1441,8 @@ export class LegionEngine {
       throwAfterWrite: this.#fakeThrowAfterWrite,
       timedOut: this.#fakeTimedOut,
       required: true,
+      cliAdapter: opts.adapter,
+      taskAdapter: task.adapter,
     });
 
     const revert = result.revert;
@@ -1426,6 +1452,14 @@ export class LegionEngine {
     const runId = result.runId;
     const durationMs = result.durationMs ?? 0;
     const timedOut = Boolean(result.timedOut);
+    const adapterId = result.resolution?.id;
+    const resolutionSource = result.resolution?.source;
+    const spawnAudit = {
+      adapterId,
+      binary: result.binary,
+      argvSummary: result.argvSummary,
+      resolutionSource,
+    };
 
     const finish = async (outcome: ExecuteTaskResult): Promise<ExecuteTaskResult> => {
       const current = await this.#readState();
@@ -1433,7 +1467,7 @@ export class LegionEngine {
         "execute",
         current.phase,
         "agent",
-        { durationMs, timedOut, status: outcome.status, runId },
+        { durationMs, timedOut, status: outcome.status, runId, ...spawnAudit },
         outcome.taskId,
       );
       if (timedOut) {
@@ -1441,11 +1475,11 @@ export class LegionEngine {
           "timeout",
           current.phase,
           "agent",
-          { skillId: "execute", durationMs },
+          { skillId: "execute", durationMs, ...spawnAudit },
           outcome.taskId,
         );
       }
-      return outcome;
+      return { ...outcome, adapterId, resolutionSource };
     };
 
     if (runId) {
@@ -1587,48 +1621,24 @@ export class LegionEngine {
     }
   }
 
-  async #assertExecuteSpawnable(config: LegionConfig): Promise<void> {
-    const adapter = resolveAdapter(config, {
-      artifacts: this.#fakeArtifacts,
-      throwAfterWrite: this.#fakeThrowAfterWrite,
-      timedOut: this.#fakeTimedOut,
+  async #assertSkillSpawnable(
+    config: LegionConfig,
+    skillId: "plan" | "execute" | "review",
+    opts?: { cliAdapter?: AdapterId; taskAdapter?: AdapterId },
+  ): Promise<void> {
+    const resolution = resolveAdapterId({
+      config,
+      skillId,
+      taskAdapter: opts?.taskAdapter,
+      cliAdapter: opts?.cliAdapter,
     });
-    if (!(await isSpawnable(adapter))) {
-      refuse("Execute needs a spawnable adapter", HINT.doctor);
+    if (!(await isResolvedAdapterSpawnable(config, resolution.id))) {
+      refuse(spawnableAdapterRefuseMessage(skillId, resolution), HINT.doctor);
     }
     const skillsDir = this.#skillsDir ?? findSkillsDir();
-    if (!skillsDir || !existsSync(join(skillsDir, "execute", "SKILL.md"))) {
-      refuse("execute requires skills/execute/SKILL.md", HINT.execute);
-    }
-  }
-
-  async #assertPlanSpawnable(config: LegionConfig): Promise<void> {
-    const adapter = resolveAdapter(config, {
-      artifacts: this.#fakeArtifacts,
-      throwAfterWrite: this.#fakeThrowAfterWrite,
-      timedOut: this.#fakeTimedOut,
-    });
-    if (!(await isSpawnable(adapter))) {
-      refuse("Plan needs a spawnable adapter", HINT.doctor);
-    }
-    const skillsDir = this.#skillsDir ?? findSkillsDir();
-    if (!skillsDir || !existsSync(join(skillsDir, "plan", "SKILL.md"))) {
-      refuse("plan requires skills/plan/SKILL.md", HINT.plan);
-    }
-  }
-
-  async #assertReviewSpawnable(config: LegionConfig): Promise<void> {
-    const adapter = resolveAdapter(config, {
-      artifacts: this.#fakeArtifacts,
-      throwAfterWrite: this.#fakeThrowAfterWrite,
-      timedOut: this.#fakeTimedOut,
-    });
-    if (!(await isSpawnable(adapter))) {
-      refuse("Review needs a spawnable adapter", HINT.doctor);
-    }
-    const skillsDir = this.#skillsDir ?? findSkillsDir();
-    if (!skillsDir || !existsSync(join(skillsDir, "review", "SKILL.md"))) {
-      refuse("review requires skills/review/SKILL.md", HINT.review);
+    if (!skillsDir || !existsSync(join(skillsDir, skillId, "SKILL.md"))) {
+      const hint = skillId === "execute" ? HINT.execute : skillId === "review" ? HINT.review : HINT.plan;
+      refuse(`${skillId} requires skills/${skillId}/SKILL.md`, hint);
     }
   }
 
@@ -1719,6 +1729,7 @@ export class LegionEngine {
     }
     const tasks = await this.#listTasks();
     let parentId = input.parentId;
+    let parentAdapter: AdapterId | undefined;
     if (parentId) {
       const parent = tasks.find((task) => task.id === parentId);
       if (!parent) {
@@ -1727,10 +1738,17 @@ export class LegionEngine {
         } else {
           refuse(`unknown parent ${parentId}`, HINT.ticket(parentId));
         }
+      } else {
+        parentAdapter = parent.adapter;
       }
     }
     const id = nextTaskId(tasks.map((task) => task.id));
-    const ticket = ticketFromInput(id, specId, { ...input, title, parentId });
+    const ticket = ticketFromInput(id, specId, {
+      ...input,
+      title,
+      parentId,
+      adapter: input.adapter ?? parentAdapter,
+    });
     await this.store.writeTask(ticket, taskMarkdownBody(ticket));
     if (parentId) {
       const parentDoc = await this.store.readTask(parentId);
@@ -2061,7 +2079,12 @@ export class LegionEngine {
     }
   }
 
-  async #optionalSpawn(skillId: "interview" | "discuss" | "spec", specId: string, promptBody: string): Promise<void> {
+  async #optionalSpawn(
+    skillId: "interview" | "discuss" | "spec",
+    specId: string,
+    promptBody: string,
+    cliAdapter?: AdapterId,
+  ): Promise<void> {
     let config: LegionConfig;
     try {
       config = await this.#readConfig();
@@ -2078,6 +2101,7 @@ export class LegionEngine {
       fakeArtifacts: this.#fakeArtifacts,
       throwAfterWrite: this.#fakeThrowAfterWrite,
       timedOut: this.#fakeTimedOut,
+      cliAdapter,
     });
     if (!result.spawned || !result.revert) return;
     if (result.revert.incident) {

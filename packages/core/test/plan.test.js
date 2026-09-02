@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -14,6 +14,7 @@ import {
   withEngine,
   withFakeAdapter,
   writeTask,
+  writeUnspawnableGrok,
 } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
@@ -57,12 +58,84 @@ test("plan refuses without a spawnable adapter", async () => {
       () => engine.plan("spec-checkin"),
       (err) => {
         assert.equal(err instanceof LegionRefuseError, true);
-        assert.match(err.message, /spawnable adapter/);
+        assert.match(err.message, /plan needs a spawnable adapter \(fake, via default\)/);
         assert.match(err.nextHint, /doctor/);
         return true;
       },
     );
     assert.equal((await engine.getState()).phase, "spec_frozen");
+  });
+});
+
+test("spawnable default plus unspawnable routes.plan refuses before phase planning", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedFrozenSpec(store);
+      await writeUnspawnableGrok(store, { routes: { plan: "grok" } });
+      await assert.rejects(
+        () => engine.plan("spec-checkin"),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /plan needs a spawnable adapter \(grok, via route\)/);
+          assert.match(err.nextHint, /doctor/);
+          return true;
+        },
+      );
+      assert.equal((await engine.getState()).phase, "spec_frozen");
+    });
+  });
+});
+
+test("adapter: not-a-cli is an unreadable task and plan FAILs", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedFrozenSpec(store);
+      const task = makeTask();
+      await writeFile(
+        join(store.paths.tasksDir, "TSK-0001.md"),
+        taskMarkdown(task).replace("specId: spec-checkin\n", "specId: spec-checkin\nadapter: not-a-cli\n"),
+        "utf8",
+      );
+      const readiness = await engine.plan("spec-checkin");
+      assert.equal(readiness, "FAIL");
+      assert.equal((await engine.getState()).phase, "plan_failed");
+      assert.ok(engine.getLastPlanReport().fails.some((line) => /TSK-0001 is not a valid task/.test(line)));
+    });
+  });
+});
+
+test("parent grok plus extra.json gpt-4 child inherits grok", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store }) => {
+        await initProject(engine);
+        await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
+        await writeTask(store, makeTask({ adapter: "grok" }));
+        const readiness = await engine.plan("spec-checkin");
+        assert.equal(readiness, "CONCERNS");
+        const child = (await store.readTask("TSK-0002")).data;
+        assert.equal(child.parentId, "TSK-0001");
+        assert.equal(child.adapter, "grok");
+        assert.equal((await store.readTask("TSK-0001")).data.adapter, "grok");
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "also do settings",
+              parentId: "TSK-0001",
+              adapter: "gpt-4",
+              filesAllowed: ["src/settings.ts"],
+              verificationCommands: ["pnpm test"],
+            }),
+          },
+        ],
+      },
+    );
   });
 });
 
@@ -220,6 +293,20 @@ test("amendTask updates FileContract and deps require --allow-deps", async () =>
     const amended = (await store.readTask("TSK-0001")).data;
     assert.deepEqual(amended.contract.filesAllowed, ["src/in-out.ts"]);
     assert.deepEqual(amended.blockedBy, ["TSK-0002"]);
+    await engine.amendTask("TSK-0001", amended.contract, { adapter: "grok" });
+    assert.equal((await store.readTask("TSK-0001")).data.adapter, "grok");
+    assert.deepEqual((await store.readTask("TSK-0001")).data.contract.filesAllowed, ["src/in-out.ts"]);
+    await engine.amendTask("TSK-0001", (await store.readTask("TSK-0001")).data.contract, { clearAdapter: true });
+    assert.equal((await store.readTask("TSK-0001")).data.adapter, undefined);
+    const cleared = (await store.readTask("TSK-0001")).data.contract;
+    await assert.rejects(
+      () => engine.amendTask("TSK-0001", cleared, { adapter: "grok", clearAdapter: true }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /mutually exclusive/);
+        return true;
+      },
+    );
     await assert.rejects(
       () =>
         engine.amendTask("TSK-0002", {

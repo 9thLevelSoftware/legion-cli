@@ -33,6 +33,8 @@ Every task MUST have:
 - `status: ready` if unblocked, else `todo` with `blockedBy`
 - `type: feature|fix|bug`, `priority: P0|P1|P2`, `specId` matching the active spec
 
+Optional frontmatter `adapter:` is an AdapterId (`claude|generic|fake|grok|openai|codex|mimo|minimax`). Set it only when SPEC or DISCUSS names that coding CLI; otherwise omit. Never emit `adapter: fake` outside tests.
+
 Emit at least one P0 task.
 
 ## Extra work
@@ -40,8 +42,10 @@ Emit at least one P0 task.
 Do not expand a live task's `filesAllowed`. If you discover extra work, stop expanding and write `.legion-cli/cache/runs/<id>/extra.json`:
 
 ```json
-{ "title": "short title", "parentId": "TSK-0001", "filesAllowed": ["src/extra.ts"], "verificationCommands": ["pnpm test"] }
+{ "title": "short title", "parentId": "TSK-0001", "filesAllowed": ["src/extra.ts"], "verificationCommands": ["pnpm test"], "adapter": "grok" }
 ```
+
+`extra.json` may include `"adapter": "grok"` (valid AdapterIds only; the engine drops unknown ids and then inherits the parent task adapter if present).
 
 The engine files a linked ticket. Humans use `legion-cli ticket create --parent TSK-x`. Do not amend `filesAllowed` (that is `legion-cli task amend`).
 
