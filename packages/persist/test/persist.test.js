@@ -17,10 +17,14 @@ import {
   PersistValidationError,
   REBUILD_SQL,
   ensureGitignore,
+  appendAuditEvent,
+  auditEventsPath,
+  gitAdd,
   gitCheckIgnore,
   gitDiscoverChanges,
   gitHead,
   gitWorktreeAdd,
+  gitStagedPaths,
   hasSecretPattern,
   queryIndex,
   redactSecrets,
@@ -609,5 +613,46 @@ test("gitWorktreeAdd recreates a deleted checkout without resetting the branch",
     assert.match(git(worktree, ["branch", "--show-current"]), /brownfield\/bbbbbbbb/);
     assert.equal(git(worktree, ["rev-parse", "HEAD"]), branchTip);
     assert.equal(git(dir, ["rev-parse", "HEAD"]), mainHead);
+  });
+});
+
+test("appendAuditEvent writes events.jsonl and YYYY-MM-DD.md", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, ".legion-cli", "audit"), { recursive: true });
+    const event = await appendAuditEvent(dir, {
+      ts: "2026-09-01T12:00:00.000Z",
+      type: "ship",
+      phase: "shipped",
+      actor: "user",
+      data: { specId: "spec-checkin", qaMode: "full", qaScore: 94 },
+    });
+    assert.equal(event.schemaVersion, "legion-cli-audit/v1");
+    const jsonl = await readFile(join(dir, ...auditEventsPath().split("/")), "utf8");
+    assert.match(jsonl, /"type":"ship"/);
+    assert.match(jsonl, /"qaScore":94/);
+    const day = await readFile(join(dir, ".legion-cli", "audit", "2026-09-01.md"), "utf8");
+    assert.match(day, /# 2026-09-01/);
+    assert.match(day, /ship phase=shipped/);
+  });
+});
+
+test("git add stages listed paths and not gitignored index/cache", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, ".legion-cli", "index"), { recursive: true });
+    await mkdir(join(dir, ".legion-cli", "cache"), { recursive: true });
+    await writeFile(join(dir, ".gitignore"), ".legion-cli/index/\n.legion-cli/cache/\n", "utf8");
+    await writeFile(join(dir, ".legion-cli", "STATE.md"), "state\n", "utf8");
+    await writeFile(join(dir, ".legion-cli", "index", "engine.lock"), "lock\n", "utf8");
+    await writeFile(join(dir, ".legion-cli", "cache", "x"), "x\n", "utf8");
+    await writeFile(join(dir, "src.ts"), "src\n", "utf8");
+    initGitRepo(dir);
+    await writeFile(join(dir, "src.ts"), "src2\n", "utf8");
+    await writeFile(join(dir, "other.ts"), "nope\n", "utf8");
+    gitAdd(dir, ["src.ts", ".legion-cli"]);
+    const staged = gitStagedPaths(dir);
+    assert.ok(staged.includes("src.ts"), staged.join(","));
+    assert.equal(staged.includes("other.ts"), false);
+    assert.equal(staged.some((p) => p.startsWith(".legion-cli/index")), false);
+    assert.equal(staged.some((p) => p.startsWith(".legion-cli/cache")), false);
   });
 });

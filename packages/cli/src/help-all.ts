@@ -24,6 +24,8 @@ const AVAILABLE = [
   ["qa", "Score the product (when the slice is done)", "--mode full|no-browser"],
   ["qa checklist", "Tick AC items when no browser", "--tick"],
   ["fix <bug>", "Test first (must stay RED), then fix", ""],
+  ["ship", "Final human review; stage diff", "--allow-degraded-qa, --pr, --commit"],
+  ["abandon", "Stop this spec without shipping", "--message"],
   ["ticket create", "Park extra work", "--parent, --title, --from-agent"],
   ["task amend", "Human changes a file contract", "--allow-deps"],
   ["design-system show", "Show the active design-system package", ""],
