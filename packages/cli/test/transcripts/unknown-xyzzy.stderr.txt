@@ -1,2 +1,2 @@
-unknown command 'garden'
+unknown command 'xyzzy'
 (run legion-cli help --all)
