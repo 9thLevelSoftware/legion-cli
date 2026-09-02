@@ -42,6 +42,8 @@ test("help --all lists the v0 command surface", () => {
   assert.match(out, /legion-cli review/);
   assert.match(out, /legion-cli qa/);
   assert.match(out, /legion-cli fix/);
+  assert.match(out, /legion-cli ship/);
+  assert.match(out, /legion-cli abandon/);
   assert.match(out, /pnpm exec legion-cli/);
 });
 

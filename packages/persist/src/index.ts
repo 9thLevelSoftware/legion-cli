@@ -5,14 +5,34 @@ export {
   PersistValidationError,
 } from "./errors.js";
 export {
+  abandonReceiptBody,
+  abandonReceiptPath,
+  appendAuditEvent,
+  auditDayFromTs,
+  auditDayPath,
+  auditEventsPath,
+  formatAuditDayLine,
+  shipReceiptBody,
+  shipReceiptPath,
+} from "./audit.js";
+export {
   commitIngest,
   commitPaths,
+  gitAdd,
   gitCheckIgnore,
+  gitCommitIndex,
+  gitDiffCached,
   gitDiscoverChanges,
+  gitHasStaged,
   gitHead,
   gitPathExistsAtRef,
+  gitPathTracked,
+  gitPorcelainPaths,
+  gitResetMixed,
+  gitRestoreStaged,
   gitRestoreWorktree,
   gitRmWorktree,
+  gitStagedPaths,
   gitStatusPorcelain,
   gitWorktreeAdd,
   isGitRepo,
@@ -56,6 +76,7 @@ export {
   readMarkdownFile,
   readYamlFile,
   writeMarkdownFile,
+  writeTextFile,
   writeYamlFile,
 } from "./markdown.js";
 export type { MarkdownDoc } from "./markdown.js";
