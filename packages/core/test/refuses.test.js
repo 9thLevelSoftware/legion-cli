@@ -148,6 +148,15 @@ const cases = [
     act: ({ engine }) => engine.review(),
   },
   {
+    name: "review without a spawnable adapter",
+    hint: /doctor/,
+    setup: async ({ engine, store }) => {
+      await initProject(engine);
+      await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
+    },
+    act: ({ engine }) => engine.review(),
+  },
+  {
     name: "ship if last QA pass is not true",
     hint: /legion-cli qa/,
     setup: async ({ engine, store }) => {

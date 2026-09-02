@@ -107,29 +107,32 @@ test("executing stays until every slice task is done or blocked", async () => {
 });
 
 test("slice is all tasks of activeSpecId", async () => {
-  await withEngine(async ({ engine, store }) => {
-    await initProject(engine);
-    await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
-    await writeTask(
-      store,
-      makeTask({
-        id: "TSK-9999",
-        specId: "spec-other",
-        status: "ready",
-        contract: { filesAllowed: ["src/other.ts"], expectedArtifacts: ["src/other.ts"] },
-      }),
-    );
-    const slice = await engine.listSliceTasks();
-    assert.deepEqual(
-      slice.map((task) => task.id),
-      ["TSK-0001"],
-    );
-    const review = await engine.review();
-    assert.equal(review.verdict, "PASS");
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
+      await writeTask(
+        store,
+        makeTask({
+          id: "TSK-9999",
+          specId: "spec-other",
+          status: "ready",
+          contract: { filesAllowed: ["src/other.ts"], expectedArtifacts: ["src/other.ts"] },
+        }),
+      );
+      const slice = await engine.listSliceTasks();
+      assert.deepEqual(
+        slice.map((task) => task.id),
+        ["TSK-0001"],
+      );
+      const review = await engine.review();
+      assert.equal(review.verdict, "PASS");
+    });
   });
 });
 
 test("review PASS only if spawn created zero new tasks", async () => {
+  await withFakeAdapter(async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
     await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
@@ -176,6 +179,7 @@ test("review PASS only if spawn created zero new tasks", async () => {
     assert.equal(pass.verdict, "PASS");
     assert.deepEqual(pass.createdTaskIds, []);
     assert.equal((await engine.getState()).lastReview, "PASS");
+  });
   });
 });
 
@@ -364,6 +368,7 @@ test("plan walks spec_frozen → planning → plan_ready and transition cannot s
 });
 
 test("reopening a blocked slice task after review PASS invalidates lastReview", async () => {
+  await withFakeAdapter(async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
     await seedPlanReady(store, {
@@ -398,9 +403,11 @@ test("reopening a blocked slice task after review PASS invalidates lastReview", 
       },
     );
   });
+  });
 });
 
 test("qa is refused after a review that filed fix tasks until re-review PASS", async () => {
+  await withFakeAdapter(async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
     await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
@@ -421,5 +428,6 @@ test("qa is refused after a review that filed fix tasks until re-review PASS", a
     const score = await engine.qa({ score: makeQaScore() });
     assert.equal(score.pass, true);
     assert.equal((await engine.getState()).phase, "ready_to_ship");
+  });
   });
 });

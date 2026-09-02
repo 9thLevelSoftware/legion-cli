@@ -75,6 +75,7 @@ export type {
   ReviewVerdict,
   SearchHit,
   SessionBrief,
+  VerifyResult,
   ShipOptions,
   ShipReceipt,
   Spec,
