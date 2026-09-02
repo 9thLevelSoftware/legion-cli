@@ -20,6 +20,7 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
+    "@9thlevelsoftware/legion-cli-agents": "workspace:*",
     "@9thlevelsoftware/legion-cli-core": "workspace:*",
     "@9thlevelsoftware/legion-cli-design-system": "workspace:*",
     "@9thlevelsoftware/legion-cli-dashboard": "workspace:*",

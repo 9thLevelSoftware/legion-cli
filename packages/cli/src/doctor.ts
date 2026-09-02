@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DEFAULT_GENERIC_ARGS, isResolvedAdapterSpawnable } from "@9thlevelsoftware/legion-cli-agents";
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import {
   readAuditEvents,
@@ -15,6 +16,7 @@ import {
   type ExtraAdapterId,
   type LegionConfig,
   type Phase,
+  type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
@@ -75,19 +77,86 @@ function extraPointerOk(id: ExtraAdapterId, config: LegionConfig | null): boolea
   return effective.some((arg) => arg.includes(POINTER_PLACEHOLDER));
 }
 
-function extraSpawnable(id: ExtraAdapterId, config: LegionConfig | null): boolean {
-  return extraOnPath(id, config) && extraPointerOk(id, config);
+const REQUIRED_ROUTE_SKILLS = ["plan", "execute", "review"] as const satisfies readonly SkillId[];
+const ROUTE_SKILL_ORDER = [
+  "interview",
+  "discuss",
+  "spec",
+  "ingest",
+  "plan",
+  "execute",
+  "verify",
+  "review",
+  "qa",
+] as const satisfies readonly SkillId[];
+
+export type DoctorRoutedAdapter = {
+  id: AdapterId;
+  via: string;
+  skill: SkillId | null;
+  required: boolean;
+  spawnable: boolean;
+};
+
+function isRequiredRouteSkill(skill: SkillId): boolean {
+  return (REQUIRED_ROUTE_SKILLS as readonly SkillId[]).includes(skill);
 }
 
-function adapterSpawnable(id: AdapterId, config: LegionConfig | null): boolean {
-  if (id === "fake") return fakeSpawnable();
-  if (id === "claude") return isSpawnableBinary("claude");
-  if (id === "generic") {
-    const binary = config?.adapter.generic?.binary;
-    if (!binary) return false;
-    return isSpawnableBinary(binary);
+function sameArgs(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, i) => value === right[i]);
+}
+
+function isFrozenGenericArgs(args: readonly string[] | undefined): boolean {
+  if (!args || args.length === 0) return true;
+  return sameArgs(args, DEFAULT_GENERIC_ARGS);
+}
+
+function pushArgsTrustWarnings(config: LegionConfig, warnings: string[]): void {
+  const extraArgs = config.adapter.claude?.extraArgs ?? [];
+  if (extraArgs.length > 0) {
+    warnings.push(`claude extraArgs are set (trust warning): ${extraArgs.join(" ")}`);
   }
-  return extraSpawnable(id, config);
+  const genericArgs = config.adapter.generic?.args;
+  if (!isFrozenGenericArgs(genericArgs) && genericArgs) {
+    warnings.push(`generic args are set (trust warning): ${genericArgs.join(" ")}`);
+  }
+  for (const id of EXTRA_ADAPTER_IDS) {
+    const args = config.adapter[id]?.args;
+    if (!isFrozenGenericArgs(args) && args) {
+      warnings.push(`${id} args are set (trust warning): ${args.join(" ")}`);
+    }
+  }
+}
+
+function pushDefaultPathWarnings(id: AdapterId, config: LegionConfig, warnings: string[]): void {
+  if (id === "claude" && !isSpawnableBinary("claude")) {
+    warnings.push("configured binary claude is missing from PATH");
+  }
+  if (id === "generic") {
+    const binary = config.adapter.generic?.binary;
+    if (!binary) {
+      warnings.push("adapter.generic.binary is missing");
+    } else if (!isSpawnableBinary(binary)) {
+      warnings.push(`configured binary ${binary} is missing from PATH`);
+    }
+  }
+  if ((EXTRA_ADAPTER_IDS as readonly string[]).includes(id)) {
+    const extraId = id as ExtraAdapterId;
+    const binary = extraBinary(extraId, config);
+    if (!isSpawnableBinary(binary)) {
+      warnings.push(`configured binary ${binary} is missing from PATH`);
+    }
+    if (!extraPointerOk(extraId, config)) {
+      warnings.push(`adapter.${extraId}.args must include {{pointer}}`);
+    }
+  }
+}
+
+function formatRoutedLine(entry: DoctorRoutedAdapter): string {
+  const label = (entry.skill ?? "default").padEnd(13);
+  const spawn = entry.spawnable ? "spawnable" : "not spawnable";
+  const optional = entry.required || entry.spawnable ? "" : " (optional)";
+  return `  ${label}${entry.id}  ${spawn}${optional}`;
 }
 
 async function loadConfig(engine: ReturnType<typeof createLegionEngine>): Promise<{
@@ -239,15 +308,19 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   const { config, error: configError } = await loadConfig(engine);
 
   const adapterDefault = config?.adapter.default ?? null;
+  const routes = config?.adapter.routes ?? {};
+  const named = config?.adapter.named ?? {};
+  const routed: DoctorRoutedAdapter[] = [];
   let spawnable = false;
-  if (!adapterDefault) {
+  if (!adapterDefault || !config) {
     checks.push({
       ok: false,
       label: "adapter.default",
       detail: configError ?? "missing",
     });
   } else {
-    spawnable = adapterSpawnable(adapterDefault, config);
+    // resolveAdapter(config) then isSpawnable — PATH-only misses per-id args/{{pointer}}.
+    spawnable = await isResolvedAdapterSpawnable(config);
     checks.push({
       ok: true,
       label: "adapter.default",
@@ -258,32 +331,55 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       label: "adapter spawnable",
       detail: spawnable ? "yes" : `${adapterDefault} is not spawnable`,
     });
-    if (adapterDefault === "claude" && !isSpawnableBinary("claude")) {
-      warnings.push("configured binary claude is missing from PATH");
-    }
-    if (adapterDefault === "generic") {
-      const binary = config?.adapter.generic?.binary;
-      if (!binary) {
-        warnings.push("adapter.generic.binary is missing");
-      } else if (!isSpawnableBinary(binary)) {
-        warnings.push(`configured binary ${binary} is missing from PATH`);
-      }
-    }
-    if ((EXTRA_ADAPTER_IDS as readonly string[]).includes(adapterDefault)) {
-      const extraId = adapterDefault as ExtraAdapterId;
-      const binary = extraBinary(extraId, config);
-      if (!isSpawnableBinary(binary)) {
-        warnings.push(`configured binary ${binary} is missing from PATH`);
-      }
-      if (!extraPointerOk(extraId, config)) {
-        warnings.push(`adapter.${extraId}.args must include {{pointer}}`);
-      }
-    }
-  }
+    routed.push({
+      id: adapterDefault,
+      via: "default",
+      skill: null,
+      required: true,
+      spawnable,
+    });
+    pushDefaultPathWarnings(adapterDefault, config, warnings);
 
-  const extraArgs = config?.adapter.claude?.extraArgs ?? [];
-  if (extraArgs.length > 0) {
-    warnings.push(`claude extraArgs are set (trust warning): ${extraArgs.join(" ")}`);
+    for (const skill of ROUTE_SKILL_ORDER) {
+      const id = config.adapter.routes?.[skill];
+      if (!id) continue;
+      const routeSpawnable = await isResolvedAdapterSpawnable(config, id);
+      const required = isRequiredRouteSkill(skill);
+      routed.push({
+        id,
+        via: `routes.${skill}`,
+        skill,
+        required,
+        spawnable: routeSpawnable,
+      });
+      if (required) {
+        checks.push({
+          ok: routeSpawnable,
+          label: `adapter.routes.${skill} spawnable`,
+          detail: routeSpawnable ? "yes" : `${id} is not spawnable`,
+        });
+      } else if (!routeSpawnable) {
+        warnings.push(`adapter.routes.${skill} (${id}) is not spawnable (optional skill)`);
+      }
+    }
+
+    for (const [name, id] of Object.entries(config.adapter.named ?? {})) {
+      if (await isResolvedAdapterSpawnable(config, id)) continue;
+      warnings.push(`adapter.named.${name} (${id}) is not spawnable`);
+    }
+
+    // Active spec slice only; skip unreadable files. Task.adapter is warn-only.
+    try {
+      for (const task of await engine.listSliceTasks()) {
+        if (!task.adapter) continue;
+        if (await isResolvedAdapterSpawnable(config, task.adapter)) continue;
+        warnings.push(`${task.id} adapter (${task.adapter}) is not spawnable`);
+      }
+    } catch {
+      // unreadable STATE.md / tasks dir must not crash doctor
+    }
+
+    pushArgsTrustWarnings(config, warnings);
   }
 
   const secrets: SecretHit[] = await scanWikiSecrets(engine.store.paths.wikiDir);
@@ -337,6 +433,9 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     adapter: {
       default: adapterDefault,
       spawnable,
+      routes,
+      named,
+      routed,
       matrix: adapterMatrix,
     },
     secrets: secrets.map((hit) => ({ name: hit.name, file: hit.file })),
@@ -379,6 +478,9 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     `  generic      ${adapterMatrix.generic}`,
     `  fake         ${adapterMatrix.fake}`,
     ...EXTRA_ADAPTER_IDS.map((id) => `  ${id.padEnd(13)}${adapterMatrix[id]}`),
+    "",
+    "Routes",
+    ...(routed.length > 0 ? routed.map(formatRoutedLine) : ["  (none)"]),
     "",
     secrets.length === 0 ? "Secrets     none" : `Secrets     ${secrets.length} hit(s)`,
   ];

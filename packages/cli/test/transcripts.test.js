@@ -19,6 +19,19 @@ function passingVerify() {
   return `${quoteArg(process.execPath)} -e process.exit(0)`;
 }
 
+async function patchAdapter(dir, patch) {
+  const engine = createLegionEngine(dir);
+  const config = await engine.store.readConfig();
+  await engine.store.writeConfig({
+    ...config,
+    adapter: {
+      ...config.adapter,
+      ...patch,
+    },
+  });
+  return engine;
+}
+
 function makeReadyTask(overrides = {}) {
   const { contract, ...rest } = overrides;
   return {
@@ -258,6 +271,136 @@ test("doctor PATH listing names legion-cli and legion", async () => {
     assert.match(out, /^PATH$/m);
     assert.match(out, /^  legion-cli$/m);
     assert.match(out, /^  legion$/m);
+  });
+});
+
+test("doctor --json includes routed default", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const result = runCli(["doctor", "--json", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.adapter.default, "fake");
+    assert.equal(body.adapter.spawnable, true);
+    assert.deepEqual(body.adapter.routes, {});
+    assert.deepEqual(body.adapter.named, {});
+    assert.deepEqual(body.adapter.routed, [
+      { id: "fake", via: "default", skill: null, required: true, spawnable: true },
+    ]);
+  });
+});
+
+test("doctor fails closed when routes.plan grok args omit {{pointer}} even if grok is on PATH", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await patchAdapter(dir, {
+      routes: { plan: "grok" },
+      grok: { binary: process.execPath, args: ["--model", "grok-4"] },
+    });
+    const result = runCli(["doctor", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const expected = await readGolden("doctor-route-plan-unspawnable.stdout.txt");
+    assert.equal(sanitizeDoctor(result.stdout), expected);
+    const out = normalize(result.stdout);
+    assert.match(out, /FAIL  adapter.routes.plan spawnable \(grok is not spawnable\)/);
+    assert.match(out, /grok args are set \(trust warning\): --model grok-4/);
+    assert.match(out, /^  grok         on PATH \(/m);
+    assert.match(out, /Doctor failed/);
+
+    const json = runCli(["doctor", "--json", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(json.status, 1, json.stderr);
+    const body = JSON.parse(json.stdout);
+    assert.equal(body.ok, false);
+    assert.equal(body.adapter.spawnable, true);
+    assert.equal(body.adapter.routes.plan, "grok");
+    const plan = body.adapter.routed.find((entry) => entry.skill === "plan");
+    assert.deepEqual(plan, {
+      id: "grok",
+      via: "routes.plan",
+      skill: "plan",
+      required: true,
+      spawnable: false,
+    });
+  });
+});
+
+test("doctor warns but passes when optional-skill route is unspawnable", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await patchAdapter(dir, {
+      routes: { interview: "grok" },
+      grok: { binary: process.execPath, args: ["--model", "grok-4"] },
+    });
+    const result = runCli(["doctor", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout);
+    assert.match(out, /adapter.routes.interview \(grok\) is not spawnable \(optional skill\)/);
+    assert.match(out, /Doctor passed/);
+    assert.doesNotMatch(out, /FAIL  adapter.routes/);
+  });
+});
+
+test("doctor warns but passes when named adapter target is unspawnable", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await patchAdapter(dir, {
+      named: { ui: "grok" },
+      grok: { binary: process.execPath, args: ["--model", "grok-4"] },
+    });
+    const result = runCli(["doctor", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout);
+    assert.match(out, /adapter.named.ui \(grok\) is not spawnable/);
+    assert.match(out, /Doctor passed/);
+  });
+});
+
+test("doctor warns on unspawnable Task.adapter in the active spec slice only", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const engine = await patchAdapter(dir, {
+      grok: { binary: process.execPath, args: ["--model", "grok-4"] },
+    });
+    const state = await engine.store.readState();
+    await engine.store.writeState({ ...state.data, activeSpecId: "spec-checkin" }, state.body);
+    await engine.store.writeTask(makeReadyTask({ adapter: "grok" }), "Scaffold the check-in app.\n");
+    await engine.store.writeTask(
+      makeReadyTask({ id: "TSK-0099", specId: "spec-other", adapter: "grok" }),
+      "Outside the active spec.\n",
+    );
+    await mkdir(join(dir, ".legion-cli", "tasks"), { recursive: true });
+    await writeFile(join(dir, ".legion-cli", "tasks", "TSK-bad.md"), "not a task\n", "utf8");
+
+    const result = runCli(["doctor", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout);
+    assert.match(out, /TSK-0001 adapter \(grok\) is not spawnable/);
+    assert.doesNotMatch(out, /TSK-0099/);
+    assert.doesNotMatch(out, /TSK-bad/);
+    assert.match(out, /Doctor passed/);
+  });
+});
+
+test("doctor fails closed when adapter.default is missing", async () => {
+  await withTempDir(async (dir) => {
+    const result = runCli(["doctor", "--project", dir]);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout);
+    assert.match(out, /FAIL  adapter.default \(adapter.default is missing\)/);
+    assert.match(out, /^Routes$/m);
+    assert.match(out, /Doctor failed/);
   });
 });
 
