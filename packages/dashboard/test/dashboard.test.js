@@ -65,8 +65,14 @@ test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, no POST, origin al
       assert.match(html, /phase:/);
       assert.match(html, /current task:/);
       assert.match(html, /Read-only/);
+      assert.doesNotMatch(html, /webmcp\.js|modelContext|registerTool/);
       assert.equal(board.headers.get("access-control-allow-origin"), null);
       assert.equal(board.headers.get("content-security-policy")?.includes("connect-src 'self'"), true);
+      assert.equal(board.headers.get("content-security-policy")?.includes("script-src"), false);
+      assert.equal(board.headers.get("cross-origin-opener-policy"), null);
+      assert.equal(board.headers.get("cross-origin-embedder-policy"), null);
+      const scriptOff = await fetch(`${handle.url}/webmcp.js`);
+      assert.equal(scriptOff.status, 404);
 
       const allowedOrigin = originFor(handle);
       const allowed = await fetch(handle.url, { headers: { Origin: allowedOrigin } });
@@ -172,6 +178,47 @@ test("--expose binds 0.0.0.0 and warns", async () => {
       },
       { host: "0.0.0.0" },
     );
+  });
+});
+
+async function enableWebmcp(dir) {
+  const path = join(dir, ".legion-cli", "config.yaml");
+  const current = await readFile(path, "utf8");
+  await writeFile(path, `${current.trimEnd()}\nflags:\n  webmcp: true\n`, "utf8");
+}
+
+test("flags.webmcp serves COOP/COEP and feature-detects registerTool; page tools are UI-only", async () => {
+  await withStore(async ({ dir, store }) => {
+    await store.writeTask(todoTask(), "Show on the board before execute.\n");
+    await enableWebmcp(dir);
+    await withServer(dir, async ({ handle }) => {
+      const board = await fetch(handle.url);
+      assert.equal(board.status, 200);
+      assert.equal(board.headers.get("cross-origin-opener-policy"), "same-origin");
+      assert.equal(board.headers.get("cross-origin-embedder-policy"), "require-corp");
+      assert.equal(board.headers.get("origin-agent-cluster"), "?1");
+      assert.equal(board.headers.get("content-security-policy")?.includes("script-src 'self'"), true);
+      const html = await board.text();
+      assert.match(html, /Kanban/);
+      assert.match(html, /TSK-0003/);
+      assert.match(html, /id="timeline"/);
+      assert.match(html, /id="blockers"/);
+      assert.match(html, /<script src="\/webmcp\.js" defer><\/script>/);
+      assert.doesNotMatch(html, /modelContext\s*=/);
+
+      const script = await fetch(`${handle.url}/webmcp.js`);
+      assert.equal(script.status, 200);
+      const js = await script.text();
+      assert.match(js, /document\.modelContext/);
+      assert.match(js, /registerTool/);
+      assert.doesNotMatch(js, /polyfill/i);
+      for (const name of ["filter_board", "open_task", "show_timeline", "highlight_blockers"]) {
+        assert.match(js, new RegExp(`name:\\s*"${name}"`));
+      }
+      assert.match(js, /readOnlyHint:\s*true/);
+      assert.match(js, /typeof registerTool !== "function"/);
+      assert.match(js, /catch/);
+    });
   });
 });
 

@@ -249,9 +249,13 @@ async function loadSpecView(
   }
 }
 
-export async function loadSnapshot(projectRoot: string): Promise<DashboardSnapshot> {
+export async function loadSnapshot(
+  projectRoot: string,
+  opts?: { rebuild?: boolean },
+): Promise<DashboardSnapshot> {
   const store = createLegionStore(projectRoot);
-  if (await store.pathExists(".legion-cli/STATE.md")) {
+  // MCP Apps HTML reuses this loader but must not take the engine lock.
+  if (opts?.rebuild !== false && (await store.pathExists(".legion-cli/STATE.md"))) {
     try {
       await ensureWikiIndex(store);
     } catch {

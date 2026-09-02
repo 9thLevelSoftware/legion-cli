@@ -20,7 +20,7 @@ function waitForStdioClose(stdin: NodeJS.ReadStream, transport: StdioServerTrans
 }
 
 export async function serveLegionMcp(opts: LegionMcpOptions): Promise<void> {
-  const server = createLegionMcpServer(opts);
+  const server = await createLegionMcpServer(opts);
   const transport = new StdioServerTransport();
   const closed = waitForStdioClose(process.stdin, transport);
   await server.connect(transport);

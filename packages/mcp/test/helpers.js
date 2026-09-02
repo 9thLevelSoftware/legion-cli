@@ -40,7 +40,7 @@ export async function withStore(fn) {
 }
 
 export async function withClient(dir, fn) {
-  const server = createLegionMcpServer({ projectRoot: dir });
+  const server = await createLegionMcpServer({ projectRoot: dir });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "legion-cli-mcp-test", version: "0.0.0" });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);

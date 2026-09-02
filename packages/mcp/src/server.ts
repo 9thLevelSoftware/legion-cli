@@ -3,12 +3,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { registerMcpApps } from "./apps.js";
 import {
   createReaderStore,
   McpReadError,
   readAuditTrail,
   readBrief,
   readCurrentTask,
+  readFeatureFlags,
   readSearch,
   readShow,
   readStatus,
@@ -67,8 +69,9 @@ async function runRead<T>(fn: () => Promise<T>) {
   }
 }
 
-export function createLegionMcpServer(opts: LegionMcpOptions): McpServer {
+export async function createLegionMcpServer(opts: LegionMcpOptions): Promise<McpServer> {
   const store = createReaderStore(opts.projectRoot);
+  const flags = await readFeatureFlags(store);
   const server = new McpServer({
     name: "legion-cli",
     version: pkg.version,
@@ -80,6 +83,9 @@ export function createLegionMcpServer(opts: LegionMcpOptions): McpServer {
       title: "Status",
       description: "Where the Legion CLI project is: phase, current task, next command, blockers.",
       annotations: READ_ONLY,
+      ...(flags.mcpApps ?
+        { _meta: { ui: { resourceUri: "ui://legion-cli/dashboard" } } }
+      : {}),
     },
     async () => runRead(() => readStatus(store)),
   );
@@ -171,6 +177,10 @@ export function createLegionMcpServer(opts: LegionMcpOptions): McpServer {
     },
     async ({ page }) => runRead(() => readWikiBacklinks(store, page)),
   );
+
+  if (flags.mcpApps) {
+    registerMcpApps(server, store);
+  }
 
   return server;
 }
