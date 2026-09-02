@@ -16,5 +16,5 @@ export function sliceHasOpenWork(tasks: readonly Task[]): boolean {
 }
 
 export function p0TasksNotDone(tasks: readonly Task[]): Task[] {
-  return tasks.filter((task) => task.priority === "P0" && task.status !== "done");
+  return tasks.filter((task) => task.priority === "P0" && task.status !== "done" && task.status !== "compacted");
 }

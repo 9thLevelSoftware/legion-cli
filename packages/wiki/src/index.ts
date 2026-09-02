@@ -8,6 +8,14 @@ export {
 } from "./brief.js";
 export { assertSpawnPathAllowed, isForbiddenSpawnPath } from "./contract.js";
 export {
+  duplicateTitleGroups,
+  gardenReport,
+  orphanPages,
+  staleUntrustedPages,
+  titlesSimilar,
+} from "./garden.js";
+export type { GardenDuplicateGroup, GardenPage, GardenReport } from "./garden.js";
+export {
   backlinks,
   hubs,
   loadWikiLinks,

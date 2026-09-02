@@ -37,6 +37,8 @@ const AVAILABLE = [
   ["run promote", "Copy brownfield run pages into the wiki", ""],
   ["packet new", "PM/designer request without the DAG", "--title, --request, --requester"],
   ["packet respond", "Spawn tickets from a packet (does not execute)", "--message, --title"],
+  ["garden", "Stale wiki, orphans, duplicates", ""],
+  ["context compact", "Manual compaction of done tasks", ""],
   ["help", "Commands", "--all"],
 ] as const;
 
@@ -78,6 +80,8 @@ const V1_SURFACE = [
   ["legion-cli brownfield", "Audit an existing app (effort 1: architecture + code)", "--effort, --execute, --resume"],
   ["legion-cli run promote", "Copy brownfield run pages into the wiki", ""],
   ["legion-cli init --mode brownfield", "Start a brownfield project", ""],
+  ["legion-cli garden", "Stale wiki, orphans, duplicates", ""],
+  ["legion-cli context compact", "Manual compaction of done tasks", ""],
 ] as const;
 
 function row(cols: readonly string[]): string {
@@ -101,6 +105,7 @@ export function printHelpAll(): void {
       ...V0_SURFACE.map(row),
       "",
       "v1:",
+      "v1 commands:",
       ...V1_SURFACE.map(row),
     ].join("\n"),
   );

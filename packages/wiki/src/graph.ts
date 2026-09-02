@@ -13,6 +13,7 @@ export type WikiPageRow = {
   body: string;
   trust: "untrusted" | "reviewed";
   aliases_json?: string;
+  updated_at?: number;
 };
 
 export function loadWikiLinks(projectRoot: string): WikiLinkRow[] {
@@ -25,7 +26,7 @@ export function loadWikiLinks(projectRoot: string): WikiLinkRow[] {
 export function loadWikiPages(projectRoot: string): WikiPageRow[] {
   return queryIndex<WikiPageRow>(
     projectRoot,
-    "SELECT id, path, title, body, trust, aliases_json FROM pages",
+    "SELECT id, path, title, body, trust, aliases_json, updated_at FROM pages",
   );
 }
 
