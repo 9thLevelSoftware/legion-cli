@@ -10,6 +10,7 @@ import {
   AuditEventSchema,
   IngestReceiptSchema,
   SCHEMA_VERSION,
+  type AdapterId,
   type AuditEvent,
   type LegionConfig,
   type Phase,
@@ -54,6 +55,8 @@ export type DashboardTask = {
   blockedBy: string[];
   blocks: string[];
   unresolved: string[];
+  /** Raw Task.adapter from frontmatter; omit when unset. Not a live resolve. */
+  adapter?: AdapterId;
 };
 
 export type DashboardSnapshot = {
@@ -140,6 +143,7 @@ function toDashboardTask(task: Task, all: readonly Task[]): DashboardTask {
     blockedBy: task.blockedBy,
     blocks: task.blocks,
     unresolved: unresolvedBlockers(task, all),
+    ...(task.adapter ? { adapter: task.adapter } : {}),
   };
 }
 

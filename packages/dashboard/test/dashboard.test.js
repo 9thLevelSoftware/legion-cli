@@ -66,6 +66,7 @@ test("package writes via LegionEngine and does not expose execute", async () => 
   assert.match(write, /wikiTrust/);
   assert.match(write, /qaChecklist/);
   assert.doesNotMatch(write, /\.execute\(/);
+  assert.doesNotMatch(write, /\badapter\b/);
   assert.doesNotMatch(server, /\.execute\(/);
   assert.doesNotMatch(server, /Set-Cookie|set-cookie|cookie=/);
 });
@@ -119,6 +120,14 @@ test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, origin allowlist, 
       assert.equal(state.phase, "executing");
       assert.equal(state.currentTaskId, "TSK-0002");
       assert.ok(state.tasks.some((task) => task.id === "TSK-0003" && task.status === "todo"));
+      assert.equal(
+        state.tasks.find((task) => task.id === "TSK-0003")?.adapter,
+        undefined,
+      );
+      assert.equal(
+        state.tasks.find((task) => task.id === "TSK-0002")?.adapter,
+        undefined,
+      );
       assert.ok(state.graph.edges.some((edge) => edge.from === "TSK-0001" && edge.to === "TSK-0002"));
 
       const spec = await fetch(`${handle.url}/spec`);
@@ -214,7 +223,12 @@ test("POST /engine/* requires token and origin; ticket/wikiTrust/qaChecklist mut
       const qa = await enginePost(handle, "/engine/qa", { mode: "full" }, { token });
       assert.equal(qa.status, 404);
 
-      const ticketRes = await enginePost(handle, "/engine/ticket", { title: "park extra from board" }, { token });
+      const ticketRes = await enginePost(
+        handle,
+        "/engine/ticket",
+        { title: "park extra from board", adapter: "grok" },
+        { token },
+      );
       assert.equal(ticketRes.status, 200, await ticketRes.clone().text());
       assert.equal(ticketRes.headers.get("access-control-allow-origin"), origin);
       assert.notEqual(ticketRes.headers.get("access-control-allow-origin"), "*");
@@ -224,6 +238,7 @@ test("POST /engine/* requires token and origin; ticket/wikiTrust/qaChecklist mut
       const filed = await store.readTask(ticketBody.id);
       assert.equal(filed.data.title, "park extra from board");
       assert.equal(filed.data.specId, "spec-checkin");
+      assert.equal(filed.data.adapter, undefined);
 
       const trustRes = await enginePost(
         handle,
@@ -306,6 +321,30 @@ test("--expose binds 0.0.0.0 and warns", async () => {
       },
       { host: "0.0.0.0" },
     );
+  });
+});
+
+test("board shows raw Task.adapter when set and omits it when unset", async () => {
+  await withStore(async ({ dir, store }) => {
+    await store.writeTask(todoTask({ adapter: "grok" }), "Show on the board before execute.\n");
+    await withServer(dir, async ({ handle }) => {
+      const board = await fetch(handle.url);
+      assert.equal(board.status, 200);
+      const html = await board.text();
+      assert.match(html, /data-task="TSK-0003"[^>]*data-adapter="grok"/);
+      assert.match(html, /P1 · todo · grok/);
+      assert.doesNotMatch(html, /data-task="TSK-0002"[^>]*data-adapter=/);
+      assert.doesNotMatch(html, /<select|<option|completions/i);
+
+      const stateRes = await fetch(`${handle.url}/api/state`);
+      assert.equal(stateRes.status, 200);
+      const state = await stateRes.json();
+      const routed = state.tasks.find((task) => task.id === "TSK-0003");
+      const unset = state.tasks.find((task) => task.id === "TSK-0002");
+      assert.equal(routed?.adapter, "grok");
+      assert.equal(unset?.adapter, undefined);
+      assert.equal("adapter" in unset, false);
+    });
   });
 });
 

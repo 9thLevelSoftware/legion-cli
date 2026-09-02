@@ -52,6 +52,7 @@ test("status, current task, task graph, brief, show, search, backlinks", async (
       assert.equal(current.isError, false, current.text);
       assert.equal(current.json.currentTask.id, "TSK-0002");
       assert.equal(current.json.currentTask.title, "in/out button");
+      assert.equal(current.json.currentTask.adapter, undefined);
 
       const graph = parseTool(await client.callTool({ name: "legion_cli_task_graph", arguments: {} }));
       assert.equal(graph.isError, false, graph.text);
@@ -59,6 +60,8 @@ test("status, current task, task graph, brief, show, search, backlinks", async (
       assert.equal(graph.json.tasks.length, 1);
       assert.equal(graph.json.tasks[0].id, "TSK-0002");
       assert.deepEqual(graph.json.tasks[0].blockedBy, ["TSK-0001"]);
+      assert.equal(graph.json.tasks[0].adapter, undefined);
+      assert.equal("adapter" in graph.json.tasks[0], false);
 
       const brief = parseTool(await client.callTool({ name: "legion_cli_brief", arguments: {} }));
       assert.equal(brief.isError, false, brief.text);
@@ -87,6 +90,25 @@ test("status, current task, task graph, brief, show, search, backlinks", async (
       );
       assert.equal(backlinks.isError, false, backlinks.text);
       assert.ok(backlinks.json.backlinks.some((link) => link.id === "README"));
+    });
+  });
+});
+
+test("task graph and current task pass through raw Task.adapter when set", async () => {
+  await withStore(async ({ dir, store }) => {
+    const doc = await store.readTask("TSK-0002");
+    await store.writeTask({ ...doc.data, adapter: "grok" }, doc.body);
+    await withClient(dir, async (client) => {
+      const current = parseTool(await client.callTool({ name: "legion_cli_current_task", arguments: {} }));
+      assert.equal(current.isError, false, current.text);
+      assert.equal(current.json.currentTask.id, "TSK-0002");
+      assert.equal(current.json.currentTask.adapter, "grok");
+
+      const graph = parseTool(await client.callTool({ name: "legion_cli_task_graph", arguments: {} }));
+      assert.equal(graph.isError, false, graph.text);
+      assert.equal(graph.json.tasks.length, 1);
+      assert.equal(graph.json.tasks[0].id, "TSK-0002");
+      assert.equal(graph.json.tasks[0].adapter, "grok");
     });
   });
 });

@@ -239,6 +239,7 @@ export async function readTaskGraph(store: LegionReader, specId?: string) {
       blockedBy: task.blockedBy,
       blocks: task.blocks,
       ready: isTaskReady(task, readyCtx),
+      ...(task.adapter ? { adapter: task.adapter } : {}),
     })),
   };
 }
