@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -415,6 +415,16 @@ test("§2.5 filesAllowed globs are plan FAIL", async () => {
 test("plan_concerns is not a phase", () => {
   assert.equal(PHASES.includes("plan_concerns"), false);
   assert.equal(HINT.plan.includes("plan_concerns"), false);
+});
+
+test("refuses append a local audit event", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    await assert.rejects(() => engine.plan());
+    const jsonl = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
+    assert.match(jsonl, /"type":"refuse"/);
+    assert.match(jsonl, /"kind":"spec"/);
+  });
 });
 
 test("empty verificationCommands is plan FAIL", async () => {

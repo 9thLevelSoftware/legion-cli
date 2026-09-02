@@ -52,6 +52,17 @@ export const HINT = {
   packetRespond: (id = "<id>") => `legion-cli packet respond ${id}`,
 } as const;
 
+export function refuseKind(nextHint: string): string {
+  const match = /legion-cli\s+([a-z0-9-]+)/i.exec(nextHint);
+  if (match?.[1]) return match[1];
+  if (/concrete paths/i.test(nextHint)) return "plan";
+  if (/in-repo path/i.test(nextHint)) return "ingest";
+  if (/greenfield/i.test(nextHint)) return "init";
+  if (/guarded or surgical/i.test(nextHint)) return "control-mode";
+  if (nextHint.trim() === "legion-cli") return "status";
+  return "other";
+}
+
 export function refuse(message: string, nextHint: string): never {
   throw new LegionRefuseError(message, nextHint);
 }

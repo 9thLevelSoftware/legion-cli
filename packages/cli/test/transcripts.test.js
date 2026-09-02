@@ -1,10 +1,49 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import { normalize, readGolden, runCli, sanitizeDoctor, withTempDir } from "./helpers.js";
+
+function quoteArg(value) {
+  return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
+}
+
+function unitCommand(payload) {
+  const script = `process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`;
+  return `${quoteArg(process.execPath)} -e ${quoteArg(script)}`;
+}
+
+function passingVerify() {
+  return `${quoteArg(process.execPath)} -e process.exit(0)`;
+}
+
+function makeReadyTask(overrides = {}) {
+  const { contract, ...rest } = overrides;
+  return {
+    schemaVersion: "legion-cli-task/v1",
+    id: "TSK-0001",
+    title: "scaffold",
+    status: "ready",
+    type: "feature",
+    priority: "P0",
+    specId: "spec-checkin",
+    blockedBy: [],
+    blocks: [],
+    assignee: "agent",
+    notes: "",
+    ...rest,
+    contract: {
+      filesAllowed: ["src/main.ts"],
+      filesForbidden: [".git/**"],
+      expectedArtifacts: ["src/main.ts"],
+      verificationCommands: [passingVerify()],
+      maxFilesTouched: 20,
+      ...contract,
+    },
+  };
+}
 
 async function assertTranscript(actual, name) {
   const expected = await readGolden(name);
@@ -219,5 +258,148 @@ test("doctor PATH listing names legion-cli and legion", async () => {
     assert.match(out, /^PATH$/m);
     assert.match(out, /^  legion-cli$/m);
     assert.match(out, /^  legion$/m);
+  });
+});
+
+test("doctor --metrics reads local audit and honors DO_NOT_TRACK", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const execute = runCli(["execute", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.equal(execute.status, 1, execute.stderr);
+    const none = runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.doesNotMatch(normalize(none.stdout), /Local metrics/);
+
+    const result = runCli(["doctor", "--metrics", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake", DO_NOT_TRACK: "1" },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout);
+    assert.match(out, /Local metrics \(on disk only; never phones home\)/);
+    assert.match(out, /DO_NOT_TRACK=1 honored/);
+    assert.match(out, /Refuses by type/);
+    assert.match(out, /plan\s+1/);
+    assert.match(out, /QA pass rate/);
+    assert.match(out, /Mean execute duration/);
+    assert.match(out, /Timeouts/);
+    assert.match(out, /Doctor passed/);
+
+    const json = runCli(["doctor", "--metrics", "--json", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake", DO_NOT_TRACK: "1" },
+    });
+    assert.equal(json.status, 0, json.stderr);
+    const body = JSON.parse(json.stdout);
+    assert.equal(body.metrics.telemetry, "off");
+    assert.equal(body.metrics.source, ".legion-cli/audit/events.jsonl");
+    assert.equal(body.metrics.refusesByType.plan, 1);
+    assert.equal(body.metrics.timeouts, 0);
+  });
+});
+
+test("help doctor lists --metrics", () => {
+  const result = runCli(["help", "doctor"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(normalize(result.stdout), /--metrics/);
+});
+
+test("Checkin session key lines match the design-doc walkthrough (golden)", async () => {
+  await withTempDir(async (dir) => {
+    const fake = { env: { LEGION_CLI_ADAPTER: "fake" } };
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+
+    const intent = runCli(["intent", "--project", dir, "--done"], {
+      input: [
+        "Teammates who keep missing who's in the office.",
+        "They ping five chat apps every morning.",
+        "People can tap in or out on their phone in under five seconds.",
+        "Do not change auth. We will not build payroll, badges, or calendar sync.",
+        "Y",
+      ].join("\n") + "\n",
+    });
+    assert.equal(intent.status, 0, `${intent.stdout}\n${intent.stderr}`);
+
+    const discuss = runCli(["discuss", "--project", dir, "--yes"]);
+    assert.equal(discuss.status, 0, `${discuss.stdout}\n${discuss.stderr}`);
+
+    const spec = runCli(["spec", "--project", dir]);
+    assert.equal(spec.status, 0, `${spec.stdout}\n${spec.stderr}`);
+
+    const approve = runCli(["spec", "approve", "--project", dir]);
+    assert.equal(approve.status, 0, approve.stderr);
+
+    const engine = createLegionEngine(dir);
+    await mkdir(join(dir, ".legion-cli", "specs", "spec-checkin"), { recursive: true });
+    await writeFile(join(dir, ".legion-cli", "specs", "spec-checkin", "stories.yaml"), "stories: []\n", "utf8");
+    await engine.store.writeTask(makeReadyTask(), "Scaffold the check-in app.\n");
+    await engine.store.writeTask(
+      makeReadyTask({
+        id: "TSK-0002",
+        title: "in/out button",
+        contract: {
+          filesAllowed: ["src/button.ts"],
+          expectedArtifacts: ["src/button.ts"],
+          verificationCommands: [passingVerify()],
+        },
+      }),
+      "Implement the in/out button.\n",
+    );
+
+    const plan = runCli(["plan", "--project", dir], fake);
+    assert.equal(plan.status, 0, `${plan.stdout}\n${plan.stderr}`);
+
+    const execute = runCli(["execute", "--until-blocked", "--project", dir], fake);
+    assert.equal(execute.status, 0, `${execute.stdout}\n${execute.stderr}`);
+
+    const review = runCli(["review", "--project", dir], fake);
+    assert.equal(review.status, 0, `${review.stdout}\n${review.stderr}`);
+
+    const specDoc = await engine.store.readSpec("spec-checkin");
+    await engine.store.writeSpec(
+      {
+        ...specDoc.data,
+        wireframesIndex: null,
+        acceptance: [
+          {
+            id: "AC-01",
+            statement: "API returns 200 for health",
+            kind: "test",
+            priority: "P0",
+          },
+        ],
+      },
+      specDoc.body,
+    );
+    const config = await engine.store.readConfig();
+    await engine.store.writeConfig({
+      ...config,
+      qa: {
+        ...config.qa,
+        unitCommand: unitCommand({
+          tests: [
+            { title: "p0 @p0", status: "passed" },
+            ...Array.from({ length: 9 }, () => ({ title: "p1 @p1", status: "passed" })),
+            { title: "p1 fail @p1", status: "failed" },
+            ...Array.from({ length: 4 }, () => ({ title: "p2 @p2", status: "passed" })),
+            { title: "p2 fail @p2", status: "failed" },
+          ],
+        }),
+      },
+    });
+
+    const qa = runCli(["qa", "--project", dir]);
+    assert.equal(qa.status, 0, `${qa.stdout}\n${qa.stderr}`);
+
+    const combined = [
+      normalize(intent.stdout),
+      normalize(approve.stdout),
+      normalize(plan.stdout),
+      normalize(execute.stdout),
+      normalize(review.stdout),
+      normalize(qa.stdout),
+    ].join("\n");
+    const expected = await readGolden("session-checkin.key-lines.txt");
+    for (const line of expected.trim().split("\n")) {
+      assert.match(combined, new RegExp(line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    }
   });
 });

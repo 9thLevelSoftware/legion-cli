@@ -3,33 +3,43 @@
 Local-first CLI that turns product knowledge into shipped, verified software.
 
 - **npm:** [`@9thlevelsoftware/legion-cli`](https://www.npmjs.com/package/@9thlevelsoftware/legion-cli)
-- **bin:** `legion-cli`
+- **bin:** `legion-cli` only
 
-This is **not** the [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion) plugin installer (`npx @9thlevelsoftware/legion --claude`, bin `legion`). They are sibling products. This engine does not register the `legion` bin.
+This engine does **not** take bin `legion`. That belongs to the sibling [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion) plugin installer (`npx @9thlevelsoftware/legion --claude`).
 
 ## Requirements
 
 - Node.js 22+
 - pnpm 9
 
-## Quick start (this repo)
+## Quick start
+
+Supported invocation: `pnpm exec legion-cli` or `npx @9thlevelsoftware/legion-cli`.
+
+Init requires `--adapter` (`claude` | `generic` | `fake`). There is no product default. Dashboard is a **viewer**: `legion-cli dashboard`.
+
+From this repo:
 
 ```bash
 pnpm install
 pnpm exec legion-cli init --name Checkin --adapter fake
 pnpm exec legion-cli status
 LEGION_CLI_ADAPTER=fake pnpm exec legion-cli doctor
+pnpm exec legion-cli dashboard --no-open
 ```
 
-`adapter.default` is required (`--adapter claude|generic|fake`, or a prompt). `fake` is the test adapter; `doctor` treats it as spawnable only when `LEGION_CLI_ADAPTER=fake`. For `claude` or `generic`, doctor fails closed until that binary is on PATH. Brownfield `init` is v1. Supported invocation: `pnpm exec legion-cli`. This package does not register bin `legion`.
-
-## Install from npm
+From npm:
 
 ```bash
-npx @9thlevelsoftware/legion-cli
+npx @9thlevelsoftware/legion-cli init --name Checkin --adapter claude
 # or
 npm i -g @9thlevelsoftware/legion-cli
+legion-cli init --name Checkin --adapter claude
 ```
+
+`fake` is the test adapter; `doctor` treats it as spawnable only when `LEGION_CLI_ADAPTER=fake`. For `claude` or `generic`, doctor fails closed until that binary is on PATH. Brownfield `init` is v1.
+
+Local metrics (never phones home): `legion-cli doctor --metrics`.
 
 ## Development
 

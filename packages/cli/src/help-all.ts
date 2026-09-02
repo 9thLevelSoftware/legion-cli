@@ -3,7 +3,7 @@ import { writeOut } from "./io.js";
 const AVAILABLE = [
   ["status (default)", "Where am I? What next?", "--blockers, --plain"],
   ["init", "Start a product in this folder", "--name, --adapter claude|generic|fake"],
-  ["doctor", "Is my laptop ready?", ""],
+  ["doctor", "Is my laptop ready?", "--metrics"],
   ["ingest <src…>", "Teach Legion CLI from these files/links", "--transcript, --diff, --no-commit"],
   ["wiki trust <page>", "I have read this ingested page; treat it as real", ""],
   ["search <q>", "Search the wiki", "--mentions, --include-untrusted"],

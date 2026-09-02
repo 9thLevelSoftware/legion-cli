@@ -1,0 +1,6 @@
+Next: legion-cli discuss    (or type legion-cli)
+Spec frozen. Next: legion-cli plan
+Next: legion-cli execute     (viewer: legion-cli dashboard)
+Slice complete. Next: legion-cli review
+QA score 94  (P0 40/40, P1 27/30, P2 12/15, visual 15/15, regressions 0)
+PASS. Next: legion-cli ship
