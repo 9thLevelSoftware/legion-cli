@@ -98,10 +98,15 @@ function taskCard(task: DashboardTask, currentId: string | null): string {
     task.unresolved.length > 0 ?
       `<p class="muted">waiting on ${escapeHtml(task.unresolved.join(", "))}</p>`
     : "";
-  return `<article class="card${current}" data-task="${escapeHtml(task.id)}" data-status="${escapeHtml(task.status)}">
+  const adapterAttr = task.adapter ? ` data-adapter="${escapeHtml(task.adapter)}"` : "";
+  const meta =
+    task.adapter ?
+      `${escapeHtml(task.priority)} · ${escapeHtml(task.status)} · ${escapeHtml(task.adapter)}`
+    : `${escapeHtml(task.priority)} · ${escapeHtml(task.status)}`;
+  return `<article class="card${current}" data-task="${escapeHtml(task.id)}" data-status="${escapeHtml(task.status)}"${adapterAttr}>
         <h3>${escapeHtml(task.id)}</h3>
         <p>${escapeHtml(task.title)}</p>
-        <p class="muted">${escapeHtml(task.priority)} · ${escapeHtml(task.status)}</p>
+        <p class="muted">${meta}</p>
         ${deps}${unresolved}
       </article>`;
 }
