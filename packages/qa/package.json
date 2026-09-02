@@ -1,7 +1,7 @@
 {
-  "name": "@9thlevelsoftware/legion-cli-core",
+  "name": "@9thlevelsoftware/legion-cli-qa",
   "version": "0.0.0",
-  "description": "Legion CLI lifecycle engine and refuses",
+  "description": "Legion CLI in-process Playwright/unit JSON scorer",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -31,7 +31,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/9thLevelSoftware/product-engineer-helper.git",
-    "directory": "packages/core"
+    "directory": "packages/qa"
   },
   "author": {
     "name": "9thLevelSoftware",
@@ -40,16 +40,10 @@
   "keywords": [
     "legion",
     "legion-cli",
-    "core",
-    "lifecycle"
+    "qa",
+    "playwright"
   ],
   "dependencies": {
-    "@9thlevelsoftware/legion-cli-agents": "workspace:*",
-    "@9thlevelsoftware/legion-cli-graph": "workspace:*",
-    "@9thlevelsoftware/legion-cli-design-system": "workspace:*",
-    "@9thlevelsoftware/legion-cli-persist": "workspace:*",
-    "@9thlevelsoftware/legion-cli-qa": "workspace:*",
-    "@9thlevelsoftware/legion-cli-schema": "workspace:*",
-    "@9thlevelsoftware/legion-cli-wiki": "workspace:*"
+    "@9thlevelsoftware/legion-cli-schema": "workspace:*"
   }
 }

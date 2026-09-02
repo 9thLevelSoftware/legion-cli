@@ -21,6 +21,7 @@
     "@9thlevelsoftware/legion-cli-design-system": "workspace:*",
     "@9thlevelsoftware/legion-cli-mcp": "workspace:*",
     "@9thlevelsoftware/legion-cli-persist": "workspace:*",
+    "@9thlevelsoftware/legion-cli-qa": "workspace:*",
     "@9thlevelsoftware/legion-cli-schema": "workspace:*",
     "@9thlevelsoftware/legion-cli-wiki": "workspace:*",
     "@types/node": "^22.13.14",
