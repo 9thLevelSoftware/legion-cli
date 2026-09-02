@@ -120,12 +120,13 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("doctor").description("Is my laptop ready?")).action(
-    async (_opts, cmd: Command) => {
-      const code = await runDoctor(resolveOpts(cmd));
+  addGlobalOptions(program.command("doctor").description("Is my laptop ready?"))
+    .option("--metrics", "local-only audit metrics (never phones home)")
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { metrics?: boolean };
+      const code = await runDoctor(resolveOpts(cmd), { metrics: Boolean(flags.metrics) });
       process.exitCode = code;
-    },
-  );
+    });
 
   addGlobalOptions(program.command("ingest").description("Teach Legion CLI from these files/links"))
     .argument("[sources...]", "files, directories, or https URLs")

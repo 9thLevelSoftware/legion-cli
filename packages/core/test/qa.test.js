@@ -64,6 +64,9 @@ test("in-process scorer writes QAScore and can pass to ready_to_ship", async () 
     assert.equal(score.buckets.visual.points, 15);
     assert.equal(score.buckets.visual.regressions, 0);
     assert.equal((await engine.getState()).phase, "ready_to_ship");
+    const jsonl = await readFile(join(store.paths.auditDir, "events.jsonl"), "utf8");
+    assert.match(jsonl, /"type":"qa"/);
+    assert.match(jsonl, /"pass":true/);
   });
 });
 

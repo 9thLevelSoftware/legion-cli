@@ -1,4 +1,4 @@
-export { HINT, LegionRefuseError, refuse } from "./errors.js";
+export { HINT, LegionRefuseError, refuse, refuseKind } from "./errors.js";
 export {
   SKILL_CONTRACTS,
   executeAllowedRoots,

@@ -78,7 +78,7 @@ import {
   type TaskStatus,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { copyShippedCraft, isBrandViolationBlockingFreeze } from "@9thlevelsoftware/legion-cli-design-system";
-import { HINT, LegionRefuseError, refuse } from "./errors.js";
+import { HINT, LegionRefuseError, refuse, refuseKind } from "./errors.js";
 import { assertIngestSourceAllowed } from "./ingest-guard.js";
 import { decisionFileName, templateDecisions } from "./discuss.js";
 import {
@@ -364,7 +364,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase !== "shipped") {
-        refuse("spec new is allowed from shipped", HINT.specNew);
+        refuse("Start a new spec after this one ships", HINT.specNew);
       }
       if (state.activeSpecId) {
         try {
@@ -402,7 +402,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
-        refuse("ingest is refused until init", HINT.init);
+        refuse("Ingest needs a Legion CLI project first", HINT.init);
       }
       if (sources.length === 0 && !opts?.transcript && !opts?.diff) {
         refuse("ingest requires a file, URL, --transcript, or --diff", HINT.inRepo);
@@ -428,7 +428,7 @@ export class LegionEngine {
         });
       } catch (err) {
         if (err instanceof PathEscapeError) {
-          refuse("ingest of file: outside the workspace is refused", HINT.inRepo);
+          refuse("That file: URL is outside this folder", HINT.inRepo);
         }
         if (err instanceof SsrfError) {
           refuse(err.message, HINT.inRepo);
@@ -450,7 +450,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
-        refuse("wiki trust is refused until init", HINT.init);
+        refuse("Wiki trust needs a Legion CLI project first", HINT.init);
       }
       try {
         await trustWikiPage(this.store, pageId);
@@ -465,7 +465,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
-        refuse("brief is refused until init", HINT.init);
+        refuse("Brief needs a Legion CLI project first", HINT.init);
       }
       return buildSessionBrief(this.store);
     });
@@ -475,7 +475,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
-        refuse("search is refused until init", HINT.init);
+        refuse("Search needs a Legion CLI project first", HINT.init);
       }
       await ensureWikiIndex(this.store);
       return searchWiki(this.projectRoot, q, opts);
@@ -495,7 +495,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase !== "spec_frozen" && state.phase !== "planning" && state.phase !== "plan_failed") {
-        refuse("plan requires a frozen spec", HINT.spec);
+        refuse("Plan needs a frozen spec first", HINT.spec);
       }
       const id = specId ?? state.activeSpecId;
       if (!id) {
@@ -648,7 +648,7 @@ export class LegionEngine {
         refuse("changing blockedBy/blocks requires --allow-deps", HINT.amend);
       }
       if (filesAllowedFailsPlan(contract.filesAllowed)) {
-        refuse("filesAllowed must be concrete paths", HINT.concretePaths);
+        refuse("File paths must be concrete (no * or **)", HINT.concretePaths);
       }
       if (contract.verificationCommands.length === 0) {
         refuse("amend requires verificationCommands", HINT.plan);
@@ -678,7 +678,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       const config = await this.#readConfig();
       if (config.control_mode === "advisory") {
-        refuse("execute is refused in advisory mode", HINT.advisory);
+        refuse("Execute is off in advisory mode", HINT.advisory);
       }
       const outcomes: ExecuteTaskResult[] = [];
       const warnings: string[] = [];
@@ -718,7 +718,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
-        refuse("verify is refused until init", HINT.init);
+        refuse("Verify needs a Legion CLI project first", HINT.init);
       }
       if (state.phase !== "executing" && state.phase !== "ready_to_ship") {
         refuse("verify is optional walkthrough notes during executing", HINT.execute);
@@ -883,6 +883,12 @@ export class LegionEngine {
         next.phase = "ready_to_ship";
       }
       await this.#writeState(next);
+      await this.#audit("qa", next.phase, "user", {
+        pass: score.pass,
+        total: score.total,
+        mode: score.mode,
+        id: score.id,
+      });
       return score;
     });
   }
@@ -988,7 +994,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
-        refuse("intent is refused until init", HINT.init);
+        refuse("Intent needs a Legion CLI project first", HINT.init);
       }
       if (state.phase === "initialized") {
         assertCanTransition(state.phase, "intent_draft");
@@ -1018,7 +1024,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
-        refuse("intent is refused until init", HINT.init);
+        refuse("Intent needs a Legion CLI project first", HINT.init);
       }
       let current = state;
       if (current.phase === "initialized") {
@@ -1262,7 +1268,7 @@ export class LegionEngine {
     void _work;
     const state = await this.#readState();
     refuse(
-      "extra work becomes a linked ticket, never an in-place expansion",
+      "Park extra work as a linked ticket instead of expanding this task",
       HINT.ticket(state.currentTaskId ?? "TSK-x"),
     );
   }
@@ -1290,15 +1296,15 @@ export class LegionEngine {
   ): Promise<ExecuteTaskResult> {
     const state = await this.#readState();
     if (state.phase === "plan_failed") {
-      refuse("execute is refused after readiness FAIL", HINT.planRetry);
+      refuse("Plan failed. Fix the FAIL list before executing", HINT.planRetry);
     }
     if (state.phase !== "plan_ready" && state.phase !== "executing") {
-      refuse("execute requires plan_ready or executing", HINT.plan);
+      refuse("Execute needs plan_ready or executing", HINT.plan);
     }
 
     const task = await this.#resolveExecuteTask(taskId, state, opts.config);
     if (task.contract.filesAllowed.length === 0 || task.contract.verificationCommands.length === 0) {
-      refuse("execute requires a FileContract with filesAllowed and verificationCommands", HINT.plan);
+      refuse("This task needs a file contract and verification commands", HINT.plan);
     }
 
     await this.#assertExecuteSpawnable(opts.config);
@@ -1348,6 +1354,29 @@ export class LegionEngine {
     const incident = Boolean(revert?.incident);
     const headMoved = Boolean(revert?.headMoved);
     const runId = result.runId;
+    const durationMs = result.durationMs ?? 0;
+    const timedOut = Boolean(result.timedOut);
+
+    const finish = async (outcome: ExecuteTaskResult): Promise<ExecuteTaskResult> => {
+      const current = await this.#readState();
+      await this.#audit(
+        "execute",
+        current.phase,
+        "agent",
+        { durationMs, timedOut, status: outcome.status, runId },
+        outcome.taskId,
+      );
+      if (timedOut) {
+        await this.#audit(
+          "timeout",
+          current.phase,
+          "agent",
+          { skillId: "execute", durationMs },
+          outcome.taskId,
+        );
+      }
+      return outcome;
+    };
 
     if (runId) {
       await this.#fileExtrasFromRun(runId, task.specId);
@@ -1377,7 +1406,7 @@ export class LegionEngine {
         phase: "executing",
         currentTaskId: task.id,
       });
-      return {
+      return finish({
         taskId: task.id,
         status: "blocked",
         runId,
@@ -1385,19 +1414,19 @@ export class LegionEngine {
         incident,
         headMoved,
         ticketId,
-      };
+      });
     }
 
     if (result.error) {
       await this.#transitionTaskTo(task.id, "blocked");
-      return {
+      return finish({
         taskId: task.id,
         status: "blocked",
         runId,
         extrasReverted: extras,
         incident,
         headMoved,
-      };
+      });
     }
 
     await this.#transitionTaskTo(task.id, "verifying");
@@ -1418,7 +1447,7 @@ export class LegionEngine {
       currentTaskId: task.id,
     });
 
-    return {
+    return finish({
       taskId: task.id,
       status: verificationPass ? "done" : "blocked",
       runId,
@@ -1426,7 +1455,7 @@ export class LegionEngine {
       incident,
       headMoved,
       verificationPass,
-    };
+    });
   }
 
   async #resolveExecuteTask(taskId: string | "auto", state: StateFile, config: LegionConfig): Promise<Task> {
@@ -1494,7 +1523,7 @@ export class LegionEngine {
       throwAfterWrite: this.#fakeThrowAfterWrite,
     });
     if (!(await isSpawnable(adapter))) {
-      refuse("execute requires a spawnable adapter", HINT.doctor);
+      refuse("Execute needs a spawnable adapter", HINT.doctor);
     }
     const skillsDir = this.#skillsDir ?? findSkillsDir();
     if (!skillsDir || !existsSync(join(skillsDir, "execute", "SKILL.md"))) {
@@ -1508,7 +1537,7 @@ export class LegionEngine {
       throwAfterWrite: this.#fakeThrowAfterWrite,
     });
     if (!(await isSpawnable(adapter))) {
-      refuse("plan requires a spawnable adapter", HINT.doctor);
+      refuse("Plan needs a spawnable adapter", HINT.doctor);
     }
     const skillsDir = this.#skillsDir ?? findSkillsDir();
     if (!skillsDir || !existsSync(join(skillsDir, "plan", "SKILL.md"))) {
@@ -1522,7 +1551,7 @@ export class LegionEngine {
       throwAfterWrite: this.#fakeThrowAfterWrite,
     });
     if (!(await isSpawnable(adapter))) {
-      refuse("review requires a spawnable adapter", HINT.doctor);
+      refuse("Review needs a spawnable adapter", HINT.doctor);
     }
     const skillsDir = this.#skillsDir ?? findSkillsDir();
     if (!skillsDir || !existsSync(join(skillsDir, "review", "SKILL.md"))) {
@@ -1993,17 +2022,13 @@ export class LegionEngine {
 
   #parseControlMode(mode: string): ControlMode {
     if (mode === "autonomous") {
-      refuse("control_mode: autonomous is rejected", HINT.controlMode);
+      refuse("Autonomous mode is not allowed", HINT.controlMode);
     }
     const parsed = ControlModeSchema.safeParse(mode);
     if (!parsed.success) {
       refuse(`control_mode ${mode} is rejected`, HINT.controlMode);
     }
     return parsed.data;
-  }
-
-  async #mutate<T>(fn: () => Promise<T>): Promise<T> {
-    return this.store.withLock(fn);
   }
 
   async #readState(): Promise<StateFile> {
@@ -2086,49 +2111,49 @@ export class LegionEngine {
 
   #assertCanReview(state: StateFile, slice: Task[]): void {
     if (state.phase !== "executing") {
-      refuse("review is allowed on a terminal executing slice", HINT.execute);
+      refuse("Review is for a terminal slice after execute", HINT.execute);
     }
     if (!isSliceTerminal(slice) || sliceHasOpenWork(slice)) {
-      refuse("review requires a terminal slice (every task done or blocked)", HINT.execute);
+      refuse("Finish the slice before review (every task done or blocked — terminal slice)", HINT.execute);
     }
   }
 
   #assertCanQa(state: StateFile, slice: Task[]): void {
     if (state.phase !== "executing") {
-      refuse("qa is allowed from executing after review PASS", HINT.execute);
+      refuse("Score the product after execute, once review PASSes", HINT.execute);
     }
     if (!isSliceTerminal(slice) || sliceHasOpenWork(slice)) {
-      refuse("qa is refused while slice tasks are todo/ready/in_progress/verifying", HINT.execute);
+      refuse("Finish the slice before scoring (tasks still todo/ready/in_progress/verifying)", HINT.execute);
     }
     if (state.lastReview !== "PASS") {
-      refuse("qa requires lastReview PASS", HINT.review);
+      refuse("Review must PASS before scoring", HINT.review);
     }
     if (p0TasksNotDone(slice).length > 0) {
-      refuse("qa is refused while any P0 task is not done", HINT.blockers);
+      refuse("A P0 task is not done yet", HINT.blockers);
     }
   }
 
   async #assertReadyToShip(state: StateFile): Promise<void> {
     const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
     if (state.lastReview !== "PASS") {
-      refuse("ready_to_ship requires lastReview PASS", HINT.review);
+      refuse("Review must PASS before shipping", HINT.review);
     }
     const lastQa = await this.#readLastQa(state);
     if (lastQa?.pass !== true) {
-      refuse("ready_to_ship requires qa.pass", HINT.qa);
+      refuse("QA must PASS before shipping", HINT.qa);
     }
     if (p0TasksNotDone(slice).length > 0) {
-      refuse("P0 tasks must be done", HINT.blockers);
+      refuse("A P0 task is not done yet", HINT.blockers);
     }
   }
 
   async #assertCanShip(state: StateFile, opts: ShipOptions): Promise<void> {
     if (state.lastReview !== "PASS") {
-      refuse("ship is refused if spec review is not PASS", HINT.review);
+      refuse("Review must PASS before shipping", HINT.review);
     }
     const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
     if (p0TasksNotDone(slice).length > 0) {
-      refuse("ship is refused if any P0 task is not done", HINT.blockers);
+      refuse("A P0 task is not done yet", HINT.blockers);
     }
     const lastQa = await this.#readLastQa(state);
     if (lastQa?.pass === true) {
@@ -2139,7 +2164,7 @@ export class LegionEngine {
     }
     // Failed or missing QA: only no-browser may proceed, and only with the flag.
     if (!opts.allowDegradedQa) {
-      refuse("ship is refused if last QA pass !== true", HINT.qa);
+      refuse("QA must PASS before shipping", HINT.qa);
     }
     if (!lastQa) {
       refuse("ship --allow-degraded-qa requires a no-browser QA score", HINT.qa);
@@ -2283,6 +2308,30 @@ export class LegionEngine {
       taskId: taskId ?? null,
       actor,
       data,
+    });
+  }
+
+  async #auditRefuse(err: LegionRefuseError): Promise<void> {
+    try {
+      const state = await this.#readState();
+      await this.#audit("refuse", state.phase, "user", {
+        kind: refuseKind(err.nextHint),
+        message: err.message,
+        next: err.nextHint,
+      });
+    } catch {
+      // local metrics are best-effort
+    }
+  }
+
+  async #mutate<T>(fn: () => Promise<T>): Promise<T> {
+    return this.store.withLock(async () => {
+      try {
+        return await fn();
+      } catch (err) {
+        if (err instanceof LegionRefuseError) await this.#auditRefuse(err);
+        throw err;
+      }
     });
   }
 

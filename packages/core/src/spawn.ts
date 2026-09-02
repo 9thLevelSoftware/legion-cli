@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  AgentError,
   buildPointerPrompt,
   DEFAULT_TIMEOUT_MS,
   filterSpawnEnv,
@@ -37,6 +38,8 @@ export type OptionalSpawnResult = {
   runId: string;
   revert: RevertResult | null;
   error?: unknown;
+  timedOut?: boolean;
+  durationMs?: number;
 };
 
 export function findSkillsDir(from = process.cwd()): string | undefined {
@@ -88,7 +91,7 @@ export async function optionalSkillSpawn(opts: {
   });
   if (!(await isSpawnable(adapter))) {
     if (opts.required) {
-      refuse(`${opts.skillId} requires a spawnable adapter`, HINT.doctor);
+      refuse(`${opts.skillId} needs a spawnable adapter (run legion-cli doctor)`, HINT.doctor);
     }
     return { spawned: false, runId, revert: null };
   }
@@ -178,8 +181,12 @@ export async function optionalSkillSpawn(opts: {
   await writeResume(handle.pid);
   let revert: RevertResult | null = null;
   let error: unknown;
+  let timedOut = false;
+  const started = Date.now();
   try {
-    await handle.wait();
+    const agentResult = await handle.wait();
+    timedOut = Boolean(agentResult.timedOut);
+    if (timedOut) error = new AgentError("spawn timed out");
   } catch (err) {
     error = err;
   } finally {
@@ -193,5 +200,5 @@ export async function optionalSkillSpawn(opts: {
       dirtyAtStart,
     });
   }
-  return { spawned: true, runId, revert, error };
+  return { spawned: true, runId, revert, error, timedOut, durationMs: Date.now() - started };
 }

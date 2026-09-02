@@ -39,6 +39,21 @@ async function readResume(dir, runId) {
   return JSON.parse(await readFile(join(dir, ".legion-cli", "cache", "runs", runId, "resume.json"), "utf8"));
 }
 
+test("execute writes local duration audit events", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store);
+      initGitRepo(dir);
+      const result = await engine.execute("auto");
+      assert.equal(result.status, "done");
+      const jsonl = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
+      assert.match(jsonl, /"type":"execute"/);
+      assert.match(jsonl, /"durationMs":/);
+    });
+  });
+});
+
 test("execute refuses without a spawnable adapter", async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
