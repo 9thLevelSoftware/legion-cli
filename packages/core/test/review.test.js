@@ -14,6 +14,7 @@ import {
   seedPlanReady,
   withEngine,
   withFakeAdapter,
+  writeUnspawnableGrok,
 } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
@@ -59,6 +60,26 @@ const fixTask = makeTask({
   parentId: "TSK-0001",
   status: "todo",
   contract: { filesAllowed: ["src/fix.ts"], expectedArtifacts: ["src/fix.ts"] },
+});
+
+test("review refuses unspawnable routes.review without spawning", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
+      await writeUnspawnableGrok(store, { routes: { review: "grok" } });
+      await assert.rejects(
+        () => engine.review(),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /review needs a spawnable adapter \(grok, via route\)/);
+          assert.match(err.nextHint, /doctor/);
+          return true;
+        },
+      );
+      assert.equal((await engine.getState()).phase, "executing");
+    });
+  });
 });
 
 test("review spawn with zero new tasks is PASS and stays executing", async () => {

@@ -17,6 +17,7 @@ import {
   seedPlanReady,
   withEngine,
   withFakeAdapter,
+  writeUnspawnableGrok,
 } from "./helpers.js";
 
 async function seedExecute(store, opts = {}) {
@@ -51,6 +52,10 @@ test("execute writes local duration audit events", async () => {
       const jsonl = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
       assert.match(jsonl, /"type":"execute"/);
       assert.match(jsonl, /"durationMs":/);
+      assert.match(jsonl, /"adapterId":"fake"/);
+      assert.match(jsonl, /"resolutionSource":"default"/);
+      assert.equal(result.tasks[0].adapterId, "fake");
+      assert.equal(result.tasks[0].resolutionSource, "default");
     });
   });
 });
@@ -70,7 +75,9 @@ test("execute spawn timeout blocks the task and counts one timeout", async () =>
         const timeouts = events.filter((event) => event.type === "timeout");
         assert.equal(executes.length, 1);
         assert.equal(executes[0].data.timedOut, true);
+        assert.equal(executes[0].data.adapterId, "fake");
         assert.equal(timeouts.length, 1);
+        assert.equal(timeouts[0].data.adapterId, "fake");
         assert.equal(summarizeAuditMetrics(events).timeouts, 1);
       },
       { fakeTimedOut: true },
@@ -86,11 +93,44 @@ test("execute refuses without a spawnable adapter", async () => {
       () => engine.execute("auto"),
       (err) => {
         assert.equal(err instanceof LegionRefuseError, true);
-        assert.match(err.message, /spawnable adapter/);
+        assert.match(err.message, /execute needs a spawnable adapter \(fake, via default\)/);
         assert.match(err.nextHint, /doctor/);
         return true;
       },
     );
+  });
+});
+
+test("execute task.adapter=grok refuses when grok is not spawnable even if default fake is", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedExecute(store, { task: { adapter: "grok" } });
+      await writeUnspawnableGrok(store);
+      await assert.rejects(
+        () => engine.execute("auto"),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /execute needs a spawnable adapter \(grok, via task\)/);
+          assert.match(err.nextHint, /doctor/);
+          return true;
+        },
+      );
+    });
+  });
+});
+
+test("execute opts.adapter records resolutionSource cli", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store, { task: { adapter: "grok" } });
+      initGitRepo(dir);
+      const result = await engine.execute("auto", { adapter: "fake" });
+      assert.equal(result.status, "done");
+      assert.equal(result.tasks[0].adapterId, "fake");
+      assert.equal(result.tasks[0].resolutionSource, "cli");
+    });
   });
 });
 
@@ -301,6 +341,10 @@ test("in-contract commit still runs verificationCommands and can mark done", asy
         assert.equal(resume.skillId, "execute");
         assert.equal(resume.taskId, "TSK-0001");
         assert.equal(resume.preSpawnRef, pre);
+        assert.equal(resume.adapterId, "fake");
+        assert.equal(resume.binary, "(in-process)");
+        assert.equal(resume.resolutionSource, "default");
+        assert.equal(resume.argvSummary, "");
       },
       {
         fakeArtifacts: [{ path: "src/main.ts", content: "export const ok = true;\n", gitAdd: true }],

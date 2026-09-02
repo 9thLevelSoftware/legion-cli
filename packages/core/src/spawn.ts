@@ -7,14 +7,23 @@ import {
   buildPointerPrompt,
   DEFAULT_TIMEOUT_MS,
   filterSpawnEnv,
-  isSpawnable,
+  isResolvedAdapterSpawnable,
   resolveAdapter,
+  resolveAdapterId,
   stageSkill,
+  templateArgv,
   writeRunPrompt,
+  type AdapterResolution,
   type FakeArtifact,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
-import { SCHEMA_VERSION, type LegionConfig, type SkillId } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  SCHEMA_VERSION,
+  type AdapterId,
+  type LegionConfig,
+  type SkillId,
+} from "@9thlevelsoftware/legion-cli-schema";
+import { redactSecrets } from "@9thlevelsoftware/legion-cli-persist";
 import { skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
 import {
@@ -33,6 +42,10 @@ function skillMissingHint(skillId: SkillId): string {
   return HINT.plan;
 }
 
+export function spawnableAdapterRefuseMessage(skillId: SkillId, resolution: AdapterResolution): string {
+  return `${skillId} needs a spawnable adapter (${resolution.id}, via ${resolution.source})`;
+}
+
 export type OptionalSpawnResult = {
   spawned: boolean;
   runId: string;
@@ -40,6 +53,9 @@ export type OptionalSpawnResult = {
   error?: unknown;
   timedOut?: boolean;
   durationMs?: number;
+  resolution?: AdapterResolution;
+  binary?: string;
+  argvSummary?: string;
 };
 
 export function findSkillsDir(from = process.cwd()): string | undefined {
@@ -84,19 +100,33 @@ export async function optionalSkillSpawn(opts: {
   throwAfterWrite?: boolean;
   timedOut?: boolean;
   required?: boolean;
+  cliAdapter?: AdapterId;
+  taskAdapter?: AdapterId;
 }): Promise<OptionalSpawnResult> {
   const runId = `${opts.skillId}-${Date.now().toString(36)}`;
+  const resolution = resolveAdapterId({
+    config: opts.config,
+    skillId: opts.skillId,
+    taskAdapter: opts.taskAdapter,
+    cliAdapter: opts.cliAdapter,
+  });
+  const tmpl = templateArgv(resolution.id, opts.config);
+  const argvSummary = redactSecrets(tmpl.argv.join(" ")).slice(0, 240);
+  const resolved = { resolution, binary: tmpl.binary, argvSummary };
+
+  if (!(await isResolvedAdapterSpawnable(opts.config, resolution.id))) {
+    if (opts.required) {
+      refuse(spawnableAdapterRefuseMessage(opts.skillId, resolution), HINT.doctor);
+    }
+    return { spawned: false, runId, revert: null, ...resolved };
+  }
+
   const adapter = resolveAdapter(opts.config, {
+    id: resolution.id,
     artifacts: opts.fakeArtifacts ?? [],
     throwAfterWrite: opts.throwAfterWrite,
     timedOut: opts.timedOut,
   });
-  if (!(await isSpawnable(adapter))) {
-    if (opts.required) {
-      refuse(`${opts.skillId} needs a spawnable adapter (run legion-cli doctor)`, HINT.doctor);
-    }
-    return { spawned: false, runId, revert: null };
-  }
 
   const skillsDir = opts.skillsDir ?? findSkillsDir();
   const skillDir = skillsDir ? join(skillsDir, opts.skillId) : undefined;
@@ -104,7 +134,7 @@ export async function optionalSkillSpawn(opts: {
     if (opts.required) {
       refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
     }
-    return { spawned: false, runId, revert: null };
+    return { spawned: false, runId, revert: null, ...resolved };
   }
 
   const contract = skillContract(opts.skillId, { runId, specId: opts.specId });
@@ -161,6 +191,10 @@ export async function optionalSkillSpawn(opts: {
           preSpawnRef: preSpawnRef ?? "UNBORN",
           startedAt: new Date().toISOString(),
           pid,
+          adapterId: resolution.id,
+          binary: tmpl.binary,
+          argvSummary,
+          resolutionSource: resolution.source,
         },
         null,
         2,
@@ -202,5 +236,5 @@ export async function optionalSkillSpawn(opts: {
       dirtyAtStart,
     });
   }
-  return { spawned: true, runId, revert, error, timedOut, durationMs: Date.now() - started };
+  return { spawned: true, runId, revert, error, timedOut, durationMs: Date.now() - started, ...resolved };
 }

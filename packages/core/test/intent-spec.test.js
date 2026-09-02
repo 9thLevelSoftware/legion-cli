@@ -13,7 +13,7 @@ import {
   palettePresent,
   splitMustNotAndOutOfScope,
 } from "../dist/index.js";
-import { initProject, withEngine } from "./helpers.js";
+import { initProject, withEngine, writeUnspawnableGrok } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
 
@@ -273,6 +273,33 @@ test("optional spec spawn cannot freeze the spec", async () => {
     if (previous === undefined) delete process.env.LEGION_CLI_ADAPTER;
     else process.env.LEGION_CLI_ADAPTER = previous;
   }
+});
+
+test("discuss skips spawn when the routed extra is not spawnable", async () => {
+  await withEngine(
+    async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await fillFullIntent(engine);
+      await writeUnspawnableGrok(store, { routes: { discuss: "grok" } });
+      const previous = process.env.LEGION_CLI_ADAPTER;
+      process.env.LEGION_CLI_ADAPTER = "fake";
+      try {
+        const proposed = await engine.startDiscuss();
+        assert.ok(proposed.length > 0);
+        assert.equal((await engine.getState()).phase, "discussing");
+        const runsDir = join(dir, ".legion-cli", "cache", "runs");
+        const runs = existsSync(runsDir) ? await readdir(runsDir) : [];
+        assert.equal(
+          runs.some((name) => name.startsWith("discuss-")),
+          false,
+        );
+      } finally {
+        if (previous === undefined) delete process.env.LEGION_CLI_ADAPTER;
+        else process.env.LEGION_CLI_ADAPTER = previous;
+      }
+    },
+    { skillsDir },
+  );
 });
 
 test("optional discuss spawn cannot auto-accept decisions", async () => {

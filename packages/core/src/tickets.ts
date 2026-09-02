@@ -1,6 +1,18 @@
 import { mergeFilesForbidden } from "@9thlevelsoftware/legion-cli-graph";
-import { SCHEMA_VERSION, type FileContract, type Task } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  AdapterIdSchema,
+  SCHEMA_VERSION,
+  type AdapterId,
+  type FileContract,
+  type Task,
+} from "@9thlevelsoftware/legion-cli-schema";
 import type { NewTicket } from "./types.js";
+
+function parseAdapterId(value: unknown): AdapterId | undefined {
+  if (typeof value !== "string") return undefined;
+  const parsed = AdapterIdSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
 
 export function nextTaskId(existing: readonly string[]): string {
   let max = 0;
@@ -40,6 +52,7 @@ export function ticketFromInput(id: string, specId: string, input: NewTicket): T
     type: input.type ?? "feature",
     priority: input.priority ?? "P2",
     specId,
+    adapter: input.adapter,
     parentId: input.parentId,
     blockedBy: input.parentId ? [input.parentId] : [],
     blocks: [],
@@ -63,6 +76,7 @@ export function parseExtraJson(raw: unknown): NewTicket[] {
       type: rec.type === "fix" || rec.type === "bug" || rec.type === "feature" ? rec.type : undefined,
       priority: rec.priority === "P0" || rec.priority === "P1" || rec.priority === "P2" ? rec.priority : undefined,
       notes: typeof rec.notes === "string" ? rec.notes : undefined,
+      adapter: parseAdapterId(rec.adapter),
       contract: {
         filesAllowed: Array.isArray(rec.filesAllowed)
           ? rec.filesAllowed.filter((path): path is string => typeof path === "string")

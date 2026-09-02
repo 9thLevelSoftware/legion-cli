@@ -80,6 +80,19 @@ export async function initProject(engine, opts = {}) {
   await engine.init({ name: "Checkin", adapter: "fake", ...opts });
 }
 
+/** Grok on PATH is still unspawnable when args omit {{pointer}}. */
+export async function writeUnspawnableGrok(store, extra = {}) {
+  const config = await store.readConfig();
+  await store.writeConfig({
+    ...config,
+    adapter: {
+      ...config.adapter,
+      grok: { args: ["--model", "grok-4"] },
+      ...extra,
+    },
+  });
+}
+
 export function makeSpec(overrides = {}) {
   return {
     schemaVersion: "legion-cli-spec/v1",

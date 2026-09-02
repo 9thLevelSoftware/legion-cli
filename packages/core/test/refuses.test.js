@@ -25,6 +25,7 @@ import {
   withFakeAdapter,
   writeQaFile,
   writeTask,
+  writeUnspawnableGrok,
 } from "./helpers.js";
 
 function isRefuse(err, hintPattern) {
@@ -156,6 +157,19 @@ const cases = [
       await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
     },
     act: ({ engine }) => engine.review(),
+    message: /review needs a spawnable adapter \(fake, via default\)/,
+  },
+  {
+    name: "plan with spawnable default and unspawnable routes.plan",
+    hint: /doctor/,
+    setup: async ({ engine, store }) => {
+      await initProject(engine);
+      await seedFrozenSpec(store);
+      await writeUnspawnableGrok(store, { routes: { plan: "grok" } });
+    },
+    act: ({ engine }) => engine.plan("spec-checkin"),
+    message: /plan needs a spawnable adapter \(grok, via route\)/,
+    phaseAfter: "spec_frozen",
   },
   {
     name: "ship if last QA pass is not true",
@@ -366,7 +380,17 @@ for (const row of cases) {
   test(`§2.5 refuses: ${row.name}`, async () => {
     await withEngine(async (ctx) => {
       await row.setup(ctx);
-      await assert.rejects(() => row.act(ctx), (err) => isRefuse(err, row.hint));
+      await assert.rejects(
+        () => row.act(ctx),
+        (err) => {
+          isRefuse(err, row.hint);
+          if (row.message) assert.match(err.message, row.message);
+          return true;
+        },
+      );
+      if (row.phaseAfter) {
+        assert.equal((await ctx.engine.getState()).phase, row.phaseAfter);
+      }
     });
   });
 }
