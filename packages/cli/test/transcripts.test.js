@@ -292,41 +292,84 @@ test("doctor --json includes routed default", async () => {
   });
 });
 
-test("doctor fails closed when routes.plan grok args omit {{pointer}} even if grok is on PATH", async () => {
+for (const skill of ["plan", "execute", "review"]) {
+  test(`doctor fails closed when routes.${skill} grok args omit {{pointer}} even if grok is on PATH`, async () => {
+    await withTempDir(async (dir) => {
+      runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+      await patchAdapter(dir, {
+        routes: { [skill]: "grok" },
+        grok: { binary: process.execPath, args: ["--model", "grok-4"] },
+      });
+      const result = runCli(["doctor", "--project", dir], {
+        env: { LEGION_CLI_ADAPTER: "fake" },
+      });
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      if (skill === "plan") {
+        const expected = await readGolden("doctor-route-plan-unspawnable.stdout.txt");
+        assert.equal(sanitizeDoctor(result.stdout), expected);
+      }
+      const out = normalize(result.stdout);
+      assert.match(out, new RegExp(`FAIL  adapter.routes.${skill} spawnable \\(grok is not spawnable\\)`));
+      assert.match(out, new RegExp(`^  ${skill.padEnd(13)}grok  not spawnable$`, "m"));
+      assert.match(out, /grok args are set \(trust warning\): --model grok-4/);
+      assert.match(out, /^  grok         on PATH \(/m);
+      assert.match(out, /Doctor failed/);
+
+      const json = runCli(["doctor", "--json", "--project", dir], {
+        env: { LEGION_CLI_ADAPTER: "fake" },
+      });
+      assert.equal(json.status, 1, json.stderr);
+      const body = JSON.parse(json.stdout);
+      assert.equal(body.ok, false);
+      assert.equal(body.adapter.spawnable, true);
+      assert.equal(body.adapter.routes[skill], "grok");
+      assert.deepEqual(
+        body.adapter.routed.find((entry) => entry.skill === skill),
+        {
+          id: "grok",
+          via: `routes.${skill}`,
+          skill,
+          required: true,
+          spawnable: false,
+        },
+      );
+    });
+  });
+}
+
+test("doctor passes with trust warning when required-route extra args include {{pointer}}", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     await patchAdapter(dir, {
       routes: { plan: "grok" },
-      grok: { binary: process.execPath, args: ["--model", "grok-4"] },
+      grok: { binary: process.execPath, args: ["--model", "grok-4", "{{pointer}}"] },
     });
     const result = runCli(["doctor", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
-    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
-    const expected = await readGolden("doctor-route-plan-unspawnable.stdout.txt");
-    assert.equal(sanitizeDoctor(result.stdout), expected);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const out = normalize(result.stdout);
-    assert.match(out, /FAIL  adapter.routes.plan spawnable \(grok is not spawnable\)/);
-    assert.match(out, /grok args are set \(trust warning\): --model grok-4/);
-    assert.match(out, /^  grok         on PATH \(/m);
-    assert.match(out, /Doctor failed/);
+    assert.match(out, /grok args are set \(trust warning\): --model grok-4 \{\{pointer\}\}/);
+    assert.match(out, /^  plan         grok  spawnable$/m);
+    assert.doesNotMatch(out, /FAIL  adapter.routes/);
+    assert.match(out, /Doctor passed/);
 
     const json = runCli(["doctor", "--json", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
-    assert.equal(json.status, 1, json.stderr);
+    assert.equal(json.status, 0, json.stderr);
     const body = JSON.parse(json.stdout);
-    assert.equal(body.ok, false);
-    assert.equal(body.adapter.spawnable, true);
-    assert.equal(body.adapter.routes.plan, "grok");
-    const plan = body.adapter.routed.find((entry) => entry.skill === "plan");
-    assert.deepEqual(plan, {
-      id: "grok",
-      via: "routes.plan",
-      skill: "plan",
-      required: true,
-      spawnable: false,
-    });
+    assert.equal(body.ok, true);
+    assert.deepEqual(
+      body.adapter.routed.find((entry) => entry.skill === "plan"),
+      {
+        id: "grok",
+        via: "routes.plan",
+        skill: "plan",
+        required: true,
+        spawnable: true,
+      },
+    );
   });
 });
 

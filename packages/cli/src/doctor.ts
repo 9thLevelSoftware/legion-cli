@@ -12,6 +12,7 @@ import {
   EXTRA_ADAPTER_IDS,
   QAScoreSchema,
   SCHEMA_VERSION,
+  SkillIdSchema,
   type AdapterId,
   type ExtraAdapterId,
   type LegionConfig,
@@ -77,18 +78,7 @@ function extraPointerOk(id: ExtraAdapterId, config: LegionConfig | null): boolea
   return effective.some((arg) => arg.includes(POINTER_PLACEHOLDER));
 }
 
-const REQUIRED_ROUTE_SKILLS = ["plan", "execute", "review"] as const satisfies readonly SkillId[];
-const ROUTE_SKILL_ORDER = [
-  "interview",
-  "discuss",
-  "spec",
-  "ingest",
-  "plan",
-  "execute",
-  "verify",
-  "review",
-  "qa",
-] as const satisfies readonly SkillId[];
+const REQUIRED_ROUTE_SKILLS = new Set<SkillId>(["plan", "execute", "review"]);
 
 export type DoctorRoutedAdapter = {
   id: AdapterId;
@@ -99,7 +89,7 @@ export type DoctorRoutedAdapter = {
 };
 
 function isRequiredRouteSkill(skill: SkillId): boolean {
-  return (REQUIRED_ROUTE_SKILLS as readonly SkillId[]).includes(skill);
+  return REQUIRED_ROUTE_SKILLS.has(skill);
 }
 
 function sameArgs(left: readonly string[], right: readonly string[]): boolean {
@@ -340,7 +330,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     });
     pushDefaultPathWarnings(adapterDefault, config, warnings);
 
-    for (const skill of ROUTE_SKILL_ORDER) {
+    for (const skill of SkillIdSchema.options) {
       const id = config.adapter.routes?.[skill];
       if (!id) continue;
       const routeSpawnable = await isResolvedAdapterSpawnable(config, id);
