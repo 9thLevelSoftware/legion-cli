@@ -37,6 +37,11 @@ export const HINT = {
   controlMode: "guarded or surgical",
   greenfield: "greenfield, or wait for v1",
   designGenerate: "legion-cli design-system generate",
+  initMode: "legion-cli init --mode greenfield|brownfield",
+  brownfield: "legion-cli brownfield --effort 1",
+  brownfieldResume: "legion-cli brownfield --resume <id>",
+  promote: "legion-cli run promote <id>",
+  gitRepo: "git init (brownfield requires a git repository)",
   ticket: (taskId: string) => `legion-cli ticket create --parent ${taskId}`,
 } as const;
 

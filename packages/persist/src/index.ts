@@ -14,9 +14,12 @@ export {
   gitRestoreWorktree,
   gitRmWorktree,
   gitStatusPorcelain,
+  gitWorktreeAdd,
   isGitRepo,
+  listGitWorktrees,
   tryGitHead,
 } from "./git.js";
+export type { GitWorktree } from "./git.js";
 export { ensureGitignore, GITIGNORE_ENTRIES, GITIGNORE_TEMPLATE } from "./gitignore.js";
 export { ingestDocumentStorePath, ingestFiles } from "./ingest.js";
 export type { IngestDocument } from "./ingest.js";
@@ -31,9 +34,14 @@ export {
   LOCK_BASENAME,
   MAX_INGEST_FILE_BYTES,
   MAX_INGEST_TREE_BYTES,
+  runPagePath,
+  runResumePath,
+  runStorePath,
   specPath,
   taskPath,
   wikiPageStorePath,
+  wikiRunPagePath,
+  worktreeStorePath,
 } from "./layout.js";
 export type { LegionPaths } from "./layout.js";
 export { acquireEngineLock } from "./lock.js";

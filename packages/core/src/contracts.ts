@@ -20,8 +20,8 @@ const IMPLICIT_FORBIDDEN = [
   ".legion-cli/index/**",
 ];
 
-/** Cache/index are engine-owned and gitignored; never revert them as extras. */
-const ENGINE_OWNED = [".legion-cli/cache/**", ".legion-cli/index/**"];
+/** Cache/index/worktrees are engine-owned and gitignored; never revert them as extras. */
+const ENGINE_OWNED = [".legion-cli/cache/**", ".legion-cli/index/**", ".legion-cli/worktrees/**"];
 
 export function skillContract(skillId: SkillId, opts: { runId: string; specId?: string }): SkillContract {
   const roots = SKILL_CONTRACTS[skillId].map((root) =>

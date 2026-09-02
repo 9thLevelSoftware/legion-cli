@@ -1,2 +1,0 @@
-legion-cli init --mode brownfield is v1
-Next: greenfield, or wait for v1

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-run/v1"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}$"
+    },
+    "effort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "execute": {
+      "type": "boolean"
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "analysis",
+        "execute",
+        "complete"
+      ]
+    },
+    "preSpawnRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "startedAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "worktreePath": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "promoted": {
+      "default": false,
+      "type": "boolean"
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "context": {
+      "default": "",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "runId",
+    "effort",
+    "execute",
+    "phase",
+    "preSpawnRef",
+    "startedAt",
+    "pages"
+  ]
+}

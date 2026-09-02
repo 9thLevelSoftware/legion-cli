@@ -5,10 +5,11 @@ export const GITIGNORE_ENTRIES = [
   ".legion-cli/index/",
   ".legion-cli/cache/",
   ".legion-cli/index/engine.lock",
+  ".legion-cli/worktrees/",
 ] as const;
 
 export const GITIGNORE_TEMPLATE = [
-  "# Legion CLI derived index, cache, and lock",
+  "# Legion CLI derived index, cache, lock, and brownfield worktrees",
   ...GITIGNORE_ENTRIES,
   "",
 ].join("\n");

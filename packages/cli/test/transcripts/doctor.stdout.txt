@@ -28,6 +28,7 @@ schemaVersions
   legion-cli-ingest/v1
   legion-cli-audit/v1
   legion-cli-resume/v1
+  legion-cli-run/v1
   legion-cli-qa/v1
   legion-cli-brief/v1
   legion-cli-design-system/v1

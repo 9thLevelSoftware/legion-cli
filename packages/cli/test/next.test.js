@@ -41,6 +41,23 @@ function executing(lastReview, slice) {
   );
 }
 
+test("initialized brownfield hints legion-cli brownfield", () => {
+  const next = nextCommand(
+    {
+      schemaVersion: "legion-cli-state/v1",
+      phase: "initialized",
+      activeSpecId: null,
+      currentTaskId: null,
+      lastReadiness: null,
+      lastReview: null,
+      lastQaId: null,
+    },
+    [],
+    "brownfield",
+  );
+  assert.equal(next.run, "legion-cli brownfield");
+});
+
 test("executing + lastReview FAIL + open work hints execute, not review", () => {
   const next = executing("FAIL", [task("ready")]);
   assert.equal(next.run, "legion-cli execute");

@@ -13,6 +13,7 @@ export const SCHEMA_VERSION = {
   ingest: "legion-cli-ingest/v1",
   audit: "legion-cli-audit/v1",
   resume: "legion-cli-resume/v1",
+  run: "legion-cli-run/v1",
   qa: "legion-cli-qa/v1",
   brief: "legion-cli-brief/v1",
   designSystem: "legion-cli-design-system/v1",

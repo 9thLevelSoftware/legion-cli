@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
+import { resolve } from "node:path";
 import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { PersistError } from "./errors.js";
 import { toPosixPath } from "./paths.js";
@@ -173,4 +175,81 @@ export function gitDiscoverChanges(cwd: string, preSpawnRef: string | null): str
   for (const path of porcelainPaths(cwd)) paths.add(path);
   for (const path of gitLines(cwd, ["ls-files", "--others", "--exclude-standard"])) paths.add(path);
   return [...paths];
+}
+
+export type GitWorktree = {
+  path: string;
+  branch: string | null;
+};
+
+function sameAbsPath(a: string, b: string): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return left === right || left.toLowerCase() === right.toLowerCase();
+}
+
+export function listGitWorktrees(cwd: string): GitWorktree[] {
+  const result = runGit(cwd, ["worktree", "list", "--porcelain"]);
+  if (result.status !== 0) {
+    throw new PersistError(`git worktree list failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+  const out: GitWorktree[] = [];
+  let current: GitWorktree | null = null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      if (current) out.push(current);
+      current = { path: line.slice("worktree ".length).trim(), branch: null };
+      continue;
+    }
+    if (line.startsWith("branch ") && current) {
+      current.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+      continue;
+    }
+    if (line.trim() === "" && current) {
+      out.push(current);
+      current = null;
+    }
+  }
+  if (current) out.push(current);
+  return out;
+}
+
+function gitBranchExists(cwd: string, branch: string): boolean {
+  const result = runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  return result.status === 0;
+}
+
+function gitWorktreePrune(cwd: string): void {
+  runGit(cwd, ["worktree", "prune"]);
+}
+
+function dropStaleWorktree(cwd: string, worktreeAbs: string): void {
+  const listed = listGitWorktrees(cwd).find((wt) => sameAbsPath(wt.path, worktreeAbs));
+  if (listed) {
+    const removed = runGit(cwd, ["worktree", "remove", "--force", listed.path]);
+    if (removed.status !== 0) gitWorktreePrune(cwd);
+  } else {
+    gitWorktreePrune(cwd);
+  }
+  if (existsSync(worktreeAbs) && !isGitRepo(worktreeAbs)) {
+    rmSync(worktreeAbs, { recursive: true, force: true });
+  }
+}
+
+/** Isolated checkout for brownfield --execute. Greenfield execute stays in-place. */
+export function gitWorktreeAdd(cwd: string, worktreePath: string, branch: string): string {
+  if (!isGitRepo(cwd)) {
+    throw new PersistError("git worktree add requires a git repository");
+  }
+  const abs = resolve(worktreePath);
+  if (isGitRepo(abs)) return abs;
+  dropStaleWorktree(cwd, abs);
+  // Recreate the existing branch tip; do not -B (that would reset to current HEAD).
+  const result = gitBranchExists(cwd, branch)
+    ? runGit(cwd, ["worktree", "add", abs, branch])
+    : runGit(cwd, ["worktree", "add", "-b", branch, abs]);
+  if (result.status !== 0) {
+    throw new PersistError(`git worktree add failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+  return abs;
 }
