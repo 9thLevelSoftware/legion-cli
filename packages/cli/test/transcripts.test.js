@@ -75,9 +75,9 @@ test("init --mode brownfield refuses (golden)", async () => {
 
 test("unknown verb is not parsed as status args (golden)", async () => {
   await withTempDir(async (dir) => {
-    const result = runCli(["intent", "--project", dir]);
+    const result = runCli(["packet", "--project", dir]);
     assert.equal(result.status, 1);
-    await assertTranscript(result.stderr, "unknown-intent.stderr.txt");
+    await assertTranscript(result.stderr, "unknown-packet.stderr.txt");
     assert.doesNotMatch(normalize(result.stderr), /too many arguments/);
   });
 });

@@ -1,2 +1,2 @@
-unknown command 'intent'
+unknown command 'packet'
 (run legion-cli help --all)
