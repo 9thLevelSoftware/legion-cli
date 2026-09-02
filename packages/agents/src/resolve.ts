@@ -67,12 +67,13 @@ export function resolveAdapter(
   options: ResolveAdapterOptions = {},
 ): AgentAdapter {
   const id = options.id ?? config.adapter.default;
-  if (id === "generic" && !config.adapter.generic?.binary) {
+  const generic = options.generic ?? config.adapter.generic;
+  if (id === "generic" && !generic?.binary) {
     throw new AdapterConfigError("adapter.generic is required when the resolved adapter is generic");
   }
   return createAdapter(id, {
     extraArgs: options.extraArgs ?? config.adapter.claude?.extraArgs,
-    generic: options.generic ?? config.adapter.generic,
+    generic,
     grok: options.grok ?? config.adapter.grok,
     openai: options.openai ?? config.adapter.openai,
     codex: options.codex ?? config.adapter.codex,

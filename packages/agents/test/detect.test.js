@@ -149,6 +149,15 @@ test("resolveAdapter throws when resolved id is generic without binary even if d
   );
 });
 
+test("resolveAdapter honors options.generic when overriding default to generic", () => {
+  const adapter = resolveAdapter(
+    { adapter: { default: "claude" } },
+    { id: "generic", generic: { binary: "node", args: ["{{pointer}}"] } },
+  );
+  assert.equal(adapter.id, "generic");
+  assert.equal(adapter.binary, "node");
+});
+
 test("resolveAdapterId precedence is cli > task > route > default", () => {
   const config = {
     adapter: {
