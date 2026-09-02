@@ -663,7 +663,7 @@ When finished, write a short summary to .legion-cli/cache/runs/<id>/summary.md
 
 Extras are **spawnable** via `ExtraAdapter` (`packages/agents/src/adapters/extra.ts`). `DETECT_ONLY_ADAPTER_IDS` is empty; `AdapterNotEnabled` is a dead path. Vendor flags stay generic-style until verified. `openai` and `codex` share assumed binary `codex` (`ASSUMED_EXTRA_BINARIES`); routing TSK-A → `openai` and TSK-B → `codex` is a no-op unless `adapter.openai.binary` / `args` differ. Prefer `codex` in `adapter.named` examples and human docs. Doctor still lists both ids.
 
-Env allowlist (plus the existing user environment’s `PATH`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `ComSpec`): `CLAUDE_API_KEY`, `GROK_API_KEY`, `XAI_API_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY` (inherit-if-set — Legion CLI never writes them), `TERM`. Do not pass `SSH_AUTH_SOCK` into a widened env; inherit by default from the user process (laptop trust model).
+Spawn env (`filterSpawnEnv(env, adapterId, binary)`): always inherit `PATH`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `ComSpec`, `TERM`. Provider credentials are **per spawned adapter** (`ADAPTER_CREDENTIAL_KEYS`): `claude` → `CLAUDE_API_KEY`; `grok` → `GROK_API_KEY`/`XAI_API_KEY`; `openai`/`codex` → `OPENAI_API_KEY`; `minimax` → `MINIMAX_API_KEY`; `fake`/`mimo` → none. `generic` infers from the configured binary basename (`claude`/`codex`/`grok`/`mimo`/`mcode`). Legion never writes these keys. Do not pass `SSH_AUTH_SOCK` into a widened env; inherit by default from the user process (laptop trust model).
 
 Timeout: 20 minutes. Abort:
 

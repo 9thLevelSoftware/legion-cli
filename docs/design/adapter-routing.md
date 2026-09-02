@@ -53,9 +53,10 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 | Detect-only | `packages/agents/src/types.ts` | `DETECT_ONLY_ADAPTER_IDS = []`. Extras **are spawnable** via `ExtraAdapter` (`packages/agents/src/adapters/extra.ts`) with generic-style `{{pointer}}` argv. |
 | Frozen argv | `packages/agents/src/argv.ts` `FROZEN_ARGV_TABLE` + `templateArgv` | Extra adapters spawnable, generic-style argv. Pointer prompt is frozen (`packages/agents/src/pointer.ts`). Adapters build argv **internally**; `AgentHandle` does not expose argv. `templateArgv` leaves `{{pointer}}` unexpanded. |
 | Env allowlist | `packages/agents/src/env.ts` `filterSpawnEnv` | Base PATH/HOME/TERM keys always. Provider credentials via `ADAPTER_CREDENTIAL_KEYS` only for the spawned adapter (`grok` → `GROK_API_KEY`/`XAI_API_KEY`, `openai`/`codex` → `OPENAI_API_KEY`, `minimax` → `MINIMAX_API_KEY`). Windows also inherits `SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`, `PATHEXT`. `SSH_AUTH_SOCK` inherited when present, never injected. |
-| Spawn | `packages/core/src/spawn.ts` `optionalSkillSpawn` | `resolveAdapterId` then `isResolvedAdapterSpawnable`. Required skills refuse if the **resolved** id is not spawnable; optional skills return `{ spawned: false, resolution }`. Resume writes `adapterId` / `binary` / names-only `argvSummary` / `resolutionSource` **before** `wait()`. |
+| Spawn | `packages/core/src/spawn.ts` `optionalSkillSpawn` | `resolveAdapterId` then `isResolvedAdapterSpawnable`. Required skills refuse if the **resolved** id is not spawnable; optional skills return `{ spawned: false, resolution }`. Resume writes `adapterId` / `binary` / value-free `argvSummary` (see §9) / `resolutionSource` **before** `wait()`. |
 | Engine | `packages/core/src/engine.ts` | Plan/execute/review/verify assert spawnable on the **resolved** id (`isResolvedAdapterSpawnable`). `ExecuteOptions.adapter` and `AmendTaskOptions.adapter` / `clearAdapter` exist (clear + adapter are mutually exclusive). Plan asserts, **then** writes `phase: planning`, **then** spawns. |
-| Doctor | `packages/cli/src/doctor.ts` | Fail-closed if `adapter.default` missing or not spawnable via `isResolvedAdapterSpawnable` (detect, not PATH-only). Fail-closed on required-skill routes (`routes.plan` / `execute` / `review`). Warns on optional-skill routes, `adapter.named`, and slice `Task.adapter`. Trust-warns per-id args after `redactSecrets`. CLI depends on agents. |
+| Doctor | `packages/cli/src/doctor.ts` | Fail-closed if `adapter.default` missing or not spawnable via PATH + argv (`isConfiguredSpawnable` — no `versionOf` / `--version` on repo-configured binaries). Fail-closed on required-skill routes (`routes.plan` / `execute` / `review`). Warns on optional-skill routes, `adapter.named`, and slice `Task.adapter`. Trust-warns per-id args via `argvSummarySafe`. CLI depends on agents. |
+| Audit | `packages/persist/src/audit.ts` + engine `#audit("execute", …)` | Execute and timeout events carry `data.adapterId` / `binary` / `argvSummary` / `resolutionSource`; `formatAuditDayLine` appends `adapter=`. Plan/review/verify do not currently emit spawn audit types. |
 | Dashboard writes | `packages/dashboard/src/write.ts` | `ENGINE_WRITE_METHODS = ticket \| wikiTrust \| qaChecklist`. `parseTicket` does not read `adapter`. Viewer may show raw `Task.adapter`. |
 | Wiki brief | `packages/wiki/src/brief.ts` | Depends on persist + schema only — **not** agents. May copy **raw** `Task.adapter`; does not call `resolveAdapterId`. |
 
@@ -65,7 +66,6 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 | --- | --- | --- |
 | Plan prompt | `engine.plan` `promptBody` + `skills/plan/SKILL.md` | Lists required task frontmatter keys. **Does not mention `adapter`.** extra.json example has no `adapter`. |
 | CLI `--adapter` | `packages/cli/src/cli.ts` + `init.ts` | **Init only** (already accepts every AdapterId). `execute` / `plan` / `review` / `verify` / `fix` have no adapter flag. `legion-cli fix` calls `engine.execute(task.id, { fix: true })` (`packages/cli/src/fix.ts`). Persistent task adapter is `task amend --adapter` / `--clear-adapter` once those flags exist. |
-| Audit | `packages/persist/src/audit.ts` + engine `#audit("execute", …)` | Execute records duration/timeout/status/runId plus adapter fields from spawn. Plan/review/verify do not currently emit spawn audit types. |
 
 **Design of record (rev 9):** KD5 and §5.1 of `docs/design/product-engineering-cli.md` say extras are **spawnable** (`DETECT_ONLY_ADAPTER_IDS` empty; `AdapterNotEnabled` is a dead path). Pre-rev-9 text said `grok`/`codex` were v0 detect-only. This design **does not** put extras back on detect-only. It builds on the spawnable extras that already exist.
 
@@ -450,7 +450,7 @@ const adapter = resolveAdapter(opts.config, {
   timedOut: opts.timedOut,
 });
 const tmpl = templateArgv(resolution.id, opts.config);
-const argvSummary = redactSecrets(tmpl.argv.join(" ")).slice(0, 240);
+const argvSummary = argvSummarySafe(tmpl.argv);
 
 if (!(await isSpawnable(adapter))) {
   if (opts.required) {
@@ -487,7 +487,7 @@ await isResolvedAdapterSpawnable(config, id);
 
 Bare `createAdapter("grok")` would use `genericArgsOrDefault([])` → `["{{pointer}}"]` and **miss** `adapter.grok.args: ["--model", "grok-4"]` (no pointer). That config must **fail doctor** when `routes.plan` (or execute/review) is `grok`.
 
-**Packaging:** `@9thlevelsoftware/legion-cli` has no agents dependency today. PR-5 adds `"@9thlevelsoftware/legion-cli-agents": "workspace:*"` to `packages/cli/package.json`. Doctor imports `isResolvedAdapterSpawnable` from agents. Do **not** re-export through core for doctor (that would couple PR-5 to PR-3). Engine `#assertSkillSpawnable` (PR-3) imports the same helper from agents — core already depends on agents. Keep the informational PATH matrix on existing CLI `isSpawnableBinary` (`packages/cli/src/which.ts`) as a separate block. `isSpawnable` / `isResolvedAdapterSpawnable` are **async**; `runDoctor` already is.
+**Packaging (landed):** `@9thlevelsoftware/legion-cli` already depends on `@9thlevelsoftware/legion-cli-agents` (`workspace:*`). Doctor spawnable checks are PATH + argv (`isConfiguredSpawnable`) so a cloned repo cannot execute `adapter.generic.binary --version`. Engine `#assertSkillSpawnable` still uses `isResolvedAdapterSpawnable` (detect) at spawn time. Keep the informational PATH matrix on CLI `isSpawnableBinary` (`packages/cli/src/which.ts`) as a separate block.
 
 | Check | Fail-closed? | Notes |
 | --- | --- | --- |
