@@ -88,6 +88,7 @@ import type {
   ReviewResult,
   ShipOptions,
   ShipReceipt,
+  VerifyResult,
 } from "./types.js";
 import { runVerificationCommands } from "./verify.js";
 import {
@@ -654,17 +655,113 @@ export class LegionEngine {
     });
   }
 
+  async verify(taskId?: string): Promise<VerifyResult> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("verify is refused until init", HINT.init);
+      }
+      if (state.phase !== "executing" && state.phase !== "ready_to_ship") {
+        refuse("verify is optional walkthrough notes during executing", HINT.execute);
+      }
+      const specId = state.activeSpecId;
+      if (!specId) {
+        refuse("verify requires an active spec", HINT.spec);
+      }
+      const slice = sliceTasks(await this.#listTasks(), specId);
+      let task: Task | undefined;
+      if (taskId) {
+        task = slice.find((candidate) => candidate.id === taskId);
+        if (!task) {
+          refuse(`task ${taskId} is not in the active spec slice`, HINT.blockers);
+        }
+      }
+
+      const config = await this.#readConfig();
+      const before = await this.snapshotTaskIds();
+      const result = await optionalSkillSpawn({
+        projectRoot: this.projectRoot,
+        config,
+        skillId: "verify",
+        specId,
+        taskId: task?.id,
+        promptBody: [
+          "Optional walkthrough notes. This is not a ship gate.",
+          `Active spec: ${specId}`,
+          task ? `Task: ${task.id} ${task.title}` : "Walk the slice tasks.",
+          "Write notes to .legion-cli/qa/verify.md (or .legion-cli/qa/verify/<taskId>.md).",
+          "If you find fix work, file type: fix child tasks under .legion-cli/tasks/ or extra.json.",
+          "Do not git add or git commit. Do not write packets.",
+        ].join("\n"),
+        skillsDir: this.#skillsDir,
+        fakeArtifacts: this.#fakeArtifacts,
+        throwAfterWrite: this.#fakeThrowAfterWrite,
+      });
+      if (result.runId) {
+        await this.#fileExtrasFromRun(result.runId, specId, { type: "fix", parentId: task?.id });
+      }
+      const after = await this.snapshotTaskIds();
+      const createdTaskIds = after.filter((id) => !before.includes(id));
+      if (result.spawned) {
+        await this.#refuseSpawnContract("verify", result.revert, result.error, createdTaskIds, before, after);
+      }
+      if (createdTaskIds.length > 0) {
+        await this.#failLastReviewLocked();
+        await this.#promoteReadyTasks(specId, "executing", config.control_mode);
+      }
+      return {
+        taskId: task?.id,
+        spawned: result.spawned,
+        notesPath: await this.#findVerifyNotes(task?.id),
+        createdTaskIds,
+        extrasReverted: result.revert?.extrasReverted ?? [],
+      };
+    });
+  }
+
   async review(): Promise<ReviewResult> {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
       this.#assertCanReview(state, slice);
-      const before = (await this.#listTasks()).map((task) => task.id);
-      // spawn is not wired; PASS only when the (empty) spawn created zero new tasks
-      const after = (await this.#listTasks()).map((task) => task.id);
+      const specId = state.activeSpecId;
+      if (!specId) {
+        refuse("review requires an active spec", HINT.spec);
+      }
+      const config = await this.#readConfig();
+      await this.#assertReviewSpawnable(config);
+
+      const before = await this.snapshotTaskIds();
+      const result = await optionalSkillSpawn({
+        projectRoot: this.projectRoot,
+        config,
+        skillId: "review",
+        specId,
+        promptBody: [
+          "Spec-level review of a terminal slice.",
+          `Active spec: ${specId}`,
+          `Read .legion-cli/specs/${specId}/SPEC.md and .legion-cli/tasks/*.md.`,
+          "Write notes to .legion-cli/qa/review.md.",
+          "If the slice does not meet the spec, file tasks under .legion-cli/tasks/ (type: fix) or extra.json.",
+          "Creating any new task id FAILs this review. Zero new tasks is PASS.",
+          "Do not git add or git commit. Do not write packets.",
+        ].join("\n"),
+        skillsDir: this.#skillsDir,
+        fakeArtifacts: this.#fakeArtifacts,
+        throwAfterWrite: this.#fakeThrowAfterWrite,
+        required: true,
+      });
+      if (result.runId) {
+        await this.#fileExtrasFromRun(result.runId, specId);
+      }
+      const after = await this.snapshotTaskIds();
       const createdTaskIds = after.filter((id) => !before.includes(id));
-      const verdict = await this.#applyReviewSnapshotsLocked(state, before, after);
-      return { verdict, createdTaskIds };
+      await this.#refuseSpawnContract("review", result.revert, result.error, createdTaskIds, before, after);
+      if (createdTaskIds.length > 0) {
+        await this.#promoteReadyTasks(specId, "executing", config.control_mode);
+      }
+      const verdict = await this.#applyReviewSnapshotsLocked(await this.#readState(), before, after);
+      return { verdict, createdTaskIds, extrasReverted: result.revert?.extrasReverted ?? [] };
     });
   }
 
@@ -1228,7 +1325,75 @@ export class LegionEngine {
     }
   }
 
-  async #fileExtrasFromRun(runId: string, specId: string): Promise<void> {
+  async #assertReviewSpawnable(config: LegionConfig): Promise<void> {
+    const adapter = resolveAdapter(config, {
+      artifacts: this.#fakeArtifacts,
+      throwAfterWrite: this.#fakeThrowAfterWrite,
+    });
+    if (!(await isSpawnable(adapter))) {
+      refuse("review requires a spawnable adapter", HINT.doctor);
+    }
+    const skillsDir = this.#skillsDir ?? findSkillsDir();
+    if (!skillsDir || !existsSync(join(skillsDir, "review", "SKILL.md"))) {
+      refuse("review requires skills/review/SKILL.md", HINT.review);
+    }
+  }
+
+  async #failLastReviewLocked(): Promise<void> {
+    const current = await this.#readState();
+    if (current.phase !== "executing" && current.phase !== "ready_to_ship") return;
+    const next: StateFile = { ...current, lastReview: "FAIL" };
+    if (current.phase === "ready_to_ship") next.phase = "executing";
+    if (next.lastReview !== current.lastReview || next.phase !== current.phase) {
+      await this.#writeState(next);
+    }
+  }
+
+  async #findVerifyNotes(taskId?: string): Promise<string | undefined> {
+    const candidates = [
+      taskId ? `.legion-cli/qa/verify/${taskId}.md` : undefined,
+      ".legion-cli/qa/verify.md",
+      ".legion-cli/qa/notes.md",
+      ".legion-cli/qa/walkthrough.md",
+    ];
+    for (const path of candidates) {
+      if (path && (await this.store.pathExists(path))) return path;
+    }
+    return undefined;
+  }
+
+  async #refuseSpawnContract(
+    skillId: "verify" | "review",
+    revert: { extrasReverted: string[]; incident: boolean } | null,
+    error: unknown,
+    createdTaskIds: readonly string[],
+    before: readonly string[],
+    after: readonly string[],
+  ): Promise<void> {
+    const failed = Boolean(revert?.incident) || Boolean(revert && revert.extrasReverted.length > 0) || Boolean(error);
+    if (!failed) return;
+    if (createdTaskIds.length > 0) {
+      await this.#applyReviewSnapshotsLocked(await this.#readState(), before, after);
+    }
+    const hint = skillId === "review" ? HINT.review : HINT.verify;
+    if (revert?.incident) {
+      refuse("inspect .git — spawn touched .git/", hint);
+    }
+    if (revert && revert.extrasReverted.length > 0) {
+      refuse(
+        `${skillId} spawn wrote files outside SkillContract; reverted: ${revert.extrasReverted.join(", ")}`,
+        hint,
+      );
+    }
+    if (error instanceof LegionRefuseError) throw error;
+    if (error) throw error;
+  }
+
+  async #fileExtrasFromRun(
+    runId: string,
+    specId: string,
+    defaults?: { type?: NewTicket["type"]; parentId?: string },
+  ): Promise<void> {
     const abs = join(this.projectRoot, ".legion-cli", "cache", "runs", runId, "extra.json");
     let raw: unknown;
     try {
@@ -1237,7 +1402,15 @@ export class LegionEngine {
       return;
     }
     for (const input of parseExtraJson(raw)) {
-      await this.#fileTicketLocked({ ...input, fromAgent: true }, specId);
+      await this.#fileTicketLocked(
+        {
+          ...input,
+          fromAgent: true,
+          type: input.type ?? defaults?.type,
+          parentId: input.parentId ?? defaults?.parentId,
+        },
+        specId,
+      );
     }
   }
 
@@ -1276,9 +1449,7 @@ export class LegionEngine {
       }
     }
     const promoted = await this.#promoteTicketIfReady(id, specId);
-    if (state.lastReview === "PASS") {
-      await this.#writeState({ ...state, lastReview: "FAIL" });
-    }
+    await this.#failLastReviewLocked();
     return promoted;
   }
 

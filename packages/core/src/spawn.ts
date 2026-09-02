@@ -24,6 +24,13 @@ import {
   type RevertResult,
 } from "./revert.js";
 
+function skillMissingHint(skillId: SkillId): string {
+  if (skillId === "execute") return HINT.execute;
+  if (skillId === "review") return HINT.review;
+  if (skillId === "verify") return HINT.verify;
+  return HINT.plan;
+}
+
 export type OptionalSpawnResult = {
   spawned: boolean;
   runId: string;
@@ -89,10 +96,7 @@ export async function optionalSkillSpawn(opts: {
   const skillDir = skillsDir ? join(skillsDir, opts.skillId) : undefined;
   if (!skillDir || !existsSync(join(skillDir, "SKILL.md"))) {
     if (opts.required) {
-      refuse(
-        `${opts.skillId} requires skills/${opts.skillId}/SKILL.md`,
-        opts.skillId === "execute" ? HINT.execute : HINT.plan,
-      );
+      refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
     }
     return { spawned: false, runId, revert: null };
   }

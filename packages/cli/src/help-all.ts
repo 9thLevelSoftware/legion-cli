@@ -19,6 +19,8 @@ const AVAILABLE = [
   ["plan", "Break into tasks I can see on the board", ""],
   ["next", "What is unblocked?", ""],
   ["execute [id]", "Do the next ready task", "--fix, --until-blocked"],
+  ["verify [id]", "Optional walkthrough notes (not a ship gate)", ""],
+  ["review", "Spec-level review; fix tasks mean FAIL and re-review", ""],
   ["ticket create", "Park extra work", "--parent, --title, --from-agent"],
   ["task amend", "Human changes a file contract", "--allow-deps"],
   ["design-system show", "Show the active design-system package", ""],

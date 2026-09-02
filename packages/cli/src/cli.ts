@@ -23,12 +23,14 @@ import {
 import { runMcp } from "./mcp.js";
 import { runNextTasks } from "./next-tasks.js";
 import { runPlan } from "./plan.js";
+import { runReview } from "./review.js";
 import { runSearch } from "./search.js";
 import { runShow } from "./show.js";
 import { runSpecApprove, runSpecDraft, runSpecNew, runSpecShow } from "./spec.js";
 import { runStatus } from "./status.js";
 import { runTaskAmend } from "./task.js";
 import { runTicketCreate } from "./ticket.js";
+import { runVerify } from "./verify.js";
 import { runWikiTrust } from "./wiki.js";
 
 const pkg = JSON.parse(
@@ -247,6 +249,21 @@ export function createProgram(): Command {
         untilBlocked: Boolean(flags.untilBlocked),
         fix: Boolean(flags.fix),
       });
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("verify").description("Optional walkthrough notes (not a ship gate)"))
+    .argument("[id]", "task id")
+    .allowExcessArguments(false)
+    .action(async (id: string | undefined, _opts, cmd: Command) => {
+      const code = await runVerify(resolveOpts(cmd), { id });
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("review").description("Spec-level review; fix tasks mean FAIL and re-review"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runReview(resolveOpts(cmd));
       process.exitCode = code;
     });
 
