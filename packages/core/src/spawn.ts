@@ -49,7 +49,7 @@ export function spawnableAdapterRefuseMessage(skillId: SkillId, resolution: Adap
 export function argvSummarySafe(argv: readonly string[]): string {
   return argv
     .map((arg) => {
-      if (arg.includes("{{pointer}}")) return arg;
+      if (arg.includes("{{pointer}}")) return "{{pointer}}";
       if (/^--[A-Za-z][\w-]*$/.test(arg) || /^-[A-Za-z]$/.test(arg)) return arg;
       const attached = /^(--[A-Za-z][\w-]*)=(.*)$/.exec(arg);
       if (attached) return `${attached[1]}=<redacted>`;

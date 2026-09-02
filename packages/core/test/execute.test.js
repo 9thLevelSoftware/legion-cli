@@ -27,6 +27,7 @@ test("argvSummarySafe keeps flag names and redacts attached values", () => {
   );
   assert.equal(argvSummarySafe(["--api-key=secret", "-pSECRET", "--header=Authorization:x"]), "--api-key=<redacted> <redacted> --header=<redacted>");
   assert.equal(argvSummarySafe(["-p", "--output-format", "json"]), "-p --output-format <redacted>");
+  assert.equal(argvSummarySafe(['{"apiKey":"secret","prompt":"{{pointer}}"}']), "{{pointer}}");
 });
 
 async function seedExecute(store, opts = {}) {
