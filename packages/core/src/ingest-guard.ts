@@ -16,7 +16,7 @@ export function assertIngestSourceAllowed(projectRoot: string, source: string): 
   if (!isUrlSource(source)) return;
 
   if (/^http:/i.test(source)) {
-    refuse("ingest refuses http: URLs", HINT.inRepo);
+    refuse("Use an https URL or an in-repo path (http is refused)", HINT.inRepo);
   }
 
   if (/^file:/i.test(source)) {
@@ -25,9 +25,9 @@ export function assertIngestSourceAllowed(projectRoot: string, source: string): 
       toProjectRelativePosix(projectRoot, abs);
     } catch (err) {
       if (err instanceof PathEscapeError) {
-        refuse("ingest of file: outside the workspace is refused", HINT.inRepo);
+        refuse("That file: URL is outside this folder", HINT.inRepo);
       }
-      refuse("ingest of file: outside the workspace is refused", HINT.inRepo);
+      refuse("That file: URL is outside this folder", HINT.inRepo);
     }
     return;
   }
@@ -36,9 +36,9 @@ export function assertIngestSourceAllowed(projectRoot: string, source: string): 
   try {
     hostname = new URL(source).hostname;
   } catch {
-    refuse("ingest refuses invalid URL", HINT.inRepo);
+    refuse("That URL is not a public in-repo source", HINT.inRepo);
   }
   if (isPrivateOrLocalHost(hostname)) {
-    refuse("ingest of private-network URL is refused", HINT.inRepo);
+    refuse("That URL is not a public in-repo source", HINT.inRepo);
   }
 }

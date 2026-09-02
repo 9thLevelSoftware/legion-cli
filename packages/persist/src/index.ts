@@ -12,9 +12,12 @@ export {
   auditDayPath,
   auditEventsPath,
   formatAuditDayLine,
+  readAuditEvents,
   shipReceiptBody,
   shipReceiptPath,
+  summarizeAuditMetrics,
 } from "./audit.js";
+export type { LocalMetrics } from "./audit.js";
 export {
   commitIngest,
   commitPaths,

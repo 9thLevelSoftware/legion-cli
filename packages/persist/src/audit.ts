@@ -55,6 +55,87 @@ export function formatAuditDayLine(event: AuditEvent): string {
   return `- ${event.ts} ${event.type} phase=${event.phase}${task} actor=${event.actor}\n`;
 }
 
+export async function readAuditEvents(projectRoot: string): Promise<AuditEvent[]> {
+  const jsonl = toFsPath(projectRoot, auditEventsPath());
+  let raw: string;
+  try {
+    raw = await readFile(jsonl, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  const events: AuditEvent[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = AuditEventSchema.safeParse(JSON.parse(line) as unknown);
+      if (parsed.success) events.push(parsed.data);
+    } catch {
+      continue;
+    }
+  }
+  return events;
+}
+
+export type LocalMetrics = {
+  refusesByType: Record<string, number>;
+  qa: { runs: number; passes: number; passRate: number | null };
+  execute: { runs: number; meanDurationMs: number | null };
+  timeouts: number;
+};
+
+function asFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function summarizeAuditMetrics(events: readonly AuditEvent[]): LocalMetrics {
+  const refusesByType: Record<string, number> = {};
+  let qaRuns = 0;
+  let qaPasses = 0;
+  let executeRuns = 0;
+  let executeDurationSum = 0;
+  let executeDurationCount = 0;
+  let timeouts = 0;
+
+  for (const event of events) {
+    if (event.type === "refuse") {
+      const kind =
+        typeof event.data.kind === "string" && event.data.kind.trim() ? event.data.kind.trim() : "other";
+      refusesByType[kind] = (refusesByType[kind] ?? 0) + 1;
+      continue;
+    }
+    if (event.type === "qa") {
+      qaRuns += 1;
+      if (event.data.pass === true) qaPasses += 1;
+      continue;
+    }
+    if (event.type === "execute") {
+      executeRuns += 1;
+      const ms = asFiniteNumber(event.data.durationMs);
+      if (ms !== null) {
+        executeDurationSum += ms;
+        executeDurationCount += 1;
+      }
+      continue;
+    }
+    if (event.type === "timeout") timeouts += 1;
+  }
+
+  return {
+    refusesByType,
+    qa: {
+      runs: qaRuns,
+      passes: qaPasses,
+      passRate: qaRuns === 0 ? null : qaPasses / qaRuns,
+    },
+    execute: {
+      runs: executeRuns,
+      meanDurationMs: executeDurationCount === 0 ? null : executeDurationSum / executeDurationCount,
+    },
+    timeouts,
+  };
+}
+
 export function shipReceiptBody(input: {
   specId: string;
   shippedAt: string;

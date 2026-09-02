@@ -34,6 +34,14 @@ export async function runPlan(opts: CliOpts): Promise<number> {
     writeOut("Concerns:");
     for (const line of concerns) writeOut(`  ${line}`);
   }
-  writeOut(`Next: ${next.run}`);
+  const ready = slice.filter((task) => task.status === "ready");
+  const first = ready[0];
+  const readyBit = first ? ` (${first.id} ${first.title})` : "";
+  writeOut(`${slice.length} tasks, ${ready.length} ready${readyBit}.`);
+  if (readiness === "FAIL") {
+    writeOut(`Next: ${next.run}`);
+  } else {
+    writeOut(`Next: ${next.run}     (viewer: legion-cli dashboard)`);
+  }
   return readiness === "FAIL" ? 1 : 0;
 }

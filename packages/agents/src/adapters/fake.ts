@@ -85,10 +85,12 @@ export class FakeAdapter implements AgentAdapter {
   readonly binary = "(in-process)";
   readonly #artifacts: FakeArtifact[];
   readonly #throwAfterWrite: boolean;
+  readonly #timedOut: boolean;
 
-  constructor(artifacts: FakeArtifact[] = [], throwAfterWrite = false) {
+  constructor(artifacts: FakeArtifact[] = [], throwAfterWrite = false, timedOut = false) {
     this.#artifacts = artifacts;
     this.#throwAfterWrite = throwAfterWrite;
+    this.#timedOut = timedOut;
   }
 
   async detect(): Promise<DetectResult> {
@@ -157,8 +159,8 @@ export class FakeAdapter implements AgentAdapter {
     await writeFile(paths.stderrPath, "", "utf8");
 
     return {
-      exitCode: 0,
-      timedOut: false,
+      exitCode: this.#timedOut ? null : 0,
+      timedOut: this.#timedOut,
       aborted: false,
       stdoutPath: paths.stdoutPath,
       stderrPath: paths.stderrPath,

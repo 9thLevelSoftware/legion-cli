@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { readAuditEvents, summarizeAuditMetrics } from "@9thlevelsoftware/legion-cli-persist";
 import { HEAD_MOVED_WARNING, LegionRefuseError, revertExtras } from "../dist/index.js";
 import { snapshotGitPolicy } from "../dist/revert.js";
 import {
@@ -38,6 +39,44 @@ async function seedExecute(store, opts = {}) {
 async function readResume(dir, runId) {
   return JSON.parse(await readFile(join(dir, ".legion-cli", "cache", "runs", runId, "resume.json"), "utf8"));
 }
+
+test("execute writes local duration audit events", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store);
+      initGitRepo(dir);
+      const result = await engine.execute("auto");
+      assert.equal(result.status, "done");
+      const jsonl = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
+      assert.match(jsonl, /"type":"execute"/);
+      assert.match(jsonl, /"durationMs":/);
+    });
+  });
+});
+
+test("execute spawn timeout blocks the task and counts one timeout", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+        const events = await readAuditEvents(dir);
+        const executes = events.filter((event) => event.type === "execute");
+        const timeouts = events.filter((event) => event.type === "timeout");
+        assert.equal(executes.length, 1);
+        assert.equal(executes[0].data.timedOut, true);
+        assert.equal(timeouts.length, 1);
+        assert.equal(summarizeAuditMetrics(events).timeouts, 1);
+      },
+      { fakeTimedOut: true },
+    );
+  });
+});
 
 test("execute refuses without a spawnable adapter", async () => {
   await withEngine(async ({ engine, store }) => {

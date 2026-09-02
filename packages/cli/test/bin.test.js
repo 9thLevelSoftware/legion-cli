@@ -45,6 +45,7 @@ test("help --all lists the v0 command surface", () => {
   assert.match(out, /legion-cli ship/);
   assert.match(out, /legion-cli abandon/);
   assert.match(out, /pnpm exec legion-cli/);
+  assert.match(out, /--metrics/);
 });
 
 test("help --all lists dashboard as available now", () => {

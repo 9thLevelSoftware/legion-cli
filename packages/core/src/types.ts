@@ -27,6 +27,7 @@ export type LegionEngineOptions = {
   skillsDir?: string;
   fakeArtifacts?: FakeArtifact[];
   fakeThrowAfterWrite?: boolean;
+  fakeTimedOut?: boolean;
 };
 
 export type IntentState = {

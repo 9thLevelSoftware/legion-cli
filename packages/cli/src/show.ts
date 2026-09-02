@@ -7,7 +7,7 @@ export async function runShow(opts: CliOpts, page: string): Promise<number> {
   const engine = createLegionEngine(opts.project);
   const state = await engine.getState();
   if (state.phase === "uninitialized") {
-    refuse("show is refused until init", HINT.init);
+    refuse("Show needs a Legion CLI project first", HINT.init);
   }
   let shown: ShownPage;
   try {

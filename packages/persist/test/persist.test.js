@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,8 @@ import {
   ensureGitignore,
   appendAuditEvent,
   auditEventsPath,
+  readAuditEvents,
+  summarizeAuditMetrics,
   gitAdd,
   gitCheckIgnore,
   gitDiscoverChanges,
@@ -634,6 +636,107 @@ test("appendAuditEvent writes events.jsonl and YYYY-MM-DD.md", async () => {
     assert.match(day, /# 2026-09-01/);
     assert.match(day, /ship phase=shipped/);
   });
+});
+
+test("readAuditEvents skips missing and malformed lines", async () => {
+  await withTempDir(async (dir) => {
+    assert.deepEqual(await readAuditEvents(dir), []);
+    await mkdir(join(dir, ".legion-cli", "audit"), { recursive: true });
+    await appendAuditEvent(dir, {
+      ts: "2026-09-01T12:00:00.000Z",
+      type: "refuse",
+      phase: "initialized",
+      actor: "user",
+      data: { kind: "plan" },
+    });
+    const jsonl = join(dir, ...auditEventsPath().split("/"));
+    await appendFile(jsonl, "not-json\n", "utf8");
+    await appendFile(jsonl, `${JSON.stringify({ schemaVersion: "nope" })}\n`, "utf8");
+    const events = await readAuditEvents(dir);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, "refuse");
+  });
+});
+
+test("summarizeAuditMetrics counts refuses, QA, execute duration, timeouts", () => {
+  const metrics = summarizeAuditMetrics([
+    {
+      schemaVersion: "legion-cli-audit/v1",
+      ts: "2026-09-01T12:00:00.000Z",
+      type: "refuse",
+      phase: "initialized",
+      actor: "user",
+      data: { kind: "plan" },
+    },
+    {
+      schemaVersion: "legion-cli-audit/v1",
+      ts: "2026-09-01T12:00:01.000Z",
+      type: "refuse",
+      phase: "initialized",
+      actor: "user",
+      data: { kind: "plan" },
+    },
+    {
+      schemaVersion: "legion-cli-audit/v1",
+      ts: "2026-09-01T12:00:02.000Z",
+      type: "qa",
+      phase: "ready_to_ship",
+      actor: "user",
+      data: { pass: true, total: 94 },
+    },
+    {
+      schemaVersion: "legion-cli-audit/v1",
+      ts: "2026-09-01T12:00:03.000Z",
+      type: "qa",
+      phase: "executing",
+      actor: "user",
+      data: { pass: false, total: 70 },
+    },
+    {
+      schemaVersion: "legion-cli-audit/v1",
+      ts: "2026-09-01T12:00:04.000Z",
+      type: "execute",
+      phase: "executing",
+      actor: "agent",
+      data: { durationMs: 10, timedOut: false },
+    },
+    {
+      schemaVersion: "legion-cli-audit/v1",
+      ts: "2026-09-01T12:00:05.000Z",
+      type: "execute",
+      phase: "executing",
+      actor: "agent",
+      data: { durationMs: 30, timedOut: true },
+    },
+    {
+      schemaVersion: "legion-cli-audit/v1",
+      ts: "2026-09-01T12:00:06.000Z",
+      type: "timeout",
+      phase: "executing",
+      actor: "agent",
+      data: { skillId: "execute" },
+    },
+  ]);
+  assert.equal(metrics.refusesByType.plan, 2);
+  assert.equal(metrics.qa.runs, 2);
+  assert.equal(metrics.qa.passes, 1);
+  assert.equal(metrics.qa.passRate, 0.5);
+  assert.equal(metrics.execute.runs, 2);
+  assert.equal(metrics.execute.meanDurationMs, 20);
+  assert.equal(metrics.timeouts, 1);
+  assert.equal(
+    summarizeAuditMetrics([
+      {
+        schemaVersion: "legion-cli-audit/v1",
+        ts: "2026-09-01T12:00:07.000Z",
+        type: "execute",
+        phase: "executing",
+        actor: "agent",
+        data: { durationMs: 5, timedOut: true },
+      },
+    ]).timeouts,
+    0,
+  );
 });
 
 test("git add stages listed paths and not gitignored index/cache", async () => {

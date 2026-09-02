@@ -151,3 +151,25 @@ test("help lists execute flags", async () => {
   assert.match(out, /until-blocked/);
   assert.match(out, /fix/);
 });
+
+test("doctor --metrics counts one execute timeout", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir);
+    const previous = process.env.LEGION_CLI_ADAPTER;
+    process.env.LEGION_CLI_ADAPTER = "fake";
+    try {
+      const timed = createLegionEngine(dir, { fakeTimedOut: true });
+      const result = await timed.execute("auto");
+      assert.equal(result.status, "blocked");
+    } finally {
+      if (previous === undefined) delete process.env.LEGION_CLI_ADAPTER;
+      else process.env.LEGION_CLI_ADAPTER = previous;
+    }
+    const doctor = runCli(["doctor", "--metrics", "--json", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(doctor.status, 0, `${doctor.stdout}\n${doctor.stderr}`);
+    const body = JSON.parse(doctor.stdout);
+    assert.equal(body.metrics.timeouts, 1);
+  });
+});

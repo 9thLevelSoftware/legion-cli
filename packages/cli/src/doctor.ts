@@ -1,5 +1,12 @@
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import { SCHEMA_VERSION, type AdapterId, type LegionConfig } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  readAuditEvents,
+  summarizeAuditMetrics,
+  type LocalMetrics,
+} from "@9thlevelsoftware/legion-cli-persist";
+import { QAScoreSchema, SCHEMA_VERSION, type AdapterId, type LegionConfig, type Phase } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { scanWikiSecrets, type SecretHit } from "./secrets.js";
@@ -70,7 +77,96 @@ function formatCheck(check: DoctorCheck): string {
   return `${mark}  ${check.label} (${check.detail})`;
 }
 
-export async function runDoctor(opts: CliOpts): Promise<number> {
+export type DoctorMetricsFlags = {
+  metrics?: boolean;
+};
+
+async function qaScoresFallback(projectRoot: string): Promise<{ runs: number; passes: number }> {
+  const dir = join(projectRoot, ".legion-cli", "qa", "scores");
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return { runs: 0, passes: 0 };
+  }
+  let runs = 0;
+  let passes = 0;
+  for (const name of names) {
+    if (!name.toLowerCase().endsWith(".json")) continue;
+    try {
+      const parsed = QAScoreSchema.safeParse(JSON.parse(await readFile(join(dir, name), "utf8")));
+      if (!parsed.success) continue;
+      runs += 1;
+      if (parsed.data.pass) passes += 1;
+    } catch {
+      continue;
+    }
+  }
+  return { runs, passes };
+}
+
+const AUDIT_SOURCE = ".legion-cli/audit/events.jsonl";
+const QA_SCORES_SOURCE = ".legion-cli/qa/scores";
+
+function mergeQaFallback(
+  metrics: LocalMetrics,
+  fallback: { runs: number; passes: number },
+): { metrics: LocalMetrics; qaSource: string | null } {
+  if (metrics.qa.runs > 0) return { metrics, qaSource: AUDIT_SOURCE };
+  if (fallback.runs === 0) return { metrics, qaSource: null };
+  return {
+    metrics: {
+      ...metrics,
+      qa: {
+        runs: fallback.runs,
+        passes: fallback.passes,
+        passRate: fallback.passes / fallback.runs,
+      },
+    },
+    qaSource: QA_SCORES_SOURCE,
+  };
+}
+
+function formatPassRate(qa: LocalMetrics["qa"]): string {
+  if (qa.runs === 0 || qa.passRate === null) return "n/a (0 runs)";
+  const pct = Math.round(qa.passRate * 100);
+  return `${qa.passes}/${qa.runs} (${pct}%)`;
+}
+
+function formatMeanDuration(execute: LocalMetrics["execute"]): string {
+  if (execute.runs === 0 || execute.meanDurationMs === null) return "n/a (0 runs)";
+  return `${Math.round(execute.meanDurationMs)} ms`;
+}
+
+function formatMetricsLines(metrics: LocalMetrics, phase: Phase | null, qaSource: string | null): string[] {
+  const kinds = Object.keys(metrics.refusesByType).sort();
+  const lines = [
+    "Local metrics (on disk only; never phones home)",
+    `  Source      ${AUDIT_SOURCE}`,
+  ];
+  if (qaSource && qaSource !== AUDIT_SOURCE) {
+    lines.push(`  QA source   ${qaSource}`);
+  }
+  if (phase) lines.push(`  Phase       ${phase}`);
+  if (process.env.DO_NOT_TRACK === "1") {
+    lines.push("  DO_NOT_TRACK=1 honored (these metrics are not telemetry)");
+  }
+  lines.push("  Refuses by type");
+  if (kinds.length === 0) {
+    lines.push("    none");
+  } else {
+    const width = Math.max(...kinds.map((kind) => kind.length));
+    for (const kind of kinds) {
+      lines.push(`    ${kind.padEnd(width)}  ${metrics.refusesByType[kind]}`);
+    }
+  }
+  lines.push(`  QA pass rate            ${formatPassRate(metrics.qa)}`);
+  lines.push(`  Mean execute duration   ${formatMeanDuration(metrics.execute)}`);
+  lines.push(`  Timeouts                ${metrics.timeouts}`);
+  return lines;
+}
+
+export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): Promise<number> {
   const engine = createLegionEngine(opts.project);
   const checks: DoctorCheck[] = [];
   const warnings: string[] = [];
@@ -167,6 +263,21 @@ export async function runDoctor(opts: CliOpts): Promise<number> {
   };
 
   const ok = checks.every((check) => check.ok);
+  let metrics: LocalMetrics | null = null;
+  let metricsPhase: Phase | null = null;
+  let qaSource: string | null = null;
+  if (flags.metrics) {
+    const events = await readAuditEvents(opts.project);
+    const merged = mergeQaFallback(summarizeAuditMetrics(events), await qaScoresFallback(opts.project));
+    metrics = merged.metrics;
+    qaSource = merged.qaSource;
+    try {
+      metricsPhase = (await engine.getState()).phase;
+    } catch {
+      metricsPhase = null;
+    }
+  }
+
   const report = {
     ok,
     checks,
@@ -181,6 +292,17 @@ export async function runDoctor(opts: CliOpts): Promise<number> {
       matrix: adapterMatrix,
     },
     secrets: secrets.map((hit) => ({ name: hit.name, file: hit.file })),
+    ...(metrics
+      ? {
+          metrics: {
+            telemetry: "off" as const,
+            source: AUDIT_SOURCE,
+            qaSource,
+            phase: metricsPhase,
+            ...metrics,
+          },
+        }
+      : {}),
   };
 
   if (opts.json) {
@@ -216,6 +338,9 @@ export async function runDoctor(opts: CliOpts): Promise<number> {
   if (warnings.length > 0) {
     lines.push("", "Warnings");
     for (const warning of warnings) lines.push(`  ${warning}`);
+  }
+  if (metrics) {
+    lines.push("", ...formatMetricsLines(metrics, metricsPhase, qaSource));
   }
   lines.push("", ok ? "Doctor passed." : "Doctor failed.");
   writeOut(lines.join("\n"));
