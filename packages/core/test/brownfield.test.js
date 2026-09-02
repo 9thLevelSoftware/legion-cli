@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -112,6 +112,26 @@ test("brownfield --resume restores resume.json", async () => {
     assert.equal(resumed.runId, "dddddddd");
     assert.equal(resumed.execute, true);
     assert.equal(resumed.worktreePath, ".legion-cli/worktrees/dddddddd");
+  });
+});
+
+test("brownfield --resume --execute recreates a deleted worktree", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine, { mode: "brownfield" });
+    initGitRepo(dir);
+    const created = await engine.brownfield({ effort: 1, execute: true, runId: "eeeeeeee" });
+    assert.equal(created.worktreePath, ".legion-cli/worktrees/eeeeeeee");
+    const worktree = join(dir, ".legion-cli", "worktrees", "eeeeeeee");
+    const mainBranch = git(dir, ["branch", "--show-current"]);
+    await rm(worktree, { recursive: true, force: true });
+    assert.equal(await exists(worktree), false);
+
+    const resumed = await engine.brownfield({ resume: "eeeeeeee", execute: true });
+    assert.equal(resumed.worktreePath, ".legion-cli/worktrees/eeeeeeee");
+    assert.equal(git(worktree, ["rev-parse", "--is-inside-work-tree"]), "true");
+    assert.match(git(worktree, ["branch", "--show-current"]), /brownfield\/eeeeeeee/);
+    assert.equal(git(dir, ["branch", "--show-current"]), mainBranch);
+    assert.notEqual(mainBranch, "brownfield/eeeeeeee");
   });
 });
 
