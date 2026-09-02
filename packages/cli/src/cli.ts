@@ -262,6 +262,7 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
+
   addGlobalOptions(program.command("verify").description("Optional walkthrough notes (not a ship gate)"))
     .argument("[id]", "task id")
     .allowExcessArguments(false)
@@ -323,7 +324,7 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("dashboard").description("Open the visual board (viewer)"))
+  addGlobalOptions(program.command("dashboard").description("Open the visual board (viewer with optional writes; not the source of truth)"))
     .option("--no-open", "do not open a browser")
     .option("--port <port>", "port (default 7420)")
     .option("--expose", "bind 0.0.0.0 (warning)")

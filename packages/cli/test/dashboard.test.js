@@ -58,7 +58,7 @@ async function stop(child) {
   });
 }
 
-test("dashboard --no-open --port 0 serves GET / and rejects POST", async () => {
+test("dashboard --no-open --port 0 serves GET / and optional engine POSTs", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(init.status, 0, init.stderr);
@@ -75,11 +75,46 @@ test("dashboard --no-open --port 0 serves GET / and rejects POST", async () => {
       const res = await fetch(viewer);
       assert.equal(res.status, 200);
       const html = await res.text();
-      assert.match(html, /Read-only/);
+      assert.match(html, /source of truth/);
       assert.match(html, /Checkin/);
       assert.match(html, /Kanban/);
-      const post = await fetch(viewer, { method: "POST", body: "{}" });
-      assert.equal(post.status, 405);
+      const tokenMatch = /<meta name="legion-cli-token" content="([^"]+)">/.exec(html);
+      assert.ok(tokenMatch);
+      const token = tokenMatch[1];
+      assert.equal(res.headers.get("access-control-allow-origin"), null);
+      assert.equal(res.headers.get("set-cookie"), null);
+
+      const noToken = await fetch(`${viewer}/engine/wikiTrust`, {
+        method: "POST",
+        headers: { Origin: viewer, "Content-Type": "application/json" },
+        body: JSON.stringify({ pageId: "README" }),
+      });
+      assert.equal(noToken.status, 403);
+
+      const execute = await fetch(`${viewer}/engine/execute`, {
+        method: "POST",
+        headers: {
+          Origin: viewer,
+          "Content-Type": "application/json",
+          "X-Legion-Cli-Token": token,
+        },
+        body: JSON.stringify({}),
+      });
+      assert.equal(execute.status, 404);
+
+      const trust = await fetch(`${viewer}/engine/wikiTrust`, {
+        method: "POST",
+        headers: {
+          Origin: viewer,
+          "Content-Type": "application/json",
+          "X-Legion-Cli-Token": token,
+        },
+        body: JSON.stringify({ pageId: "README" }),
+      });
+      assert.equal(trust.status, 200, await trust.clone().text());
+      const body = await trust.json();
+      assert.equal(body.ok, true);
+      assert.equal(body.trust, "reviewed");
     } finally {
       await stop(child);
     }

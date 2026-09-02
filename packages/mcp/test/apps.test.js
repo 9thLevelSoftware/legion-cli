@@ -58,7 +58,7 @@ test("flags.mcpApps lists ui:// resources with CSP self and status text fallback
       const dashboard = await client.readResource({ uri: "ui://legion-cli/dashboard" });
       const html = htmlOf(dashboard.contents);
       assert.match(html.text, /Kanban/);
-      assert.match(html.text, /Read-only/);
+      assert.match(html.text, /optional writes/);
       assert.doesNotMatch(html.text, /webmcp\.js/);
       assert.deepEqual(html._meta?.ui?.csp, {
         connectDomains: ["'self'"],

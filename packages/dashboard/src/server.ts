@@ -19,6 +19,7 @@ import {
   echoAllowedOrigin,
   headerValue,
   originIsAllowed,
+  writeOriginIsAllowed,
 } from "./origin.js";
 import { openBrowser } from "./open.js";
 import {
@@ -32,12 +33,23 @@ import {
 } from "./html.js";
 import { loadSnapshot, readOptionalConfig } from "./snapshot.js";
 import {
+  WRITE_TOKEN_HEADER,
+  createDashboardEngine,
+  dispatchEngineWrite,
+  EngineWriteError,
+  mintWriteToken,
+  readJsonBody,
+  writeTokenMatches,
+} from "./write.js";
+import {
   WEBMCP_SCRIPT,
   WEBMCP_SCRIPT_PATH,
   webmcpHeaders,
 } from "./webmcp.js";
 
-const ALLOW_METHODS = "GET, HEAD, OPTIONS";
+const VIEW_METHODS = "GET, HEAD, OPTIONS";
+const ALLOW_METHODS = "GET, HEAD, POST, OPTIONS";
+const ALLOW_HEADERS = "X-Legion-Cli-Token, Content-Type";
 const CSP =
   "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
 const CSP_WEBMCP =
@@ -75,11 +87,7 @@ function contentTypeFor(file: string): string {
   return "text/plain; charset=utf-8";
 }
 
-function setSecurityHeaders(
-  res: ServerResponse,
-  origin: string | undefined,
-  webmcp: boolean,
-): void {
+function setSecurityHeaders(res: ServerResponse, origin: string | undefined, webmcp = false): void {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
   res.setHeader("Content-Security-Policy", webmcp ? CSP_WEBMCP : CSP);
@@ -93,7 +101,8 @@ function setSecurityHeaders(
   if (origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Methods", "GET");
+    res.setHeader("Access-Control-Allow-Methods", ALLOW_METHODS);
+    res.setHeader("Access-Control-Allow-Headers", ALLOW_HEADERS);
   }
 }
 
@@ -104,9 +113,8 @@ function send(
   contentType: string,
   headOnly: boolean,
   origin: string | undefined,
-  webmcp: boolean,
 ): void {
-  setSecurityHeaders(res, origin, webmcp);
+  setSecurityHeaders(res, origin);
   res.statusCode = status;
   res.setHeader("Content-Type", contentType);
   const payload = Buffer.from(body, "utf8");
@@ -118,16 +126,28 @@ function send(
   res.end(payload);
 }
 
-function methodNotAllowed(
-  res: ServerResponse,
-  origin: string | undefined,
-  webmcp: boolean,
-): void {
-  setSecurityHeaders(res, origin, webmcp);
+function methodNotAllowed(res: ServerResponse, origin: string | undefined): void {
+  setSecurityHeaders(res, origin);
   res.statusCode = 405;
-  res.setHeader("Allow", ALLOW_METHODS);
+  res.setHeader("Allow", VIEW_METHODS);
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.end("Method Not Allowed\n");
+}
+
+function forbidden(res: ServerResponse, origin: string | undefined, message: string): void {
+  setSecurityHeaders(res, origin);
+  res.statusCode = 403;
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.end(`${message}\n`);
+}
+
+function sendJson(
+  res: ServerResponse,
+  status: number,
+  payload: unknown,
+  origin: string | undefined,
+): void {
+  send(res, status, `${JSON.stringify(payload)}\n`, "application/json; charset=utf-8", false, origin);
 }
 
 async function serveWireframe(
@@ -137,21 +157,21 @@ async function serveWireframe(
   res: ServerResponse,
   headOnly: boolean,
   origin: string | undefined,
-  webmcp: boolean,
+  token: string,
 ): Promise<void> {
   const base = basename(fileName);
   if (base !== fileName || fileName.includes("\\") || fileName.includes("\0")) {
-    send(res, 404, renderNotFound("unknown wireframe", { webmcp }), "text/html; charset=utf-8", headOnly, origin, webmcp);
+    send(res, 404, renderNotFound("unknown wireframe", token), "text/html; charset=utf-8", headOnly, origin);
     return;
   }
   const storePath = `.legion-cli/specs/${specId}/wireframes/${base}`;
   try {
     const abs = toFsPath(projectRoot, storePath);
     const body = await readFile(abs, "utf8");
-    send(res, 200, body, contentTypeFor(base), headOnly, origin, webmcp);
+    send(res, 200, body, contentTypeFor(base), headOnly, origin);
   } catch (err) {
     if (err instanceof PathEscapeError || (err as NodeJS.ErrnoException).code === "ENOENT") {
-      send(res, 404, renderNotFound("unknown wireframe", { webmcp }), "text/html; charset=utf-8", headOnly, origin, webmcp);
+      send(res, 404, renderNotFound("unknown wireframe", token), "text/html; charset=utf-8", headOnly, origin);
       return;
     }
     throw err;
@@ -167,6 +187,10 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     warn("WARNING: --expose binds 0.0.0.0 (all interfaces)");
   }
 
+  const token = mintWriteToken();
+  const engine = createDashboardEngine(opts.projectRoot);
+  const config = await readOptionalConfig(createLegionStore(opts.projectRoot));
+  const webmcp = config?.flags.webmcp === true;
   const sseClients = new Set<SseClient>();
   let lastEncoded = "";
   let closed = false;
@@ -192,46 +216,80 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       port: boundPort,
     });
     const cors = echoAllowedOrigin(originHeader, allowed);
-    const store = createLegionStore(opts.projectRoot);
-    const config = await readOptionalConfig(store);
-    const webmcp = config?.flags.webmcp === true;
-    const htmlOpts = { webmcp };
     if (!allowed) {
-      setSecurityHeaders(res, undefined, webmcp);
-      res.statusCode = 403;
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end("Forbidden origin\n");
+      forbidden(res, undefined, "Forbidden origin");
       return;
     }
 
     const method = (req.method ?? "GET").toUpperCase();
     if (method === "OPTIONS") {
-      setSecurityHeaders(res, cors, webmcp);
+      setSecurityHeaders(res, cors);
       res.statusCode = 204;
       res.setHeader("Allow", ALLOW_METHODS);
       res.end();
       return;
     }
-    if (method !== "GET" && method !== "HEAD") {
-      methodNotAllowed(res, cors, webmcp);
-      return;
-    }
-    const headOnly = method === "HEAD";
+
     const url = new URL(req.url ?? "/", `http://${hostHeader ?? `${host}:${boundPort}`}`);
     const pathname = decodeURIComponent(url.pathname);
 
-    if (pathname === WEBMCP_SCRIPT_PATH) {
-      if (!webmcp) {
-        send(res, 404, "Not found\n", "text/plain; charset=utf-8", headOnly, cors, webmcp);
+    if (method === "POST") {
+      if (!pathname.startsWith("/engine/")) {
+        methodNotAllowed(res, cors);
         return;
       }
-      send(res, 200, WEBMCP_SCRIPT, "text/javascript; charset=utf-8", headOnly, cors, webmcp);
+      if (
+        !writeOriginIsAllowed({
+          origin: originHeader,
+          hostHeader,
+          bind: host,
+          port: boundPort,
+        })
+      ) {
+        forbidden(res, undefined, "Forbidden origin");
+        return;
+      }
+      const engineMethod = pathname.slice("/engine/".length);
+      if (engineMethod.includes("/") || engineMethod.includes("\\") || !/^[A-Za-z]+$/.test(engineMethod)) {
+        sendJson(res, 404, { error: "unknown engine method" }, cors);
+        return;
+      }
+      if (!writeTokenMatches(token, headerValue(req.headers[WRITE_TOKEN_HEADER]))) {
+        forbidden(res, cors, "Forbidden token");
+        return;
+      }
+      try {
+        const body = await readJsonBody(req);
+        const payload = await dispatchEngineWrite(engine, engineMethod, body);
+        sendJson(res, 200, payload, cors);
+      } catch (err) {
+        if (err instanceof EngineWriteError) {
+          sendJson(res, err.status, err.payload, cors);
+          return;
+        }
+        throw err;
+      }
+      return;
+    }
+
+    if (method !== "GET" && method !== "HEAD") {
+      methodNotAllowed(res, cors);
+      return;
+    }
+    const headOnly = method === "HEAD";
+
+    if (pathname === WEBMCP_SCRIPT_PATH) {
+      if (!webmcp) {
+        send(res, 404, "Not found\n", "text/plain; charset=utf-8", headOnly, cors);
+        return;
+      }
+      send(res, 200, WEBMCP_SCRIPT, "text/javascript; charset=utf-8", headOnly, cors);
       return;
     }
 
     if (pathname === "/events") {
       if (headOnly) {
-        setSecurityHeaders(res, cors, webmcp);
+        setSecurityHeaders(res, cors);
         res.statusCode = 200;
         res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
         res.end();
@@ -246,7 +304,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
         const message = err instanceof Error ? err.message : String(err);
         initial += `event: error\ndata: ${JSON.stringify({ error: message })}\n\n`;
       }
-      setSecurityHeaders(res, cors, webmcp);
+      setSecurityHeaders(res, cors);
       res.statusCode = 200;
       res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
       res.setHeader("Connection", "keep-alive");
@@ -268,33 +326,33 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     const snapshot = await loadSnapshot(opts.projectRoot);
 
     if (pathname === "/") {
-      send(res, 200, renderKanban(snapshot, htmlOpts), "text/html; charset=utf-8", headOnly, cors, webmcp);
+      send(res, 200, renderKanban(snapshot, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
       return;
     }
     if (pathname === "/spec") {
-      send(res, 200, renderSpec(snapshot, htmlOpts), "text/html; charset=utf-8", headOnly, cors, webmcp);
+      send(res, 200, renderSpec(snapshot, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
       return;
     }
     if (pathname === "/graph") {
-      send(res, 200, renderGraph(snapshot, htmlOpts), "text/html; charset=utf-8", headOnly, cors, webmcp);
+      send(res, 200, renderGraph(snapshot, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
       return;
     }
     if (pathname === "/audit") {
-      send(res, 200, renderAudit(snapshot, htmlOpts), "text/html; charset=utf-8", headOnly, cors, webmcp);
+      send(res, 200, renderAudit(snapshot, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
       return;
     }
     if (pathname === "/api/state") {
-      send(res, 200, `${JSON.stringify(snapshot)}\n`, "application/json; charset=utf-8", headOnly, cors, webmcp);
+      send(res, 200, `${JSON.stringify(snapshot)}\n`, "application/json; charset=utf-8", headOnly, cors);
       return;
     }
     if (pathname.startsWith("/spec/wireframes/")) {
       const fileName = pathname.slice("/spec/wireframes/".length);
       const specId = snapshot.activeSpecId;
       if (!specId || !fileName) {
-        send(res, 404, renderNotFound("unknown wireframe", htmlOpts), "text/html; charset=utf-8", headOnly, cors, webmcp);
+        send(res, 404, renderNotFound("unknown wireframe", token), "text/html; charset=utf-8", headOnly, cors);
         return;
       }
-      await serveWireframe(opts.projectRoot, specId, fileName, res, headOnly, cors, webmcp);
+      await serveWireframe(opts.projectRoot, specId, fileName, res, headOnly, cors, token);
       return;
     }
     if (pathname === "/wiki" || pathname === "/wiki/") {
@@ -309,15 +367,16 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       } catch {
         pages = [];
       }
-      send(res, 200, renderWikiIndex(pages, htmlOpts), "text/html; charset=utf-8", headOnly, cors, webmcp);
+      send(res, 200, renderWikiIndex(pages, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
       return;
     }
     if (pathname.startsWith("/wiki/")) {
       const pageRef = pathname.slice("/wiki/".length);
       if (!pageRef || pageRef.includes("\0")) {
-        send(res, 404, renderNotFound("unknown page", htmlOpts), "text/html; charset=utf-8", headOnly, cors, webmcp);
+        send(res, 404, renderNotFound("unknown page", token), "text/html; charset=utf-8", headOnly, cors);
         return;
       }
+      const store = createLegionStore(opts.projectRoot);
       try {
         const shown = await showPage(store, pageRef);
         let links: string[] = [];
@@ -330,19 +389,19 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
         } catch {
           links = [];
         }
-        send(res, 200, renderWikiPage(shown, links, htmlOpts), "text/html; charset=utf-8", headOnly, cors, webmcp);
+        send(res, 200, renderWikiPage(shown, links, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
       } catch (err) {
         if (err instanceof PathEscapeError) {
-          send(res, 404, renderNotFound("unknown page", htmlOpts), "text/html; charset=utf-8", headOnly, cors, webmcp);
+          send(res, 404, renderNotFound("unknown page", token), "text/html; charset=utf-8", headOnly, cors);
           return;
         }
         const message = err instanceof Error ? err.message : String(err);
-        send(res, 404, renderNotFound(message, htmlOpts), "text/html; charset=utf-8", headOnly, cors, webmcp);
+        send(res, 404, renderNotFound(message, token), "text/html; charset=utf-8", headOnly, cors);
       }
       return;
     }
 
-    send(res, 404, renderNotFound("unknown route", htmlOpts), "text/html; charset=utf-8", headOnly, cors, webmcp);
+    send(res, 404, renderNotFound("unknown route", token), "text/html; charset=utf-8", headOnly, cors);
   };
 
   const server: Server = createServer((req, res) => {
