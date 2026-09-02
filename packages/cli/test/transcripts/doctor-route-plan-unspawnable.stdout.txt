@@ -6,6 +6,7 @@ ok    pnpm (<version>)
 ok    git (<version>)
 ok    adapter.default (fake)
 ok    adapter spawnable (yes)
+FAIL  adapter.routes.plan spawnable (grok is not spawnable)
 
 PATH
   legion-cli
@@ -49,7 +50,8 @@ Adapter
 
 Routes
   default      fake  spawnable
+  plan         grok  not spawnable
 
 Secrets     none
 
-Doctor passed.
+Doctor failed.
