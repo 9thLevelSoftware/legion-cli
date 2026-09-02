@@ -217,6 +217,46 @@ const cases = [
     act: ({ engine }) => engine.ingest(["https://192.168.1.10/wiki"], { noCommit: true }),
   },
   {
+    name: "ingest of IPv4-mapped loopback URL",
+    hint: /in-repo path/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.ingest(["https://[::ffff:127.0.0.1]/secret"], { noCommit: true }),
+  },
+  {
+    name: "ingest of IPv4-mapped RFC1918 URL",
+    hint: /in-repo path/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.ingest(["https://[::ffff:10.0.0.1]/wiki"], { noCommit: true }),
+  },
+  {
+    name: "ingest of IPv4-mapped metadata URL",
+    hint: /in-repo path/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.ingest(["https://[::ffff:169.254.169.254]/"], { noCommit: true }),
+  },
+  {
+    name: "ingest of IPv4-mapped hex metadata URL",
+    hint: /in-repo path/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.ingest(["https://[::ffff:a9fe:a9fe]/"], { noCommit: true }),
+  },
+  {
+    name: "ingest of IPv4-compatible loopback URL",
+    hint: /in-repo path/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.ingest(["https://[::127.0.0.1]/secret"], { noCommit: true }),
+  },
+  {
     name: "ingest of http URL",
     hint: /in-repo path/,
     setup: async ({ engine }) => {
@@ -235,6 +275,14 @@ const cases = [
       await writeFile(outside, "secret\n", "utf8");
       return engine.ingest([pathToFileURL(outside).href], { noCommit: true });
     },
+  },
+  {
+    name: "ingest of github: source is v1",
+    hint: /save markdown and ingest the file/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.ingest(["github:pr:123"], { noCommit: true }),
   },
   {
     name: "control_mode autonomous",

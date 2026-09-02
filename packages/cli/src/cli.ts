@@ -3,11 +3,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, CommanderError } from "commander";
 import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
+import { runBrief } from "./brief.js";
 import { runDoctor } from "./doctor.js";
 import { printHelpAll } from "./help-all.js";
+import { runIngest } from "./ingest.js";
 import { runInit } from "./init.js";
 import { printRefuse, resolveOpts, writeErr } from "./io.js";
+import { runSearch } from "./search.js";
+import { runShow } from "./show.js";
 import { runStatus } from "./status.js";
+import { runWikiTrust } from "./wiki.js";
 
 const pkg = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
@@ -92,6 +97,49 @@ export function createProgram(): Command {
   addGlobalOptions(program.command("doctor").description("Is my laptop ready?")).action(
     async (_opts, cmd: Command) => {
       const code = await runDoctor(resolveOpts(cmd));
+      process.exitCode = code;
+    },
+  );
+
+  addGlobalOptions(program.command("ingest").description("Teach Legion CLI from these files/links"))
+    .argument("[sources...]", "files, directories, or https URLs")
+    .option("--transcript <path>", "ingest an agent transcript")
+    .option("--diff <range>", "ingest a git diff range")
+    .option("--no-commit", "skip auto-commit of wiki pages")
+    .action(async (sources: string[], opts, cmd: Command) => {
+      const flags = opts as { transcript?: string; diff?: string; commit?: boolean };
+      const code = await runIngest(resolveOpts(cmd), sources, flags);
+      process.exitCode = code;
+    });
+
+  const wiki = addGlobalOptions(program.command("wiki").description("Wiki operations"));
+  addGlobalOptions(wiki.command("trust").description("I have read this ingested page; treat it as real"))
+    .argument("<page>", "wiki page id or path")
+    .action(async (page: string, _opts, cmd: Command) => {
+      const code = await runWikiTrust(resolveOpts(cmd), page);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("search").description("Search the wiki"))
+    .argument("<query>", "keyword query")
+    .option("--include-untrusted", "search untrusted bodies")
+    .option("--mentions", "pages that wikilink to this page")
+    .action(async (query: string, opts, cmd: Command) => {
+      const flags = opts as { includeUntrusted?: boolean; mentions?: boolean };
+      const code = await runSearch(resolveOpts(cmd), query, flags);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("show").description("Open one wiki/spec/task page"))
+    .argument("<page>", "wiki page, spec, or task")
+    .action(async (page: string, _opts, cmd: Command) => {
+      const code = await runShow(resolveOpts(cmd), page);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("brief").description("Print what the next agent will see")).action(
+    async (_opts, cmd: Command) => {
+      const code = await runBrief(resolveOpts(cmd));
       process.exitCode = code;
     },
   );

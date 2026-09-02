@@ -27,7 +27,7 @@ import type {
 import type { ZodType } from "zod";
 import { PersistError } from "./errors.js";
 import { commitIngest, isGitRepo } from "./git.js";
-import { ingestFiles } from "./ingest.js";
+import { ingestFiles, type IngestDocument } from "./ingest.js";
 import {
   assumptionPath,
   decisionPath,
@@ -220,7 +220,10 @@ export class LegionStore implements LegionReader {
     return this.withLock(() => rebuildIndex(this.projectRoot));
   }
 
-  ingest(sources: string[], opts?: { noCommit?: boolean }): Promise<IngestReceipt> {
+  ingest(
+    sources: string[],
+    opts?: { noCommit?: boolean; documents?: IngestDocument[] },
+  ): Promise<IngestReceipt> {
     return this.withLock(async () => {
       if (!opts?.noCommit && !isGitRepo(this.projectRoot)) {
         throw new PersistError("ingest auto-commit requires a git repository");
@@ -228,6 +231,7 @@ export class LegionStore implements LegionReader {
       const receipt = await ingestFiles({
         projectRoot: this.projectRoot,
         sources,
+        documents: opts?.documents,
         wikiExists: (storePath) => this.pathExists(storePath),
         readWikiPage: async (storePath) => {
           try {
@@ -247,6 +251,10 @@ export class LegionStore implements LegionReader {
       }
       return receipt;
     });
+  }
+
+  writeWikiPage(storePath: string, data: WikiPage, body: string): Promise<void> {
+    return this.writeMarkdown(storePath, data, body);
   }
 }
 

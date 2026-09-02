@@ -7,7 +7,14 @@ import { PathEscapeError } from "./errors.js";
 import { ingestReceiptPath, MAX_INGEST_FILE_BYTES, MAX_INGEST_TREE_BYTES, wikiPageStorePath } from "./layout.js";
 import { parseMarkdownDocument, type MarkdownDoc } from "./markdown.js";
 import { assertInsideProject, resolveProjectPath, toStorePath } from "./paths.js";
+import { redactSecrets } from "./redact.js";
 import { WIKI_PAGE_SCHEMA_VERSION, type WikiPage } from "./wiki-page.js";
+
+export type IngestDocument = {
+  source: string;
+  body: string;
+  title?: string;
+};
 
 const SKIP_DIR_NAMES = new Set([".git", "node_modules", ".legion-cli"]);
 
@@ -98,9 +105,76 @@ function sameBody(a: string, b: string): boolean {
   return a.replaceAll("\r\n", "\n").trim() === b.replaceAll("\r\n", "\n").trim();
 }
 
+function safeSlugSegment(part: string): string {
+  return part.replace(/[^A-Za-z0-9._~-]+/g, "_");
+}
+
+/** Store path for a non-file ingest (URL, transcript, diff). */
+export function ingestDocumentStorePath(source: string): string {
+  let slug = source;
+  if (/^https:\/\//i.test(source)) {
+    try {
+      const url = new URL(source);
+      const path = url.pathname.replace(/\/+$/, "") || "index";
+      slug = `urls/${url.hostname}${path}`;
+    } catch {
+      slug = `urls/${source.replace(/^https:\/\//i, "")}`;
+    }
+  } else if (source.startsWith("diff:")) {
+    slug = `diffs/${source.slice("diff:".length)}`;
+  } else if (source.startsWith("transcript:")) {
+    slug = `transcripts/${source.slice("transcript:".length)}`;
+  }
+  const posix = toStorePath(slug)
+    .split("/")
+    .filter((part) => part !== "" && part !== "." && part !== "..")
+    .map(safeSlugSegment)
+    .join("/");
+  return wikiPageStorePath(posix || "note");
+}
+
+async function upsertWikiPage(opts: {
+  pagePath: string;
+  source: string;
+  title: string;
+  body: string;
+  updatedAt: string;
+  wikiExists: (storePath: string) => Promise<boolean>;
+  readWikiPage: (storePath: string) => Promise<MarkdownDoc<WikiPage> | null>;
+  writeWikiPage: (storePath: string, data: WikiPage, body: string) => Promise<void>;
+}): Promise<"created" | "updated" | "skipped"> {
+  const body = redactSecrets(opts.body);
+  if (body.trim() === "") return "skipped";
+
+  let existing: MarkdownDoc<WikiPage> | null = null;
+  try {
+    existing = await opts.readWikiPage(opts.pagePath);
+  } catch {
+    existing = null;
+  }
+
+  if (existing && sameBody(existing.body, body)) return "skipped";
+
+  const page: WikiPage = {
+    schemaVersion: WIKI_PAGE_SCHEMA_VERSION,
+    title: opts.title.trim() || titleFromSource(opts.source, body),
+    aliases: existing?.data.aliases ?? [],
+    tags: existing?.data.tags ?? [],
+    // New or changed bytes are untrusted until a human re-runs wiki trust.
+    trust: "untrusted",
+    updated: opts.updatedAt,
+    source: existing?.data.source ?? opts.source,
+  };
+
+  const existed = existing !== null || (await opts.wikiExists(opts.pagePath));
+  await opts.writeWikiPage(opts.pagePath, page, body);
+  return existed ? "updated" : "created";
+}
+
 export async function ingestFiles(opts: {
   projectRoot: string;
   sources: string[];
+  documents?: IngestDocument[];
   wikiExists: (storePath: string) => Promise<boolean>;
   readWikiPage: (storePath: string) => Promise<MarkdownDoc<WikiPage> | null>;
   writeWikiPage: (storePath: string, data: WikiPage, body: string) => Promise<void>;
@@ -148,7 +222,6 @@ export async function ingestFiles(opts: {
     uniqueFiles.push(file);
   }
 
-  const uniqueSources = [...new Set(sourcePosix)];
   const updatedAt = new Date().toISOString();
 
   for (const file of uniqueFiles) {
@@ -190,40 +263,50 @@ export async function ingestFiles(opts: {
       continue;
     }
     const raw = buf.toString("utf8");
-
     const pagePath = alreadyWiki ? file.posix : wikiPageStorePath(file.posix);
     const body = excerptBody(raw);
-    if (body.trim() === "") {
-      skipped.push(file.posix);
-      continue;
-    }
-
-    const existing = alreadyWiki ? await opts.readWikiPage(pagePath) : null;
-    const page: WikiPage = {
-      schemaVersion: WIKI_PAGE_SCHEMA_VERSION,
+    const result = await upsertWikiPage({
+      pagePath,
+      source: file.posix,
       title: titleFromSource(file.posix, raw),
-      aliases: existing?.data.aliases ?? [],
-      tags: existing?.data.tags ?? [],
-      trust: existing?.data.trust ?? "untrusted",
-      updated: existing && sameBody(existing.body, body) ? existing.data.updated : updatedAt,
-      source: existing?.data.source ?? file.posix,
-    };
-
-    if (existing && sameBody(existing.body, body)) {
-      skipped.push(file.posix);
-      continue;
-    }
-
-    const existed = existing !== null || (await opts.wikiExists(pagePath));
-    await opts.writeWikiPage(pagePath, page, body);
-    if (existed) pagesUpdated.push(pagePath);
-    else pagesCreated.push(pagePath);
+      body,
+      updatedAt,
+      wikiExists: opts.wikiExists,
+      readWikiPage: opts.readWikiPage,
+      writeWikiPage: opts.writeWikiPage,
+    });
+    if (result === "created") pagesCreated.push(pagePath);
+    else if (result === "updated") pagesUpdated.push(pagePath);
+    else skipped.push(file.posix);
   }
 
+  for (const doc of opts.documents ?? []) {
+    const pagePath = ingestDocumentStorePath(doc.source);
+    const body = excerptBody(doc.body);
+    const result = await upsertWikiPage({
+      pagePath,
+      source: doc.source,
+      title: doc.title ?? titleFromSource(doc.source, doc.body),
+      body,
+      updatedAt,
+      wikiExists: opts.wikiExists,
+      readWikiPage: opts.readWikiPage,
+      writeWikiPage: opts.writeWikiPage,
+    });
+    sourcePosix.push(doc.source);
+    if (result === "created") pagesCreated.push(pagePath);
+    else if (result === "updated") pagesUpdated.push(pagePath);
+    else skipped.push(doc.source);
+  }
+
+  const allSources = [...new Set(sourcePosix)];
   const receipt = IngestReceiptSchema.parse({
     schemaVersion: "legion-cli-ingest/v1",
     id,
-    sources: uniqueSources.length > 0 ? uniqueSources : opts.sources.map((s) => toStorePath(s)),
+    sources:
+      allSources.length > 0
+        ? allSources
+        : opts.sources.map((s) => toStorePath(s)),
     pagesCreated,
     pagesUpdated,
     skipped,

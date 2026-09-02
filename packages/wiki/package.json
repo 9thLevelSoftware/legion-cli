@@ -1,7 +1,7 @@
 {
-  "name": "@9thlevelsoftware/legion-cli-core",
+  "name": "@9thlevelsoftware/legion-cli-wiki",
   "version": "0.0.0",
-  "description": "Legion CLI lifecycle engine and refuses",
+  "description": "Legion CLI wiki ingest, FTS search, graph, briefing, and untrusted wrapper",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -31,7 +31,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/9thLevelSoftware/product-engineer-helper.git",
-    "directory": "packages/core"
+    "directory": "packages/wiki"
   },
   "author": {
     "name": "9thLevelSoftware",
@@ -40,12 +40,10 @@
   "keywords": [
     "legion",
     "legion-cli",
-    "core",
-    "lifecycle"
+    "wiki"
   ],
   "dependencies": {
     "@9thlevelsoftware/legion-cli-persist": "workspace:*",
-    "@9thlevelsoftware/legion-cli-schema": "workspace:*",
-    "@9thlevelsoftware/legion-cli-wiki": "workspace:*"
+    "@9thlevelsoftware/legion-cli-schema": "workspace:*"
   }
 }

@@ -19,6 +19,7 @@ import {
   gitCheckIgnore,
   gitHead,
   queryIndex,
+  redactSecrets,
   toPosixPath,
   toProjectRelativePosix,
   toStorePath,
@@ -293,6 +294,49 @@ test("successful ingest auto-commits wiki pages unless noCommit", async () => {
   });
 });
 
+test("re-ingest of unchanged file preserves reviewed trust and does not commit", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    await writeFile(join(dir, "notes.md"), "# Office notes\n\nDurable fact.\n", "utf8");
+    initGitRepo(dir);
+    const store = new LegionStore(dir);
+    const first = await store.ingest(["notes.md"]);
+    const pagePath = first.pagesCreated[0];
+    const doc = await store.readWikiPage(pagePath);
+    await store.writeWikiPage(pagePath, { ...doc.data, trust: "reviewed" }, doc.body);
+    const headAfterTrust = gitHead(dir);
+
+    const second = await store.ingest(["notes.md"]);
+    assert.ok(second.skipped.includes("notes.md"));
+    assert.equal(second.pagesCreated.length, 0);
+    assert.equal(second.pagesUpdated.length, 0);
+    const after = await store.readWikiPage(pagePath);
+    assert.equal(after.data.trust, "reviewed");
+    assert.equal(gitHead(dir), headAfterTrust);
+  });
+});
+
+test("re-ingest of changed file resets trust to untrusted", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    await writeFile(join(dir, "notes.md"), "# Office notes\n\nDurable fact.\n", "utf8");
+    initGitRepo(dir);
+    const store = new LegionStore(dir);
+    const first = await store.ingest(["notes.md"]);
+    const pagePath = first.pagesCreated[0];
+    const doc = await store.readWikiPage(pagePath);
+    await store.writeWikiPage(pagePath, { ...doc.data, trust: "reviewed" }, doc.body);
+
+    await writeFile(join(dir, "notes.md"), "# Office notes\n\nCHANGED_UNTRUSTED_BODY now lives here.\n", "utf8");
+    const second = await store.ingest(["notes.md"]);
+    assert.ok(second.pagesUpdated.includes(pagePath));
+    assert.equal(second.pagesCreated.length, 0);
+    const after = await store.readWikiPage(pagePath);
+    assert.equal(after.data.trust, "untrusted");
+    assert.match(after.body, /CHANGED_UNTRUSTED_BODY/);
+  });
+});
+
 test("ingest accepts Windows backslash paths and stores POSIX", async () => {
   await withTempDir(async (dir) => {
     await copyFixtureProject(dir);
@@ -403,5 +447,47 @@ test("project containment compares canonical realpaths", async () => {
     const store = new LegionStore(alias);
     const receipt = await store.ingest(["docs/notes.md"], { noCommit: true });
     assert.equal(receipt.pagesCreated[0], ".legion-cli/wiki/ingested/docs/notes.md");
+  });
+});
+
+test("ingest redacts secrets before wiki write", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    await writeFile(
+      join(dir, "leaked.md"),
+      "# Leaked\n\nAKIAIOSFODNN7EXAMPLE key sk-abcdefghijklmnopqrstuvwxyz ghp_abcdefghijklmnopqrstuvwxyz\n",
+      "utf8",
+    );
+    const store = new LegionStore(dir);
+    const receipt = await store.ingest(["leaked.md"], { noCommit: true });
+    const page = await store.readWikiPage(receipt.pagesCreated[0]);
+    assert.match(page.body, /\[REDACTED:aws-access-key\]/);
+    assert.match(page.body, /\[REDACTED:sk\]/);
+    assert.match(page.body, /\[REDACTED:ghp\]/);
+    assert.doesNotMatch(page.body, /AKIAIOSFODNN7EXAMPLE/);
+    assert.equal(redactSecrets("xai-abcdefghijklmnopqrstuvwxyz").includes("xai-"), false);
+  });
+});
+
+test("ingest documents write untrusted wiki pages", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    const store = new LegionStore(dir);
+    const receipt = await store.ingest([], {
+      noCommit: true,
+      documents: [
+        {
+          source: "https://example.com/guide",
+          title: "Guide",
+          body: "Public HTTPS excerpt.\n",
+        },
+      ],
+    });
+    assert.equal(receipt.pagesCreated.length, 1);
+    assert.ok(receipt.pagesCreated[0].startsWith(".legion-cli/wiki/ingested/"));
+    const page = await store.readWikiPage(receipt.pagesCreated[0]);
+    assert.equal(page.data.trust, "untrusted");
+    assert.equal(page.data.source, "https://example.com/guide");
+    assert.match(page.body, /Public HTTPS excerpt/);
   });
 });
