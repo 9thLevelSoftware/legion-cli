@@ -1,12 +1,14 @@
 export {
   ASSUMED_EXTRA_BINARIES,
   CLAUDE_FROZEN_ARGV,
+  CODEX_FROZEN_ARGV,
   DEFAULT_GENERIC_ARGS,
   FROZEN_ARGV_TABLE,
   POINTER_PLACEHOLDER,
   argsIncludePointer,
   buildClaudeArgv,
   buildGenericArgv,
+  extraArgsOrDefault,
   genericArgsOrDefault,
 } from "./argv.js";
 export { AdapterConfigError, AdapterNotEnabled, AgentError } from "./errors.js";

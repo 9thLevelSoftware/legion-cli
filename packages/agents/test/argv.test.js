@@ -9,6 +9,7 @@ import {
   POINTER_PLACEHOLDER,
   POINTER_PROMPT_MAX_CHARS,
   SPAWNABLE_ADAPTER_IDS,
+  extraArgsOrDefault,
   argsIncludePointer,
   buildClaudeArgv,
   buildGenericArgv,
@@ -82,10 +83,18 @@ test("frozen argv table marks extra adapters spawnable with fillable generic-sty
   for (const id of EXTRA_ADAPTER_IDS) {
     assert.equal(FROZEN_ARGV_TABLE[id].spawnable, true);
     assert.equal(FROZEN_ARGV_TABLE[id].binary, ASSUMED_EXTRA_BINARIES[id]);
-    assert.deepEqual([...FROZEN_ARGV_TABLE[id].argv], [...DEFAULT_GENERIC_ARGS]);
     assert.equal(argsIncludePointer(FROZEN_ARGV_TABLE[id].argv), true);
     assert.ok(SPAWNABLE_ADAPTER_IDS.includes(id));
   }
+  assert.deepEqual([...FROZEN_ARGV_TABLE.grok.argv], [...DEFAULT_GENERIC_ARGS]);
+  assert.deepEqual([...FROZEN_ARGV_TABLE.mimo.argv], [...DEFAULT_GENERIC_ARGS]);
+  assert.deepEqual([...FROZEN_ARGV_TABLE.minimax.argv], [...DEFAULT_GENERIC_ARGS]);
+  assert.deepEqual([...FROZEN_ARGV_TABLE.openai.argv], ["exec", "{{pointer}}"]);
+  assert.deepEqual([...FROZEN_ARGV_TABLE.codex.argv], ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("openai"), ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("codex"), ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("grok"), [...DEFAULT_GENERIC_ARGS]);
+  assert.deepEqual(extraArgsOrDefault("openai", ["{{pointer}}"]), ["{{pointer}}"]);
   assert.equal(FROZEN_ARGV_TABLE.fake.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.claude.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.generic.spawnable, true);

@@ -1,4 +1,4 @@
-import { ASSUMED_EXTRA_BINARIES, argsIncludePointer, buildGenericArgv, genericArgsOrDefault } from "../argv.js";
+import { ASSUMED_EXTRA_BINARIES, argsIncludePointer, buildGenericArgv, extraArgsOrDefault } from "../argv.js";
 import { AdapterConfigError } from "../errors.js";
 import { spawnAgentProcess } from "../process.js";
 import { runCachePaths } from "../paths.js";
@@ -16,7 +16,7 @@ function pointerRequired(id: ExtraAdapterId): string {
   return `adapter.${id}.args must include {{pointer}}`;
 }
 
-/** Spawnable extra CLI. Vendor flags are unverified, so argv stays generic-style. */
+/** Spawnable extra CLI. openai/codex default to `exec {{pointer}}`; others stay generic-style. */
 export class ExtraAdapter implements AgentAdapter {
   readonly id: ExtraAdapterId;
   readonly binary: string;
@@ -25,7 +25,7 @@ export class ExtraAdapter implements AgentAdapter {
   constructor(id: ExtraAdapterId, config: ExtraAdapterConfig = {}) {
     this.id = id;
     this.binary = config.binary ?? ASSUMED_EXTRA_BINARIES[id];
-    this.#args = genericArgsOrDefault(config.args ?? []);
+    this.#args = extraArgsOrDefault(id, config.args ?? []);
   }
 
   async detect(): Promise<DetectResult> {
