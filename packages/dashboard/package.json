@@ -1,7 +1,7 @@
 {
   "name": "@9thlevelsoftware/legion-cli-dashboard",
   "version": "0.0.0",
-  "description": "Legion CLI read-only HTTP dashboard (GET + SSE viewer)",
+  "description": "Legion CLI HTTP dashboard (GET + SSE viewer; optional POSTs via LegionEngine)",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -43,6 +43,7 @@
     "dashboard"
   ],
   "dependencies": {
+    "@9thlevelsoftware/legion-cli-core": "workspace:*",
     "@9thlevelsoftware/legion-cli-graph": "workspace:*",
     "@9thlevelsoftware/legion-cli-persist": "workspace:*",
     "@9thlevelsoftware/legion-cli-schema": "workspace:*",

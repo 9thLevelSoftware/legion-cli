@@ -47,11 +47,11 @@ export async function runDashboard(opts: CliOpts, flags: DashboardFlags): Promis
       url: handle.url,
       bind: handle.host,
       port: handle.port,
-      readOnly: true,
+      sourceOfTruth: "cli",
     });
   } else {
     writeOut(`Viewer: ${handle.url}`);
-    writeOut("Read-only. No POST. Run CLI verbs to change state.");
+    writeOut("Viewer with optional writes. CLI remains the source of truth.");
   }
 
   await waitForSignal();
