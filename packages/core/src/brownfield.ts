@@ -342,11 +342,13 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
       refuse("brownfield effort 2–5 is not implemented yet", HINT.brownfield);
     }
     const wantExecute = run.execute || executeRequested;
-    if (run.phase === "complete" && run.worktreePath && wantExecute) {
-      return toResult(run);
-    }
     if (run.phase === "complete" && !wantExecute) {
       refuse("Run already complete; start a new legion-cli brownfield invocation", HINT.brownfield);
+    }
+    if (run.phase === "complete" && wantExecute) {
+      run = await ensureWorktree(store, { ...run, execute: true });
+      await writeRunResume(store.projectRoot, run);
+      return toResult(run);
     }
     run = {
       ...run,

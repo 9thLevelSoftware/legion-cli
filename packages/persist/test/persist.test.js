@@ -571,3 +571,25 @@ test("gitWorktreeAdd creates an isolated checkout", async () => {
     gitWorktreeAdd(dir, worktree, "brownfield/aaaaaaaa");
   });
 });
+
+test("gitWorktreeAdd recreates a deleted checkout without resetting the branch", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "README.md"), "app\n", "utf8");
+    initGitRepo(dir);
+    const worktree = join(dir, ".legion-cli", "worktrees", "bbbbbbbb");
+    gitWorktreeAdd(dir, worktree, "brownfield/bbbbbbbb");
+    const branchTip = git(worktree, ["rev-parse", "HEAD"]);
+    await writeFile(join(dir, "README.md"), "moved\n", "utf8");
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-m", "main moved"]);
+    const mainHead = git(dir, ["rev-parse", "HEAD"]);
+    assert.notEqual(mainHead, branchTip);
+
+    await rm(worktree, { recursive: true, force: true });
+    gitWorktreeAdd(dir, worktree, "brownfield/bbbbbbbb");
+    assert.equal(git(worktree, ["rev-parse", "--is-inside-work-tree"]), "true");
+    assert.match(git(worktree, ["branch", "--show-current"]), /brownfield\/bbbbbbbb/);
+    assert.equal(git(worktree, ["rev-parse", "HEAD"]), branchTip);
+    assert.equal(git(dir, ["rev-parse", "HEAD"]), mainHead);
+  });
+});

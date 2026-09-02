@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { PersistError } from "./errors.js";
@@ -213,15 +214,40 @@ export function listGitWorktrees(cwd: string): GitWorktree[] {
   return out;
 }
 
+function gitBranchExists(cwd: string, branch: string): boolean {
+  const result = runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  return result.status === 0;
+}
+
+function gitWorktreePrune(cwd: string): void {
+  runGit(cwd, ["worktree", "prune"]);
+}
+
+function dropStaleWorktree(cwd: string, worktreeAbs: string): void {
+  const listed = listGitWorktrees(cwd).find((wt) => sameAbsPath(wt.path, worktreeAbs));
+  if (listed) {
+    const removed = runGit(cwd, ["worktree", "remove", "--force", listed.path]);
+    if (removed.status !== 0) gitWorktreePrune(cwd);
+  } else {
+    gitWorktreePrune(cwd);
+  }
+  if (existsSync(worktreeAbs) && !isGitRepo(worktreeAbs)) {
+    rmSync(worktreeAbs, { recursive: true, force: true });
+  }
+}
+
 /** Isolated checkout for brownfield --execute. Greenfield execute stays in-place. */
 export function gitWorktreeAdd(cwd: string, worktreePath: string, branch: string): string {
   if (!isGitRepo(cwd)) {
     throw new PersistError("git worktree add requires a git repository");
   }
   const abs = resolve(worktreePath);
-  const existing = listGitWorktrees(cwd);
-  if (existing.some((wt) => sameAbsPath(wt.path, abs))) return abs;
-  const result = runGit(cwd, ["worktree", "add", "-B", branch, abs]);
+  if (isGitRepo(abs)) return abs;
+  dropStaleWorktree(cwd, abs);
+  // Recreate the existing branch tip; do not -B (that would reset to current HEAD).
+  const result = gitBranchExists(cwd, branch)
+    ? runGit(cwd, ["worktree", "add", abs, branch])
+    : runGit(cwd, ["worktree", "add", "-b", branch, abs]);
   if (result.status !== 0) {
     throw new PersistError(`git worktree add failed: ${result.stderr.trim() || result.stdout.trim()}`);
   }
