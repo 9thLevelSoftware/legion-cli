@@ -63,9 +63,12 @@ export {
   LEGAL_TASK_TRANSITIONS,
   OPEN_TASK_STATUSES,
 } from "./tasks.js";
+export { BROWNFIELD_PAGES } from "./brownfield.js";
 export type {
   Actor,
   AmendTaskOptions,
+  BrownfieldOptions,
+  BrownfieldResult,
   DecisionInput,
   ExecuteOptions,
   ExecuteResult,
@@ -79,6 +82,7 @@ export type {
   LegionEngineOptions,
   NewTicket,
   Phase,
+  PromoteRunResult,
   QaOptions,
   QAScore,
   Readiness,

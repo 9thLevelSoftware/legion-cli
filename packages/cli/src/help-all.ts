@@ -31,6 +31,8 @@ const AVAILABLE = [
   ["design-system import-od <dir>", "One-way OpenDesign importer", ""],
   ["design-system generate", "Generate a design system from a brief", "--name, --work-type, --platforms, --wcag, --brand"],
   ["dashboard", "Open the visual board (viewer)", "--no-open, --port, --expose"],
+  ["brownfield", "Audit an existing app (effort 1)", "--effort, --execute, --resume"],
+  ["run promote", "Copy brownfield run pages into the wiki", ""],
   ["help", "Commands", "--all"],
 ] as const;
 
@@ -68,6 +70,12 @@ const V0_SURFACE = [
   ["legion-cli help", "Commands", "--all"],
 ] as const;
 
+const V1_SURFACE = [
+  ["legion-cli brownfield", "Audit an existing app (effort 1: architecture + code)", "--effort, --execute, --resume"],
+  ["legion-cli run promote", "Copy brownfield run pages into the wiki", ""],
+  ["legion-cli init --mode brownfield", "Start a brownfield project", ""],
+] as const;
+
 function row(cols: readonly string[]): string {
   const [cmd, what, flags] = cols;
   return flags ? `  ${cmd}\n      ${what}  ${flags}` : `  ${cmd}\n      ${what}`;
@@ -87,6 +95,9 @@ export function printHelpAll(): void {
       "",
       "Full v0 command surface:",
       ...V0_SURFACE.map(row),
+      "",
+      "v1:",
+      ...V1_SURFACE.map(row),
     ].join("\n"),
   );
 }

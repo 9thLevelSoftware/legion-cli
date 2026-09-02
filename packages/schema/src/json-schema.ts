@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   AssumptionSchema,
   AuditEventSchema,
+  BrownfieldRunSchema,
   ContextFileSchema,
   DesignActiveSchema,
   DesignSystemPackageSchema,
@@ -39,6 +40,7 @@ export const JSON_SCHEMA_FILES = [
   "ingest-receipt",
   "audit-event",
   "resume-file",
+  "brownfield-run",
   "qa-score",
   "session-brief",
   "design-system-package",
@@ -65,6 +67,7 @@ const schemaByFile = {
   "ingest-receipt": IngestReceiptSchema,
   "audit-event": AuditEventSchema,
   "resume-file": ResumeFileSchema,
+  "brownfield-run": BrownfieldRunSchema,
   "qa-score": QAScoreSchema,
   "session-brief": SessionBriefSchema,
   "design-system-package": DesignSystemPackageSchema,

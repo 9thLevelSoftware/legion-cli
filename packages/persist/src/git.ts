@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { PersistError } from "./errors.js";
 import { toPosixPath } from "./paths.js";
@@ -173,4 +174,56 @@ export function gitDiscoverChanges(cwd: string, preSpawnRef: string | null): str
   for (const path of porcelainPaths(cwd)) paths.add(path);
   for (const path of gitLines(cwd, ["ls-files", "--others", "--exclude-standard"])) paths.add(path);
   return [...paths];
+}
+
+export type GitWorktree = {
+  path: string;
+  branch: string | null;
+};
+
+function sameAbsPath(a: string, b: string): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return left === right || left.toLowerCase() === right.toLowerCase();
+}
+
+export function listGitWorktrees(cwd: string): GitWorktree[] {
+  const result = runGit(cwd, ["worktree", "list", "--porcelain"]);
+  if (result.status !== 0) {
+    throw new PersistError(`git worktree list failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+  const out: GitWorktree[] = [];
+  let current: GitWorktree | null = null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      if (current) out.push(current);
+      current = { path: line.slice("worktree ".length).trim(), branch: null };
+      continue;
+    }
+    if (line.startsWith("branch ") && current) {
+      current.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+      continue;
+    }
+    if (line.trim() === "" && current) {
+      out.push(current);
+      current = null;
+    }
+  }
+  if (current) out.push(current);
+  return out;
+}
+
+/** Isolated checkout for brownfield --execute. Greenfield execute stays in-place. */
+export function gitWorktreeAdd(cwd: string, worktreePath: string, branch: string): string {
+  if (!isGitRepo(cwd)) {
+    throw new PersistError("git worktree add requires a git repository");
+  }
+  const abs = resolve(worktreePath);
+  const existing = listGitWorktrees(cwd);
+  if (existing.some((wt) => sameAbsPath(wt.path, abs))) return abs;
+  const result = runGit(cwd, ["worktree", "add", "-B", branch, abs]);
+  if (result.status !== 0) {
+    throw new PersistError(`git worktree add failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+  return abs;
 }

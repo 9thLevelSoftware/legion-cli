@@ -69,7 +69,14 @@ const NEXT_BY_PHASE: Record<Phase, NextCommand> = {
   },
 };
 
-export function nextCommand(state: StateFile, slice: readonly Task[]): NextCommand {
+export function nextCommand(
+  state: StateFile,
+  slice: readonly Task[],
+  mode?: "greenfield" | "brownfield",
+): NextCommand {
+  if (state.phase === "initialized" && mode === "brownfield") {
+    return { run: "legion-cli brownfield", hint: "audit this running app (code is evidence)." };
+  }
   if (state.phase === "executing" && isSliceTerminal(slice)) {
     if (state.lastReview === "PASS") {
       return { run: "legion-cli qa", hint: "score the product (the slice is done)." };

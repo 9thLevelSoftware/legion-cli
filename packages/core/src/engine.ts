@@ -87,6 +87,8 @@ import { nextTaskId, parseExtraJson, taskMarkdownBody, ticketFromInput } from ".
 import type {
   Actor,
   AmendTaskOptions,
+  BrownfieldOptions,
+  BrownfieldResult,
   DecisionInput,
   ExecuteOptions,
   ExecuteResult,
@@ -96,12 +98,14 @@ import type {
   IntentState,
   LegionEngineOptions,
   NewTicket,
+  PromoteRunResult,
   QaOptions,
   ReviewResult,
   ShipOptions,
   ShipReceipt,
   VerifyResult,
 } from "./types.js";
+import { promoteBrownfieldRun, runBrownfield } from "./brownfield.js";
 import { runVerificationCommands } from "./verify.js";
 import {
   palettePresent,
@@ -164,11 +168,9 @@ export class LegionEngine {
   }
 
   async init(opts: InitOptions): Promise<void> {
-    if (opts.mode === "brownfield") {
-      refuse("legion-cli init --mode brownfield is v1", HINT.greenfield);
-    }
-    if (opts.mode !== undefined && opts.mode !== "greenfield") {
-      refuse("legion-cli init is greenfield only in v0", HINT.greenfield);
+    const mode = opts.mode ?? "greenfield";
+    if (mode !== "greenfield" && mode !== "brownfield") {
+      refuse("init mode must be greenfield or brownfield", HINT.initMode);
     }
     const controlMode = this.#parseControlMode(opts.controlMode ?? "guarded");
     if (!opts.name?.trim()) {
@@ -196,11 +198,12 @@ export class LegionEngine {
       await mkdir(paths.auditDir, { recursive: true });
       await mkdir(paths.wikiDir, { recursive: true });
       await mkdir(join(paths.wikiDir, "product"), { recursive: true });
+      await mkdir(paths.runsDir, { recursive: true });
 
       const project: ProjectFile = {
         schemaVersion: SCHEMA_VERSION.project,
         name: opts.name.trim(),
-        mode: "greenfield",
+        mode,
         controlMode,
       };
       await this.store.writeProject(project, "This folder is now a Legion CLI project.\n");
@@ -1188,6 +1191,14 @@ export class LegionEngine {
 
   async getState(): Promise<StateFile> {
     return this.#readState();
+  }
+
+  async brownfield(opts: BrownfieldOptions = {}): Promise<BrownfieldResult> {
+    return this.#mutate(() => runBrownfield(this.store, opts));
+  }
+
+  async promoteRun(runId: string): Promise<PromoteRunResult> {
+    return this.#mutate(() => promoteBrownfieldRun(this.store, runId));
   }
 
   async #executeOneLocked(
