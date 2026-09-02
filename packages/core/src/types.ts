@@ -177,7 +177,6 @@ export type AmendTaskOptions = {
   blocks?: string[];
 };
 
-export type { FileContract, IngestReceipt, Phase, Priority, QAScore, Readiness, ReviewVerdict, SearchHit, SessionBrief, Spec, Task };
 export type {
   FileContract,
   IngestReceipt,
@@ -187,6 +186,8 @@ export type {
   QAScore,
   Readiness,
   ReviewVerdict,
+  SearchHit,
+  SessionBrief,
   Spec,
   Task,
 };
