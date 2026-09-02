@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -103,13 +104,16 @@ test("ship --pr uses gh via the test seam", async () => {
     initGitRepo(dir);
     const receipt = await engine.ship({
       pr: true,
+      commit: true,
       prCreate: ({ title, body }) => {
         assert.match(title, /spec-checkin/);
         assert.match(body, /QA mode: full/);
+        assert.match(readFileSync(store.paths.stateMd, "utf8"), /phase: ready_to_ship/);
         return { url: "https://example.test/pr/1" };
       },
     });
     assert.equal(receipt.prUrl, "https://example.test/pr/1");
+    assert.equal((await engine.getState()).phase, "shipped");
   });
 });
 
@@ -161,6 +165,140 @@ test("ship --allow-degraded-qa from executing after no-browser QA", async () => 
     assert.equal(receipt.qaScore, 70);
     assert.equal(receipt.qaPass, false);
     assert.equal(receipt.allowDegradedQa, true);
+  });
+});
+
+test("ship --allow-degraded-qa refuses missing last QA", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedPlanReady(store, {
+      phase: "executing",
+      lastReview: "PASS",
+      lastQaId: null,
+      task: { status: "done" },
+    });
+    await assert.rejects(
+      () => engine.ship({ allowDegradedQa: true }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /no-browser QA score/);
+        assert.match(err.nextHint, /legion-cli qa/);
+        return true;
+      },
+    );
+    assert.equal((await engine.getState()).phase, "executing");
+  });
+});
+
+test("ship --allow-degraded-qa refuses failed full QA including visual regressions", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedReadyToShip(store, {
+      phase: "executing",
+      score: makeQaScore({
+        mode: "full",
+        pass: false,
+        total: 85,
+        buckets: {
+          p0: { points: 40, max: 40, failed: 0 },
+          p1: { points: 30, max: 30, passRate: 1 },
+          p2: { points: 15, max: 15, passRate: 1 },
+          visual: { points: 0, max: 15, regressions: 1 },
+        },
+      }),
+    });
+    await assert.rejects(
+      () => engine.ship({ allowDegradedQa: true }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /no-browser/);
+        assert.match(err.nextHint, /legion-cli qa/);
+        return true;
+      },
+    );
+    assert.equal((await engine.getState()).phase, "executing");
+  });
+});
+
+test("ship stages deletions of tracked filesAllowed paths", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
+    initGitRepo(dir);
+    await rm(join(dir, "src", "main.ts"));
+    const receipt = await engine.ship({
+      commit: true,
+      confirm: async (preview) => {
+        assert.match(preview.diff, /src\/main\.ts/);
+        assert.match(preview.diff, /deleted file/);
+        return true;
+      },
+    });
+    assert.equal(receipt.phase, "shipped");
+    const tree = git(dir, ["ls-tree", "-r", "--name-only", "HEAD"]);
+    assert.equal(
+      tree.split(/\r?\n/).includes("src/main.ts"),
+      false,
+      `expected deletion committed, tree=${tree}`,
+    );
+  });
+});
+
+test("ship skips a never-created filesAllowed path", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store, {
+      task: { contract: { filesAllowed: ["src/main.ts", "src/ghost.ts"], expectedArtifacts: ["src/main.ts"] } },
+    });
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
+    initGitRepo(dir);
+    const receipt = await engine.ship();
+    assert.equal(receipt.phase, "shipped");
+    const staged = git(dir, ["diff", "--cached", "--name-only"]);
+    assert.doesNotMatch(staged, /ghost\.ts/);
+  });
+});
+
+test("ship --pr failure stays ready_to_ship", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    initGitRepo(dir);
+    await assert.rejects(
+      () =>
+        engine.ship({
+          pr: true,
+          commit: true,
+          prCreate: () => ({ error: "gh failed" }),
+        }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /gh failed/);
+        assert.match(err.nextHint, /legion-cli ship --pr --commit/);
+        return true;
+      },
+    );
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+  });
+});
+
+test("ship --pr without --commit is refused", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    initGitRepo(dir);
+    await assert.rejects(
+      () => engine.ship({ pr: true, prCreate: () => ({ url: "https://example.test/pr/1" }) }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /--pr requires --commit/);
+        return true;
+      },
+    );
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
   });
 });
 

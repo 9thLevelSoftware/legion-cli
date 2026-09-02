@@ -26,6 +26,7 @@ export {
   gitHasStaged,
   gitHead,
   gitPathExistsAtRef,
+  gitPathTracked,
   gitPorcelainPaths,
   gitRestoreStaged,
   gitRestoreWorktree,

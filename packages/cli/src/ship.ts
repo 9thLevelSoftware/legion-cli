@@ -37,11 +37,14 @@ export async function runShip(opts: CliOpts, flags: ShipFlags): Promise<number> 
       writeJson({
         ok: true,
         receipt,
-        next: flags.commit || flags.pr ? "legion-cli spec new" : "legion-cli ship --pr --commit",
+        next: "legion-cli spec new",
       });
       return 0;
     }
-    writeOut("Ship receipt written. Optional: legion-cli ship --pr --commit");
+    writeOut("Ship receipt written. Next: legion-cli spec new");
+    if (!flags.commit && !flags.pr) {
+      writeOut("Optional: git commit / gh pr create");
+    }
     if (receipt.committed && receipt.commitSha) {
       writeOut(`Commit: ${receipt.commitSha}`);
     }
