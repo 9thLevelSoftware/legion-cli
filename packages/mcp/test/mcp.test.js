@@ -28,10 +28,12 @@ test("exposes exactly the read-only tools", async () => {
       for (const tool of listed.tools) {
         assert.equal(tool.annotations?.readOnlyHint, true, tool.name);
         assert.equal(tool.annotations?.destructiveHint, false, tool.name);
+        assert.equal(tool._meta?.ui, undefined, tool.name);
         for (const banned of WRITE_TOOLS) {
           assert.doesNotMatch(tool.name, new RegExp(banned, "i"));
         }
       }
+      assert.equal(client.getServerCapabilities()?.resources, undefined);
     });
   });
 });
