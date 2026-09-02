@@ -14,6 +14,7 @@ import {
   JSON_SCHEMA_FILES,
   LegionConfigSchema,
   legionJsonSchemas,
+  PacketSchema,
   PhaseSchema,
   ProjectFileSchema,
   QAScoreSchema,
@@ -106,6 +107,7 @@ test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.brief, "legion-cli-brief/v1");
   assert.equal(SCHEMA_VERSION.designSystem, "legion-cli-design-system/v1");
   assert.equal(SCHEMA_VERSION.designActive, "legion-cli-design-active/v1");
+  assert.equal(SCHEMA_VERSION.packet, "legion-cli-packet/v1");
 });
 
 test("DesignSystemPackage is legion-cli-design-system/v1", () => {
@@ -148,6 +150,36 @@ test("BrownfieldRunSchema requires 8-hex runId and resume fields", () => {
   assert.deepEqual(BrownfieldRunSchema.parse(run).runId, "a1b2c3d4");
   assert.equal(BrownfieldRunSchema.safeParse({ ...run, runId: "not-hex" }).success, false);
   assert.equal(BrownfieldRunSchema.safeParse({ ...run, effort: 6 }).success, false);
+});
+
+test("PacketSchema accepts open and responded packets", () => {
+  const open = PacketSchema.parse({
+    schemaVersion: "legion-cli-packet/v1",
+    id: "PKT-0001",
+    title: "Dark mode",
+    status: "open",
+    requester: "pm",
+    request: "Users want a dark theme.",
+    specId: "spec-checkin",
+    ticketIds: [],
+    createdAt: "2026-09-01T12:00:00.000Z",
+    respondedAt: null,
+    response: null,
+  });
+  assert.equal(open.status, "open");
+  assert.deepEqual(open.ticketIds, []);
+
+  const responded = PacketSchema.parse({
+    ...open,
+    status: "responded",
+    ticketIds: ["TSK-0003"],
+    respondedAt: "2026-09-01T13:00:00.000Z",
+    response: "Spawned tickets for this request.",
+  });
+  assert.equal(responded.status, "responded");
+  assert.equal(PacketSchema.safeParse({ ...open, schemaVersion: "legion-cli-packet/v2" }).success, false);
+  assert.equal(PacketSchema.safeParse({ ...open, status: "executing" }).success, false);
+});
 });
 
 test("plan_concerns is not a phase", () => {

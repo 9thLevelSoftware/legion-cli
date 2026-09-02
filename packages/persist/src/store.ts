@@ -7,6 +7,7 @@ import {
   IngestReceiptSchema,
   IntentAnswersFileSchema,
   LegionConfigSchema,
+  PacketSchema,
   ProjectFileSchema,
   SpecSchema,
   StateFileSchema,
@@ -19,6 +20,7 @@ import type {
   IngestReceipt,
   IntentAnswersFile,
   LegionConfig,
+  Packet,
   ProjectFile,
   Spec,
   StateFile,
@@ -33,6 +35,7 @@ import {
   decisionPath,
   ingestReceiptPath,
   legionPaths,
+  packetPath,
   specPath,
   taskPath,
   type LegionPaths,
@@ -60,6 +63,7 @@ export interface LegionReader {
   readIntentAnswers(): Promise<IntentAnswersFile>;
   readSpec(specId: string): Promise<MarkdownDoc<Spec>>;
   readTask(taskId: string): Promise<MarkdownDoc<Task>>;
+  readPacket(packetId: string): Promise<MarkdownDoc<Packet>>;
   readDiscuss(): Promise<MarkdownDoc<DiscussFile>>;
   readAssumption(id: string): Promise<MarkdownDoc<Assumption>>;
   readDecision(fileName: string): Promise<MarkdownDoc<DecisionFile>>;
@@ -183,6 +187,14 @@ export class LegionStore implements LegionReader {
   }
   writeTask(data: Task, body: string): Promise<void> {
     return this.writeMarkdown(taskPath(data.id), data, body);
+  }
+
+  readPacket(packetId: string): Promise<MarkdownDoc<Packet>> {
+    const store = packetPath(packetId);
+    return readMarkdownFile(toFsPath(this.projectRoot, store), store, PacketSchema);
+  }
+  writePacket(data: Packet, body: string): Promise<void> {
+    return this.writeMarkdown(packetPath(data.id), data, body);
   }
 
   readDiscuss(): Promise<MarkdownDoc<DiscussFile>> {

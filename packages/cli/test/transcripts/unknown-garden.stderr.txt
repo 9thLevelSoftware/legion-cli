@@ -1,2 +1,2 @@
-unknown command 'packet'
+unknown command 'garden'
 (run legion-cli help --all)
