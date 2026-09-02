@@ -84,4 +84,5 @@ export type AdapterCreateOptions = {
   codex?: ExtraAdapterConfig;
   artifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
+  timedOut?: boolean;
 };

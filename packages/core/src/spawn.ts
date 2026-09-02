@@ -82,12 +82,14 @@ export async function optionalSkillSpawn(opts: {
   skillsDir?: string;
   fakeArtifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
+  timedOut?: boolean;
   required?: boolean;
 }): Promise<OptionalSpawnResult> {
   const runId = `${opts.skillId}-${Date.now().toString(36)}`;
   const adapter = resolveAdapter(opts.config, {
     artifacts: opts.fakeArtifacts ?? [],
     throwAfterWrite: opts.throwAfterWrite,
+    timedOut: opts.timedOut,
   });
   if (!(await isSpawnable(adapter))) {
     if (opts.required) {
