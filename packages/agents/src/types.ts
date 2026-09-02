@@ -33,6 +33,10 @@ export interface AgentAdapter {
 export type FakeArtifact = {
   path: string;
   content?: string;
+  /** Fixture-only: `git add` + `git commit` this path after write. */
+  gitAdd?: boolean;
+  /** Fixture-only: `git mv path gitMv` then commit (rename extras vs preSpawnRef). */
+  gitMv?: string;
 };
 
 export interface AgentJob {

@@ -64,9 +64,28 @@ export type ShipOptions = {
   allowDegradedQa?: boolean;
 };
 
+export type ExecuteOptions = {
+  untilBlocked?: boolean;
+  fix?: boolean;
+};
+
+export type ExecuteTaskResult = {
+  taskId: string;
+  status: "done" | "blocked";
+  runId: string;
+  extrasReverted: string[];
+  incident: boolean;
+  headMoved: boolean;
+  ticketId?: string;
+  verificationPass?: boolean;
+};
+
 export type ExecuteResult = {
   taskId: string;
   phase: Phase;
+  status: "done" | "blocked";
+  tasks: ExecuteTaskResult[];
+  warnings: string[];
 };
 
 export type ReviewResult = {

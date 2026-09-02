@@ -28,6 +28,35 @@ function gitLines(cwd: string, args: string[]): string[] {
     .filter((line) => line.length > 0);
 }
 
+function unquoteDiffPath(value: string): string {
+  return toPosixPath(value.replace(/^"(.*)"$/, "$1").trim());
+}
+
+/** Parse one `git diff --name-status` line. R/C include source and destination. */
+function parseNameStatusLine(line: string): string[] {
+  if (!line) return [];
+  const parts = line.split("\t");
+  if (parts.length < 2) return [];
+  const code = parts[0].trim();
+  if (!code) return [];
+  if ((code.startsWith("R") || code.startsWith("C")) && parts.length >= 3) {
+    return [unquoteDiffPath(parts[1]), unquoteDiffPath(parts[2])].filter((path) => path.length > 0);
+  }
+  return [unquoteDiffPath(parts[1])].filter((path) => path.length > 0);
+}
+
+function gitNameStatusPaths(cwd: string, args: string[]): string[] {
+  const result = runGit(cwd, args);
+  if (result.status !== 0) {
+    throw new PersistError(`git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+  const paths: string[] = [];
+  for (const raw of result.stdout.split(/\r?\n/)) {
+    for (const path of parseNameStatusLine(raw)) paths.push(path);
+  }
+  return paths;
+}
+
 export function isGitRepo(cwd: string): boolean {
   const result = runGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
   return result.status === 0 && result.stdout.trim() === "true";
@@ -137,8 +166,9 @@ export function gitDiscoverChanges(cwd: string, preSpawnRef: string | null): str
   if (!isGitRepo(cwd)) return [];
   const paths = new Set<string>();
   if (preSpawnRef) {
-    for (const path of gitLines(cwd, ["diff", "--name-only", preSpawnRef, "HEAD"])) paths.add(path);
-    for (const path of gitLines(cwd, ["diff", "--name-only", preSpawnRef])) paths.add(path);
+    // --name-status so a committed git mv yields both source and destination.
+    for (const path of gitNameStatusPaths(cwd, ["diff", "--name-status", preSpawnRef, "HEAD"])) paths.add(path);
+    for (const path of gitNameStatusPaths(cwd, ["diff", "--name-status", preSpawnRef])) paths.add(path);
   }
   for (const path of porcelainPaths(cwd)) paths.add(path);
   for (const path of gitLines(cwd, ["ls-files", "--others", "--exclude-standard"])) paths.add(path);

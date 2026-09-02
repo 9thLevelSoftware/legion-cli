@@ -1,5 +1,12 @@
 export { HINT, LegionRefuseError, refuse } from "./errors.js";
-export { SKILL_CONTRACTS, isAllowedPath, isEngineOwned, matchesGlob, skillContract } from "./contracts.js";
+export {
+  SKILL_CONTRACTS,
+  executeAllowedRoots,
+  isAllowedPath,
+  isEngineOwned,
+  matchesGlob,
+  skillContract,
+} from "./contracts.js";
 export { createLegionEngine, LegionEngine } from "./engine.js";
 export {
   assertIngestSourceAllowed,
@@ -19,7 +26,8 @@ export {
   splitLines,
   splitMustNotAndOutOfScope,
 } from "./intent.js";
-export { revertExtras } from "./revert.js";
+export { HEAD_MOVED_WARNING, revertExtras } from "./revert.js";
+export { runVerificationCommands, splitCommand } from "./verify.js";
 export { findSkillsDir, optionalSkillSpawn } from "./spawn.js";
 export { WIREFRAME_PALETTE, palettePresent, uniqueScreenPages } from "./wireframes.js";
 export {
@@ -48,7 +56,9 @@ export type {
   Actor,
   AmendTaskOptions,
   DecisionInput,
+  ExecuteOptions,
   ExecuteResult,
+  ExecuteTaskResult,
   FileContract,
   IngestOpts,
   IngestReceipt,

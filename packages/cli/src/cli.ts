@@ -8,6 +8,7 @@ import { runBrief } from "./brief.js";
 import { runDashboard } from "./dashboard.js";
 import { runDiscuss } from "./discuss.js";
 import { runDoctor } from "./doctor.js";
+import { runExecute } from "./execute.js";
 import { printHelpAll } from "./help-all.js";
 import { runIngest } from "./ingest.js";
 import { runInit } from "./init.js";
@@ -223,6 +224,21 @@ export function createProgram(): Command {
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
       const code = await runNextTasks(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("execute").description("Do the next ready task"))
+    .argument("[id]", "task id")
+    .option("--until-blocked", "loop until no ready task remains or one blocks")
+    .option("--fix", "fix-run prompt (keep reproducing tests)")
+    .allowExcessArguments(false)
+    .action(async (id: string | undefined, opts, cmd: Command) => {
+      const flags = opts as { untilBlocked?: boolean; fix?: boolean };
+      const code = await runExecute(resolveOpts(cmd), {
+        id,
+        untilBlocked: Boolean(flags.untilBlocked),
+        fix: Boolean(flags.fix),
+      });
       process.exitCode = code;
     });
 
