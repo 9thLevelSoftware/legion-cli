@@ -1,8 +1,9 @@
+import { ADAPTER_ID_HELP } from "@9thlevelsoftware/legion-cli-schema";
 import { writeOut } from "./io.js";
 
 const AVAILABLE = [
   ["status (default)", "Where am I? What next?", "--blockers, --plain"],
-  ["init", "Start a product in this folder", "--name, --adapter claude|generic|fake"],
+  ["init", "Start a product in this folder", `--name, --adapter ${ADAPTER_ID_HELP}`],
   ["doctor", "Is my laptop ready?", "--metrics"],
   ["ingest <src…>", "Teach Legion CLI from these files/links", "--transcript, --diff, --no-commit"],
   ["wiki trust <page>", "I have read this ingested page; treat it as real", ""],
@@ -45,7 +46,7 @@ const AVAILABLE = [
 
 const V0_SURFACE = [
   ["legion-cli / legion-cli status", "Where am I? What next?", "--blockers, --plain"],
-  ["legion-cli init", "Start a product in this folder", "--name, --adapter claude|generic|fake"],
+  ["legion-cli init", "Start a product in this folder", `--name, --adapter ${ADAPTER_ID_HELP}`],
   ["legion-cli doctor", "Is my laptop ready?", "--metrics"],
   ["legion-cli ingest <src…>", "Teach Legion CLI from these files/links", "--transcript, --diff, --no-commit"],
   ["legion-cli wiki trust <page>", "I have read this ingested page; treat it as real", ""],

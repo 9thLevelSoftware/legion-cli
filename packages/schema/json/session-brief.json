@@ -66,6 +66,19 @@
             "title": {
               "type": "string",
               "minLength": 1
+            },
+            "adapter": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax"
+              ]
             }
           },
           "required": [

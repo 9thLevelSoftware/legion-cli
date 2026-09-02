@@ -21,7 +21,7 @@ import {
   StateFileSchema,
   TaskSchema,
 } from "./schemas.js";
-import { PhaseSchema, SkillIdSchema, TaskStatusSchema } from "./versions.js";
+import { ADAPTER_IDS, PhaseSchema, SkillIdSchema, TaskStatusSchema } from "./versions.js";
 
 export const JSON_SCHEMA_FILES = [
   "phase",
@@ -95,20 +95,64 @@ function withAllOf(
   return { ...json, allOf: [...existing, clause] };
 }
 
+function namedPropertyNames(
+  json: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const properties = json.properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return undefined;
+  const adapter = (properties as Record<string, unknown>).adapter;
+  if (!adapter || typeof adapter !== "object" || Array.isArray(adapter)) return undefined;
+  const adapterProps = (adapter as Record<string, unknown>).properties;
+  if (!adapterProps || typeof adapterProps !== "object" || Array.isArray(adapterProps)) return undefined;
+  const named = (adapterProps as Record<string, unknown>).named;
+  if (!named || typeof named !== "object" || Array.isArray(named)) return undefined;
+  const propertyNames = (named as Record<string, unknown>).propertyNames;
+  if (!propertyNames || typeof propertyNames !== "object" || Array.isArray(propertyNames)) return undefined;
+  return propertyNames as Record<string, unknown>;
+}
+
 /** Overlay Zod refinements that `toJSONSchema` cannot represent. */
 function overlayJsonSchema(
   name: JsonSchemaFileName,
   json: Record<string, unknown>,
 ): Record<string, unknown> {
   if (name === "legion-config") {
+    const propertyNames = namedPropertyNames(json);
+    if (propertyNames) {
+      propertyNames.not = { enum: [...ADAPTER_IDS] };
+    }
+    const genericAdapterIf = (clause: Record<string, unknown>): Record<string, unknown> => ({
+      type: "object",
+      properties: clause,
+      required: Object.keys(clause),
+    });
     return withAllOf(json, {
       if: {
         type: "object",
         properties: {
           adapter: {
-            type: "object",
-            properties: { default: { const: "generic" } },
-            required: ["default"],
+            anyOf: [
+              genericAdapterIf({ default: { const: "generic" } }),
+              ...SkillIdSchema.options.map((skillId) =>
+                genericAdapterIf({
+                  routes: {
+                    type: "object",
+                    properties: { [skillId]: { const: "generic" } },
+                    required: [skillId],
+                  },
+                }),
+              ),
+              {
+                type: "object",
+                properties: {
+                  named: {
+                    type: "object",
+                    not: { additionalProperties: { not: { const: "generic" } } },
+                  },
+                },
+                required: ["named"],
+              },
+            ],
           },
         },
         required: ["adapter"],

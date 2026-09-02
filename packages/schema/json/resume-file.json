@@ -54,6 +54,35 @@
           "type": "null"
         }
       ]
+    },
+    "adapterId": {
+      "type": "string",
+      "enum": [
+        "claude",
+        "generic",
+        "fake",
+        "grok",
+        "openai",
+        "codex",
+        "mimo",
+        "minimax"
+      ]
+    },
+    "binary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "argvSummary": {
+      "type": "string"
+    },
+    "resolutionSource": {
+      "type": "string",
+      "enum": [
+        "cli",
+        "task",
+        "route",
+        "default"
+      ]
     }
   },
   "required": [

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Command, CommanderError } from "commander";
 import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
 import { DesignSystemError } from "@9thlevelsoftware/legion-cli-design-system";
+import { ADAPTER_ID_HELP } from "@9thlevelsoftware/legion-cli-schema";
 import { runAbandon } from "./abandon.js";
 import { runBrief } from "./brief.js";
 import { runBrownfield } from "./brownfield.js";
@@ -106,7 +107,7 @@ export function createProgram(): Command {
 
   addGlobalOptions(program.command("init").description("Start a product in this folder"))
     .option("--name <name>", "product name")
-    .option("--adapter <id>", "claude | generic | fake (required)")
+    .option("--adapter <id>", `${ADAPTER_ID_HELP} (required)`)
     .option("--mode <mode>", "greenfield (v0) or brownfield (v1)", "greenfield")
     .option("--generic-binary <bin>", "binary when --adapter generic")
     .option("--generic-args <args...>", "args when --adapter generic")

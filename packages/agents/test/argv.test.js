@@ -9,6 +9,7 @@ import {
   POINTER_PLACEHOLDER,
   POINTER_PROMPT_MAX_CHARS,
   SPAWNABLE_ADAPTER_IDS,
+  extraArgsOrDefault,
   argsIncludePointer,
   buildClaudeArgv,
   buildGenericArgv,
@@ -70,16 +71,32 @@ test("pointer prompt includes run/skill paths and forbids git commit", () => {
   assert.match(prompt, /\.legion-cli\/cache\/runs\/abc\/summary\.md/);
 });
 
-test("frozen argv table marks grok and codex spawnable with fillable generic-style argv", () => {
-  assert.deepEqual([...EXTRA_ADAPTER_IDS], ["grok", "codex"]);
-  assert.deepEqual(ASSUMED_EXTRA_BINARIES, { grok: "grok", codex: "codex" });
+test("frozen argv table marks extra adapters spawnable with fillable generic-style argv", () => {
+  assert.deepEqual([...EXTRA_ADAPTER_IDS], ["grok", "openai", "codex", "mimo", "minimax"]);
+  assert.deepEqual(ASSUMED_EXTRA_BINARIES, {
+    grok: "grok",
+    openai: "codex",
+    codex: "codex",
+    mimo: "mimo",
+    minimax: "mcode",
+  });
   for (const id of EXTRA_ADAPTER_IDS) {
     assert.equal(FROZEN_ARGV_TABLE[id].spawnable, true);
     assert.equal(FROZEN_ARGV_TABLE[id].binary, ASSUMED_EXTRA_BINARIES[id]);
-    assert.deepEqual([...FROZEN_ARGV_TABLE[id].argv], [...DEFAULT_GENERIC_ARGS]);
     assert.equal(argsIncludePointer(FROZEN_ARGV_TABLE[id].argv), true);
     assert.ok(SPAWNABLE_ADAPTER_IDS.includes(id));
   }
+  assert.deepEqual([...FROZEN_ARGV_TABLE.grok.argv], [...DEFAULT_GENERIC_ARGS]);
+  assert.deepEqual([...FROZEN_ARGV_TABLE.mimo.argv], [...DEFAULT_GENERIC_ARGS]);
+  assert.deepEqual([...FROZEN_ARGV_TABLE.minimax.argv], [...DEFAULT_GENERIC_ARGS]);
+  assert.deepEqual([...FROZEN_ARGV_TABLE.openai.argv], ["exec", "{{pointer}}"]);
+  assert.deepEqual([...FROZEN_ARGV_TABLE.codex.argv], ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("openai"), ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("codex"), ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("grok"), [...DEFAULT_GENERIC_ARGS]);
+  assert.deepEqual(extraArgsOrDefault("openai", ["{{pointer}}"]), ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("codex", ["exec", "{{pointer}}"]), ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("openai", ["{{pointer}}"], process.execPath), ["{{pointer}}"]);
   assert.equal(FROZEN_ARGV_TABLE.fake.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.claude.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.generic.spawnable, true);

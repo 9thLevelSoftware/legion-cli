@@ -1,15 +1,19 @@
-import type { SkillId } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  ADAPTER_IDS,
+  EXTRA_ADAPTER_IDS,
+  type AdapterId,
+  type ExtraAdapterId,
+  type SkillId,
+} from "@9thlevelsoftware/legion-cli-schema";
 
-export type { SkillId };
+export type { ExtraAdapterId, SkillId };
 
-/** Config `adapter.default` remains fake | generic | claude until schema unlocks extra ids. */
-export type AgentAdapterId = "fake" | "generic" | "claude" | "grok" | "codex";
-export type ExtraAdapterId = "grok" | "codex";
+export type AgentAdapterId = AdapterId;
 export type SpawnableAdapterId = AgentAdapterId;
 
-export const DETECT_ADAPTER_IDS = ["fake", "generic", "claude", "grok", "codex"] as const;
-export const SPAWNABLE_ADAPTER_IDS = ["fake", "generic", "claude", "grok", "codex"] as const;
-export const EXTRA_ADAPTER_IDS = ["grok", "codex"] as const;
+export const DETECT_ADAPTER_IDS = ADAPTER_IDS;
+export const SPAWNABLE_ADAPTER_IDS = ADAPTER_IDS;
+export { EXTRA_ADAPTER_IDS };
 export const DETECT_ONLY_ADAPTER_IDS = [] as const satisfies readonly AgentAdapterId[];
 
 export const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
@@ -81,7 +85,10 @@ export type AdapterCreateOptions = {
   extraArgs?: string[];
   generic?: GenericAdapterConfig;
   grok?: ExtraAdapterConfig;
+  openai?: ExtraAdapterConfig;
   codex?: ExtraAdapterConfig;
+  mimo?: ExtraAdapterConfig;
+  minimax?: ExtraAdapterConfig;
   artifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
   timedOut?: boolean;

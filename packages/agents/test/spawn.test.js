@@ -131,17 +131,59 @@ test("filterSpawnEnv keeps allowlisted keys and inherits SSH_AUTH_SOCK", () => {
     HOME: "/home/u",
     SECRET: "nope",
     CLAUDE_API_KEY: "k",
+    GROK_API_KEY: "g",
+    OPENAI_API_KEY: "o",
+    MINIMAX_API_KEY: "m",
     SSH_AUTH_SOCK: "/tmp/ssh",
     TERM: "xterm",
   });
   assert.equal(filtered.PATH, "/bin");
   assert.equal(filtered.HOME, "/home/u");
-  assert.equal(filtered.CLAUDE_API_KEY, "k");
+  assert.equal(filtered.CLAUDE_API_KEY, undefined);
+  assert.equal(filtered.GROK_API_KEY, undefined);
+  assert.equal(filtered.OPENAI_API_KEY, undefined);
+  assert.equal(filtered.MINIMAX_API_KEY, undefined);
   assert.equal(filtered.SSH_AUTH_SOCK, "/tmp/ssh");
   assert.equal(filtered.TERM, "xterm");
   assert.equal(filtered.SECRET, undefined);
   const noSock = filterSpawnEnv({ PATH: "/bin" });
   assert.equal(noSock.SSH_AUTH_SOCK, undefined);
+});
+
+test("filterSpawnEnv scopes provider credentials to the selected adapter", () => {
+  const source = {
+    PATH: "/bin",
+    CLAUDE_API_KEY: "c",
+    GROK_API_KEY: "g",
+    XAI_API_KEY: "x",
+    OPENAI_API_KEY: "o",
+    MINIMAX_API_KEY: "m",
+    SECRET: "nope",
+  };
+  const grok = filterSpawnEnv(source, "grok");
+  assert.equal(grok.PATH, "/bin");
+  assert.equal(grok.GROK_API_KEY, "g");
+  assert.equal(grok.XAI_API_KEY, "x");
+  assert.equal(grok.OPENAI_API_KEY, undefined);
+  assert.equal(grok.CLAUDE_API_KEY, undefined);
+  assert.equal(grok.MINIMAX_API_KEY, undefined);
+  const claude = filterSpawnEnv(source, "claude");
+  assert.equal(claude.CLAUDE_API_KEY, "c");
+  assert.equal(claude.GROK_API_KEY, undefined);
+  const openai = filterSpawnEnv(source, "openai");
+  assert.equal(openai.OPENAI_API_KEY, "o");
+  assert.equal(openai.GROK_API_KEY, undefined);
+  const generic = filterSpawnEnv(source, "generic");
+  assert.equal(generic.OPENAI_API_KEY, undefined);
+  assert.equal(generic.CLAUDE_API_KEY, undefined);
+  const genericClaude = filterSpawnEnv(source, "generic", "claude");
+  assert.equal(genericClaude.CLAUDE_API_KEY, "c");
+  assert.equal(genericClaude.OPENAI_API_KEY, undefined);
+  const genericCodex = filterSpawnEnv(source, "generic", "C:\\npm\\codex.cmd");
+  assert.equal(genericCodex.OPENAI_API_KEY, "o");
+  assert.equal(genericCodex.CLAUDE_API_KEY, undefined);
+  assert.equal(generic.CLAUDE_API_KEY, undefined);
+  assert.equal(generic.SECRET, undefined);
 });
 
 function extraShim(id, script) {
@@ -153,7 +195,7 @@ function extraShim(id, script) {
   });
 }
 
-test("grok and codex conformance: pointer prompt after skill staging copy", async () => {
+test("extra adapters conformance: pointer prompt after skill staging copy", async () => {
   for (const id of EXTRA_ADAPTER_IDS) {
     await withTempDir(async (dir) => {
       const runId = `run-${id}`;
@@ -177,7 +219,7 @@ test("grok and codex conformance: pointer prompt after skill staging copy", asyn
   }
 });
 
-test("grok and codex process-group abort kills the spawn tree", async () => {
+test("extra adapters process-group abort kills the spawn tree", async () => {
   for (const id of EXTRA_ADAPTER_IDS) {
     await withTempDir(async (dir) => {
       const { job } = await setupRun(dir, { runId: `abort-${id}`, timeoutMs: 20_000 });

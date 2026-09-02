@@ -1,14 +1,13 @@
-import type { AgentAdapterId, ExtraAdapterId } from "./types.js";
+import { ASSUMED_EXTRA_BINARIES, type ExtraAdapterId } from "@9thlevelsoftware/legion-cli-schema";
+import type { AgentAdapterId } from "./types.js";
+
+export { ASSUMED_EXTRA_BINARIES };
 
 export const POINTER_PLACEHOLDER = "{{pointer}}";
 export const DEFAULT_GENERIC_ARGS = [POINTER_PLACEHOLDER] as const;
 export const CLAUDE_FROZEN_ARGV = ["-p", "--output-format", "json"] as const;
-
-/** Assumed PATH names. Not verified vendor CLIs; tests spawn via shim override. */
-export const ASSUMED_EXTRA_BINARIES = {
-  grok: "grok",
-  codex: "codex",
-} as const satisfies Record<ExtraAdapterId, string>;
+/** Codex CLI: `codex exec` is the non-interactive subcommand. `openai` shares binary `codex`. */
+export const CODEX_FROZEN_ARGV = ["exec", POINTER_PLACEHOLDER] as const;
 
 /** Frozen argv. Extra adapters stay generic-style until vendor flags are verified. */
 export const FROZEN_ARGV_TABLE = {
@@ -28,8 +27,23 @@ export const FROZEN_ARGV_TABLE = {
     argv: DEFAULT_GENERIC_ARGS,
     spawnable: true,
   },
+  openai: {
+    binary: ASSUMED_EXTRA_BINARIES.openai,
+    argv: CODEX_FROZEN_ARGV,
+    spawnable: true,
+  },
   codex: {
     binary: ASSUMED_EXTRA_BINARIES.codex,
+    argv: CODEX_FROZEN_ARGV,
+    spawnable: true,
+  },
+  mimo: {
+    binary: ASSUMED_EXTRA_BINARIES.mimo,
+    argv: DEFAULT_GENERIC_ARGS,
+    spawnable: true,
+  },
+  minimax: {
+    binary: ASSUMED_EXTRA_BINARIES.minimax,
     argv: DEFAULT_GENERIC_ARGS,
     spawnable: true,
   },
@@ -49,6 +63,25 @@ export function argsIncludePointer(args: readonly string[]): boolean {
 /** Empty args (init without --generic-args) still deliver the frozen pointer. */
 export function genericArgsOrDefault(args: readonly string[]): string[] {
   return args.length === 0 ? [...DEFAULT_GENERIC_ARGS] : [...args];
+}
+
+function basenameBinary(binary: string): string {
+  return binary.replaceAll("\\", "/").split("/").pop()?.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() ?? "";
+}
+
+function needsCodexExec(id: ExtraAdapterId, binary?: string): boolean {
+  if (id !== "openai" && id !== "codex") return false;
+  return basenameBinary(binary ?? ASSUMED_EXTRA_BINARIES[id]) === "codex";
+}
+
+/** Empty extra-adapter args use that id's frozen argv. Codex-binary openai/codex start with `exec`. */
+export function extraArgsOrDefault(id: ExtraAdapterId, args: readonly string[] = [], binary?: string): string[] {
+  if (args.length === 0) {
+    const frozen = FROZEN_ARGV_TABLE[id].argv;
+    return frozen ? [...frozen] : [...DEFAULT_GENERIC_ARGS];
+  }
+  if (needsCodexExec(id, binary) && args[0] !== "exec") return ["exec", ...args];
+  return [...args];
 }
 
 export function buildGenericArgv(args: readonly string[], pointerPrompt: string): string[] {

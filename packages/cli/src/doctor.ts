@@ -6,7 +6,16 @@ import {
   summarizeAuditMetrics,
   type LocalMetrics,
 } from "@9thlevelsoftware/legion-cli-persist";
-import { QAScoreSchema, SCHEMA_VERSION, type AdapterId, type LegionConfig, type Phase } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  ASSUMED_EXTRA_BINARIES,
+  EXTRA_ADAPTER_IDS,
+  QAScoreSchema,
+  SCHEMA_VERSION,
+  type AdapterId,
+  type ExtraAdapterId,
+  type LegionConfig,
+  type Phase,
+} from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { scanWikiSecrets, type SecretHit } from "./secrets.js";
@@ -49,12 +58,36 @@ function fakeSpawnable(): boolean {
   return process.env.LEGION_CLI_ADAPTER === "fake";
 }
 
+const POINTER_PLACEHOLDER = "{{pointer}}";
+
+function extraBinary(id: ExtraAdapterId, config: LegionConfig | null): string {
+  return config?.adapter[id]?.binary ?? ASSUMED_EXTRA_BINARIES[id];
+}
+
+function extraOnPath(id: ExtraAdapterId, config: LegionConfig | null): boolean {
+  return isSpawnableBinary(extraBinary(id, config));
+}
+
+/** Match ExtraAdapter.detect(): empty args default to {{pointer}}; nonempty args must include it. */
+function extraPointerOk(id: ExtraAdapterId, config: LegionConfig | null): boolean {
+  const args = config?.adapter[id]?.args;
+  const effective = !args || args.length === 0 ? [POINTER_PLACEHOLDER] : args;
+  return effective.some((arg) => arg.includes(POINTER_PLACEHOLDER));
+}
+
+function extraSpawnable(id: ExtraAdapterId, config: LegionConfig | null): boolean {
+  return extraOnPath(id, config) && extraPointerOk(id, config);
+}
+
 function adapterSpawnable(id: AdapterId, config: LegionConfig | null): boolean {
   if (id === "fake") return fakeSpawnable();
   if (id === "claude") return isSpawnableBinary("claude");
-  const binary = config?.adapter.generic?.binary;
-  if (!binary) return false;
-  return isSpawnableBinary(binary);
+  if (id === "generic") {
+    const binary = config?.adapter.generic?.binary;
+    if (!binary) return false;
+    return isSpawnableBinary(binary);
+  }
+  return extraSpawnable(id, config);
 }
 
 async function loadConfig(engine: ReturnType<typeof createLegionEngine>): Promise<{
@@ -236,6 +269,16 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
         warnings.push(`configured binary ${binary} is missing from PATH`);
       }
     }
+    if ((EXTRA_ADAPTER_IDS as readonly string[]).includes(adapterDefault)) {
+      const extraId = adapterDefault as ExtraAdapterId;
+      const binary = extraBinary(extraId, config);
+      if (!isSpawnableBinary(binary)) {
+        warnings.push(`configured binary ${binary} is missing from PATH`);
+      }
+      if (!extraPointerOk(extraId, config)) {
+        warnings.push(`adapter.${extraId}.args must include {{pointer}}`);
+      }
+    }
   }
 
   const extraArgs = config?.adapter.claude?.extraArgs ?? [];
@@ -250,6 +293,12 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
 
   const schemaVersions = Object.values(SCHEMA_VERSION);
 
+  const extraLabels = Object.fromEntries(
+    EXTRA_ADAPTER_IDS.map((id) => {
+      const binary = extraBinary(id, config);
+      return [id, extraOnPath(id, config) ? `on PATH (${binary})` : `missing (${binary})`];
+    }),
+  ) as Record<ExtraAdapterId, string>;
   const adapterMatrix = {
     claude: isSpawnableBinary("claude") ? "on PATH" : "missing",
     generic: config?.adapter.generic?.binary
@@ -258,8 +307,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
         : `missing (${config.adapter.generic.binary})`
       : "(unset)",
     fake: fakeSpawnable() ? "spawnable (LEGION_CLI_ADAPTER=fake)" : "not spawnable (set LEGION_CLI_ADAPTER=fake)",
-    grok: isSpawnableBinary("grok") ? "on PATH (detect-only)" : "missing  detect-only",
-    codex: isSpawnableBinary("codex") ? "on PATH (detect-only)" : "missing  detect-only",
+    ...extraLabels,
   };
 
   const ok = checks.every((check) => check.ok);
@@ -330,8 +378,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     `  claude       ${adapterMatrix.claude}`,
     `  generic      ${adapterMatrix.generic}`,
     `  fake         ${adapterMatrix.fake}`,
-    `  grok         ${adapterMatrix.grok}`,
-    `  codex        ${adapterMatrix.codex}`,
+    ...EXTRA_ADAPTER_IDS.map((id) => `  ${id.padEnd(13)}${adapterMatrix[id]}`),
     "",
     secrets.length === 0 ? "Secrets     none" : `Secrets     ${secrets.length} hit(s)`,
   ];

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
@@ -44,6 +44,37 @@ test("doctor warns on multiple legion-cli binaries on PATH", async () => {
     assert.ok(
       body.warnings.some((warning) => /multiple legion-cli binaries on PATH \(collision check\)/.test(warning)),
       `expected collision warning, got ${JSON.stringify(body.warnings)}`,
+    );
+  });
+});
+
+test("doctor fails spawnable when extra adapter args omit {{pointer}}", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "grok"]);
+    assert.equal(init.status, 0, init.stderr);
+    const configPath = join(dir, ".legion-cli", "config.yaml");
+    const config = await readFile(configPath, "utf8");
+    const patched = config.replace(
+      /adapter:\r?\n  default: grok/,
+      [
+        "adapter:",
+        "  default: grok",
+        "  grok:",
+        "    binary: node",
+        "    args:",
+        "      - -e",
+        "      - console.log(1)",
+      ].join("\n"),
+    );
+    assert.notEqual(patched, config, "expected to patch adapter.grok args");
+    await writeFile(configPath, patched, "utf8");
+    const result = runCli(["doctor", "--project", dir, "--json"]);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.adapter.spawnable, false);
+    assert.ok(
+      body.warnings.some((warning) => /adapter\.grok\.args must include \{\{pointer\}\}/.test(warning)),
+      `expected pointer warning, got ${JSON.stringify(body.warnings)}`,
     );
   });
 });

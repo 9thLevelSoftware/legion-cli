@@ -1,2 +1,2 @@
 adapter.default is required
-Next: legion-cli init --adapter claude|generic|fake
+Next: legion-cli init --adapter claude|generic|fake|grok|openai|codex|mimo|minimax

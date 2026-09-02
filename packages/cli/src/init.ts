@@ -1,5 +1,5 @@
 import { createLegionEngine, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
-import { AdapterIdSchema, type AdapterId } from "@9thlevelsoftware/legion-cli-schema";
+import { ADAPTER_ID_HELP, AdapterIdSchema, type AdapterId } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { promptIfTty } from "./prompt.js";
@@ -40,13 +40,13 @@ export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> 
 
   const adapterRaw = await requireValue(
     flags.adapter,
-    "Adapter (claude|generic|fake): ",
+    `Adapter (${ADAPTER_ID_HELP}): `,
     "adapter.default is required",
-    "legion-cli init --adapter claude|generic|fake",
+    `legion-cli init --adapter ${ADAPTER_ID_HELP}`,
   );
   const adapterParsed = AdapterIdSchema.safeParse(adapterRaw);
   if (!adapterParsed.success) {
-    refuse("adapter.default must be claude, generic, or fake", "legion-cli init --adapter claude|generic|fake");
+    refuse(`adapter.default must be ${ADAPTER_ID_HELP}`, `legion-cli init --adapter ${ADAPTER_ID_HELP}`);
   }
   const adapter: AdapterId = adapterParsed.data;
 
