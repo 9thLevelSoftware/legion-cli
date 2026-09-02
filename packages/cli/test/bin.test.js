@@ -1,21 +1,35 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { normalize, runCli } from "./helpers.js";
+
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const bin = join(pkgRoot, "dist", "bin.js");
 const pkg = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8"));
 
 test("registers bin legion-cli only", () => {
   assert.deepEqual(Object.keys(pkg.bin), ["legion-cli"]);
 });
 
-test("prints uninitialized and exits 0", () => {
-  const result = spawnSync(process.execPath, [bin], { encoding: "utf8" });
-  assert.equal(result.status, 0);
-  assert.equal(result.stdout, "uninitialized\n");
-  assert.equal(result.stderr, "");
+test("help mentions pnpm exec legion-cli and does not take bin legion", () => {
+  const result = runCli(["help"]);
+  assert.equal(result.status, 0, result.stderr);
+  const out = normalize(result.stdout);
+  assert.match(out, /pnpm exec legion-cli/);
+  assert.match(out, /status/);
+  assert.match(out, /init/);
+  assert.match(out, /doctor/);
+  assert.match(out, /Does not register bin legion/);
+});
+
+test("help --all lists the v0 command surface", () => {
+  const result = runCli(["help", "--all"]);
+  assert.equal(result.status, 0, result.stderr);
+  const out = normalize(result.stdout);
+  assert.match(out, /Available now:/);
+  assert.match(out, /Full v0 command surface:/);
+  assert.match(out, /legion-cli intent/);
+  assert.match(out, /pnpm exec legion-cli/);
 });
