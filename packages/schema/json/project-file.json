@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-project/v1"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "greenfield",
+        "brownfield"
+      ]
+    },
+    "controlMode": {
+      "type": "string",
+      "enum": [
+        "guarded",
+        "surgical",
+        "advisory"
+      ]
+    },
+    "activeSpecId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "name",
+    "mode",
+    "controlMode"
+  ]
+}
