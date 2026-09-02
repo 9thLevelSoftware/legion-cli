@@ -71,10 +71,10 @@ export function formatStatusFallback(status: Awaited<ReturnType<typeof readStatu
 
 async function htmlForPage(projectRoot: string, page: McpAppName): Promise<string> {
   const snapshot = await loadSnapshot(projectRoot, { rebuild: false });
-  if (page === "spec") return renderSpec(snapshot);
-  if (page === "graph") return renderGraph(snapshot);
-  if (page === "audit") return renderAudit(snapshot);
-  return renderKanban(snapshot);
+  if (page === "spec") return renderSpec(snapshot, "");
+  if (page === "graph") return renderGraph(snapshot, "");
+  if (page === "audit") return renderAudit(snapshot, "");
+  return renderKanban(snapshot, "");
 }
 
 export async function readAppContents(store: LegionReader, page: McpAppName, uri: string) {

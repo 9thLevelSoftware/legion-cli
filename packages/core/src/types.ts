@@ -202,9 +202,29 @@ export type AmendTaskOptions = {
   blocks?: string[];
 };
 
-export type { FileContract, IngestReceipt, Phase, Priority, QAScore, Readiness, ReviewVerdict, SearchHit, SessionBrief, Spec, Task };
+export type CompactedTask = {
+  id: string;
+  title: string;
+};
+
+export type SkippedCompactTask = {
+  id: string;
+  title: string;
+  reason: string;
+};
+
+export type CompactResult = {
+  compacted: CompactedTask[];
+  skipped: SkippedCompactTask[];
+};
+
+export type CompactOptions = {
+  timeoutMs?: number;
+};
+
 export type {
   FileContract,
+  GardenReport,
   IngestReceipt,
   Packet,
   Phase,
@@ -212,22 +232,8 @@ export type {
   QAScore,
   Readiness,
   ReviewVerdict,
+  SearchHit,
+  SessionBrief,
   Spec,
   Task,
 };
-export type IngestOpts = {
-  noCommit?: boolean;
-  transcript?: string;
-  diff?: string;
-
-export type CompactedTask = {
-  id: string;
-  title: string;
-export type SkippedCompactTask = {
-  reason: string;
-export type CompactResult = {
-  compacted: CompactedTask[];
-  skipped: SkippedCompactTask[];
-export type CompactOptions = {
-  timeoutMs?: number;
-export type { FileContract, GardenReport, IngestReceipt, Phase, Priority, QAScore, Readiness, ReviewVerdict, SearchHit, SessionBrief, Spec, Task };
