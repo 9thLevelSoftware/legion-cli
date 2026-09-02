@@ -272,3 +272,52 @@ test("garden reports orphans, duplicates, and stale untrusted without deleting",
     await access(join(store.projectRoot, ".legion-cli", "wiki", "ingested", "checkin-notes.md"));
   });
 });
+
+test("duplicate titles ignore path ids that merely contain another page id", async () => {
+  await withStore(async ({ store }) => {
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/product-intent-workshop.md",
+      wikiFrontmatter("Workshop notes"),
+      "A workshop page whose id contains product-intent.\n",
+    );
+    await store.rebuild();
+    const dupes = duplicateTitleGroups(loadWikiPages(store.projectRoot));
+    assert.equal(
+      dupes.some((group) =>
+        group.some((page) => page.id === "product/intent") &&
+        group.some((page) => page.id === "ingested/product-intent-workshop"),
+      ),
+      false,
+    );
+  });
+});
+
+test("backslash wikilinks count as inbound for orphan listing", async () => {
+  await withStore(async ({ store }) => {
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/win-target.md",
+      wikiFrontmatter("Win Target"),
+      "Target of a Windows-style wikilink.\n",
+    );
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/windows-pointer.md",
+      wikiFrontmatter("Windows pointer"),
+      "See [[ingested\\win-target]], [[product\\intent]], and [[.legion-cli\\wiki\\product\\intent]].\n",
+    );
+    await store.rebuild();
+    const pages = loadWikiPages(store.projectRoot);
+    const links = loadWikiLinks(store.projectRoot);
+    assert.ok(links.some((link) => link.to_id.includes("\\")));
+    const orphans = orphanPages(pages, links);
+    assert.equal(
+      orphans.some((page) => page.id === "ingested/win-target"),
+      false,
+      "[[ingested\\\\win-target]] inbound keeps the target out of orphans",
+    );
+    assert.equal(
+      orphans.some((page) => page.id === "product/intent"),
+      false,
+      "[[product\\\\intent]] inbound keeps product/intent out of orphans",
+    );
+  });
+});
