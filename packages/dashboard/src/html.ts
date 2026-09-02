@@ -33,7 +33,13 @@ iframe.wireframes { width:100%; min-height:24rem; border:1px solid var(--ink); b
 .edges { list-style:none; padding:0; }
 `.trim();
 
-function layout(title: string, body: string, opts: { token: string; alert?: string; webmcp?: boolean }): string {
+export type DashboardHtmlOpts = {
+  token: string;
+  alert?: string;
+  webmcp?: boolean;
+};
+
+function layout(title: string, body: string, opts: DashboardHtmlOpts): string {
   const banner = opts.alert ? `<div class="banner">${escapeHtml(opts.alert)}</div>` : "";
   const script = opts.webmcp ? `  <script src="/webmcp.js" defer></script>\n` : "";
   return `<!DOCTYPE html>
@@ -107,7 +113,7 @@ function alertFor(snapshot: DashboardSnapshot): string | undefined {
   return undefined;
 }
 
-export function renderKanban(snapshot: DashboardSnapshot, token: string, webmcp = false): string {
+export function renderKanban(snapshot: DashboardSnapshot, token = "", webmcp = false): string {
   const name = snapshot.project?.name ?? "(uninitialized)";
   const current = snapshot.currentTask
     ? `${snapshot.currentTask.id} ${snapshot.currentTask.title}`
@@ -156,7 +162,7 @@ ${cols}
   return layout(`${name} · board`, body, { token, alert: alertFor(snapshot), webmcp });
 }
 
-export function renderSpec(snapshot: DashboardSnapshot, token: string, webmcp = false): string {
+export function renderSpec(snapshot: DashboardSnapshot, token = "", webmcp = false): string {
   if (!snapshot.spec) {
     return layout("Spec", `<h1>Spec</h1><p class="muted">No active spec yet.</p>`, { token, webmcp });
   }
@@ -180,7 +186,7 @@ export function renderSpec(snapshot: DashboardSnapshot, token: string, webmcp = 
   return layout(`Spec · ${snapshot.spec.title}`, body, { token, webmcp });
 }
 
-export function renderGraph(snapshot: DashboardSnapshot, token: string, webmcp = false): string {
+export function renderGraph(snapshot: DashboardSnapshot, token: string = "", webmcp = false): string {
   const nodes =
     snapshot.graph.nodes.length === 0 ?
       `<p class="muted">No tasks yet. Kanban still works once tasks exist (including todo).</p>`
@@ -210,7 +216,7 @@ export function renderGraph(snapshot: DashboardSnapshot, token: string, webmcp =
   return layout("Task graph", body, { token, webmcp });
 }
 
-export function renderAudit(snapshot: DashboardSnapshot, token: string, webmcp = false): string {
+export function renderAudit(snapshot: DashboardSnapshot, token = "", webmcp = false): string {
   const rows =
     snapshot.audit.length === 0 ?
       `<p class="muted">No audit events yet. Ship will write events.jsonl; ingest receipts appear here when present.</p>`
