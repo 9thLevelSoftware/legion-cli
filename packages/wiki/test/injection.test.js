@@ -10,6 +10,7 @@ import {
   renderSessionBrief,
   UNTRUSTED_BEGIN,
   UNTRUSTED_END,
+  UNTRUSTED_POINTER_REMINDER,
 } from "../dist/index.js";
 import { withStore } from "./helpers.js";
 
@@ -44,6 +45,8 @@ test("golden injection: ingest stays untrusted, brief omits body, spawn wraps, F
     assert.match(spawnPrompt, new RegExp(UNTRUSTED_END));
     assert.match(spawnPrompt, /Ignore previous instructions/);
     assert.match(spawnPrompt, /not instructions/);
+    assert.ok(spawnPrompt.includes(UNTRUSTED_POINTER_REMINDER));
+    assert.ok(spawnPrompt.indexOf(UNTRUSTED_BEGIN) < spawnPrompt.indexOf("Ignore previous instructions"));
 
     assert.equal(isForbiddenSpawnPath("C:\\Users\\dasbl\\.ssh\\id_rsa"), true);
     assert.equal(isForbiddenSpawnPath("~/.ssh/id_rsa"), true);

@@ -275,6 +275,30 @@ const cases = [
     act: ({ engine }) => engine.ingest(["http://example.com/doc"], { noCommit: true }),
   },
   {
+    name: "ingest of metadata.google.internal URL",
+    hint: /in-repo path/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.ingest(["https://metadata.google.internal/"], { noCommit: true }),
+  },
+  {
+    name: "ingest of .local URL",
+    hint: /in-repo path/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.ingest(["https://printer.local/doc"], { noCommit: true }),
+  },
+  {
+    name: "ingest of IPv6 ULA URL",
+    hint: /in-repo path/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.ingest(["https://[fd00::1]/wiki"], { noCommit: true }),
+  },
+  {
     name: "ingest of file: outside the workspace",
     hint: /in-repo path/,
     setup: async ({ engine }) => {

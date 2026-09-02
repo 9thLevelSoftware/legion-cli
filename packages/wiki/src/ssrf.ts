@@ -1,6 +1,13 @@
-import { lookup } from "node:dns/promises";
+import dns from "node:dns/promises";
 import https from "node:https";
 import { MAX_INGEST_FILE_BYTES } from "@9thlevelsoftware/legion-cli-persist";
+
+/** Single-address lookup so ingest never happy-eyeballs to a second IP. */
+export type SsrfLookup = (hostname: string) => Promise<{ address: string; family: number }>;
+
+async function defaultLookup(hostname: string): Promise<{ address: string; family: number }> {
+  return dns.lookup(hostname, { all: false });
+}
 
 const PRIVATE_HOSTS = new Set(["localhost", "metadata.google.internal"]);
 const FETCH_TIMEOUT_MS = 20_000;
@@ -65,9 +72,16 @@ function firstHextet(host: string): number | null {
   return Number.parseInt(head, 16);
 }
 
+function isUnspecifiedIPv6(host: string): boolean {
+  const h = normalizeHost(host);
+  if (h === "::" || h === "::0") return true;
+  return /^(0+:){7}0+$/.test(h);
+}
+
 function isPrivateIPv6(host: string): boolean {
   const h = normalizeHost(host);
   if (h === "::1" || h === "0:0:0:0:0:0:0:1") return true;
+  if (isUnspecifiedIPv6(h)) return true;
   const first = firstHextet(h);
   if (first === null) return false;
   // fe80::/10 link-local (not merely the fe80: prefix)
@@ -106,12 +120,13 @@ export function fileUrlToPath(source: string): string {
 
 export async function resolvePublicAddress(
   hostname: string,
+  lookupFn: SsrfLookup = defaultLookup,
 ): Promise<{ address: string; family: number }> {
   const host = hostname.replace(/^\[|\]$/g, "");
   if (isPrivateOrLocalHost(host)) {
     throw new SsrfError("ingest of private-network URL is refused");
   }
-  const resolved = await lookup(host, { all: false });
+  const resolved = await lookupFn(host);
   if (isPrivateOrLocalHost(resolved.address)) {
     throw new SsrfError("ingest of private-network URL is refused");
   }
@@ -136,6 +151,29 @@ function assertHttpsUrl(source: string): URL {
 
 type Fetched = { body: string; finalUrl: string; contentType: string; status: number };
 
+type LookupCallback = (
+  err: NodeJS.ErrnoException | null,
+  address: string | Array<{ address: string; family: number }>,
+  family?: number,
+) => void;
+
+/** Node 22+ https.request calls lookup with `{ all: true }`; honor that without a second address. */
+function pinnedLookup(
+  address: string,
+  family: number,
+): NonNullable<https.RequestOptions["lookup"]> {
+  return (_hostname, options, callback) => {
+    const cb = (typeof options === "function" ? options : callback) as LookupCallback | undefined;
+    if (!cb) return;
+    const all = typeof options === "object" && options !== null && options.all === true;
+    if (all) {
+      cb(null, [{ address, family }]);
+      return;
+    }
+    cb(null, address, family);
+  };
+}
+
 async function httpsGetPinned(
   url: URL,
   address: string,
@@ -151,15 +189,15 @@ async function httpsGetPinned(
         port: url.port ? Number(url.port) : 443,
         path: `${url.pathname}${url.search}`,
         method: "GET",
+        family,
+        autoSelectFamily: false,
         headers: {
           Host: url.host,
           "User-Agent": "legion-cli",
           Accept: "text/*, application/json, application/xml",
         },
-        lookup(_hostname, _options, callback) {
-          callback(null, address, family);
-        },
-      },
+        lookup: pinnedLookup(address, family),
+      } as https.RequestOptions,
       (res) => {
         const chunks: Buffer[] = [];
         let size = 0;
@@ -200,13 +238,14 @@ function header(headers: httpHeaders, name: string): string {
 
 export async function fetchPublicHttps(
   source: string,
-  opts?: { maxBytes?: number; timeoutMs?: number },
+  opts?: { maxBytes?: number; timeoutMs?: number; lookup?: SsrfLookup },
 ): Promise<Fetched> {
   const maxBytes = opts?.maxBytes ?? MAX_INGEST_FILE_BYTES;
   const timeoutMs = opts?.timeoutMs ?? FETCH_TIMEOUT_MS;
+  const lookupFn = opts?.lookup ?? defaultLookup;
   let current = assertHttpsUrl(source);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    const pinned = await resolvePublicAddress(current.hostname);
+    const pinned = await resolvePublicAddress(current.hostname, lookupFn);
     const res = await httpsGetPinned(current, pinned.address, pinned.family, maxBytes, timeoutMs);
     if (res.status >= 300 && res.status < 400) {
       const location = header(res.headers, "location");
