@@ -180,7 +180,6 @@ test("PacketSchema accepts open and responded packets", () => {
   assert.equal(PacketSchema.safeParse({ ...open, schemaVersion: "legion-cli-packet/v2" }).success, false);
   assert.equal(PacketSchema.safeParse({ ...open, status: "executing" }).success, false);
 });
-});
 
 test("plan_concerns is not a phase", () => {
   assert.equal(PhaseSchema.safeParse("plan_concerns").success, false);
