@@ -88,9 +88,18 @@ export type ExecuteResult = {
   warnings: string[];
 };
 
+export type VerifyResult = {
+  taskId?: string;
+  spawned: boolean;
+  notesPath?: string;
+  createdTaskIds: string[];
+  extrasReverted: string[];
+};
+
 export type ReviewResult = {
   verdict: ReviewVerdict;
   createdTaskIds: string[];
+  extrasReverted: string[];
 };
 
 export type ShipReceipt = {
