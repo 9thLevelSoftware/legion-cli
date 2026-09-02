@@ -1,6 +1,6 @@
 import type { LegionConfig } from "@9thlevelsoftware/legion-cli-schema";
 import { ClaudeAdapter } from "./adapters/claude.js";
-import { DetectOnlyAdapter } from "./adapters/detect-only.js";
+import { ExtraAdapter } from "./adapters/extra.js";
 import { FakeAdapter } from "./adapters/fake.js";
 import { GenericAdapter } from "./adapters/generic.js";
 import { AdapterConfigError } from "./errors.js";
@@ -26,9 +26,9 @@ export function createAdapter(id: AgentAdapterId, options: AdapterCreateOptions 
     case "generic":
       return new GenericAdapter(options.generic ?? { binary: "", args: [] });
     case "grok":
-      return new DetectOnlyAdapter("grok");
+      return new ExtraAdapter("grok", options.grok);
     case "codex":
-      return new DetectOnlyAdapter("codex");
+      return new ExtraAdapter("codex", options.codex);
   }
 }
 
