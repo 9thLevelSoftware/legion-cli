@@ -7,6 +7,7 @@ export {
   matchesGlob,
   skillContract,
 } from "./contracts.js";
+export { COMPACT_AUDIT_POINTER, compactTaskBody, outcomeFromTask } from "./compact.js";
 export { createLegionEngine, LegionEngine } from "./engine.js";
 export {
   assertIngestSourceAllowed,
@@ -76,11 +77,15 @@ export type {
   AmendTaskOptions,
   BrownfieldOptions,
   BrownfieldResult,
+  CompactOptions,
+  CompactResult,
+  CompactedTask,
   DecisionInput,
   ExecuteOptions,
   ExecuteResult,
   ExecuteTaskResult,
   FileContract,
+  GardenReport,
   IngestOpts,
   IngestReceipt,
   IngestSource,
@@ -105,6 +110,7 @@ export type {
   ShipOptions,
   ShipPreview,
   ShipReceipt,
+  SkippedCompactTask,
   Spec,
   Task,
 } from "./types.js";

@@ -1,25 +1,32 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { access, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+
+import { WIKI_PAGE_SCHEMA_VERSION } from "@9thlevelsoftware/legion-cli-persist";
 
 import {
   assembleSessionBrief,
   backlinks,
   buildSessionBrief,
+  duplicateTitleGroups,
   fetchPublicHttps,
+  gardenReport,
   hubs,
   isForbiddenSpawnPath,
   isPrivateOrLocalHost,
   loadWikiLinks,
   loadWikiPages,
   neighbors,
+  orphanPages,
   renderSessionBrief,
   resolvePublicAddress,
   searchWiki,
   SESSION_BRIEF_CHAR_CAP,
   showPage,
+  staleUntrustedPages,
   SsrfError,
+  titlesSimilar,
   trustWikiPage,
   UNTRUSTED_BEGIN,
   UNTRUSTED_END,
@@ -193,5 +200,75 @@ test("changed re-ingest after wiki trust is untrusted in brief and default searc
     assert.equal(hidden.length, 0);
     const shown = searchWiki(store.projectRoot, "CHANGED_UNTRUSTED_BODY", { includeUntrusted: true });
     assert.ok(shown.some((hit) => hit.snippet.includes("CHANGED_UNTRUSTED_BODY")));
+  });
+});
+
+function wikiFrontmatter(title, extra = {}) {
+  return {
+    schemaVersion: WIKI_PAGE_SCHEMA_VERSION,
+    title,
+    aliases: extra.aliases ?? [],
+    tags: extra.tags ?? [],
+    trust: extra.trust ?? "reviewed",
+    updated: extra.updated ?? "2026-01-02T00:00:00.000Z",
+  };
+}
+
+test("titlesSimilar matches normalized and overlapping titles", () => {
+  assert.equal(titlesSimilar("Check-in notes", "Check in notes"), true);
+  assert.equal(titlesSimilar("Office check-in notes", "Check-in notes"), true);
+  assert.equal(titlesSimilar("Intent", "Wiki"), false);
+});
+
+test("garden reports orphans, duplicates, and stale untrusted without deleting", async () => {
+  await withStore(async ({ store }) => {
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/lonely-orphan.md",
+      wikiFrontmatter("Lonely Orphan"),
+      "Nobody links here.\n",
+    );
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/check-in-notes.md",
+      wikiFrontmatter("Check-in notes", { trust: "untrusted" }),
+      "First copy.\n",
+    );
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/checkin-notes.md",
+      wikiFrontmatter("Check in notes", { trust: "untrusted" }),
+      "Second copy.\n",
+    );
+    await store.rebuild();
+
+    const pages = loadWikiPages(store.projectRoot);
+    const links = loadWikiLinks(store.projectRoot);
+    const orphans = orphanPages(pages, links);
+    assert.ok(orphans.some((page) => page.id === "ingested/lonely-orphan"));
+    assert.equal(
+      orphans.some((page) => page.id === "product/intent"),
+      false,
+      "inbound [[product/intent]] is not an orphan",
+    );
+
+    const dupes = duplicateTitleGroups(pages);
+    assert.ok(
+      dupes.some((group) =>
+        group.some((page) => page.id === "ingested/check-in-notes") &&
+        group.some((page) => page.id === "ingested/checkin-notes"),
+      ),
+    );
+
+    const stale = staleUntrustedPages(pages);
+    assert.ok(stale.some((page) => page.id === "ingested/check-in-notes"));
+    assert.ok(stale.some((page) => page.id === "ingested/checkin-notes"));
+    assert.equal(stale.some((page) => page.trust !== "untrusted"), false);
+
+    const report = gardenReport(store.projectRoot);
+    assert.ok(report.orphans.some((page) => page.id === "ingested/lonely-orphan"));
+    assert.ok(report.duplicates.length >= 1);
+    assert.ok(report.staleUntrusted.some((page) => page.path.includes("check-in-notes")));
+
+    await access(join(store.projectRoot, ".legion-cli", "wiki", "ingested", "lonely-orphan.md"));
+    await access(join(store.projectRoot, ".legion-cli", "wiki", "ingested", "check-in-notes.md"));
+    await access(join(store.projectRoot, ".legion-cli", "wiki", "ingested", "checkin-notes.md"));
   });
 });

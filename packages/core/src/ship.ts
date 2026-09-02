@@ -8,7 +8,7 @@ const LEGION_PREFIX = ".legion-cli";
 export function unionDoneFilesAllowed(tasks: readonly Task[]): string[] {
   const paths = new Set<string>();
   for (const task of tasks) {
-    if (task.status !== "done") continue;
+    if (task.status !== "done" && task.status !== "compacted") continue;
     for (const path of task.contract.filesAllowed) paths.add(toPosixPath(path));
   }
   return [...paths].sort();

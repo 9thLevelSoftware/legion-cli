@@ -2,9 +2,8 @@ import { type TaskStatus } from "@9thlevelsoftware/legion-cli-schema";
 import { refuse } from "./errors.js";
 
 /**
- * todo → ready → in_progress → verifying → done
+ * todo → ready → in_progress → verifying → done → compacted
  *                  ↘ blocked
- * compacted is v1 only.
  */
 export const LEGAL_TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   todo: ["ready", "blocked"],
@@ -12,7 +11,7 @@ export const LEGAL_TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskSt
   in_progress: ["verifying", "blocked"],
   verifying: ["done", "blocked"],
   blocked: ["todo", "ready"],
-  done: [],
+  done: ["compacted"],
   compacted: [],
 };
 
@@ -22,9 +21,6 @@ export function canTransitionTaskStatus(from: TaskStatus, to: TaskStatus): boole
 }
 
 export function assertTaskStatusTransition(from: TaskStatus, to: TaskStatus): void {
-  if (to === "compacted") {
-    refuse("compacted task status is v1", "legion-cli help");
-  }
   if (!canTransitionTaskStatus(from, to)) {
     refuse(`cannot move task from ${from} to ${to}`, "legion-cli status --blockers");
   }
