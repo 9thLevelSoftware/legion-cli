@@ -135,15 +135,18 @@ export async function dispatchEngineWrite(
       await engine.wikiTrust(pageId);
       return { ok: true, page: pageId, trust: "reviewed" };
     }
-    const ticks = parseTicks(body);
-    await engine.qaChecklist(ticks);
-    const state = await engine.getState();
-    return {
-      ok: true,
-      specId: state.activeSpecId,
-      ticks,
-      next: "legion-cli qa --mode no-browser",
-    };
+    if (method === "qaChecklist") {
+      const ticks = parseTicks(body);
+      await engine.qaChecklist(ticks);
+      const state = await engine.getState();
+      return {
+        ok: true,
+        specId: state.activeSpecId,
+        ticks,
+        next: "legion-cli qa --mode no-browser",
+      };
+    }
+    throw new EngineWriteError(404, { error: "unknown engine method" });
   } catch (err) {
     if (err instanceof EngineWriteError) throw err;
     if (err instanceof LegionRefuseError) {

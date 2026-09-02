@@ -129,4 +129,40 @@ test("IPv4-mapped loopback is loopback; other mapped addresses are not", () => {
     }),
     true,
   );
+  assert.equal(
+    originIsAllowed({
+      origin: undefined,
+      hostHeader: "[::]:7420",
+      bind,
+      port,
+    }),
+    false,
+  );
+  assert.equal(
+    originIsAllowed({
+      origin: undefined,
+      hostHeader: "0.0.0.0:7420",
+      bind,
+      port,
+    }),
+    false,
+  );
+  assert.equal(
+    writeOriginIsAllowed({
+      origin: "http://127.0.0.1:7420",
+      hostHeader: "[::]:7420",
+      bind,
+      port,
+    }),
+    false,
+  );
+  assert.equal(
+    writeOriginIsAllowed({
+      origin: "http://127.0.0.1:7420",
+      hostHeader: "0.0.0.0:7420",
+      bind,
+      port,
+    }),
+    false,
+  );
 });
