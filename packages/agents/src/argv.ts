@@ -1,14 +1,11 @@
-import type { AgentAdapterId, ExtraAdapterId } from "./types.js";
+import { ASSUMED_EXTRA_BINARIES } from "@9thlevelsoftware/legion-cli-schema";
+import type { AgentAdapterId } from "./types.js";
+
+export { ASSUMED_EXTRA_BINARIES };
 
 export const POINTER_PLACEHOLDER = "{{pointer}}";
 export const DEFAULT_GENERIC_ARGS = [POINTER_PLACEHOLDER] as const;
 export const CLAUDE_FROZEN_ARGV = ["-p", "--output-format", "json"] as const;
-
-/** Assumed PATH names. Not verified vendor CLIs; tests spawn via shim override. */
-export const ASSUMED_EXTRA_BINARIES = {
-  grok: "grok",
-  codex: "codex",
-} as const satisfies Record<ExtraAdapterId, string>;
 
 /** Frozen argv. Extra adapters stay generic-style until vendor flags are verified. */
 export const FROZEN_ARGV_TABLE = {
@@ -28,8 +25,23 @@ export const FROZEN_ARGV_TABLE = {
     argv: DEFAULT_GENERIC_ARGS,
     spawnable: true,
   },
+  openai: {
+    binary: ASSUMED_EXTRA_BINARIES.openai,
+    argv: DEFAULT_GENERIC_ARGS,
+    spawnable: true,
+  },
   codex: {
     binary: ASSUMED_EXTRA_BINARIES.codex,
+    argv: DEFAULT_GENERIC_ARGS,
+    spawnable: true,
+  },
+  mimo: {
+    binary: ASSUMED_EXTRA_BINARIES.mimo,
+    argv: DEFAULT_GENERIC_ARGS,
+    spawnable: true,
+  },
+  minimax: {
+    binary: ASSUMED_EXTRA_BINARIES.minimax,
     argv: DEFAULT_GENERIC_ARGS,
     spawnable: true,
   },

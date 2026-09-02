@@ -3,7 +3,7 @@ import {
   type Phase,
   type Task,
 } from "@9thlevelsoftware/legion-cli-core";
-import type { Readiness, ReviewVerdict, StateFile } from "@9thlevelsoftware/legion-cli-schema";
+import { ADAPTER_ID_HELP, type Readiness, type ReviewVerdict, type StateFile } from "@9thlevelsoftware/legion-cli-schema";
 
 export type NextCommand = {
   run: string;
@@ -12,7 +12,7 @@ export type NextCommand = {
 
 const NEXT_BY_PHASE: Record<Phase, NextCommand> = {
   uninitialized: {
-    run: "legion-cli init --name <product> --adapter claude|generic|fake",
+    run: `legion-cli init --name <product> --adapter ${ADAPTER_ID_HELP}`,
     hint: "start a product in this folder.",
   },
   initialized: {

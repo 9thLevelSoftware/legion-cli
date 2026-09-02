@@ -42,7 +42,10 @@ Adapter
   generic      (unset)
   fake         spawnable (LEGION_CLI_ADAPTER=fake)
   grok         <detect>
+  openai       <detect>
   codex        <detect>
+  mimo         <detect>
+  minimax      <detect>
 
 Secrets     none
 

@@ -7,6 +7,7 @@ import {
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   AuditEventSchema,
+  ADAPTER_ID_HELP,
   SCHEMA_VERSION,
   type AuditEvent,
   type ControlMode,
@@ -40,7 +41,7 @@ const UNINITIALIZED: StateFile = {
 
 const NEXT_BY_PHASE: Record<Phase, { run: string; hint: string }> = {
   uninitialized: {
-    run: "legion-cli init --name <product> --adapter claude|generic|fake",
+    run: `legion-cli init --name <product> --adapter ${ADAPTER_ID_HELP}`,
     hint: "start a product in this folder.",
   },
   initialized: { run: "legion-cli intent", hint: "interview me about the product." },

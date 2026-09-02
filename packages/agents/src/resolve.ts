@@ -31,8 +31,14 @@ export function createAdapter(id: AgentAdapterId, options: AdapterCreateOptions 
       return new GenericAdapter(options.generic ?? { binary: "", args: [] });
     case "grok":
       return new ExtraAdapter("grok", options.grok);
+    case "openai":
+      return new ExtraAdapter("openai", options.openai);
     case "codex":
       return new ExtraAdapter("codex", options.codex);
+    case "mimo":
+      return new ExtraAdapter("mimo", options.mimo);
+    case "minimax":
+      return new ExtraAdapter("minimax", options.minimax);
   }
 }
 
@@ -41,15 +47,17 @@ export function resolveAdapter(
   options: AdapterCreateOptions = {},
 ): AgentAdapter {
   const id = config.adapter.default;
-  if (id !== "fake" && id !== "generic" && id !== "claude") {
-    throw new AdapterConfigError("adapter.default must be claude, generic, or fake");
-  }
   if (id === "generic" && !config.adapter.generic?.binary) {
     throw new AdapterConfigError("adapter.generic is required when adapter.default is generic");
   }
   return createAdapter(id, {
     extraArgs: options.extraArgs ?? config.adapter.claude?.extraArgs,
     generic: options.generic ?? config.adapter.generic,
+    grok: options.grok ?? config.adapter.grok,
+    openai: options.openai ?? config.adapter.openai,
+    codex: options.codex ?? config.adapter.codex,
+    mimo: options.mimo ?? config.adapter.mimo,
+    minimax: options.minimax ?? config.adapter.minimax,
     artifacts: options.artifacts,
     throwAfterWrite: options.throwAfterWrite,
     timedOut: options.timedOut,
@@ -64,6 +72,11 @@ export async function detectMatrix(
     const adapter = createAdapter(id, {
       extraArgs: config?.adapter.claude?.extraArgs,
       generic: config?.adapter.generic,
+      grok: config?.adapter.grok,
+      openai: config?.adapter.openai,
+      codex: config?.adapter.codex,
+      mimo: config?.adapter.mimo,
+      minimax: config?.adapter.minimax,
     });
     out[id] = await adapter.detect();
   }

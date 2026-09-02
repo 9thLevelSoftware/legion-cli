@@ -6,7 +6,16 @@ import {
   summarizeAuditMetrics,
   type LocalMetrics,
 } from "@9thlevelsoftware/legion-cli-persist";
-import { QAScoreSchema, SCHEMA_VERSION, type AdapterId, type LegionConfig, type Phase } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  ASSUMED_EXTRA_BINARIES,
+  EXTRA_ADAPTER_IDS,
+  QAScoreSchema,
+  SCHEMA_VERSION,
+  type AdapterId,
+  type ExtraAdapterId,
+  type LegionConfig,
+  type Phase,
+} from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { scanWikiSecrets, type SecretHit } from "./secrets.js";
@@ -49,12 +58,23 @@ function fakeSpawnable(): boolean {
   return process.env.LEGION_CLI_ADAPTER === "fake";
 }
 
+function extraBinary(id: ExtraAdapterId, config: LegionConfig | null): string {
+  return config?.adapter[id]?.binary ?? ASSUMED_EXTRA_BINARIES[id];
+}
+
+function extraOnPath(id: ExtraAdapterId, config: LegionConfig | null): boolean {
+  return isSpawnableBinary(extraBinary(id, config));
+}
+
 function adapterSpawnable(id: AdapterId, config: LegionConfig | null): boolean {
   if (id === "fake") return fakeSpawnable();
   if (id === "claude") return isSpawnableBinary("claude");
-  const binary = config?.adapter.generic?.binary;
-  if (!binary) return false;
-  return isSpawnableBinary(binary);
+  if (id === "generic") {
+    const binary = config?.adapter.generic?.binary;
+    if (!binary) return false;
+    return isSpawnableBinary(binary);
+  }
+  return extraOnPath(id, config);
 }
 
 async function loadConfig(engine: ReturnType<typeof createLegionEngine>): Promise<{
@@ -236,6 +256,12 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
         warnings.push(`configured binary ${binary} is missing from PATH`);
       }
     }
+    if ((EXTRA_ADAPTER_IDS as readonly string[]).includes(adapterDefault)) {
+      const binary = extraBinary(adapterDefault as ExtraAdapterId, config);
+      if (!isSpawnableBinary(binary)) {
+        warnings.push(`configured binary ${binary} is missing from PATH`);
+      }
+    }
   }
 
   const extraArgs = config?.adapter.claude?.extraArgs ?? [];
@@ -258,8 +284,15 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
         : `missing (${config.adapter.generic.binary})`
       : "(unset)",
     fake: fakeSpawnable() ? "spawnable (LEGION_CLI_ADAPTER=fake)" : "not spawnable (set LEGION_CLI_ADAPTER=fake)",
-    grok: isSpawnableBinary("grok") ? "on PATH (detect-only)" : "missing  detect-only",
-    codex: isSpawnableBinary("codex") ? "on PATH (detect-only)" : "missing  detect-only",
+    grok: extraOnPath("grok", config) ? `on PATH (${extraBinary("grok", config)})` : `missing (${extraBinary("grok", config)})`,
+    openai: extraOnPath("openai", config)
+      ? `on PATH (${extraBinary("openai", config)})`
+      : `missing (${extraBinary("openai", config)})`,
+    codex: extraOnPath("codex", config) ? `on PATH (${extraBinary("codex", config)})` : `missing (${extraBinary("codex", config)})`,
+    mimo: extraOnPath("mimo", config) ? `on PATH (${extraBinary("mimo", config)})` : `missing (${extraBinary("mimo", config)})`,
+    minimax: extraOnPath("minimax", config)
+      ? `on PATH (${extraBinary("minimax", config)})`
+      : `missing (${extraBinary("minimax", config)})`,
   };
 
   const ok = checks.every((check) => check.ok);
@@ -331,7 +364,10 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     `  generic      ${adapterMatrix.generic}`,
     `  fake         ${adapterMatrix.fake}`,
     `  grok         ${adapterMatrix.grok}`,
+    `  openai       ${adapterMatrix.openai}`,
     `  codex        ${adapterMatrix.codex}`,
+    `  mimo         ${adapterMatrix.mimo}`,
+    `  minimax      ${adapterMatrix.minimax}`,
     "",
     secrets.length === 0 ? "Secrets     none" : `Secrets     ${secrets.length} hit(s)`,
   ];

@@ -82,5 +82,27 @@ export type Readiness = z.infer<typeof ReadinessSchema>;
 export const ReviewVerdictSchema = z.enum(["PASS", "FAIL"]);
 export type ReviewVerdict = z.infer<typeof ReviewVerdictSchema>;
 
-export const AdapterIdSchema = z.enum(["claude", "generic", "fake"]);
+export const ADAPTER_IDS = [
+  "claude",
+  "generic",
+  "fake",
+  "grok",
+  "openai",
+  "codex",
+  "mimo",
+  "minimax",
+] as const;
+export const AdapterIdSchema = z.enum(ADAPTER_IDS);
 export type AdapterId = z.infer<typeof AdapterIdSchema>;
+export const ADAPTER_ID_HELP = ADAPTER_IDS.join("|");
+
+/** Subscription coding CLIs spawned by PATH name. Vendor flags stay generic-style. */
+export const EXTRA_ADAPTER_IDS = ["grok", "openai", "codex", "mimo", "minimax"] as const;
+export type ExtraAdapterId = (typeof EXTRA_ADAPTER_IDS)[number];
+export const ASSUMED_EXTRA_BINARIES = {
+  grok: "grok",
+  openai: "codex",
+  codex: "codex",
+  mimo: "mimo",
+  minimax: "mcode",
+} as const satisfies Record<ExtraAdapterId, string>;

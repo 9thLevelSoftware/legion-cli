@@ -106,7 +106,7 @@ export function createProgram(): Command {
 
   addGlobalOptions(program.command("init").description("Start a product in this folder"))
     .option("--name <name>", "product name")
-    .option("--adapter <id>", "claude | generic | fake (required)")
+    .option("--adapter <id>", "claude | generic | fake | grok | openai | mimo | minimax | codex (required)")
     .option("--mode <mode>", "greenfield (v0) or brownfield (v1)", "greenfield")
     .option("--generic-binary <bin>", "binary when --adapter generic")
     .option("--generic-args <args...>", "args when --adapter generic")

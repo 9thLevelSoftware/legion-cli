@@ -44,7 +44,7 @@ test("fake detect is ok only when LEGION_CLI_ADAPTER=fake", async () => {
   }
 });
 
-test("grok and codex detect assumed PATH binaries and are no longer detect-only", async () => {
+test("extra adapters detect assumed PATH binaries and are no longer detect-only", async () => {
   assert.deepEqual([...DETECT_ONLY_ADAPTER_IDS], []);
   for (const id of EXTRA_ADAPTER_IDS) {
     const adapter = createAdapter(id);
@@ -60,7 +60,7 @@ test("grok and codex detect assumed PATH binaries and are no longer detect-only"
   }
 });
 
-test("grok and codex with a node shim binary are spawnable", async () => {
+test("extra adapters with a node shim binary are spawnable", async () => {
   for (const id of EXTRA_ADAPTER_IDS) {
     const adapter = createAdapter(id, {
       [id]: { binary: process.execPath, args: ["{{pointer}}"] },
@@ -71,7 +71,7 @@ test("grok and codex with a node shim binary are spawnable", async () => {
   }
 });
 
-test("grok and codex args that omit {{pointer}} are not spawnable and spawn throws", async () => {
+test("extra adapter args that omit {{pointer}} are not spawnable and spawn throws", async () => {
   for (const id of EXTRA_ADAPTER_IDS) {
     const adapter = createAdapter(id, {
       [id]: { binary: process.execPath, args: ["-p"] },
@@ -105,6 +105,17 @@ test("resolveAdapter uses user-set default and has no product fallback", () => {
   });
   assert.equal(generic.id, "generic");
   assert.equal(generic.binary, "node");
+  const grok = resolveAdapter({ adapter: { default: "grok" } });
+  assert.equal(grok.id, "grok");
+  assert.equal(grok.binary, ASSUMED_EXTRA_BINARIES.grok);
+  const openai = resolveAdapter({ adapter: { default: "openai" } });
+  assert.equal(openai.id, "openai");
+  assert.equal(openai.binary, ASSUMED_EXTRA_BINARIES.openai);
+  const mimo = resolveAdapter({ adapter: { default: "mimo" } });
+  assert.equal(mimo.id, "mimo");
+  const minimax = resolveAdapter({ adapter: { default: "minimax" } });
+  assert.equal(minimax.id, "minimax");
+  assert.equal(minimax.binary, ASSUMED_EXTRA_BINARIES.minimax);
   assert.throws(
     () => resolveAdapter({ adapter: { default: "generic" } }),
     (err) => err instanceof AdapterConfigError,

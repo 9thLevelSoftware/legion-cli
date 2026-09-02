@@ -14,7 +14,12 @@
           "enum": [
             "claude",
             "generic",
-            "fake"
+            "fake",
+            "grok",
+            "openai",
+            "codex",
+            "mimo",
+            "minimax"
           ]
         },
         "claude": {
@@ -47,6 +52,81 @@
             "binary",
             "args"
           ]
+        },
+        "grok": {
+          "type": "object",
+          "properties": {
+            "binary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "openai": {
+          "type": "object",
+          "properties": {
+            "binary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "codex": {
+          "type": "object",
+          "properties": {
+            "binary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "mimo": {
+          "type": "object",
+          "properties": {
+            "binary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "minimax": {
+          "type": "object",
+          "properties": {
+            "binary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
         }
       },
       "required": [

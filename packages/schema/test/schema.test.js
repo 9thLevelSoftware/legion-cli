@@ -410,6 +410,32 @@ test("LegionConfig requires adapter.default and defaults ingest.autoCommit", () 
     "claude",
   );
 
+  for (const id of ["grok", "openai", "codex", "mimo", "minimax"]) {
+    assert.equal(
+      LegionConfigSchema.parse({
+        schemaVersion: "legion-cli-config/v1",
+        adapter: { default: id },
+      }).adapter.default,
+      id,
+    );
+  }
+
+  assert.equal(
+    LegionConfigSchema.parse({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "openai", openai: { binary: "codex", args: ["{{pointer}}"] } },
+    }).adapter.openai.binary,
+    "codex",
+  );
+
+  assert.equal(
+    LegionConfigSchema.parse({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "minimax", minimax: { binary: "mcode" } },
+    }).adapter.minimax.binary,
+    "mcode",
+  );
+
   assert.equal(
     LegionConfigSchema.safeParse({
       schemaVersion: "legion-cli-config/v1",

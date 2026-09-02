@@ -7,6 +7,10 @@ const ENV_ALLOWLIST = [
   "TEMP",
   "ComSpec",
   "CLAUDE_API_KEY",
+  "GROK_API_KEY",
+  "XAI_API_KEY",
+  "OPENAI_API_KEY",
+  "MINIMAX_API_KEY",
   "TERM",
 ] as const;
 

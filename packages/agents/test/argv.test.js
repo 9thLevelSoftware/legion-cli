@@ -70,9 +70,15 @@ test("pointer prompt includes run/skill paths and forbids git commit", () => {
   assert.match(prompt, /\.legion-cli\/cache\/runs\/abc\/summary\.md/);
 });
 
-test("frozen argv table marks grok and codex spawnable with fillable generic-style argv", () => {
-  assert.deepEqual([...EXTRA_ADAPTER_IDS], ["grok", "codex"]);
-  assert.deepEqual(ASSUMED_EXTRA_BINARIES, { grok: "grok", codex: "codex" });
+test("frozen argv table marks extra adapters spawnable with fillable generic-style argv", () => {
+  assert.deepEqual([...EXTRA_ADAPTER_IDS], ["grok", "openai", "codex", "mimo", "minimax"]);
+  assert.deepEqual(ASSUMED_EXTRA_BINARIES, {
+    grok: "grok",
+    openai: "codex",
+    codex: "codex",
+    mimo: "mimo",
+    minimax: "mcode",
+  });
   for (const id of EXTRA_ADAPTER_IDS) {
     assert.equal(FROZEN_ARGV_TABLE[id].spawnable, true);
     assert.equal(FROZEN_ARGV_TABLE[id].binary, ASSUMED_EXTRA_BINARIES[id]);

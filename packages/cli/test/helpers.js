@@ -36,7 +36,10 @@ export function sanitizeDoctor(text) {
     .replace(/^Playwright  .+$/m, "Playwright  <playwright>")
     .replace(/^  claude       .+$/m, "  claude       <detect>")
     .replace(/^  grok         .+$/m, "  grok         <detect>")
+    .replace(/^  openai       .+$/m, "  openai       <detect>")
     .replace(/^  codex        .+$/m, "  codex        <detect>")
+    .replace(/^  mimo         .+$/m, "  mimo         <detect>")
+    .replace(/^  minimax      .+$/m, "  minimax      <detect>")
     .replace(/\nWarnings\n(?:  .+\n?)*(?:\n)?/g, "\n");
 }
 

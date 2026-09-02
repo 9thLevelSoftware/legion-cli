@@ -80,6 +80,12 @@ export const IntentAnswersFileSchema = z.object({
 });
 export type IntentAnswersFile = z.infer<typeof IntentAnswersFileSchema>;
 
+export const ExtraAdapterConfigSchema = z.object({
+  binary: z.string().min(1).optional(),
+  args: z.array(z.string()).optional(),
+});
+export type ExtraAdapterConfig = z.infer<typeof ExtraAdapterConfigSchema>;
+
 export const LegionConfigSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.config),
   adapter: z
@@ -96,6 +102,11 @@ export const LegionConfigSchema = z.object({
           args: z.array(z.string()),
         })
         .optional(),
+      grok: ExtraAdapterConfigSchema.optional(),
+      openai: ExtraAdapterConfigSchema.optional(),
+      codex: ExtraAdapterConfigSchema.optional(),
+      mimo: ExtraAdapterConfigSchema.optional(),
+      minimax: ExtraAdapterConfigSchema.optional(),
     })
     .refine((adapter) => adapter.default !== "generic" || adapter.generic !== undefined, {
       message: "adapter.generic is required when adapter.default is generic",

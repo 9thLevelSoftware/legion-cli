@@ -1,4 +1,4 @@
 phase: uninitialized
 Next up: start a product in this folder.
-Run:  legion-cli init --name <product> --adapter claude|generic|fake
+Run:  legion-cli init --name <product> --adapter claude|generic|fake|grok|openai|codex|mimo|minimax
 Supported command: pnpm exec legion-cli

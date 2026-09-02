@@ -131,12 +131,18 @@ test("filterSpawnEnv keeps allowlisted keys and inherits SSH_AUTH_SOCK", () => {
     HOME: "/home/u",
     SECRET: "nope",
     CLAUDE_API_KEY: "k",
+    GROK_API_KEY: "g",
+    OPENAI_API_KEY: "o",
+    MINIMAX_API_KEY: "m",
     SSH_AUTH_SOCK: "/tmp/ssh",
     TERM: "xterm",
   });
   assert.equal(filtered.PATH, "/bin");
   assert.equal(filtered.HOME, "/home/u");
   assert.equal(filtered.CLAUDE_API_KEY, "k");
+  assert.equal(filtered.GROK_API_KEY, "g");
+  assert.equal(filtered.OPENAI_API_KEY, "o");
+  assert.equal(filtered.MINIMAX_API_KEY, "m");
   assert.equal(filtered.SSH_AUTH_SOCK, "/tmp/ssh");
   assert.equal(filtered.TERM, "xterm");
   assert.equal(filtered.SECRET, undefined);
@@ -153,7 +159,7 @@ function extraShim(id, script) {
   });
 }
 
-test("grok and codex conformance: pointer prompt after skill staging copy", async () => {
+test("extra adapters conformance: pointer prompt after skill staging copy", async () => {
   for (const id of EXTRA_ADAPTER_IDS) {
     await withTempDir(async (dir) => {
       const runId = `run-${id}`;
@@ -177,7 +183,7 @@ test("grok and codex conformance: pointer prompt after skill staging copy", asyn
   }
 });
 
-test("grok and codex process-group abort kills the spawn tree", async () => {
+test("extra adapters process-group abort kills the spawn tree", async () => {
   for (const id of EXTRA_ADAPTER_IDS) {
     await withTempDir(async (dir) => {
       const { job } = await setupRun(dir, { runId: `abort-${id}`, timeoutMs: 20_000 });
