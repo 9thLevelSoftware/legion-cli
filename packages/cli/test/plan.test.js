@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import { normalize, runCli, withTempDir } from "./helpers.js";
+import { normalize, runCli, withNamedAdapter, withTempDir, withUnspawnableGrok } from "./helpers.js";
 
 function makeTask(overrides = {}) {
   const { contract, ...rest } = overrides;
@@ -185,4 +185,211 @@ test("task amend updates filesAllowed", async () => {
     const task = (await engine.store.readTask("TSK-0001")).data;
     assert.deepEqual(task.contract.filesAllowed, ["src/in-out.ts"]);
   });
+});
+
+test("plan --adapter grok refuses via cli when grok is unspawnable", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedFrozen(dir);
+    await engine.store.writeConfig(withUnspawnableGrok(await engine.store.readConfig()));
+    const result = runCli(["plan", "--adapter", "grok", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /spawnable adapter \(grok, via cli\)/);
+  });
+});
+
+test("plan --adapter bogus refuses", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    const result = runCli(["plan", "--adapter", "bogus", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /adapter must be/);
+  });
+});
+
+test("next prints raw Task.adapter when set", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const engine = createLegionEngine(dir);
+    const doc = await engine.store.readTask("TSK-0001");
+    await engine.store.writeTask({ ...doc.data, adapter: "grok" }, doc.body);
+    const result = runCli(["next", "--project", dir]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(normalize(result.stdout), /TSK-0001  in\/out button  P0  grok/);
+  });
+});
+
+test("next omits adapter when Task.adapter is unset even if routes.execute is set", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedFrozen(dir);
+    const config = await engine.store.readConfig();
+    await engine.store.writeConfig({
+      ...config,
+      adapter: { ...config.adapter, routes: { execute: "grok" } },
+    });
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["next", "--project", dir]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(normalize(result.stdout), /TSK-0001  in\/out button  P0/);
+    assert.doesNotMatch(normalize(result.stdout), /grok/);
+  });
+});
+
+test("task amend --adapter persists Task.adapter", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["task", "amend", "TSK-0001", "--adapter", "grok", "--project", dir]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const engine = createLegionEngine(dir);
+    assert.equal((await engine.store.readTask("TSK-0001")).data.adapter, "grok");
+  });
+});
+
+test("task amend --route expands named adapter at write", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedFrozen(dir);
+    await engine.store.writeConfig(withNamedAdapter(await engine.store.readConfig(), "ui", "grok"));
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["task", "amend", "TSK-0001", "--route", "ui", "--project", dir]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal((await engine.store.readTask("TSK-0001")).data.adapter, "grok");
+  });
+});
+
+test("task amend --adapter wins over unused bad --route", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli([
+      "task",
+      "amend",
+      "TSK-0001",
+      "--adapter",
+      "grok",
+      "--route",
+      "nope",
+      "--project",
+      dir,
+    ]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const engine = createLegionEngine(dir);
+    assert.equal((await engine.store.readTask("TSK-0001")).data.adapter, "grok");
+  });
+});
+
+test("task amend --route constructor refuses inherited prototype keys", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedFrozen(dir);
+    await engine.store.writeConfig(withNamedAdapter(await engine.store.readConfig(), "ui", "grok"));
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["task", "amend", "TSK-0001", "--route", "constructor", "--project", dir]);
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /unknown named route constructor/);
+  });
+});
+
+test("task amend --route unknown refuses before write", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["task", "amend", "TSK-0001", "--route", "ui", "--project", dir]);
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /unknown named route ui/);
+    const engine = createLegionEngine(dir);
+    assert.equal((await engine.store.readTask("TSK-0001")).data.adapter, undefined);
+  });
+});
+
+test("task amend --clear-adapter omits Task.adapter", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    runCli(["task", "amend", "TSK-0001", "--adapter", "grok", "--project", dir]);
+    const result = runCli(["task", "amend", "TSK-0001", "--clear-adapter", "--project", dir]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const engine = createLegionEngine(dir);
+    assert.equal((await engine.store.readTask("TSK-0001")).data.adapter, undefined);
+  });
+});
+
+test("task amend --adapter bogus refuses", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["task", "amend", "TSK-0001", "--adapter", "bogus", "--project", dir]);
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /adapter must be/);
+  });
+});
+
+test("task amend --clear-adapter is exclusive with --adapter", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli([
+      "task",
+      "amend",
+      "TSK-0001",
+      "--clear-adapter",
+      "--adapter",
+      "grok",
+      "--project",
+      dir,
+    ]);
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /--clear-adapter cannot be combined/);
+  });
+});
+
+test("ticket create --adapter persists on the new ticket", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli([
+      "ticket",
+      "create",
+      "--project",
+      dir,
+      "--title",
+      "parked extra",
+      "--adapter",
+      "codex",
+    ]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const engine = createLegionEngine(dir);
+    assert.equal((await engine.store.readTask("TSK-0002")).data.adapter, "codex");
+  });
+});
+
+test("ticket create --route expands named adapter at write", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedFrozen(dir);
+    await engine.store.writeConfig(withNamedAdapter(await engine.store.readConfig(), "ui", "grok"));
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli([
+      "ticket",
+      "create",
+      "--project",
+      dir,
+      "--title",
+      "parked extra",
+      "--route",
+      "ui",
+    ]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal((await engine.store.readTask("TSK-0002")).data.adapter, "grok");
+  });
+});
+
+test("help lists plan adapter flag", () => {
+  const result = runCli(["help", "plan"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(normalize(result.stdout), /--adapter/);
+  const all = runCli(["help", "--all"]);
+  assert.match(normalize(all.stdout), /plan[\s\S]*--adapter/);
 });

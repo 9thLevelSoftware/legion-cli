@@ -133,6 +133,52 @@ test("search excludes untrusted bodies unless include-untrusted", async () => {
   });
 });
 
+test("renderSessionBrief suffixes raw currentTask.adapter when set", () => {
+  const brief = assembleSessionBrief({
+    project: { name: "Checkin", mode: "greenfield", controlMode: "guarded" },
+    phase: "executing",
+    currentTask: { id: "TSK-0100", title: "settings screen", adapter: "grok" },
+    blockers: [],
+    decisions: [],
+    wiki: [],
+  });
+  assert.match(renderSessionBrief(brief), /Current task: TSK-0100 settings screen \(grok\)/);
+});
+
+test("renderSessionBrief omits adapter when currentTask.adapter is unset", () => {
+  const brief = assembleSessionBrief({
+    project: { name: "Checkin", mode: "greenfield", controlMode: "guarded" },
+    phase: "executing",
+    currentTask: { id: "TSK-0100", title: "settings screen" },
+    blockers: [],
+    decisions: [],
+    wiki: [],
+  });
+  const rendered = renderSessionBrief(brief);
+  assert.match(rendered, /Current task: TSK-0100 settings screen$/m);
+  assert.doesNotMatch(rendered, /Current task: TSK-0100 settings screen \(/);
+});
+
+test("buildSessionBrief copies raw Task.adapter onto currentTask", async () => {
+  await withStore(async ({ store }) => {
+    const doc = await store.readTask("TSK-0002");
+    await store.writeTask({ ...doc.data, adapter: "grok" }, doc.body);
+    const brief = await buildSessionBrief(store);
+    assert.equal(brief.currentTask?.adapter, "grok");
+    assert.match(renderSessionBrief(brief), /Current task: TSK-0002 in\/out button \(grok\)/);
+  });
+});
+
+test("buildSessionBrief omits currentTask.adapter when Task.adapter is unset", async () => {
+  await withStore(async ({ store }) => {
+    const brief = await buildSessionBrief(store);
+    assert.equal(brief.currentTask?.adapter, undefined);
+    const rendered = renderSessionBrief(brief);
+    assert.match(rendered, /Current task: TSK-0002 in\/out button$/m);
+    assert.doesNotMatch(rendered, /Current task: TSK-0002 in\/out button \(/);
+  });
+});
+
 test("SessionBrief drops wiki summaries to stay under 24k characters", () => {
   const long = "x".repeat(3000);
   const wiki = Array.from({ length: 12 }, (_, i) => ({

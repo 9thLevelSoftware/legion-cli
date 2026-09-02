@@ -1,4 +1,5 @@
 import { createLegionEngine, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
+import { resolvePersistAdapter } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 
@@ -8,6 +9,8 @@ export type TicketCreateFlags = {
   fromAgent?: boolean;
   type?: string;
   priority?: string;
+  adapter?: string;
+  route?: string;
 };
 
 export async function runTicketCreate(opts: CliOpts, flags: TicketCreateFlags): Promise<number> {
@@ -19,12 +22,14 @@ export async function runTicketCreate(opts: CliOpts, flags: TicketCreateFlags): 
   const priority =
     flags.priority === "P0" || flags.priority === "P1" || flags.priority === "P2" ? flags.priority : undefined;
   const engine = createLegionEngine(opts.project);
+  const persisted = resolvePersistAdapter(await engine.store.readConfig(), flags);
   const ticket = await engine.fileTicket({
     title,
     parentId: flags.parent,
     fromAgent: Boolean(flags.fromAgent),
     type,
     priority,
+    ...(persisted.adapter ? { adapter: persisted.adapter } : {}),
   });
   if (opts.json) {
     writeJson({

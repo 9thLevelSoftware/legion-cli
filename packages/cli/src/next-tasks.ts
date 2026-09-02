@@ -1,6 +1,7 @@
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
+import { formatReadyTaskLine } from "./next.js";
 
 export async function runNextTasks(opts: CliOpts): Promise<number> {
   const engine = createLegionEngine(opts.project);
@@ -12,6 +13,7 @@ export async function runNextTasks(opts: CliOpts): Promise<number> {
         title: task.title,
         priority: task.priority,
         status: task.status,
+        ...(task.adapter ? { adapter: task.adapter } : {}),
       })),
       next: ready[0] ? `legion-cli execute ${ready[0].id}` : "legion-cli status --blockers",
     });
@@ -24,7 +26,7 @@ export async function runNextTasks(opts: CliOpts): Promise<number> {
   }
   writeOut("Ready:");
   for (const task of ready) {
-    writeOut(`  ${task.id}  ${task.title}  ${task.priority}`);
+    writeOut(formatReadyTaskLine(task));
   }
   writeOut(`Run:  legion-cli execute ${ready[0].id}`);
   return 0;

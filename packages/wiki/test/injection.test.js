@@ -36,6 +36,8 @@ test("golden injection: ingest stays untrusted, brief omits body, spawn wraps, F
     assert.doesNotMatch(rendered, /Ignore previous instructions/);
     assert.doesNotMatch(rendered, /id_rsa/);
     assert.doesNotMatch(rendered, /pre-commit/);
+    assert.match(rendered, /Current task: TSK-0002 in\/out button$/m);
+    assert.doesNotMatch(rendered, /Current task: TSK-0002 in\/out button \(/);
 
     const spawnPrompt = renderExecutePromptWithUntrusted({
       pointerPrompt: "Read prompt.md",

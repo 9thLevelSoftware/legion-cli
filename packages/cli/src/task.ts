@@ -1,4 +1,5 @@
 import { createLegionEngine, HINT, refuse, type FileContract } from "@9thlevelsoftware/legion-cli-core";
+import { resolvePersistAdapter } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 
@@ -9,6 +10,9 @@ export type TaskAmendFlags = {
   blockedBy?: string[];
   blocks?: string[];
   allowDeps?: boolean;
+  adapter?: string;
+  route?: string;
+  clearAdapter?: boolean;
 };
 
 function splitList(values: string[] | undefined): string[] | undefined {
@@ -22,6 +26,7 @@ export async function runTaskAmend(opts: CliOpts, id: string, flags: TaskAmendFl
   }
   const engine = createLegionEngine(opts.project);
   const doc = await engine.store.readTask(id);
+  const persisted = resolvePersistAdapter(await engine.store.readConfig(), flags);
   const filesAllowed = splitList(flags.filesAllowed) ?? doc.data.contract.filesAllowed;
   const verificationCommands = splitList(flags.verificationCommands) ?? doc.data.contract.verificationCommands;
   const expectedArtifacts = splitList(flags.expectedArtifacts) ?? doc.data.contract.expectedArtifacts;
@@ -35,6 +40,7 @@ export async function runTaskAmend(opts: CliOpts, id: string, flags: TaskAmendFl
     allowDeps: Boolean(flags.allowDeps),
     blockedBy: splitList(flags.blockedBy),
     blocks: splitList(flags.blocks),
+    ...persisted,
   });
   if (opts.json) {
     writeJson({ ok: true, id, next: "legion-cli next" });
