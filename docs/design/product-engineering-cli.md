@@ -5,7 +5,7 @@
 | **Title** | Legion CLI: a CLI-owned product development lifecycle engine |
 | **Author** | Systems Architecture (founding draft) |
 | **Date** | 2026-09-01 |
-| **Status** | Draft (rev 8 — product name Legion CLI) |
+| **Status** | Draft (rev 9 — KD5 extras spawnable; adapter routing) |
 | **Product** | **Legion CLI** (binary: `legion-cli`, npm: `@9thlevelsoftware/legion-cli`) |
 | **Audience** | Senior engineers implementing v0/v1; product leads reviewing scope |
 | **Workspace** | `D:\product-engineer-helper` (greenfield; no existing code, package.json, or ADRs) |
@@ -36,7 +36,7 @@ These are the defaults this document commits to. Former open questions are recor
 | KD2 | **Language / toolchain** | TypeScript on Node.js 22+, pnpm workspaces, ESM | MCP SDK and a future WebMCP page host are first-class in JS/TS. One language for CLI, engine, and dashboard. |
 | KD3 | **CLI framework** | Commander | Subcommands map 1:1 to lifecycle verbs a non-coder can read. |
 | KD4 | **Persistence** | Git-reviewed markdown under `.legion-cli/` plus a derived, gitignored SQLite index | Humans and git review the wiki, specs, and tasks. SQLite is a cache. Rebuild with `legion-cli index rebuild`. Single-writer lock on `.legion-cli/index/engine.lock`. **Ingest auto-commits** wiki pages on success (`--no-commit` to skip). **Execute does not auto-commit.** `legion-cli ship` stages and shows the diff. |
-| KD5 | **Agents (v0)** | Spawn installed CLIs. Available: `claude` + `fake` + `generic`. `grok` / `codex` detect-only until v1. **No product-default adapter** — `adapter.default` is required in `.legion-cli/config.yaml`. | User always chooses. Doctor fails if `adapter.default` is missing or that adapter is not spawnable. |
+| KD5 | **Agents (v0)** | Spawn installed CLIs. Available: `claude` + `fake` + `generic` plus extras `grok` / `openai` / `codex` / `mimo` / `minimax`. Extras are **spawnable** (`DETECT_ONLY_ADAPTER_IDS` is empty; `ExtraAdapter` generic-style argv). `openai` is an **alias id** for the Codex CLI (assumed binary `codex`); prefer `codex` in named examples and human docs. **No product-default adapter** — `adapter.default` is required in `.legion-cli/config.yaml`. Spawn routing: CLI `--adapter` > `Task.adapter` (execute/verify) > `adapter.routes[skillId]` > `adapter.default`. Model pin is argv-only (`claude.extraArgs` / `adapter.<id>.args`). The adapter object is `.strict()` so `apiKey` / `apiBase` / `model` / `provider` fail parse. | User always chooses. Doctor fails if `adapter.default` is missing or that adapter is not spawnable, and fail-closed on required-skill routes (`plan` / `execute` / `review`). Details: [`docs/design/adapter-routing.md`](adapter-routing.md). |
 | KD6 | **Dashboard (v0)** | Loopback HTTP **viewer** on `127.0.0.1` (GET + SSE only). MCP Apps and WebMCP are v1, flags default off. | WebMCP is a W3C CG draft (26 Aug 2026), not a Standard. The viewer exists so non-coders can see path/timeline/task; they still run CLI verbs. |
 | KD7 | **Write isolation** | Code writes: only spawned agent CLIs under a `FileContract` (after-the-fact revert, **not** OS isolation). State writes: **CLI only in v0**. MCP (v1): read-only tools. WebMCP (v1): page UI only. Dashboard: no POSTs in v0. | Legion CLI policy, plus CodeAlmanac `serve` as the read-only-viewer prior art. beads-mcp is **not** read-only (it has `init`/`create`); do not cite it for write isolation. |
 | KD8 | **Lifecycle** | Product phase ≠ task status. Slice = all tasks with `specId === activeSpecId` (no human subset in v0). CONCERNS is `lastReadiness` on `plan_ready`, not a phase. Stay in `executing` until every slice task is `done` or `blocked`. `lastReview: PASS` only when the review spawn created zero new tasks. | QA/ship are spec gates. `legion-cli review` then `legion-cli qa` from slice-terminal `executing`. |
@@ -577,7 +577,7 @@ Extra work: spawn must stop expanding; the engine files `legion-cli ticket creat
 
 ```ts
 // packages/agents/src/types.ts
-export type AdapterId = "fake" | "generic" | "claude" | "grok" | "codex";
+export type AdapterId = "fake" | "generic" | "claude" | "grok" | "openai" | "codex" | "mimo" | "minimax";
 
 export interface AgentAdapter {
   id: AdapterId;
@@ -653,12 +653,17 @@ When finished, write a short summary to .legion-cli/cache/runs/<id>/summary.md
 | `fake` | (in-process) | n/a | n/a | Reads SKILL.md, writes `expectedArtifacts` from the fixture | n/a |
 | `claude` | `claude` / `claude.cmd` | `["-p", "--output-format", "json", pointerPrompt]` | Allowlist below | **Legion CLI staging only.** Do not rely on Claude Code auto-discovery. | Process group |
 | `generic` | `config.yaml adapter.generic.binary` | `adapter.generic.args` with `{{pointer}}` substituted | Allowlist | Staging dir in prompt | Process group |
-| `grok` | `grok` if present | **detect-only in v0**; `spawn` throws `AdapterNotEnabled` | — | — | — |
-| `codex` | `codex` if present | **detect-only in v0**; same throw | — | — | — |
+| `grok` | `grok` (override `adapter.grok.binary`) | generic-style `adapter.grok.args` with `{{pointer}}` (default `["{{pointer}}"]`) | Allowlist | Staging dir in prompt | Process group |
+| `openai` | `codex` — **alias id** for the Codex CLI (override `adapter.openai.binary`) | same generic-style `adapter.openai.args` | Allowlist | Staging dir in prompt | Process group |
+| `codex` | `codex` | same generic-style `adapter.codex.args` | Allowlist | Staging dir in prompt | Process group |
+| `mimo` | `mimo` | same generic-style `adapter.mimo.args` | Allowlist | Staging dir in prompt | Process group |
+| `minimax` | `mcode` (override `adapter.minimax.binary`) | same generic-style `adapter.minimax.args` | Allowlist | Staging dir in prompt | Process group |
 
 `claude` permission flags: v0 does **not** pass `--dangerously-skip-permissions`. If the vendor CLI blocks on a TTY permission prompt, execute is interactive (user present). Optional config `adapter.claude.extraArgs: []` is the escape hatch; extra args are printed by `doctor` as a trust warning.
 
-Env allowlist (plus the existing user environment’s `PATH`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `ComSpec`): `CLAUDE_API_KEY` (if already set — Legion CLI never writes it), `TERM`. Do not pass `SSH_AUTH_SOCK` into a widened env; inherit by default from the user process (laptop trust model).
+Extras are **spawnable** via `ExtraAdapter` (`packages/agents/src/adapters/extra.ts`). `DETECT_ONLY_ADAPTER_IDS` is empty; `AdapterNotEnabled` is a dead path. Vendor flags stay generic-style until verified. `openai` and `codex` share assumed binary `codex` (`ASSUMED_EXTRA_BINARIES`); routing TSK-A → `openai` and TSK-B → `codex` is a no-op unless `adapter.openai.binary` / `args` differ. Prefer `codex` in `adapter.named` examples and human docs. Doctor still lists both ids.
+
+Env allowlist (plus the existing user environment’s `PATH`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `ComSpec`): `CLAUDE_API_KEY`, `GROK_API_KEY`, `XAI_API_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY` (inherit-if-set — Legion CLI never writes them), `TERM`. Do not pass `SSH_AUTH_SOCK` into a widened env; inherit by default from the user process (laptop trust model).
 
 Timeout: 20 minutes. Abort:
 
@@ -666,19 +671,41 @@ Timeout: 20 minutes. Abort:
 2. Windows: `taskkill /PID <pid> /T` then `/F` after 5s.
 3. This is **not** “kill spawn” on a contract violation mid-write. Contract enforcement runs **after** `wait()`. Abort is for timeout and Ctrl+C.
 
-`config.yaml` generic schema:
+`config.yaml` adapter schema (`legion-cli-config/v1`; adapter object is **`.strict()`**):
 
 ```yaml
 adapter:
-  default: claude          # REQUIRED. User-set. One of: claude | generic | fake
+  default: claude          # REQUIRED. User-set. One of: claude | generic | fake | grok | openai | codex | mimo | minimax
+  routes:                  # optional skill-level policy
+    plan: grok
+    execute: claude
+    review: grok
+  named:                   # write-time aliases only; spawn never looks these up
+    ui: grok
+    api: codex             # prefer codex, not openai
+  claude:
+    extraArgs: ["--model", "opus"]    # argv only; doctor trust-warns
+  grok:
+    args: ["--model", "grok-4", "{{pointer}}"]
   generic:
-    binary: claude         # only used when default: generic
+    binary: claude         # required when default or any routes/named target is generic
     args: ["-p", "--output-format", "json", "{{pointer}}"]
 ```
 
 There is no product-wide default: `legion-cli init` writes `adapter.default` as a commented placeholder and `legion-cli doctor` fails until the user sets it.
 
-Legion CLI does not call vendor HTTP APIs. Auth is whatever the installed CLI already uses.
+**Spawn routing** (`resolveAdapterId` in `packages/agents/src/resolve.ts`). Yields an existing `AdapterId`, then the current `createAdapter` / `detect` / `spawn` path. Precedence:
+
+1. CLI `--adapter` on `plan` / `execute` / `review` / `verify` / `fix` (one-shot; does not write `Task.adapter` or `adapter.default`)
+2. `Task.adapter` — execute and verify only (task in scope)
+3. `adapter.routes[skillId]`
+4. `adapter.default` (required fallback; never invent an id)
+
+`adapter.named` expands at **write** time in the CLI (`task amend --route ui` writes `adapter: grok`). Spawn does not consult named keys.
+
+**Model stays argv.** There is no `model`, `provider`, `apiKey`, or `apiBase` field on `LegionConfig` or `Task`. Pin a model with `adapter.claude.extraArgs` or extra/generic `args` (must keep `{{pointer}}` or `detect()` fails). The adapter object is `.strict()` so those HTTP-router keys **fail config parse** instead of stripping. Task schema stays strip-unknown except the optional `adapter` enum.
+
+Legion CLI does not call vendor HTTP APIs. Auth is whatever the installed CLI already uses. Full routing contract: [`docs/design/adapter-routing.md`](adapter-routing.md).
 
 #### 5.2 Spawn lifecycle and revert (not OS isolation)
 
@@ -1090,7 +1117,7 @@ Global flags: `--project <dir>`, `--json`, `--yes` (non-gate confirms only), `--
 | `legion-cli abandon` | Stop this spec without shipping | `--message` |
 | `legion-cli help` | Commands | `--all` |
 
-`legion-cli doctor` prints: Node, pnpm, git, every `legion-cli`/`legion-cli.cmd`/`legion-cli.exe` on PATH (`where`/`command -v`), Playwright (`pnpm exec playwright --version` if present), lockfile presence, schemaVersions, and the adapter matrix. **`adapter.default` is required** in `.legion-cli/config.yaml` (no product default). **Spawnable** means the configured adapter can run: `claude` detect+spawn, or `generic` with `adapter.generic.binary` on PATH, or `fake` when `LEGION_CLI_ADAPTER=fake` (tests). Doctor **fails** if `adapter.default` is missing or that adapter is not spawnable. Doctor **warns** if the configured binary is missing from PATH. `grok`/`codex` remain detect-only in v0.
+`legion-cli doctor` prints: Node, pnpm, git, every `legion-cli`/`legion-cli.cmd`/`legion-cli.exe` on PATH (`where`/`command -v`), Playwright (`pnpm exec playwright --version` if present), lockfile presence, schemaVersions, and the adapter matrix. **`adapter.default` is required** in `.legion-cli/config.yaml` (no product default). **Spawnable** means `resolveAdapter(config, { id })` then `detect()`: `claude` detect+spawn, extras (`grok` / `openai` / `codex` / `mimo` / `minimax`) with `{{pointer}}` in args and the assumed binary on PATH, `generic` with `adapter.generic.binary` on PATH, or `fake` when `LEGION_CLI_ADAPTER=fake` (tests). Doctor **fails** if `adapter.default` is missing or that adapter is not spawnable, and fail-closed on **required-skill routes** (`adapter.routes.plan` / `execute` / `review`) via the same `isResolvedAdapterSpawnable` path — never PATH-only and never bare `createAdapter(id)`. Doctor **warns** on optional-skill routes, `adapter.named` targets, parseable active-slice `Task.adapter` that is not spawnable, extra/generic `args` that are not the frozen default, and a configured binary missing from PATH. The informational PATH matrix still lists every id, including both `openai` and `codex`. Adapter-object HTTP-router keys (`apiKey` / `apiBase` / `model` / `provider`) fail config parse (`.strict()`), so doctor never sees them.
 
 ### v1 commands
 
@@ -1694,6 +1721,7 @@ No remaining open questions.
 - Legion `skills/design-workflows/SKILL.md`
 - Row-Bot Designer Studio — research-only for overflow/CSS-variable list
 - Internal research report: `wf_01a05d7d285b7213a7d1440e7f04d13f/scratch/report.md` (status Partial; 24/24 claims verified; mashup unproven)
+- Adapter routing RFC: [`docs/design/adapter-routing.md`](adapter-routing.md) — spawn-CLI routing (not an HTTP model router); `openai` alias for Codex CLI
 
 ---
 
@@ -1737,7 +1765,7 @@ Incremental, independently reviewable PRs from an empty repo. **PR-01–PR-16 ar
 
 - **Files/components:** `packages/agents/**`, frozen argv table, process-group abort, skill staging copy, `AgentResult`
 - **Depends on:** PR-05
-- **Description:** `grok`/`codex` detect-only. No product-default adapter. `fake` writes expected artifacts for tests. Conformance: detect matrix + spawn pointer prompt.
+- **Description:** `claude` + `generic` + `fake` spawnable. No product-default adapter. `fake` writes expected artifacts for tests. Conformance: detect matrix + spawn pointer prompt. Extra adapters land spawnable in PR-23 (not detect-only).
 
 ### PR-07 — Interview, discuss, spec freeze (question bank + optional spawn)
 
@@ -1841,7 +1869,7 @@ Incremental, independently reviewable PRs from an empty repo. **PR-01–PR-16 ar
 
 - **Files/components:** `packages/agents` argv tables once binaries are verified
 - **Depends on:** PR-06
-- **Description:** Unlocks KD5 detect-only adapters.
+- **Description:** Unlocks KD5 extras as **spawnable** (`ExtraAdapter`, generic-style argv; `DETECT_ONLY_ADAPTER_IDS` stays empty). `openai` is an alias id for the Codex CLI (assumed binary `codex`); also `mimo` / `minimax` (`mcode`). Per-task / per-skill spawn routing: [`docs/design/adapter-routing.md`](adapter-routing.md).
 
 ### PR-24 — Optional dashboard write surface
 
