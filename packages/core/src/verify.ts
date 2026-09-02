@@ -25,11 +25,15 @@ export function runVerificationCommands(cwd: string, commands: readonly string[]
     if (argv.length === 0) {
       throw new Error("verificationCommands entry is empty (engine bug)");
     }
+    const env = { ...process.env };
+    // Nested `node --test` inherits this and exits 0 without running the file.
+    delete env.NODE_TEST_CONTEXT;
     const result = spawnSync(argv[0], argv.slice(1), {
       cwd,
       encoding: "utf8",
       windowsHide: true,
       shell: false,
+      env,
     });
     if (result.error) {
       const code = (result.error as NodeJS.ErrnoException).code;

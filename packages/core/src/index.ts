@@ -27,6 +27,17 @@ export {
   splitMustNotAndOutOfScope,
 } from "./intent.js";
 export { HEAD_MOVED_WARNING, revertExtras } from "./revert.js";
+export {
+  ensureRegressionTest,
+  fixFilesAllowed,
+  LIKELY_PRODUCT_PATHS,
+  PRODUCT_ENTRY,
+  productSourcePaths,
+  regressionSlug,
+  regressionTestPath,
+  regressionTestSource,
+  regressionVerifyCommand,
+} from "./fix.js";
 export { runVerificationCommands, splitCommand } from "./verify.js";
 export { findSkillsDir, optionalSkillSpawn } from "./spawn.js";
 export { WIREFRAME_PALETTE, palettePresent, uniqueScreenPages } from "./wireframes.js";

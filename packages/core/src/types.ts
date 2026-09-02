@@ -56,8 +56,8 @@ export type InitOptions = {
 export type QaOptions = {
   mode?: "full" | "no-browser";
   allowDegraded?: boolean;
-  /** Injected until @9thlevelsoftware/legion-cli-qa exists. */
-  score: QAScore;
+  /** Test seam: skip the in-process runner and persist this score. */
+  score?: QAScore;
 };
 
 export type ShipOptions = {

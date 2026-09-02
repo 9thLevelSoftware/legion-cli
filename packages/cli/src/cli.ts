@@ -9,6 +9,7 @@ import { runDashboard } from "./dashboard.js";
 import { runDiscuss } from "./discuss.js";
 import { runDoctor } from "./doctor.js";
 import { runExecute } from "./execute.js";
+import { runFix } from "./fix.js";
 import { printHelpAll } from "./help-all.js";
 import { runIngest } from "./ingest.js";
 import { runInit } from "./init.js";
@@ -23,6 +24,7 @@ import {
 import { runMcp } from "./mcp.js";
 import { runNextTasks } from "./next-tasks.js";
 import { runPlan } from "./plan.js";
+import { runQa, runQaChecklist } from "./qa.js";
 import { runReview } from "./review.js";
 import { runSearch } from "./search.js";
 import { runShow } from "./show.js";
@@ -264,6 +266,32 @@ export function createProgram(): Command {
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
       const code = await runReview(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  const qa = addGlobalOptions(program.command("qa").description("Score the product (when the slice is done)"))
+    .option("--mode <mode>", "full | no-browser")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { mode?: string };
+      const code = await runQa(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(qa.command("checklist").description("Tick AC items when no browser"))
+    .option("--tick <ids...>", "acceptance criterion ids to tick")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { tick?: string[] };
+      const code = await runQaChecklist(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("fix").description("Test first (must stay RED), then fix"))
+    .argument("<bug...>", "bug to reproduce then fix")
+    .allowExcessArguments(false)
+    .action(async (bug: string[], _opts, cmd: Command) => {
+      const code = await runFix(resolveOpts(cmd), bug.join(" "));
       process.exitCode = code;
     });
 

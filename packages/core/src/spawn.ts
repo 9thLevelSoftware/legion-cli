@@ -19,6 +19,7 @@ import { HINT, refuse } from "./errors.js";
 import {
   recordPreSpawnRef,
   revertExtras,
+  snapshotDirtyPaths,
   snapshotGitPolicy,
   snapshotPaths,
   type RevertResult,
@@ -138,6 +139,7 @@ export async function optionalSkillSpawn(opts: {
   });
   const preSpawnRef = recordPreSpawnRef(opts.projectRoot);
   const snapshot = preSpawnRef ? undefined : await snapshotPaths(opts.projectRoot);
+  const dirtyAtStart = snapshotDirtyPaths(opts.projectRoot, preSpawnRef);
   const gitPolicy = await snapshotGitPolicy(opts.projectRoot);
   const resumeDir = join(opts.projectRoot, ".legion-cli", "cache", "runs", runId);
   await mkdir(resumeDir, { recursive: true });
@@ -188,6 +190,7 @@ export async function optionalSkillSpawn(opts: {
       filesForbidden: opts.filesForbidden,
       snapshot,
       gitPolicy,
+      dirtyAtStart,
     });
   }
   return { spawned: true, runId, revert, error };
