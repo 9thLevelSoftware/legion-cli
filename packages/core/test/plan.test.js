@@ -298,6 +298,15 @@ test("amendTask updates FileContract and deps require --allow-deps", async () =>
     assert.deepEqual((await store.readTask("TSK-0001")).data.contract.filesAllowed, ["src/in-out.ts"]);
     await engine.amendTask("TSK-0001", (await store.readTask("TSK-0001")).data.contract, { clearAdapter: true });
     assert.equal((await store.readTask("TSK-0001")).data.adapter, undefined);
+    const cleared = (await store.readTask("TSK-0001")).data.contract;
+    await assert.rejects(
+      () => engine.amendTask("TSK-0001", cleared, { adapter: "grok", clearAdapter: true }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /mutually exclusive/);
+        return true;
+      },
+    );
     await assert.rejects(
       () =>
         engine.amendTask("TSK-0002", {

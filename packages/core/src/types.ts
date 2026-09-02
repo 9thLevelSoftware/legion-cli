@@ -206,6 +206,7 @@ export type AmendTaskOptions = {
   blockedBy?: string[];
   blocks?: string[];
   adapter?: AdapterId;
+  /** Mutually exclusive with `adapter`. */
   clearAdapter?: boolean;
 };
 

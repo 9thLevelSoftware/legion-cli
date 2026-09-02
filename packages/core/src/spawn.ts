@@ -23,7 +23,6 @@ import {
   type LegionConfig,
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
-import { redactSecrets } from "@9thlevelsoftware/legion-cli-persist";
 import { skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
 import {
@@ -44,6 +43,14 @@ function skillMissingHint(skillId: SkillId): string {
 
 export function spawnableAdapterRefuseMessage(skillId: SkillId, resolution: AdapterResolution): string {
   return `${skillId} needs a spawnable adapter (${resolution.id}, via ${resolution.source})`;
+}
+
+/** Persist flag names and {{pointer}} only — never raw argv values (credentials). */
+export function argvSummarySafe(argv: readonly string[]): string {
+  return argv
+    .map((arg) => (arg.startsWith("-") || arg.includes("{{pointer}}") ? arg : "<redacted>"))
+    .join(" ")
+    .slice(0, 240);
 }
 
 export type OptionalSpawnResult = {
@@ -110,15 +117,21 @@ export async function optionalSkillSpawn(opts: {
     taskAdapter: opts.taskAdapter,
     cliAdapter: opts.cliAdapter,
   });
-  const tmpl = templateArgv(resolution.id, opts.config);
-  const argvSummary = redactSecrets(tmpl.argv.join(" ")).slice(0, 240);
-  const resolved = { resolution, binary: tmpl.binary, argvSummary };
 
   if (!(await isResolvedAdapterSpawnable(opts.config, resolution.id))) {
     if (opts.required) {
       refuse(spawnableAdapterRefuseMessage(opts.skillId, resolution), HINT.doctor);
     }
-    return { spawned: false, runId, revert: null, ...resolved };
+    return { spawned: false, runId, revert: null, resolution };
+  }
+
+  const skillsDir = opts.skillsDir ?? findSkillsDir();
+  const skillDir = skillsDir ? join(skillsDir, opts.skillId) : undefined;
+  if (!skillDir || !existsSync(join(skillDir, "SKILL.md"))) {
+    if (opts.required) {
+      refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
+    }
+    return { spawned: false, runId, revert: null, resolution };
   }
 
   const adapter = resolveAdapter(opts.config, {
@@ -127,15 +140,8 @@ export async function optionalSkillSpawn(opts: {
     throwAfterWrite: opts.throwAfterWrite,
     timedOut: opts.timedOut,
   });
-
-  const skillsDir = opts.skillsDir ?? findSkillsDir();
-  const skillDir = skillsDir ? join(skillsDir, opts.skillId) : undefined;
-  if (!skillDir || !existsSync(join(skillDir, "SKILL.md"))) {
-    if (opts.required) {
-      refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
-    }
-    return { spawned: false, runId, revert: null, ...resolved };
-  }
+  const tmpl = templateArgv(resolution.id, opts.config);
+  const argvSummary = argvSummarySafe(tmpl.argv);
 
   const contract = skillContract(opts.skillId, { runId, specId: opts.specId });
   const allowedRoots = [...contract.allowedRoots, ...(opts.extraAllowedRoots ?? [])];
@@ -236,5 +242,15 @@ export async function optionalSkillSpawn(opts: {
       dirtyAtStart,
     });
   }
-  return { spawned: true, runId, revert, error, timedOut, durationMs: Date.now() - started, ...resolved };
+  return {
+    spawned: true,
+    runId,
+    revert,
+    error,
+    timedOut,
+    durationMs: Date.now() - started,
+    resolution,
+    binary: tmpl.binary,
+    argvSummary,
+  };
 }

@@ -735,6 +735,9 @@ export class LegionEngine {
       if (overlaps.length > 0) {
         refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.amend);
       }
+      if (opts?.clearAdapter && opts.adapter) {
+        refuse("clearAdapter and adapter are mutually exclusive", HINT.amend);
+      }
       const adapter = opts?.clearAdapter ? undefined : (opts?.adapter ?? doc.data.adapter);
       await this.store.writeTask(
         {
