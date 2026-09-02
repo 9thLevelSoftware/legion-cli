@@ -56,7 +56,7 @@ export function titlesSimilar(a: string, b: string): boolean {
 }
 
 function pageLabels(page: WikiPageRow): string[] {
-  return [page.title, page.id, ...pageAliases(page)];
+  return [page.title, ...pageAliases(page)];
 }
 
 function pagesSimilar(a: WikiPageRow, b: WikiPageRow): boolean {
