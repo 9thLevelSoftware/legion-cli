@@ -139,15 +139,44 @@ test("filterSpawnEnv keeps allowlisted keys and inherits SSH_AUTH_SOCK", () => {
   });
   assert.equal(filtered.PATH, "/bin");
   assert.equal(filtered.HOME, "/home/u");
-  assert.equal(filtered.CLAUDE_API_KEY, "k");
-  assert.equal(filtered.GROK_API_KEY, "g");
-  assert.equal(filtered.OPENAI_API_KEY, "o");
-  assert.equal(filtered.MINIMAX_API_KEY, "m");
+  assert.equal(filtered.CLAUDE_API_KEY, undefined);
+  assert.equal(filtered.GROK_API_KEY, undefined);
+  assert.equal(filtered.OPENAI_API_KEY, undefined);
+  assert.equal(filtered.MINIMAX_API_KEY, undefined);
   assert.equal(filtered.SSH_AUTH_SOCK, "/tmp/ssh");
   assert.equal(filtered.TERM, "xterm");
   assert.equal(filtered.SECRET, undefined);
   const noSock = filterSpawnEnv({ PATH: "/bin" });
   assert.equal(noSock.SSH_AUTH_SOCK, undefined);
+});
+
+test("filterSpawnEnv scopes provider credentials to the selected adapter", () => {
+  const source = {
+    PATH: "/bin",
+    CLAUDE_API_KEY: "c",
+    GROK_API_KEY: "g",
+    XAI_API_KEY: "x",
+    OPENAI_API_KEY: "o",
+    MINIMAX_API_KEY: "m",
+    SECRET: "nope",
+  };
+  const grok = filterSpawnEnv(source, "grok");
+  assert.equal(grok.PATH, "/bin");
+  assert.equal(grok.GROK_API_KEY, "g");
+  assert.equal(grok.XAI_API_KEY, "x");
+  assert.equal(grok.OPENAI_API_KEY, undefined);
+  assert.equal(grok.CLAUDE_API_KEY, undefined);
+  assert.equal(grok.MINIMAX_API_KEY, undefined);
+  const claude = filterSpawnEnv(source, "claude");
+  assert.equal(claude.CLAUDE_API_KEY, "c");
+  assert.equal(claude.GROK_API_KEY, undefined);
+  const openai = filterSpawnEnv(source, "openai");
+  assert.equal(openai.OPENAI_API_KEY, "o");
+  assert.equal(openai.GROK_API_KEY, undefined);
+  const generic = filterSpawnEnv(source, "generic");
+  assert.equal(generic.OPENAI_API_KEY, undefined);
+  assert.equal(generic.CLAUDE_API_KEY, undefined);
+  assert.equal(generic.SECRET, undefined);
 });
 
 function extraShim(id, script) {
