@@ -259,6 +259,13 @@ export function gitPorcelainPaths(cwd: string): string[] {
   return porcelainPaths(cwd);
 }
 
+/** True when git still tracks the path (including a tracked deletion). */
+export function gitPathTracked(cwd: string, path: string): boolean {
+  if (!isGitRepo(cwd)) return false;
+  const result = runGit(cwd, ["ls-files", "--error-unmatch", "--", path]);
+  return result.status === 0;
+}
+
 export function gitAdd(cwd: string, paths: string[]): void {
   if (paths.length === 0) return;
   const add = runGit(cwd, ["add", "--", ...paths]);

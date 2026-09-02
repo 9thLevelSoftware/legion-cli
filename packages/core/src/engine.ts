@@ -948,6 +948,9 @@ export class LegionEngine {
     if ((opts.commit || opts.pr) && !isGitRepo(this.projectRoot)) {
       refuse("ship --commit/--pr requires a git repository", HINT.shipCommit);
     }
+    if (opts.pr && !opts.commit) {
+      refuse("ship --pr requires --commit", HINT.shipPrRetry);
+    }
     if (opts.pr && !opts.prCreate && !ghAvailable()) {
       refuse("gh is required for --pr", HINT.shipPr);
     }
@@ -2118,23 +2121,32 @@ export class LegionEngine {
   }
 
   async #assertCanShip(state: StateFile, opts: ShipOptions): Promise<void> {
-    if (state.phase === "ready_to_ship") {
-      // ok
-    } else if (state.phase === "executing" && opts.allowDegradedQa) {
-      // no-browser QA never sets ready_to_ship; --allow-degraded-qa is the gate
-    } else {
-      refuse("ship requires ready_to_ship (or --allow-degraded-qa)", HINT.qa);
-    }
-    const lastQa = await this.#readLastQa(state);
-    if (lastQa?.pass !== true && !opts.allowDegradedQa) {
-      refuse("ship is refused if last QA pass !== true", HINT.qa);
-    }
     if (state.lastReview !== "PASS") {
       refuse("ship is refused if spec review is not PASS", HINT.review);
     }
     const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
     if (p0TasksNotDone(slice).length > 0) {
       refuse("ship is refused if any P0 task is not done", HINT.blockers);
+    }
+    const lastQa = await this.#readLastQa(state);
+    if (lastQa?.pass === true) {
+      if (state.phase !== "ready_to_ship") {
+        refuse("ship requires ready_to_ship", HINT.qa);
+      }
+      return;
+    }
+    // Failed or missing QA: only no-browser may proceed, and only with the flag.
+    if (!opts.allowDegradedQa) {
+      refuse("ship is refused if last QA pass !== true", HINT.qa);
+    }
+    if (!lastQa) {
+      refuse("ship --allow-degraded-qa requires a no-browser QA score", HINT.qa);
+    }
+    if (lastQa.mode !== "no-browser") {
+      refuse("ship --allow-degraded-qa only applies to no-browser QA", HINT.qa);
+    }
+    if (state.phase !== "executing" && state.phase !== "ready_to_ship") {
+      refuse("ship requires ready_to_ship (or --allow-degraded-qa)", HINT.qa);
     }
   }
 
@@ -2203,23 +2215,13 @@ export class LegionEngine {
       receiptPath,
     };
 
-    await this.#writeState({
-      ...state,
-      phase: "shipped",
-      currentTaskId: null,
-    });
+    // Receipt (not STATE) first so --pr can fail while still ready_to_ship.
     await writeTextFile(toFsPath(this.projectRoot, receiptPath), shipReceiptBody(receipt));
-    await this.#audit("ship", "shipped", actor, {
-      specId,
-      qaMode,
-      qaScore,
-      qaPass,
-      allowDegradedQa,
-      receiptPath,
-    });
 
     if (isGitRepo(this.projectRoot)) {
-      gitAdd(this.projectRoot, [".legion-cli", ...preview.added.filter((path) => path !== ".legion-cli")]);
+      // Product paths were staged before confirm. Re-adding a staged deletion fails
+      // (`pathspec did not match`); only pick up receipt / .legion-cli here.
+      gitAdd(this.projectRoot, [".legion-cli"]);
       receipt.staged = gitStagedPaths(this.projectRoot);
       if (opts.commit && gitHasStaged(this.projectRoot)) {
         receipt.commitSha = gitCommitIndex(this.projectRoot, `legion-cli ship: ${specId || "spec"}`);
@@ -2238,7 +2240,34 @@ export class LegionEngine {
       const created = opts.prCreate
         ? opts.prCreate({ cwd: this.projectRoot, title, body })
         : tryCreatePullRequest(this.projectRoot, title, body);
-      if (created.url) receipt.prUrl = created.url;
+      if (created.error || !created.url) {
+        refuse(`gh pr create failed: ${created.error ?? "no pull request url"}`, HINT.shipPrRetry);
+      }
+      receipt.prUrl = created.url;
+    }
+
+    await this.#writeState({
+      ...state,
+      phase: "shipped",
+      currentTaskId: null,
+    });
+    await writeTextFile(toFsPath(this.projectRoot, receiptPath), shipReceiptBody(receipt));
+    await this.#audit("ship", "shipped", actor, {
+      specId,
+      qaMode,
+      qaScore,
+      qaPass,
+      allowDegradedQa,
+      receiptPath,
+      prUrl: receipt.prUrl ?? null,
+    });
+
+    if (isGitRepo(this.projectRoot) && opts.commit) {
+      gitAdd(this.projectRoot, [".legion-cli"]);
+      if (gitHasStaged(this.projectRoot)) {
+        receipt.commitSha = gitCommitIndex(this.projectRoot, `legion-cli ship: ${specId || "spec"}`);
+        receipt.committed = true;
+      }
     }
 
     return receipt;

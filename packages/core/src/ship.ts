@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { toFsPath, toPosixPath } from "@9thlevelsoftware/legion-cli-persist";
+import { gitPathTracked, isGitRepo, toFsPath, toPosixPath } from "@9thlevelsoftware/legion-cli-persist";
 import type { Task } from "@9thlevelsoftware/legion-cli-schema";
 
 const LEGION_PREFIX = ".legion-cli";
@@ -46,17 +46,24 @@ export function displayStagedRoots(paths: readonly string[]): string {
   return [...roots].sort().join(", ");
 }
 
-/** Paths that exist and are allowed to be staged for ship. */
+function shipPathAddable(projectRoot: string, path: string, git: boolean): boolean {
+  try {
+    if (existsSync(toFsPath(projectRoot, path))) return true;
+  } catch {
+    return false;
+  }
+  // Tracked missing paths must still be `git add`ed so deletions reach the index.
+  return git && gitPathTracked(projectRoot, path);
+}
+
+/** Existing files plus tracked deletions under the ship allowed set. */
 export function shipAddPaths(projectRoot: string, allowedFiles: readonly string[]): string[] {
+  const git = isGitRepo(projectRoot);
   const out: string[] = [];
-  if (existsSync(toFsPath(projectRoot, LEGION_PREFIX))) out.push(LEGION_PREFIX);
+  if (shipPathAddable(projectRoot, LEGION_PREFIX, git)) out.push(LEGION_PREFIX);
   for (const path of allowedFiles) {
     if (path === LEGION_PREFIX) continue;
-    try {
-      if (existsSync(toFsPath(projectRoot, path))) out.push(path);
-    } catch {
-      // skip paths that cannot be resolved inside the project
-    }
+    if (shipPathAddable(projectRoot, path, git)) out.push(path);
   }
   return out;
 }

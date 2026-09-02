@@ -28,6 +28,7 @@ export const HINT = {
   ship: "legion-cli ship",
   shipCommit: "git repository required for --commit/--pr",
   shipPr: "install GitHub CLI (gh)",
+  shipPrRetry: "legion-cli ship --pr --commit",
   abandon: "legion-cli abandon --message",
   specNew: "legion-cli spec new",
   intent: "legion-cli intent",

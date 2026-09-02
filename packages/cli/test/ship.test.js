@@ -184,6 +184,28 @@ test("abandon --message writes audit and stops the spec", async () => {
   });
 });
 
+test("ship without flags does not advertise a second legion-cli ship", async () => {
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    const result = runCli(["ship", "--project", dir, "--json"], { input: "y\n" });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /"next": "legion-cli spec new"/);
+    assert.doesNotMatch(result.stdout, /legion-cli ship --pr --commit/);
+  });
+});
+
+test("ship --pr without --commit is refused", async () => {
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    initGitRepo(dir);
+    const result = runCli(["ship", "--project", dir, "--pr"], { input: "y\n" });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(`${result.stdout}\n${result.stderr}`), /--pr requires --commit/);
+    const state = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
+    assert.match(state, /phase: ready_to_ship/);
+  });
+});
+
 test("spec new after ship starts the next increment", async () => {
   await withTempDir(async (dir) => {
     await seedReadyToShip(dir);
