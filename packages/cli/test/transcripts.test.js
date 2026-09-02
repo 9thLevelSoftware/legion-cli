@@ -311,7 +311,7 @@ for (const skill of ["plan", "execute", "review"]) {
       const out = normalize(result.stdout);
       assert.match(out, new RegExp(`FAIL  adapter.routes.${skill} spawnable \\(grok is not spawnable\\)`));
       assert.match(out, new RegExp(`^  ${skill.padEnd(13)}grok  not spawnable$`, "m"));
-      assert.match(out, /grok args are set \(trust warning\): --model grok-4/);
+      assert.match(out, /grok args are set \(trust warning\): --model <redacted>/);
       assert.match(out, /^  grok         on PATH \(/m);
       assert.match(out, /Doctor failed/);
 
@@ -349,7 +349,7 @@ test("doctor passes with trust warning when required-route extra args include {{
     });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const out = normalize(result.stdout);
-    assert.match(out, /grok args are set \(trust warning\): --model grok-4 \{\{pointer\}\}/);
+    assert.match(out, /grok args are set \(trust warning\): --model <redacted> \{\{pointer\}\}/);
     assert.match(out, /^  plan         grok  spawnable$/m);
     assert.doesNotMatch(out, /FAIL  adapter.routes/);
     assert.match(out, /Doctor passed/);

@@ -1,10 +1,9 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DEFAULT_GENERIC_ARGS, isResolvedAdapterSpawnable } from "@9thlevelsoftware/legion-cli-agents";
-import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+import { argvSummarySafe, createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import {
   readAuditEvents,
-  redactSecrets,
   summarizeAuditMetrics,
   type LocalMetrics,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -103,7 +102,20 @@ function isFrozenGenericArgs(args: readonly string[] | undefined): boolean {
 }
 
 function formatArgsTrustWarning(label: string, args: readonly string[]): string {
-  return `${label} are set (trust warning): ${redactSecrets(args.join(" "))}`;
+  return `${label} are set (trust warning): ${argvSummarySafe(args)}`;
+}
+
+function cachedSpawnable(config: LegionConfig): (id?: AdapterId) => Promise<boolean> {
+  const cache = new Map<string, Promise<boolean>>();
+  return (id) => {
+    const key = id ?? config.adapter.default;
+    let pending = cache.get(key);
+    if (!pending) {
+      pending = isResolvedAdapterSpawnable(config, id);
+      cache.set(key, pending);
+    }
+    return pending;
+  };
 }
 
 function pushArgsTrustWarnings(config: LegionConfig, warnings: string[]): void {
@@ -315,7 +327,8 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     });
   } else {
     // resolveAdapter(config) then isSpawnable — PATH-only misses per-id args/{{pointer}}.
-    spawnable = await isResolvedAdapterSpawnable(config);
+    const spawnableOf = cachedSpawnable(config);
+    spawnable = await spawnableOf(adapterDefault);
     checks.push({
       ok: true,
       label: "adapter.default",
@@ -335,10 +348,18 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     });
     pushDefaultPathWarnings(adapterDefault, config, warnings);
 
-    for (const skill of SkillIdSchema.options) {
+    const routeEntries = SkillIdSchema.options.flatMap((skill) => {
       const id = config.adapter.routes?.[skill];
-      if (!id) continue;
-      const routeSpawnable = await isResolvedAdapterSpawnable(config, id);
+      return id ? [{ skill, id }] : [];
+    });
+    const routeResults = await Promise.all(
+      routeEntries.map(async ({ skill, id }) => ({
+        skill,
+        id,
+        spawnable: await spawnableOf(id),
+      })),
+    );
+    for (const { skill, id, spawnable: routeSpawnable } of routeResults) {
       const required = isRequiredRouteSkill(skill);
       routed.push({
         id,
@@ -358,20 +379,36 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       }
     }
 
-    for (const [name, id] of Object.entries(config.adapter.named ?? {})) {
-      if (await isResolvedAdapterSpawnable(config, id)) continue;
+    const namedResults = await Promise.all(
+      Object.entries(config.adapter.named ?? {}).map(async ([name, id]) => ({
+        name,
+        id,
+        ok: await spawnableOf(id),
+      })),
+    );
+    for (const { name, id, ok } of namedResults) {
+      if (ok) continue;
       warnings.push(`adapter.named.${name} (${id}) is not spawnable`);
     }
 
     // Active spec slice only; skip unreadable files. Task.adapter is warn-only.
     try {
-      for (const task of await engine.listSliceTasks()) {
-        if (!task.adapter) continue;
-        if (await isResolvedAdapterSpawnable(config, task.adapter)) continue;
-        warnings.push(`${task.id} adapter (${task.adapter}) is not spawnable`);
+      const sliceTasks = (await engine.listSliceTasks()).filter((task) => task.adapter);
+      const taskResults = await Promise.all(
+        sliceTasks.map(async (task) => ({
+          id: task.id,
+          adapter: task.adapter as AdapterId,
+          ok: await spawnableOf(task.adapter),
+        })),
+      );
+      for (const { id, adapter, ok } of taskResults) {
+        if (ok) continue;
+        warnings.push(`${id} adapter (${adapter}) is not spawnable`);
       }
-    } catch {
-      // unreadable STATE.md / tasks dir must not crash doctor
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        warnings.push(`could not read active slice tasks: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     pushArgsTrustWarnings(config, warnings);
