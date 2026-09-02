@@ -702,12 +702,15 @@ export class LegionEngine {
       }
       const after = await this.snapshotTaskIds();
       const createdTaskIds = after.filter((id) => !before.includes(id));
+      if (createdTaskIds.length > 0) {
+        await this.#clampSpawnedTaskStatuses(createdTaskIds);
+        await this.#promoteReadyTasks(specId, "executing", config.control_mode);
+      }
       if (result.spawned) {
         await this.#refuseSpawnContract("verify", result.revert, result.error, createdTaskIds, before, after);
       }
       if (createdTaskIds.length > 0) {
         await this.#failLastReviewLocked();
-        await this.#promoteReadyTasks(specId, "executing", config.control_mode);
       }
       return {
         taskId: task?.id,
@@ -756,10 +759,11 @@ export class LegionEngine {
       }
       const after = await this.snapshotTaskIds();
       const createdTaskIds = after.filter((id) => !before.includes(id));
-      await this.#refuseSpawnContract("review", result.revert, result.error, createdTaskIds, before, after);
       if (createdTaskIds.length > 0) {
+        await this.#clampSpawnedTaskStatuses(createdTaskIds);
         await this.#promoteReadyTasks(specId, "executing", config.control_mode);
       }
+      await this.#refuseSpawnContract("review", result.revert, result.error, createdTaskIds, before, after);
       const verdict = await this.#applyReviewSnapshotsLocked(await this.#readState(), before, after);
       return { verdict, createdTaskIds, extrasReverted: result.revert?.extrasReverted ?? [] };
     });
@@ -1451,6 +1455,15 @@ export class LegionEngine {
     const promoted = await this.#promoteTicketIfReady(id, specId);
     await this.#failLastReviewLocked();
     return promoted;
+  }
+
+  /** Spawn may write tasks/**; only execute + verificationCommands may mark done/blocked. */
+  async #clampSpawnedTaskStatuses(createdTaskIds: readonly string[]): Promise<void> {
+    for (const id of createdTaskIds) {
+      const doc = await this.store.readTask(id);
+      if (doc.data.status === "todo" || doc.data.status === "ready") continue;
+      await this.store.writeTask({ ...doc.data, status: "todo" }, doc.body);
+    }
   }
 
   async #clampPlanTaskStatuses(specId: string): Promise<void> {

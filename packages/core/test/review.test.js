@@ -5,11 +5,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { LegionRefuseError } from "../dist/index.js";
+import { isSliceTerminal, LegionEngine, LegionRefuseError } from "../dist/index.js";
 import {
   initProject,
   makeQaScore,
   makeTask,
+  passingVerificationCommand,
   seedPlanReady,
   withEngine,
   withFakeAdapter,
@@ -40,7 +41,7 @@ function taskMarkdown(task) {
     "  expectedArtifacts:",
     ...task.contract.expectedArtifacts.map((path) => `    - ${path}`),
     "  verificationCommands:",
-    ...task.contract.verificationCommands.map((cmd) => `    - ${cmd}`),
+    ...task.contract.verificationCommands.map((cmd) => `    - ${JSON.stringify(cmd)}`),
     "assignee: agent",
     'notes: ""',
     "---",
@@ -100,6 +101,64 @@ test("review spawn that files a task is lastReview FAIL", async () => {
       {
         skillsDir,
         fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0002.md", content: taskMarkdown(fixTask) }],
+      },
+    );
+  });
+});
+
+test("review spawn cannot stamp status done; child must execute before re-review PASS", async () => {
+  await withFakeAdapter(async () => {
+    const verify = [passingVerificationCommand()];
+    const stamped = makeTask({
+      id: "TSK-0002",
+      title: "fix walkthrough finding",
+      type: "fix",
+      parentId: "TSK-0001",
+      status: "done",
+      contract: {
+        filesAllowed: ["src/fix.ts"],
+        expectedArtifacts: ["src/fix.ts"],
+        verificationCommands: verify,
+      },
+    });
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedPlanReady(store, {
+          phase: "executing",
+          task: { status: "done", contract: { verificationCommands: verify } },
+        });
+        const review = await engine.review();
+        assert.equal(review.verdict, "FAIL");
+        assert.ok(review.createdTaskIds.includes("TSK-0002"));
+        assert.equal((await engine.getState()).lastReview, "FAIL");
+        const child = (await store.readTask("TSK-0002")).data;
+        assert.notEqual(child.status, "done");
+        assert.notEqual(child.status, "blocked");
+        assert.ok(child.status === "todo" || child.status === "ready");
+        const slice = await engine.listSliceTasks();
+        assert.equal(isSliceTerminal(slice), false);
+        await assert.rejects(
+          () => engine.review(),
+          (err) => {
+            assert.equal(err instanceof LegionRefuseError, true);
+            assert.match(err.message, /terminal slice/);
+            return true;
+          },
+        );
+        // same tree, no review fixture — execute must not rewrite the child as done
+        const runner = new LegionEngine(dir, undefined, { skillsDir });
+        const executed = await runner.execute("TSK-0002");
+        assert.equal(executed.status, "done");
+        assert.equal((await store.readTask("TSK-0002")).data.status, "done");
+        const later = await runner.review();
+        assert.equal(later.verdict, "PASS");
+        assert.deepEqual(later.createdTaskIds, []);
+        assert.equal((await runner.getState()).lastReview, "PASS");
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0002.md", content: taskMarkdown(stamped) }],
       },
     );
   });
@@ -188,6 +247,37 @@ test("verify spawn may file fix tasks and sets lastReview FAIL", async () => {
             }),
           },
         ],
+      },
+    );
+  });
+});
+
+test("verify spawn cannot stamp status done or blocked", async () => {
+  await withFakeAdapter(async () => {
+    const stamped = makeTask({
+      id: "TSK-0002",
+      title: "fix contrast",
+      type: "fix",
+      parentId: "TSK-0001",
+      status: "blocked",
+      contract: { filesAllowed: ["src/fix.ts"], expectedArtifacts: ["src/fix.ts"] },
+    });
+    await withEngine(
+      async ({ engine, store }) => {
+        await initProject(engine);
+        await seedPlanReady(store, { phase: "executing", lastReview: "PASS", task: { status: "done" } });
+        const result = await engine.verify();
+        assert.ok(result.createdTaskIds.includes("TSK-0002"));
+        const child = (await store.readTask("TSK-0002")).data;
+        assert.notEqual(child.status, "done");
+        assert.notEqual(child.status, "blocked");
+        assert.ok(child.status === "todo" || child.status === "ready");
+        assert.equal((await engine.getState()).lastReview, "FAIL");
+        assert.equal(isSliceTerminal(await engine.listSliceTasks()), false);
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0002.md", content: taskMarkdown(stamped) }],
       },
     );
   });
