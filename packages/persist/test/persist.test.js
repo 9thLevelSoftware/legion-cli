@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -20,6 +20,7 @@ import {
   gitCheckIgnore,
   gitDiscoverChanges,
   gitHead,
+  gitWorktreeAdd,
   hasSecretPattern,
   queryIndex,
   redactSecrets,
@@ -73,15 +74,17 @@ test("Windows backslash ingest paths normalize to POSIX store paths", () => {
   assert.equal(toPosixPath("src/ui/button.ts"), "src/ui/button.ts");
 });
 
-test("gitignore template covers index, cache, and engine.lock", () => {
+test("gitignore template covers index, cache, engine.lock, and worktrees", () => {
   assert.deepEqual([...GITIGNORE_ENTRIES], [
     ".legion-cli/index/",
     ".legion-cli/cache/",
     ".legion-cli/index/engine.lock",
+    ".legion-cli/worktrees/",
   ]);
   assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/index\//);
   assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/cache\//);
   assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/index\/engine\.lock/);
+  assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/worktrees\//);
 });
 
 test("rebuild SQL is idempotent DROP+CREATE including FTS5", () => {
@@ -250,6 +253,7 @@ test("index db and engine.lock are gitignored", async () => {
       assert.equal(gitCheckIgnore(dir, ".legion-cli/index/legion-cli.db"), true);
       assert.equal(gitCheckIgnore(dir, ".legion-cli/index/engine.lock"), true);
       assert.equal(gitCheckIgnore(dir, ".legion-cli/cache/tmp"), true);
+      assert.equal(gitCheckIgnore(dir, ".legion-cli/worktrees/tmp"), true);
       const status = spawnSync("git", ["status", "--porcelain"], {
         cwd: dir,
         encoding: "utf8",
@@ -552,5 +556,18 @@ test("gitDiscoverChanges lists both paths of a committed rename", async () => {
     const paths = gitDiscoverChanges(dir, pre);
     assert.ok(paths.includes("secret.ts"), `expected secret.ts in ${JSON.stringify(paths)}`);
     assert.ok(paths.includes("leaked.ts"), `expected leaked.ts in ${JSON.stringify(paths)}`);
+  });
+});
+
+test("gitWorktreeAdd creates an isolated checkout", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "README.md"), "app\n", "utf8");
+    initGitRepo(dir);
+    const worktree = join(dir, ".legion-cli", "worktrees", "aaaaaaaa");
+    const added = gitWorktreeAdd(dir, worktree, "brownfield/aaaaaaaa");
+    assert.equal(added, resolve(worktree));
+    assert.equal(git(worktree, ["rev-parse", "--is-inside-work-tree"]), "true");
+    assert.match(git(worktree, ["branch", "--show-current"]), /brownfield\/aaaaaaaa/);
+    gitWorktreeAdd(dir, worktree, "brownfield/aaaaaaaa");
   });
 });

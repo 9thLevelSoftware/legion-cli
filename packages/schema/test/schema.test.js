@@ -9,6 +9,7 @@ import { parse as parseYaml } from "yaml";
 import {
   computeQaPass,
   DesignSystemPackageSchema,
+  BrownfieldRunSchema,
   FileContractSchema,
   JSON_SCHEMA_FILES,
   LegionConfigSchema,
@@ -100,6 +101,7 @@ test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.ingest, "legion-cli-ingest/v1");
   assert.equal(SCHEMA_VERSION.audit, "legion-cli-audit/v1");
   assert.equal(SCHEMA_VERSION.resume, "legion-cli-resume/v1");
+  assert.equal(SCHEMA_VERSION.run, "legion-cli-run/v1");
   assert.equal(SCHEMA_VERSION.qa, "legion-cli-qa/v1");
   assert.equal(SCHEMA_VERSION.brief, "legion-cli-brief/v1");
   assert.equal(SCHEMA_VERSION.designSystem, "legion-cli-design-system/v1");
@@ -127,6 +129,25 @@ test("DesignSystemPackage is legion-cli-design-system/v1", () => {
     }).success,
     false,
   );
+});
+
+test("BrownfieldRunSchema requires 8-hex runId and resume fields", () => {
+  const run = {
+    schemaVersion: "legion-cli-run/v1",
+    runId: "a1b2c3d4",
+    effort: 1,
+    execute: false,
+    phase: "complete",
+    preSpawnRef: "abc123",
+    startedAt: "2026-09-01T12:00:00Z",
+    worktreePath: null,
+    promoted: false,
+    pages: ["intent.md"],
+    context: "",
+  };
+  assert.deepEqual(BrownfieldRunSchema.parse(run).runId, "a1b2c3d4");
+  assert.equal(BrownfieldRunSchema.safeParse({ ...run, runId: "not-hex" }).success, false);
+  assert.equal(BrownfieldRunSchema.safeParse({ ...run, effort: 6 }).success, false);
 });
 
 test("plan_concerns is not a phase", () => {

@@ -5,6 +5,7 @@ import { Command, CommanderError } from "commander";
 import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
 import { DesignSystemError } from "@9thlevelsoftware/legion-cli-design-system";
 import { runBrief } from "./brief.js";
+import { runBrownfield } from "./brownfield.js";
 import { runDashboard } from "./dashboard.js";
 import { runDiscuss } from "./discuss.js";
 import { runDoctor } from "./doctor.js";
@@ -24,6 +25,7 @@ import {
 import { runMcp } from "./mcp.js";
 import { runNextTasks } from "./next-tasks.js";
 import { runPlan } from "./plan.js";
+import { runPromote } from "./run.js";
 import { runQa, runQaChecklist } from "./qa.js";
 import { runReview } from "./review.js";
 import { runSearch } from "./search.js";
@@ -346,6 +348,34 @@ export function createProgram(): Command {
         allowDeps?: boolean;
       };
       const code = await runTaskAmend(resolveOpts(cmd), id, flags);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(
+    program.command("brownfield").description("Audit an existing app (effort 1: architecture + code)"),
+  )
+    .argument("[context...]", "scope notes")
+    .option("--effort <n>", "analysis rigor 1–5 (effort 1 implemented)", "1")
+    .option("--execute", "isolate product writes in a git worktree")
+    .option("--resume <id>", "resume a brownfield run")
+    .allowExcessArguments(false)
+    .action(async (context: string[], opts, cmd: Command) => {
+      const flags = opts as { effort?: string; execute?: boolean; resume?: string };
+      const code = await runBrownfield(resolveOpts(cmd), {
+        effort: flags.effort,
+        execute: Boolean(flags.execute),
+        resume: flags.resume,
+        context,
+      });
+      process.exitCode = code;
+    });
+
+  const run = addGlobalOptions(program.command("run").description("Brownfield run artifacts"));
+  addGlobalOptions(run.command("promote").description("Copy brownfield run pages into the wiki"))
+    .argument("<id>", "brownfield run id")
+    .allowExcessArguments(false)
+    .action(async (id: string, _opts, cmd: Command) => {
+      const code = await runPromote(resolveOpts(cmd), id);
       process.exitCode = code;
     });
 

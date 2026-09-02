@@ -31,6 +31,8 @@ export type LegionPaths = {
   db: string;
   lock: string;
   cacheDir: string;
+  runsDir: string;
+  worktreesDir: string;
 };
 
 export function legionPaths(projectRoot: string): LegionPaths {
@@ -59,6 +61,8 @@ export function legionPaths(projectRoot: string): LegionPaths {
     db: join(indexDir, INDEX_DB_BASENAME),
     lock: join(indexDir, LOCK_BASENAME),
     cacheDir: join(root, "cache"),
+    runsDir: join(root, "runs"),
+    worktreesDir: join(root, "worktrees"),
   };
 }
 
@@ -87,4 +91,24 @@ export function wikiPageStorePath(sourcePosix: string): string {
   const trimmed = sourcePosix.replace(/^\/+/, "");
   const withMd = trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`;
   return `.legion-cli/wiki/ingested/${withMd}`;
+}
+
+export function runStorePath(runId: string): string {
+  return `.legion-cli/runs/${runId}`;
+}
+
+export function runResumePath(runId: string): string {
+  return `.legion-cli/runs/${runId}/resume.json`;
+}
+
+export function runPagePath(runId: string, fileName: string): string {
+  return `.legion-cli/runs/${runId}/${fileName}`;
+}
+
+export function worktreeStorePath(runId: string): string {
+  return `.legion-cli/worktrees/${runId}`;
+}
+
+export function wikiRunPagePath(runId: string, fileName: string): string {
+  return `.legion-cli/wiki/runs/${runId}/${fileName}`;
 }

@@ -53,6 +53,30 @@ export type InitOptions = {
   controlMode?: ControlMode | "autonomous" | string;
 };
 
+export type BrownfieldOptions = {
+  effort?: number;
+  execute?: boolean;
+  resume?: string;
+  context?: string;
+  runId?: string;
+};
+
+export type BrownfieldResult = {
+  runId: string;
+  effort: 1;
+  execute: boolean;
+  phase: "analysis" | "execute" | "complete";
+  pages: string[];
+  worktreePath: string | null;
+  promoted: boolean;
+  resumePath: string;
+};
+
+export type PromoteRunResult = {
+  runId: string;
+  pages: string[];
+};
+
 export type QaOptions = {
   mode?: "full" | "no-browser";
   allowDegraded?: boolean;

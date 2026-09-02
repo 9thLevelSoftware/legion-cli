@@ -27,11 +27,8 @@ async function requireValue(
 
 export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> {
   const mode = (flags.mode ?? "greenfield").trim();
-  if (mode === "brownfield") {
-    refuse("legion-cli init --mode brownfield is v1", HINT.greenfield);
-  }
-  if (mode !== "greenfield") {
-    refuse("legion-cli init is greenfield only in v0", HINT.greenfield);
+  if (mode !== "greenfield" && mode !== "brownfield") {
+    refuse("init mode must be greenfield or brownfield", HINT.initMode);
   }
 
   const name = await requireValue(
@@ -65,15 +62,16 @@ export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> 
   }
 
   const engine = createLegionEngine(opts.project);
-  await engine.init({ name, adapter, generic, mode: "greenfield" });
+  await engine.init({ name, adapter, generic, mode });
+  const next = mode === "brownfield" ? "legion-cli brownfield" : "legion-cli intent";
 
   if (opts.json) {
     writeJson({
       ok: true,
       name,
-      mode: "greenfield",
+      mode,
       adapter,
-      next: "legion-cli intent",
+      next,
     });
     return 0;
   }
@@ -81,10 +79,10 @@ export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> 
   writeOut(
     [
       "Legion CLI created a project in this folder.",
-      "mode: greenfield",
+      `mode: ${mode}`,
       `adapter.default: ${adapter}`,
       "Supported command: pnpm exec legion-cli",
-      "Next: legion-cli intent",
+      `Next: ${next}`,
     ].join("\n"),
   );
   return 0;

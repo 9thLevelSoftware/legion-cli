@@ -55,7 +55,7 @@ test("status --blockers with none (golden)", async () => {
   });
 });
 
-test("init --mode brownfield refuses (golden)", async () => {
+test("init --mode brownfield writes templates (golden)", async () => {
   await withTempDir(async (dir) => {
     const result = runCli([
       "init",
@@ -68,8 +68,10 @@ test("init --mode brownfield refuses (golden)", async () => {
       "--mode",
       "brownfield",
     ]);
-    assert.equal(result.status, 1);
-    await assertTranscript(result.stderr, "init-brownfield.stderr.txt");
+    assert.equal(result.status, 0, result.stderr);
+    await assertTranscript(result.stdout, "init-brownfield.stdout.txt");
+    const project = await readFile(join(dir, ".legion-cli", "PROJECT.md"), "utf8");
+    assert.match(project, /mode: brownfield/);
   });
 });
 

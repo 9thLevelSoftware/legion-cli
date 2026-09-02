@@ -13,6 +13,7 @@ import {
   PHASES,
 } from "../dist/index.js";
 import {
+  initGitRepo,
   initProject,
   makeQaScore,
   makeSpec,
@@ -325,10 +326,25 @@ const cases = [
     act: ({ engine }) => engine.init({ name: "Checkin", adapter: "fake", controlMode: "autonomous" }),
   },
   {
-    name: "init --mode brownfield",
-    hint: /greenfield/,
+    name: "init --mode unknown",
+    hint: /greenfield\|brownfield/,
     setup: async () => {},
-    act: ({ engine }) => engine.init({ name: "Checkin", adapter: "fake", mode: "brownfield" }),
+    act: ({ engine }) => engine.init({ name: "Checkin", adapter: "fake", mode: "legacy" }),
+  },
+  {
+    name: "brownfield before init",
+    hint: /legion-cli init/,
+    setup: async () => {},
+    act: ({ engine }) => engine.brownfield({ effort: 1 }),
+  },
+  {
+    name: "brownfield effort 2",
+    hint: /legion-cli brownfield --effort 1/,
+    setup: async ({ engine, dir }) => {
+      await initProject(engine, { mode: "brownfield" });
+      initGitRepo(dir);
+    },
+    act: ({ engine }) => engine.brownfield({ effort: 2 }),
   },
   {
     name: "ingest from uninitialized",

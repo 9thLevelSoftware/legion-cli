@@ -230,6 +230,27 @@ export const ResumeFileSchema = z.object({
 });
 export type ResumeFile = z.infer<typeof ResumeFileSchema>;
 
+/** Brownfield run-scoped resume. Not a wiki page; promote copies markdown into the wiki. */
+export const BrownfieldRunPhaseSchema = z.enum(["analysis", "execute", "complete"]);
+export type BrownfieldRunPhase = z.infer<typeof BrownfieldRunPhaseSchema>;
+
+export const BrownfieldRunIdSchema = z.string().regex(/^[0-9a-f]{8}$/);
+
+export const BrownfieldRunSchema = z.object({
+  schemaVersion: z.literal(SCHEMA_VERSION.run),
+  runId: BrownfieldRunIdSchema,
+  effort: z.number().int().min(1).max(5),
+  execute: z.boolean(),
+  phase: BrownfieldRunPhaseSchema,
+  preSpawnRef: z.string().min(1),
+  startedAt: z.string().min(1),
+  worktreePath: z.string().min(1).nullable().optional(),
+  promoted: z.boolean().default(false),
+  pages: z.array(z.string().min(1)),
+  context: z.string().default(""),
+});
+export type BrownfieldRun = z.infer<typeof BrownfieldRunSchema>;
+
 const QaP0BucketSchema = z.object({
   points: z.number(),
   max: z.literal(40),
