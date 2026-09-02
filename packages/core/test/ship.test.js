@@ -92,8 +92,11 @@ test("ship --commit creates a commit after confirm", async () => {
     assert.equal(receipt.committed, true);
     assert.ok(receipt.commitSha);
     assert.notEqual(gitHead(dir), before);
+    assert.equal(git(dir, ["rev-list", "--count", "HEAD", `^${before}`]), "1");
     const msg = git(dir, ["log", "-1", "--pretty=%s"]);
     assert.match(msg, /legion-cli ship: spec-checkin/);
+    assert.match(git(dir, ["show", "HEAD:.legion-cli/STATE.md"]), /phase: shipped/);
+    assert.match(git(dir, ["show", "HEAD:.legion-cli/audit/ship-spec-checkin.md"]), /committed: true/);
   });
 });
 
@@ -101,19 +104,21 @@ test("ship --pr uses gh via the test seam", async () => {
   await withEngine(async ({ engine, store, dir }) => {
     await initProject(engine);
     await seedReadyToShip(store);
-    initGitRepo(dir);
+    const before = initGitRepo(dir);
     const receipt = await engine.ship({
       pr: true,
       commit: true,
       prCreate: ({ title, body }) => {
         assert.match(title, /spec-checkin/);
         assert.match(body, /QA mode: full/);
-        assert.match(readFileSync(store.paths.stateMd, "utf8"), /phase: ready_to_ship/);
+        assert.match(readFileSync(store.paths.stateMd, "utf8"), /phase: shipped/);
         return { url: "https://example.test/pr/1" };
       },
     });
     assert.equal(receipt.prUrl, "https://example.test/pr/1");
     assert.equal((await engine.getState()).phase, "shipped");
+    assert.equal(git(dir, ["rev-list", "--count", "HEAD", `^${before}`]), "1");
+    assert.match(git(dir, ["show", "HEAD:.legion-cli/STATE.md"]), /phase: shipped/);
   });
 });
 
@@ -266,7 +271,7 @@ test("ship --pr failure stays ready_to_ship", async () => {
   await withEngine(async ({ engine, store, dir }) => {
     await initProject(engine);
     await seedReadyToShip(store);
-    initGitRepo(dir);
+    const before = initGitRepo(dir);
     await assert.rejects(
       () =>
         engine.ship({
@@ -282,6 +287,7 @@ test("ship --pr failure stays ready_to_ship", async () => {
       },
     );
     assert.equal((await engine.getState()).phase, "ready_to_ship");
+    assert.equal(gitHead(dir), before);
   });
 });
 

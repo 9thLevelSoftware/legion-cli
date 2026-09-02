@@ -25,9 +25,11 @@ import {
   gitDiffCached,
   gitHasStaged,
   gitPorcelainPaths,
+  gitResetMixed,
   gitRestoreStaged,
   gitStagedPaths,
   isGitRepo,
+  tryGitHead,
   shipReceiptBody,
   shipReceiptPath,
   toFsPath,
@@ -2211,16 +2213,29 @@ export class LegionEngine {
       qaPass,
       allowDegradedQa,
       staged: preview.staged,
-      committed: false,
+      committed: Boolean(opts.commit),
       receiptPath,
     };
 
-    // Receipt (not STATE) first so --pr can fail while still ready_to_ship.
+    await this.#writeState({
+      ...state,
+      phase: "shipped",
+      currentTaskId: null,
+    });
     await writeTextFile(toFsPath(this.projectRoot, receiptPath), shipReceiptBody(receipt));
+    await this.#audit("ship", "shipped", actor, {
+      specId,
+      qaMode,
+      qaScore,
+      qaPass,
+      allowDegradedQa,
+      receiptPath,
+    });
 
+    const priorHead = isGitRepo(this.projectRoot) ? tryGitHead(this.projectRoot) : null;
     if (isGitRepo(this.projectRoot)) {
       // Product paths were staged before confirm. Re-adding a staged deletion fails
-      // (`pathspec did not match`); only pick up receipt / .legion-cli here.
+      // (`pathspec did not match`); only pick up receipt / STATE / .legion-cli here.
       gitAdd(this.projectRoot, [".legion-cli"]);
       receipt.staged = gitStagedPaths(this.projectRoot);
       if (opts.commit && gitHasStaged(this.projectRoot)) {
@@ -2241,33 +2256,13 @@ export class LegionEngine {
         ? opts.prCreate({ cwd: this.projectRoot, title, body })
         : tryCreatePullRequest(this.projectRoot, title, body);
       if (created.error || !created.url) {
+        if (priorHead && receipt.commitSha) {
+          gitResetMixed(this.projectRoot, priorHead);
+        }
+        await this.#writeState(state);
         refuse(`gh pr create failed: ${created.error ?? "no pull request url"}`, HINT.shipPrRetry);
       }
       receipt.prUrl = created.url;
-    }
-
-    await this.#writeState({
-      ...state,
-      phase: "shipped",
-      currentTaskId: null,
-    });
-    await writeTextFile(toFsPath(this.projectRoot, receiptPath), shipReceiptBody(receipt));
-    await this.#audit("ship", "shipped", actor, {
-      specId,
-      qaMode,
-      qaScore,
-      qaPass,
-      allowDegradedQa,
-      receiptPath,
-      prUrl: receipt.prUrl ?? null,
-    });
-
-    if (isGitRepo(this.projectRoot) && opts.commit) {
-      gitAdd(this.projectRoot, [".legion-cli"]);
-      if (gitHasStaged(this.projectRoot)) {
-        receipt.commitSha = gitCommitIndex(this.projectRoot, `legion-cli ship: ${specId || "spec"}`);
-        receipt.committed = true;
-      }
     }
 
     return receipt;
