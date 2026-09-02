@@ -46,6 +46,7 @@
   "dependencies": {
     "@9thlevelsoftware/legion-cli-agents": "workspace:*",
     "@9thlevelsoftware/legion-cli-graph": "workspace:*",
+    "@9thlevelsoftware/legion-cli-design-system": "workspace:*",
     "@9thlevelsoftware/legion-cli-persist": "workspace:*",
     "@9thlevelsoftware/legion-cli-schema": "workspace:*",
     "@9thlevelsoftware/legion-cli-wiki": "workspace:*"

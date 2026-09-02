@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "legion-cli-design-system/v1",
+  "id": "fixture-neutral",
+  "name": "Neutral fixture",
+  "description": "Brand-agnostic fixture used in tests.",
+  "source": {
+    "type": "bundled",
+    "origin": "design-systems/_fixture-neutral"
+  },
+  "files": {
+    "design": "DESIGN.md",
+    "tokens": "tokens.css",
+    "usage": "USAGE.md"
+  }
+}

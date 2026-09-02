@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -29,6 +29,11 @@ test("init writes initialized greenfield project", async () => {
     const config = await store.readConfig();
     assert.equal(config.adapter.default, "fake");
     assert.equal(await store.pathExists(".legion-cli/wiki/README.md"), true);
+    assert.equal(await store.pathExists(".legion-cli/design/craft/typography.md"), true);
+    assert.match(
+      await readFile(join(store.paths.designDir, "craft", "anti-ai-slop.md"), "utf8"),
+      /Anti AI slop/,
+    );
   });
 });
 
@@ -261,6 +266,28 @@ test("ingest does not change phase", async () => {
     const receipt = await engine.ingest(["notes.md"], { noCommit: true });
     assert.ok(receipt.pagesCreated.length + receipt.pagesUpdated.length + receipt.skipped.length >= 1);
     assert.equal((await engine.getState()).phase, "initialized");
+  });
+});
+
+test("approveSpec refuses UI freeze when brand violation is set", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await writeSpec(store, makeSpec({ status: "draft", wireframesIndex: "wireframes/INDEX.html" }));
+    await patchState(store, { phase: "spec_draft" });
+    await writeFile(
+      join(dir, ".legion-cli", "design", "active.yaml"),
+      "schemaVersion: legion-cli-design-active/v1\npackageId: checkin\ncraft: []\nbrandViolation: true\n",
+      "utf8",
+    );
+    await assert.rejects(
+      () => engine.approveSpec("spec-checkin", { id: "human" }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /brand violation/);
+        assert.match(err.nextHint, /design-system generate/);
+        return true;
+      },
+    );
   });
 });
 

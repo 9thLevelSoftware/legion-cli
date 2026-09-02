@@ -314,6 +314,40 @@ export const QAScoreSchema = z
   });
 export type QAScore = z.infer<typeof QAScoreSchema>;
 
+export const DesignSystemIdSchema = z
+  .string()
+  .min(1)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "design-system id must be a lowercase slug");
+export type DesignSystemId = z.infer<typeof DesignSystemIdSchema>;
+
+export const DesignSystemPackageSchema = z.object({
+  schemaVersion: z.literal(SCHEMA_VERSION.designSystem),
+  id: DesignSystemIdSchema,
+  name: z.string().min(1),
+  description: z.string(),
+  source: z.object({
+    type: z.enum(["bundled", "local", "github"]),
+    origin: z.string().min(1),
+  }),
+  files: z.object({
+    design: z.literal("DESIGN.md"),
+    tokens: z.literal("tokens.css"),
+    usage: z.string().min(1).optional(),
+  }),
+  wcag: z.enum(["A", "AA", "AAA"]).optional(),
+  integrity: z.object({ sha256: z.string().min(1) }).optional(),
+});
+export type DesignSystemPackage = z.infer<typeof DesignSystemPackageSchema>;
+
+export const DesignActiveSchema = z.object({
+  schemaVersion: z.literal(SCHEMA_VERSION.designActive),
+  packageId: z.string().min(1).optional(),
+  craft: z.array(z.string()),
+  /** Set by generate/import review; blocks spec freeze for UI work when true. */
+  brandViolation: z.boolean().optional(),
+});
+export type DesignActive = z.infer<typeof DesignActiveSchema>;
+
 export const SessionBriefSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.brief),
   project: z.object({
