@@ -1,6 +1,13 @@
-import { lookup } from "node:dns/promises";
+import dns from "node:dns/promises";
 import https from "node:https";
 import { MAX_INGEST_FILE_BYTES } from "@9thlevelsoftware/legion-cli-persist";
+
+/** Single-address lookup so ingest never happy-eyeballs to a second IP. */
+export type SsrfLookup = (hostname: string) => Promise<{ address: string; family: number }>;
+
+async function defaultLookup(hostname: string): Promise<{ address: string; family: number }> {
+  return dns.lookup(hostname, { all: false });
+}
 
 const PRIVATE_HOSTS = new Set(["localhost", "metadata.google.internal"]);
 const FETCH_TIMEOUT_MS = 20_000;
@@ -106,12 +113,13 @@ export function fileUrlToPath(source: string): string {
 
 export async function resolvePublicAddress(
   hostname: string,
+  lookupFn: SsrfLookup = defaultLookup,
 ): Promise<{ address: string; family: number }> {
   const host = hostname.replace(/^\[|\]$/g, "");
   if (isPrivateOrLocalHost(host)) {
     throw new SsrfError("ingest of private-network URL is refused");
   }
-  const resolved = await lookup(host, { all: false });
+  const resolved = await lookupFn(host);
   if (isPrivateOrLocalHost(resolved.address)) {
     throw new SsrfError("ingest of private-network URL is refused");
   }
@@ -200,13 +208,14 @@ function header(headers: httpHeaders, name: string): string {
 
 export async function fetchPublicHttps(
   source: string,
-  opts?: { maxBytes?: number; timeoutMs?: number },
+  opts?: { maxBytes?: number; timeoutMs?: number; lookup?: SsrfLookup },
 ): Promise<Fetched> {
   const maxBytes = opts?.maxBytes ?? MAX_INGEST_FILE_BYTES;
   const timeoutMs = opts?.timeoutMs ?? FETCH_TIMEOUT_MS;
+  const lookupFn = opts?.lookup ?? defaultLookup;
   let current = assertHttpsUrl(source);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    const pinned = await resolvePublicAddress(current.hostname);
+    const pinned = await resolvePublicAddress(current.hostname, lookupFn);
     const res = await httpsGetPinned(current, pinned.address, pinned.family, maxBytes, timeoutMs);
     if (res.status >= 300 && res.status < 400) {
       const location = header(res.headers, "location");
