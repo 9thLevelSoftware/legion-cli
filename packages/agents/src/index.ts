@@ -10,13 +10,22 @@ export {
   buildGenericArgv,
   extraArgsOrDefault,
   genericArgsOrDefault,
+  templateArgv,
 } from "./argv.js";
 export { AdapterConfigError, AdapterNotEnabled, AgentError } from "./errors.js";
 export { filterSpawnEnv } from "./env.js";
 export { buildPointerPrompt } from "./pointer.js";
 export { runCachePaths, writeRunPrompt } from "./paths.js";
 export { stageSkill } from "./stage.js";
-export { createAdapter, detectMatrix, isDetectOnly, isSpawnable, resolveAdapter } from "./resolve.js";
+export {
+  createAdapter,
+  detectMatrix,
+  isDetectOnly,
+  isResolvedAdapterSpawnable,
+  isSpawnable,
+  resolveAdapter,
+  resolveAdapterId,
+} from "./resolve.js";
 export { FakeAdapter } from "./adapters/fake.js";
 export { ClaudeAdapter } from "./adapters/claude.js";
 export { GenericAdapter } from "./adapters/generic.js";
@@ -26,6 +35,8 @@ export type { StageSkillOptions } from "./stage.js";
 export type { RunCachePaths } from "./paths.js";
 export type {
   AdapterCreateOptions,
+  AdapterResolution,
+  AdapterResolutionSource,
   AgentAdapter,
   AgentAdapterId,
   AgentHandle,

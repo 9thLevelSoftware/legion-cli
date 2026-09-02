@@ -15,6 +15,7 @@ import {
   buildGenericArgv,
   buildPointerPrompt,
   genericArgsOrDefault,
+  templateArgv,
 } from "../dist/index.js";
 
 test("frozen claude argv is -p --output-format json pointerPrompt", () => {
@@ -100,4 +101,52 @@ test("frozen argv table marks extra adapters spawnable with fillable generic-sty
   assert.equal(FROZEN_ARGV_TABLE.fake.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.claude.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.generic.spawnable, true);
+});
+
+test("templateArgv leaves {{pointer}} unexpanded and omits the pointer-prompt body", () => {
+  const pointer = buildPointerPrompt("run-9", "execute");
+  const config = {
+    adapter: {
+      default: "claude",
+      claude: { extraArgs: ["--model", "opus"] },
+      grok: { args: ["--model", "grok-4", "{{pointer}}"] },
+      generic: { binary: "node", args: ["-p", "{{pointer}}"] },
+      minimax: { binary: "custom-mcode" },
+    },
+  };
+  const claude = templateArgv("claude", config);
+  assert.equal(claude.binary, "claude");
+  assert.deepEqual(claude.argv, ["-p", "--output-format", "json", "--model", "opus", POINTER_PLACEHOLDER]);
+  assert.ok(!claude.argv.includes(pointer));
+  assert.ok(claude.argv.every((arg) => !arg.includes("Do not `git add`")));
+
+  const grok = templateArgv("grok", config);
+  assert.equal(grok.binary, ASSUMED_EXTRA_BINARIES.grok);
+  assert.deepEqual([...grok.argv], ["--model", "grok-4", POINTER_PLACEHOLDER]);
+  assert.ok(!grok.argv.includes(pointer));
+
+  const generic = templateArgv("generic", config);
+  assert.equal(generic.binary, "node");
+  assert.deepEqual([...generic.argv], ["-p", POINTER_PLACEHOLDER]);
+
+  const fake = templateArgv("fake", config);
+  assert.equal(fake.binary, "(in-process)");
+  assert.deepEqual([...fake.argv], []);
+
+  const minimax = templateArgv("minimax", config);
+  assert.equal(minimax.binary, "custom-mcode");
+  assert.deepEqual([...minimax.argv], [...DEFAULT_GENERIC_ARGS]);
+});
+
+test("templateArgv uses assumed extra binaries and default {{pointer}} argv", () => {
+  const config = { adapter: { default: "claude" } };
+  for (const id of EXTRA_ADAPTER_IDS) {
+    const tmpl = templateArgv(id, config);
+    assert.equal(tmpl.binary, ASSUMED_EXTRA_BINARIES[id]);
+    assert.deepEqual([...tmpl.argv], [...DEFAULT_GENERIC_ARGS]);
+    assert.equal(argsIncludePointer(tmpl.argv), true);
+  }
+  const generic = templateArgv("generic", config);
+  assert.equal(generic.binary, FROZEN_ARGV_TABLE.generic.binary);
+  assert.deepEqual([...generic.argv], [...DEFAULT_GENERIC_ARGS]);
 });

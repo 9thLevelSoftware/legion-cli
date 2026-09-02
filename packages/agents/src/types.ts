@@ -2,14 +2,20 @@ import {
   ADAPTER_IDS,
   EXTRA_ADAPTER_IDS,
   type AdapterId,
+  type AdapterResolutionSource,
   type ExtraAdapterId,
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 
-export type { ExtraAdapterId, SkillId };
+export type { AdapterResolutionSource, ExtraAdapterId, SkillId };
 
 export type AgentAdapterId = AdapterId;
 export type SpawnableAdapterId = AgentAdapterId;
+
+export type AdapterResolution = {
+  id: AgentAdapterId;
+  source: AdapterResolutionSource;
+};
 
 export const DETECT_ADAPTER_IDS = ADAPTER_IDS;
 export const SPAWNABLE_ADAPTER_IDS = ADAPTER_IDS;

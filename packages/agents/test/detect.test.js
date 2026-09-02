@@ -10,8 +10,10 @@ import {
   createAdapter,
   detectMatrix,
   isDetectOnly,
+  isResolvedAdapterSpawnable,
   isSpawnable,
   resolveAdapter,
+  resolveAdapterId,
 } from "../dist/index.js";
 
 function restoreEnv(key, previous) {
@@ -118,8 +120,123 @@ test("resolveAdapter uses user-set default and has no product fallback", () => {
   assert.equal(minimax.binary, ASSUMED_EXTRA_BINARIES.minimax);
   assert.throws(
     () => resolveAdapter({ adapter: { default: "generic" } }),
-    (err) => err instanceof AdapterConfigError,
+    (err) =>
+      err instanceof AdapterConfigError && /resolved adapter is generic/.test(err.message),
   );
+});
+
+test("resolveAdapter options.id overrides default and still applies per-id knobs", () => {
+  const grok = resolveAdapter(
+    {
+      adapter: {
+        default: "claude",
+        grok: { binary: process.execPath, args: ["{{pointer}}"] },
+      },
+    },
+    { id: "grok" },
+  );
+  assert.equal(grok.id, "grok");
+  assert.equal(grok.binary, process.execPath);
+  const claude = resolveAdapter({ adapter: { default: "grok" } }, { id: "claude" });
+  assert.equal(claude.id, "claude");
+});
+
+test("resolveAdapter throws when resolved id is generic without binary even if default is not", () => {
+  assert.throws(
+    () => resolveAdapter({ adapter: { default: "claude" } }, { id: "generic" }),
+    (err) =>
+      err instanceof AdapterConfigError && /resolved adapter is generic/.test(err.message),
+  );
+});
+
+test("resolveAdapterId precedence is cli > task > route > default", () => {
+  const config = {
+    adapter: {
+      default: "claude",
+      routes: { execute: "codex", plan: "grok", verify: "mimo" },
+    },
+  };
+  assert.deepEqual(
+    resolveAdapterId({
+      config,
+      skillId: "execute",
+      taskAdapter: "mimo",
+      cliAdapter: "minimax",
+    }),
+    { id: "minimax", source: "cli" },
+  );
+  assert.deepEqual(resolveAdapterId({ config, skillId: "execute", taskAdapter: "mimo" }), {
+    id: "mimo",
+    source: "task",
+  });
+  assert.deepEqual(resolveAdapterId({ config, skillId: "execute" }), {
+    id: "codex",
+    source: "route",
+  });
+  assert.deepEqual(resolveAdapterId({ config, skillId: "review" }), {
+    id: "claude",
+    source: "default",
+  });
+});
+
+test("resolveAdapterId ignores Task.adapter unless skill is execute or verify", () => {
+  const config = {
+    adapter: { default: "claude", routes: { plan: "grok", review: "codex" } },
+  };
+  for (const skillId of ["plan", "review", "interview", "discuss", "spec", "ingest", "qa"]) {
+    const expected =
+      skillId === "plan"
+        ? { id: "grok", source: "route" }
+        : skillId === "review"
+          ? { id: "codex", source: "route" }
+          : { id: "claude", source: "default" };
+    assert.deepEqual(resolveAdapterId({ config, skillId, taskAdapter: "mimo" }), expected);
+  }
+  assert.deepEqual(resolveAdapterId({ config, skillId: "verify", taskAdapter: "minimax" }), {
+    id: "minimax",
+    source: "task",
+  });
+  assert.deepEqual(resolveAdapterId({ config, skillId: "execute", taskAdapter: "mimo" }), {
+    id: "mimo",
+    source: "task",
+  });
+});
+
+test("isResolvedAdapterSpawnable is false when grok args omit {{pointer}} even if PATH would pass", async () => {
+  const config = {
+    adapter: {
+      default: "claude",
+      grok: { binary: process.execPath, args: ["--model", "grok-4"] },
+    },
+  };
+  assert.equal(await isResolvedAdapterSpawnable(config, "grok"), false);
+  assert.equal(
+    await isResolvedAdapterSpawnable(
+      {
+        adapter: {
+          default: "claude",
+          grok: { binary: process.execPath, args: ["{{pointer}}"] },
+        },
+      },
+      "grok",
+    ),
+    true,
+  );
+});
+
+test("isResolvedAdapterSpawnable is false when resolved generic is missing binary", async () => {
+  assert.equal(await isResolvedAdapterSpawnable({ adapter: { default: "generic" } }), false);
+  assert.equal(await isResolvedAdapterSpawnable({ adapter: { default: "claude" } }, "generic"), false);
+});
+
+test("isResolvedAdapterSpawnable uses default when id is omitted", async () => {
+  const previous = process.env[FAKE_ADAPTER_ENV];
+  try {
+    process.env[FAKE_ADAPTER_ENV] = "fake";
+    assert.equal(await isResolvedAdapterSpawnable({ adapter: { default: "fake" } }), true);
+  } finally {
+    restoreEnv(FAKE_ADAPTER_ENV, previous);
+  }
 });
 
 test("generic without a binary is not spawnable", async () => {
