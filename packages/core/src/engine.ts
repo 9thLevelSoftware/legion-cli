@@ -79,6 +79,7 @@ import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
 import { assertTaskStatusTransition } from "./tasks.js";
 import {
   ensureRegressionTest,
+  fixFilesAllowed,
   regressionTestPath,
   regressionVerifyCommand,
 } from "./fix.js";
@@ -883,13 +884,14 @@ export class LegionEngine {
         refuse("this does not reproduce", HINT.fix);
       }
       await this.#failLastReviewLocked();
+      const filesAllowed = fixFilesAllowed(this.projectRoot, testPath);
       return this.#fileTicketLocked({
         title,
         type: "bug",
         priority: "P0",
         notes: "Playwright-before-fix: reproducing test must stay RED until execute goes GREEN.",
         contract: {
-          filesAllowed: [testPath],
+          filesAllowed,
           expectedArtifacts: [testPath],
           verificationCommands: [verifyCmd],
         },

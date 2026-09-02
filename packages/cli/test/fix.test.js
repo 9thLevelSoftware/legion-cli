@@ -103,5 +103,6 @@ test("fix writes a RED test then execute must go GREEN", async () => {
     assert.equal(tasks.length, 1);
     assert.equal(tasks[0].priority, "P0");
     assert.match(tasks[0].contract.filesAllowed[0], /regression/);
+    assert.ok(tasks[0].contract.filesAllowed.includes("src/main.js"));
   });
 });

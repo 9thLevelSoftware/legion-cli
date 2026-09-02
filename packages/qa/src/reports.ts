@@ -18,17 +18,16 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function visualFailureFromResult(_title: string, result: Record<string, unknown>): boolean {
+function visualFailureFromResult(result: Record<string, unknown>): boolean {
   const error = asRecord(result.error);
   const message = typeof error?.message === "string" ? error.message : "";
-  if (/screenshot|snapshot comparison|toHaveScreenshot|toMatchSnapshot/i.test(message)) return true;
+  if (/toHaveScreenshot|toMatchSnapshot|screenshot comparison|snapshot comparison/i.test(message)) return true;
   for (const raw of asArray(result.attachments)) {
     const attachment = asRecord(raw);
     if (!attachment) continue;
     const name = typeof attachment.name === "string" ? attachment.name : "";
-    const type = typeof attachment.contentType === "string" ? attachment.contentType : "";
+    // Default Playwright failure screenshots are named "screenshot"; only diffs count.
     if (/^(diff|expected|actual)$/i.test(name)) return true;
-    if (/screenshot/i.test(name) && /image\//i.test(type)) return true;
   }
   return false;
 }
@@ -70,7 +69,7 @@ function parsePlaywrightSpec(spec: unknown, suiteTitle: string, acc: ParsedTest[
       results.some((result) => result.status === "failed" || result.status === "timedOut");
     if (failed) ok = false;
     for (const result of results) {
-      if (visualFailureFromResult(title, result)) visualFailure = true;
+      if (visualFailureFromResult(result)) visualFailure = true;
     }
   }
   if (isVisualTitle(title) && !ok && !skipped) visualFailure = true;
@@ -182,6 +181,29 @@ export function extractJsonPayload(text: string): unknown {
     }
   }
   return null;
+}
+
+/** Missing JSON, or a failure report with no tests, is not a vacuous pass. */
+export function reportFailClosed(input: unknown): boolean {
+  if (input === undefined) return false;
+  if (input === null) return true;
+  if (typeof input === "string") {
+    const ndjson: ParsedTest[] = [];
+    if (parseNdjson(input, ndjson) && ndjson.length > 0) return false;
+    const payload = extractJsonPayload(input);
+    if (payload === null) return true;
+    return reportFailClosed(payload);
+  }
+  const rec = asRecord(input);
+  if (!rec) return true;
+  if (rec.error === "no reporter json") return true;
+  const hasSuites = Array.isArray(rec.suites) || Array.isArray(rec.specs);
+  const hasSimple = "tests" in rec;
+  const testResults = asArray(rec.testResults);
+  if (hasSuites || hasSimple || testResults.length > 0) return false;
+  if (rec.success === false) return true;
+  if (typeof rec.numFailedTests === "number" && rec.numFailedTests > 0) return true;
+  return false;
 }
 
 export function parseTestReport(input: unknown): ParsedTest[] {
