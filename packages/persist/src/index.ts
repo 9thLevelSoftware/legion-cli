@@ -28,6 +28,7 @@ export {
   gitPathExistsAtRef,
   gitPathTracked,
   gitPorcelainPaths,
+  gitResetMixed,
   gitRestoreStaged,
   gitRestoreWorktree,
   gitRmWorktree,

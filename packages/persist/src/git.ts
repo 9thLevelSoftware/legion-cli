@@ -306,3 +306,11 @@ export function gitCommitIndex(cwd: string, message: string): string {
   }
   return gitHead(cwd);
 }
+
+/** Undo a commit we just made; keep the worktree (not --hard). */
+export function gitResetMixed(cwd: string, ref: string): void {
+  const result = runGit(cwd, ["reset", "--mixed", ref]);
+  if (result.status !== 0) {
+    throw new PersistError(`git reset failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+}
