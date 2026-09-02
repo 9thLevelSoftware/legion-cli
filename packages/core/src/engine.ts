@@ -18,6 +18,7 @@ import {
   packetPath,
   parseMarkdownDocument,
   PathEscapeError,
+  EngineLockedError,
   PersistError,
   ensureGitignore,
   gitAdd,
@@ -40,12 +41,14 @@ import {
 import {
   buildSessionBrief,
   ensureWikiIndex,
+  gardenReport,
   isForbiddenSpawnPath,
   materializeIngestSources,
   searchWiki,
   SsrfError,
   trustWikiPage,
   wrapUntrustedContent,
+  type GardenReport,
   type SearchHit,
 } from "@9thlevelsoftware/legion-cli-wiki";
 import {
@@ -95,6 +98,7 @@ import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from ".
 import { HEAD_MOVED_WARNING } from "./revert.js";
 import { findSkillsDir, optionalSkillSpawn } from "./spawn.js";
 import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
+import { compactTaskBody, outcomeFromTask } from "./compact.js";
 import { assertTaskStatusTransition } from "./tasks.js";
 import {
   ensureRegressionTest,
@@ -117,6 +121,8 @@ import type {
   AmendTaskOptions,
   BrownfieldOptions,
   BrownfieldResult,
+  CompactOptions,
+  CompactResult,
   DecisionInput,
   ExecuteOptions,
   ExecuteResult,
@@ -482,6 +488,61 @@ export class LegionEngine {
       await ensureWikiIndex(this.store);
       return searchWiki(this.projectRoot, q, opts);
     });
+  }
+
+  async garden(): Promise<GardenReport> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("garden is refused until init", HINT.init);
+      }
+      await ensureWikiIndex(this.store);
+      return gardenReport(this.projectRoot);
+    });
+  }
+
+  async compactContext(opts?: CompactOptions): Promise<CompactResult> {
+    const lockOpts = opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : undefined;
+    try {
+      return await this.store.withLock(async () => {
+        const state = await this.#readState();
+        if (state.phase === "uninitialized") {
+          refuse("context compact is refused until init", HINT.init);
+        }
+        const tasks = await this.#listTasks();
+        const compacted: CompactResult["compacted"] = [];
+        const skipped: CompactResult["skipped"] = [];
+        for (const task of tasks) {
+          if (task.status !== "done") continue;
+          const siblingInProgress = tasks.some(
+            (other) => other.specId === task.specId && other.status === "in_progress",
+          );
+          if (siblingInProgress) {
+            skipped.push({ id: task.id, title: task.title, reason: "in_progress sibling" });
+            continue;
+          }
+          const doc = await this.store.readTask(task.id);
+          if (doc.data.status !== "done") continue;
+          assertTaskStatusTransition(doc.data.status, "compacted");
+          const outcome = outcomeFromTask(doc.data.notes, doc.body);
+          await this.store.writeTask({ ...doc.data, status: "compacted" }, compactTaskBody(doc.data.title, outcome));
+          compacted.push({ id: doc.data.id, title: doc.data.title });
+        }
+        if (compacted.length > 0) {
+          await this.store.rebuild();
+          await this.#audit("context_compact", state.phase, "user", {
+            compacted: compacted.map((task) => task.id),
+            skipped: skipped.map((task) => task.id),
+          });
+        }
+        return { compacted, skipped };
+      }, lockOpts);
+    } catch (err) {
+      if (err instanceof EngineLockedError) {
+        refuse(err.message, HINT.compact);
+      }
+      throw err;
+    }
   }
 
   /** Execute-spawn helper: wrap untrusted bodies if they are injected at all. */
@@ -1252,6 +1313,9 @@ export class LegionEngine {
 
   async setTaskStatus(taskId: string, status: TaskStatus): Promise<void> {
     return this.#mutate(async () => {
+      if (status === "compacted") {
+        refuse("use legion-cli context compact", HINT.compact);
+      }
       const doc = await this.store.readTask(taskId);
       assertTaskStatusTransition(doc.data.status, status);
       const state = await this.#readState();

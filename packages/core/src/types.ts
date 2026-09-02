@@ -1,5 +1,5 @@
 import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
-import type { SearchHit } from "@9thlevelsoftware/legion-cli-wiki";
+import type { GardenReport, SearchHit } from "@9thlevelsoftware/legion-cli-wiki";
 import type {
   AdapterId,
   ControlMode,
@@ -215,3 +215,19 @@ export type {
   Spec,
   Task,
 };
+export type IngestOpts = {
+  noCommit?: boolean;
+  transcript?: string;
+  diff?: string;
+
+export type CompactedTask = {
+  id: string;
+  title: string;
+export type SkippedCompactTask = {
+  reason: string;
+export type CompactResult = {
+  compacted: CompactedTask[];
+  skipped: SkippedCompactTask[];
+export type CompactOptions = {
+  timeoutMs?: number;
+export type { FileContract, GardenReport, IngestReceipt, Phase, Priority, QAScore, Readiness, ReviewVerdict, SearchHit, SessionBrief, Spec, Task };

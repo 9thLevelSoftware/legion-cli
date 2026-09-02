@@ -95,6 +95,10 @@ test("§4.1 ready requires done blockers, verification, concrete files, phase, a
   });
   assert.equal(isTaskReady(unblocked, ctx([doneParent, unblocked])), true);
 
+  const compactedParent = task({ id: "TSK-0001", status: "compacted", blocks: ["TSK-0002"] });
+  assert.deepEqual(unresolvedBlockers(unblocked, [compactedParent, unblocked]), []);
+  assert.equal(isTaskReady(unblocked, ctx([compactedParent, unblocked])), true);
+
   assert.equal(
     isTaskReady(task({ contract: { verificationCommands: [] } }), ctx([task({ contract: { verificationCommands: [] } })])),
     false,

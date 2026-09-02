@@ -50,6 +50,8 @@ export const HINT = {
   ticket: (taskId: string) => `legion-cli ticket create --parent ${taskId}`,
   packet: "legion-cli packet new --title <title>",
   packetRespond: (id = "<id>") => `legion-cli packet respond ${id}`,
+  garden: "legion-cli garden",
+  compact: "legion-cli context compact",
 } as const;
 
 export function refuseKind(nextHint: string): string {

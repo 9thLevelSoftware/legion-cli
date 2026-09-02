@@ -38,6 +38,8 @@ import { runStatus } from "./status.js";
 import { runTaskAmend } from "./task.js";
 import { runTicketCreate } from "./ticket.js";
 import { runVerify } from "./verify.js";
+import { runContextCompact } from "./context.js";
+import { runGarden } from "./garden.js";
 import { runWikiTrust } from "./wiki.js";
 
 const pkg = JSON.parse(
@@ -479,6 +481,21 @@ export function createProgram(): Command {
         brand?: string;
       };
       const code = await runDesignSystemGenerate(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("garden").description("Stale wiki, orphans, duplicates"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runGarden(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  const context = addGlobalOptions(program.command("context").description("Session context"));
+  addGlobalOptions(context.command("compact").description("Compact done tasks"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runContextCompact(resolveOpts(cmd));
       process.exitCode = code;
     });
 
