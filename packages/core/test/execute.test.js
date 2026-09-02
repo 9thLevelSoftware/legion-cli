@@ -4,7 +4,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { HEAD_MOVED_WARNING, LegionRefuseError } from "../dist/index.js";
+import { HEAD_MOVED_WARNING, LegionRefuseError, revertExtras } from "../dist/index.js";
+import { snapshotGitPolicy } from "../dist/revert.js";
 import {
   git,
   gitHead,
@@ -193,11 +194,18 @@ test(".git hooks incident blocks and does not rm .git", async () => {
         await initProject(engine);
         await seedExecute(store);
         initGitRepo(dir);
+        const headBefore = gitHead(dir);
         const result = await engine.execute("auto");
         assert.equal(result.status, "blocked");
         assert.equal(result.tasks[0].incident, true);
         assert.equal(existsSync(join(dir, ".git")), true);
+        assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
+        assert.equal(existsSync(join(dir, ".git", "config")), true);
         assert.equal(existsSync(join(dir, ".git", "hooks", "pre-commit")), true);
+        const hook = (await readFile(join(dir, ".git", "hooks", "pre-commit"), "utf8")).replaceAll("\r\n", "\n");
+        assert.match(hook, /pwned/);
+        assert.equal(gitHead(dir), headBefore);
+        assert.equal(git(dir, ["rev-parse", "--is-inside-work-tree"]), "true");
         assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
         assert.equal(result.phase, "executing");
       },
@@ -205,6 +213,30 @@ test(".git hooks incident blocks and does not rm .git", async () => {
         fakeArtifacts: [{ path: ".git/hooks/pre-commit", content: "#!/bin/sh\necho pwned\n" }],
       },
     );
+  });
+});
+
+test(".git/config change is an incident and does not delete .git", async () => {
+  await withEngine(async ({ dir }) => {
+    await writeFile(join(dir, "README.md"), "seed\n", "utf8");
+    initGitRepo(dir);
+    const gitPolicy = await snapshotGitPolicy(dir);
+    const pre = gitHead(dir);
+    const configPath = join(dir, ".git", "config");
+    const before = await readFile(configPath, "utf8");
+    await writeFile(configPath, `${before}\n[alias]\n\tpwn = status\n`, "utf8");
+    const result = await revertExtras({
+      projectRoot: dir,
+      preSpawnRef: pre,
+      allowedRoots: ["src/main.ts"],
+      gitPolicy,
+    });
+    assert.equal(result.incident, true);
+    assert.equal(existsSync(join(dir, ".git")), true);
+    assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
+    assert.equal(existsSync(configPath), true);
+    assert.match(await readFile(configPath, "utf8"), /pwn = status/);
+    assert.equal(git(dir, ["rev-parse", "--is-inside-work-tree"]), "true");
   });
 });
 
@@ -225,6 +257,7 @@ test("in-contract commit still runs verificationCommands and can mark done", asy
         assert.ok(result.warnings.includes(HEAD_MOVED_WARNING));
         assert.equal(result.tasks[0].verificationPass, true);
         assert.equal(result.tasks[0].headMoved, true);
+        assert.equal(result.tasks[0].incident, false, "HEAD movement alone is not a .git incident");
         const resume = await readResume(dir, result.tasks[0].runId);
         assert.equal(resume.skillId, "execute");
         assert.equal(resume.taskId, "TSK-0001");

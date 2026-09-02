@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
+  DEFAULT_LOCK_TIMEOUT_MS,
   EngineLockedError,
   GITIGNORE_ENTRIES,
   GITIGNORE_TEMPLATE,
@@ -19,6 +20,7 @@ import {
   gitCheckIgnore,
   gitDiscoverChanges,
   gitHead,
+  hasSecretPattern,
   queryIndex,
   redactSecrets,
   toPosixPath,
@@ -168,16 +170,22 @@ test("unknown schemaVersion fails closed", async () => {
   });
 });
 
+test("engine.lock default timeout is 30s", () => {
+  assert.equal(DEFAULT_LOCK_TIMEOUT_MS, 30_000);
+});
+
 test("engine.lock is single-writer and times out", async () => {
   await withTempDir(async (dir) => {
     const a = new LegionStore(dir);
     const b = new LegionStore(dir);
     await a.acquireLock({ timeoutMs: 200 });
+    const started = Date.now();
     await assert.rejects(() => b.acquireLock({ timeoutMs: 200 }), (err) => {
       assert.equal(err instanceof EngineLockedError, true);
-      assert.match(err.message, /another legion-cli is running/);
+      assert.equal(err.message, "another legion-cli is running.");
       return true;
     });
+    assert.ok(Date.now() - started >= 150, "timeout must wait before refusing");
     await a.releaseLock();
     await b.acquireLock({ timeoutMs: 200 });
     await b.releaseLock();
@@ -451,12 +459,49 @@ test("project containment compares canonical realpaths", async () => {
   });
 });
 
+test("redactSecrets covers the documented secret patterns", () => {
+  const leaked = [
+    "AKIAIOSFODNN7EXAMPLE",
+    "sk-abcdefghijklmnopqrstuvwxyz",
+    "xai-abcdefghijklmnopqrstuvwxyz",
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----",
+    "ghp_abcdefghijklmnopqrstuvwxyzABCD",
+    "github_pat_11AAAAAAA0123456789_abcdefghijklmnopqrstuvwxyz",
+  ].join("\n");
+  const redacted = redactSecrets(leaked);
+  assert.match(redacted, /\[REDACTED:aws-access-key\]/);
+  assert.match(redacted, /\[REDACTED:sk\]/);
+  assert.match(redacted, /\[REDACTED:xai\]/);
+  assert.match(redacted, /\[REDACTED:private-key\]/);
+  assert.match(redacted, /\[REDACTED:ghp\]/);
+  assert.match(redacted, /\[REDACTED:github_pat\]/);
+  assert.doesNotMatch(redacted, /AKIAIOSFODNN7EXAMPLE/);
+  assert.doesNotMatch(redacted, /sk-abcdefghijklmnopqrstuvwxyz/);
+  assert.doesNotMatch(redacted, /xai-abcdefghijklmnopqrstuvwxyz/);
+  assert.doesNotMatch(redacted, /BEGIN RSA PRIVATE KEY/);
+  assert.doesNotMatch(redacted, /ghp_abcdefghijklmnopqrstuvwxyzABCD/);
+  assert.doesNotMatch(redacted, /github_pat_11AAAAAAA0123456789/);
+  assert.equal(hasSecretPattern(leaked), true);
+  assert.equal(hasSecretPattern(redacted), false);
+  assert.equal(hasSecretPattern("no secrets in this wiki page"), false);
+});
+
 test("ingest redacts secrets before wiki write", async () => {
   await withTempDir(async (dir) => {
     await copyFixtureProject(dir);
     await writeFile(
       join(dir, "leaked.md"),
-      "# Leaked\n\nAKIAIOSFODNN7EXAMPLE key sk-abcdefghijklmnopqrstuvwxyz ghp_abcdefghijklmnopqrstuvwxyz\n",
+      [
+        "# Leaked",
+        "",
+        "AKIAIOSFODNN7EXAMPLE key sk-abcdefghijklmnopqrstuvwxyz ghp_abcdefghijklmnopqrstuvwxyz",
+        "xai-abcdefghijklmnopqrstuvwxyz",
+        "github_pat_11AAAAAAA0123456789_abcdefghijklmnopqrstuvwxyz",
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "secret-material",
+        "-----END OPENSSH PRIVATE KEY-----",
+        "",
+      ].join("\n"),
       "utf8",
     );
     const store = new LegionStore(dir);
@@ -465,7 +510,11 @@ test("ingest redacts secrets before wiki write", async () => {
     assert.match(page.body, /\[REDACTED:aws-access-key\]/);
     assert.match(page.body, /\[REDACTED:sk\]/);
     assert.match(page.body, /\[REDACTED:ghp\]/);
+    assert.match(page.body, /\[REDACTED:xai\]/);
+    assert.match(page.body, /\[REDACTED:github_pat\]/);
+    assert.match(page.body, /\[REDACTED:private-key\]/);
     assert.doesNotMatch(page.body, /AKIAIOSFODNN7EXAMPLE/);
+    assert.doesNotMatch(page.body, /secret-material/);
     assert.equal(redactSecrets("xai-abcdefghijklmnopqrstuvwxyz").includes("xai-"), false);
   });
 });
