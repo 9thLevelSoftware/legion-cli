@@ -138,12 +138,12 @@ test("templateArgv leaves {{pointer}} unexpanded and omits the pointer-prompt bo
   assert.deepEqual([...minimax.argv], [...DEFAULT_GENERIC_ARGS]);
 });
 
-test("templateArgv uses assumed extra binaries and default {{pointer}} argv", () => {
+test("templateArgv uses assumed extra binaries and frozen extra argv", () => {
   const config = { adapter: { default: "claude" } };
   for (const id of EXTRA_ADAPTER_IDS) {
     const tmpl = templateArgv(id, config);
     assert.equal(tmpl.binary, ASSUMED_EXTRA_BINARIES[id]);
-    assert.deepEqual([...tmpl.argv], [...DEFAULT_GENERIC_ARGS]);
+    assert.deepEqual([...tmpl.argv], extraArgsOrDefault(id));
     assert.equal(argsIncludePointer(tmpl.argv), true);
   }
   const generic = templateArgv("generic", config);
