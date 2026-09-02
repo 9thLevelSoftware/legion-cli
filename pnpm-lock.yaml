@@ -26,6 +26,9 @@ importers:
       '@9thlevelsoftware/legion-cli-persist':
         specifier: workspace:*
         version: link:packages/persist
+      '@9thlevelsoftware/legion-cli-qa':
+        specifier: workspace:*
+        version: link:packages/qa
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:packages/schema
@@ -56,6 +59,9 @@ importers:
       '@9thlevelsoftware/legion-cli-persist':
         specifier: workspace:*
         version: link:../persist
+      '@9thlevelsoftware/legion-cli-qa':
+        specifier: workspace:*
+        version: link:../qa
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:../schema
@@ -77,6 +83,9 @@ importers:
       '@9thlevelsoftware/legion-cli-persist':
         specifier: workspace:*
         version: link:../persist
+      '@9thlevelsoftware/legion-cli-qa':
+        specifier: workspace:*
+        version: link:../qa
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:../schema
@@ -123,6 +132,12 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
+
+  packages/qa:
+    dependencies:
+      '@9thlevelsoftware/legion-cli-schema':
+        specifier: workspace:*
+        version: link:../schema
 
   packages/schema:
     dependencies:

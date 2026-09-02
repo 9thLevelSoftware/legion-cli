@@ -30,6 +30,11 @@ export function recordPreSpawnRef(projectRoot: string): string | null {
   return tryGitHead(projectRoot);
 }
 
+/** Worktree dirt at spawn start so engine writes (STATE, new tasks) are not extras. */
+export function snapshotDirtyPaths(projectRoot: string, preSpawnRef: string | null): Set<string> {
+  return new Set(gitDiscoverChanges(projectRoot, preSpawnRef));
+}
+
 export async function snapshotPaths(projectRoot: string): Promise<Set<string>> {
   const out = new Set<string>();
   await walk(projectRoot, "", out);
@@ -109,6 +114,7 @@ export async function revertExtras(opts: {
   filesForbidden?: readonly string[];
   snapshot?: Set<string>;
   gitPolicy?: GitPolicySnapshot;
+  dirtyAtStart?: ReadonlySet<string>;
 }): Promise<RevertResult> {
   const extrasReverted: string[] = [];
   const headNow = tryGitHead(opts.projectRoot);
@@ -129,6 +135,9 @@ export async function revertExtras(opts: {
   for (const posix of candidates) {
     if (posix.startsWith(".git/") || posix === ".git") {
       incident = true;
+      continue;
+    }
+    if (opts.dirtyAtStart?.has(posix)) {
       continue;
     }
     if (isAllowedPath(posix, opts.allowedRoots) && !forbiddenByContract(posix, opts.filesForbidden)) {

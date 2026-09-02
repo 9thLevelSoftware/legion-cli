@@ -31,6 +31,12 @@ import {
   type SearchHit,
 } from "@9thlevelsoftware/legion-cli-wiki";
 import {
+  checklistComplete,
+  readChecklist,
+  runProjectQa,
+  writeChecklist,
+} from "@9thlevelsoftware/legion-cli-qa";
+import {
   ControlModeSchema,
   QAScoreSchema,
   SCHEMA_VERSION,
@@ -71,6 +77,11 @@ import { HEAD_MOVED_WARNING } from "./revert.js";
 import { findSkillsDir, optionalSkillSpawn } from "./spawn.js";
 import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
 import { assertTaskStatusTransition } from "./tasks.js";
+import {
+  ensureRegressionTest,
+  regressionTestPath,
+  regressionVerifyCommand,
+} from "./fix.js";
 import { nextTaskId, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
 import type {
   Actor,
@@ -787,12 +798,34 @@ export class LegionEngine {
     });
   }
 
-  async qa(opts: QaOptions): Promise<QAScore> {
+  async qa(opts: QaOptions = {}): Promise<QAScore> {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
       this.#assertCanQa(state, slice);
-      const score = QAScoreSchema.parse(opts.score);
+      const specId = state.activeSpecId;
+      if (!specId) {
+        refuse("qa requires an active spec", HINT.spec);
+      }
+      const spec = (await this.store.readSpec(specId)).data;
+      const config = await this.#readConfig();
+      const mode = opts.mode ?? config.qa.mode;
+      if (mode === "no-browser") {
+        const receipt = await readChecklist(this.projectRoot);
+        if (!checklistComplete(spec, receipt)) {
+          refuse("no-browser qa requires legion-cli qa checklist", HINT.qaChecklist);
+        }
+      }
+      const score = opts.score
+        ? QAScoreSchema.parse(opts.score)
+        : (
+            await runProjectQa({
+              projectRoot: this.projectRoot,
+              spec,
+              mode,
+              unitCommand: config.qa.unitCommand,
+            })
+          ).score;
       await this.#writeQaScore(score);
       const next: StateFile = {
         ...state,
@@ -803,6 +836,64 @@ export class LegionEngine {
       }
       await this.#writeState(next);
       return score;
+    });
+  }
+
+  async qaChecklist(ticks: string[]): Promise<void> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      const specId = state.activeSpecId;
+      if (!specId) {
+        refuse("qa checklist requires an active spec", HINT.spec);
+      }
+      const spec = (await this.store.readSpec(specId)).data;
+      const valid = new Set(spec.acceptance.map((ac) => ac.id));
+      const unique = [...new Set(ticks.map((id) => id.trim()).filter(Boolean))];
+      const unknown = unique.find((id) => !valid.has(id));
+      if (unknown) {
+        refuse(`unknown acceptance criterion ${unknown}`, HINT.qaChecklist);
+      }
+      await writeChecklist(this.projectRoot, {
+        specId,
+        ticks: unique,
+        updatedAt: nowIso(),
+      });
+    });
+  }
+
+  async fix(bug: string): Promise<Task> {
+    return this.#mutate(async () => {
+      const title = bug.trim();
+      if (!title) {
+        refuse("fix requires a bug description", HINT.fix);
+      }
+      const state = await this.#readState();
+      if (state.phase !== "executing" && state.phase !== "ready_to_ship" && state.phase !== "plan_ready") {
+        refuse("fix requires plan_ready, executing, or ready_to_ship", HINT.execute);
+      }
+      const specId = state.activeSpecId;
+      if (!specId) {
+        refuse("fix requires an active spec", HINT.spec);
+      }
+      const testPath = regressionTestPath(title);
+      await ensureRegressionTest(this.projectRoot, testPath, title);
+      const verifyCmd = regressionVerifyCommand(testPath);
+      const red = runVerificationCommands(this.projectRoot, [verifyCmd]);
+      if (red[0]?.ok) {
+        refuse("this does not reproduce", HINT.fix);
+      }
+      await this.#failLastReviewLocked();
+      return this.#fileTicketLocked({
+        title,
+        type: "bug",
+        priority: "P0",
+        notes: "Playwright-before-fix: reproducing test must stay RED until execute goes GREEN.",
+        contract: {
+          filesAllowed: [testPath],
+          expectedArtifacts: [testPath],
+          verificationCommands: [verifyCmd],
+        },
+      });
     });
   }
 
