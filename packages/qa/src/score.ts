@@ -5,7 +5,7 @@ import {
   type QAScore,
   type Spec,
 } from "@9thlevelsoftware/legion-cli-schema";
-import { parseTestReport, type ParsedTest } from "./reports.js";
+import { parseTestReport, reportFailClosed, type ParsedTest } from "./reports.js";
 import { isVisualTitle, specHasUi } from "./tags.js";
 
 export type QaMode = "full" | "no-browser";
@@ -21,6 +21,8 @@ export type ScoreQaInput = {
   id?: string;
   createdAt?: string;
   evidencePaths?: string[];
+  /** Crashed/missing reporter JSON: force P0 failed rather than a vacuous 40. */
+  failClosed?: boolean;
 };
 
 const NO_BROWSER_CAP = 70;
@@ -51,8 +53,8 @@ function visualRegressions(opts: {
   if (!opts.specHasUi) return 0;
   let regressions = 0;
   for (const test of opts.tests) {
-    if (test.skipped) continue;
-    if (test.visualFailure || (!test.ok && test.title.match(/@visual\b/i))) regressions += 1;
+    if (test.skipped || test.ok) continue;
+    if (test.visualFailure || isVisualTitle(test.title)) regressions += 1;
   }
   // Schema: visual points are 15 iff regressions==0. A UI spec without a full
   // Playwright run must score visual 0, so record a synthetic regression.
@@ -64,8 +66,12 @@ export function scoreQa(input: ScoreQaInput): QAScore {
   const unitTests = input.unitReport !== undefined ? parseTestReport(input.unitReport) : [];
   const pwTests = input.playwrightReport !== undefined ? parseTestReport(input.playwrightReport) : [];
   const tests = input.tests ?? [...unitTests, ...pwTests];
+  const failClosed =
+    input.failClosed === true ||
+    (input.tests === undefined && input.unitReport !== undefined && reportFailClosed(input.unitReport));
 
   const p0 = bucketCounts(tests, "P0");
+  if (failClosed) p0.failed = Math.max(p0.failed, 1);
   const p1 = bucketCounts(tests, "P1");
   const p2 = bucketCounts(tests, "P2");
   const p1Rate = passRate(p1.passed, p1.failed);
@@ -108,6 +114,7 @@ export function scoreSpecReports(opts: {
   id?: string;
   createdAt?: string;
   evidencePaths?: string[];
+  failClosed?: boolean;
 }): QAScore {
   return scoreQa({
     specId: opts.spec.id,
@@ -119,6 +126,7 @@ export function scoreSpecReports(opts: {
     id: opts.id,
     createdAt: opts.createdAt,
     evidencePaths: opts.evidencePaths,
+    failClosed: opts.failClosed,
   });
 }
 

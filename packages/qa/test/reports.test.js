@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { parseTestReport, runCommand, splitCommand } from "../dist/index.js";
+import { parseTestReport, runCommand, runProjectQa, scoreQa, splitCommand } from "../dist/index.js";
 
 test("parses Playwright JSON including screenshot-diff failures", () => {
   const report = {
@@ -89,4 +89,110 @@ test("runCommand captures JSON from node -e", async () => {
   assert.equal(capture.status, 0);
   assert.equal(JSON.parse(capture.stdout).tests[0].title, "health @p0");
   assert.deepEqual(splitCommand(`pnpm test -- --reporter=json`), ["pnpm", "test", "--", "--reporter=json"]);
+});
+
+function playwrightSpec(title, { ok, attachments, error }) {
+  return {
+    title,
+    ok,
+    tests: [
+      {
+        status: ok ? "expected" : "unexpected",
+        results: [
+          {
+            status: ok ? "passed" : "failed",
+            error,
+            attachments,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+test("generic screenshot attachments are not visual regressions", () => {
+  const failed = parseTestReport({
+    suites: [
+      {
+        specs: [
+          playwrightSpec("api @p1", {
+            ok: false,
+            error: { message: "Error: expect(received).toBe(expected)" },
+            attachments: [{ name: "screenshot", contentType: "image/png" }],
+          }),
+        ],
+      },
+    ],
+  });
+  assert.equal(failed[0].visualFailure, false);
+  const failedScore = scoreQa({
+    specId: "spec-checkin",
+    mode: "full",
+    specHasUi: true,
+    playwrightRan: true,
+    tests: failed,
+    id: "qa-shot",
+    createdAt: "2026-09-01T12:00:00Z",
+  });
+  assert.equal(failedScore.buckets.visual.points, 15);
+  assert.equal(failedScore.buckets.visual.regressions, 0);
+
+  const passed = parseTestReport({
+    suites: [
+      {
+        specs: [
+          playwrightSpec("api @p1", {
+            ok: true,
+            attachments: [{ name: "screenshot", contentType: "image/png" }],
+          }),
+        ],
+      },
+    ],
+  });
+  assert.equal(passed[0].visualFailure, false);
+  const passedScore = scoreQa({
+    specId: "spec-checkin",
+    mode: "full",
+    specHasUi: true,
+    playwrightRan: true,
+    tests: passed,
+    id: "qa-pass-shot",
+    createdAt: "2026-09-01T12:00:00Z",
+  });
+  assert.equal(passedScore.buckets.visual.points, 15);
+});
+
+test("missing unit JSON fail-closes P0 instead of vacuous 100", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "legion-qa-miss-"));
+  const script = join(dir, "fail.js");
+  await writeFile(script, "process.exit(1)\n", "utf8");
+  const result = await runProjectQa({
+    projectRoot: dir,
+    spec: {
+      id: "spec-api",
+      acceptance: [{ id: "AC-01", statement: "API returns 200 for health", kind: "test", priority: "P0" }],
+      wireframesIndex: null,
+    },
+    mode: "full",
+    unitCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`,
+    id: "qa-miss",
+    createdAt: "2026-09-01T12:00:00Z",
+  });
+  assert.equal(result.score.pass, false);
+  assert.ok(result.score.buckets.p0.failed >= 1);
+});
+
+test("Jest success false with empty testResults is not a 100", () => {
+  const score = scoreQa({
+    specId: "spec-api",
+    mode: "full",
+    specHasUi: false,
+    playwrightRan: false,
+    unitReport: { success: false, numFailedTests: 1, testResults: [] },
+    id: "qa-jest-empty",
+    createdAt: "2026-09-01T12:00:00Z",
+  });
+  assert.equal(score.pass, false);
+  assert.notEqual(score.total, 100);
+  assert.ok(score.buckets.p0.failed >= 1);
 });

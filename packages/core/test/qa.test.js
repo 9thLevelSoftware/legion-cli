@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
   LegionRefuseError,
+  PRODUCT_ENTRY,
   regressionTestPath,
 } from "../dist/index.js";
 import {
@@ -151,19 +153,42 @@ test("fix writes a RED @p0 test then execute can go GREEN", async () => {
         assert.equal(task.priority, "P0");
         assert.equal(task.status, "ready");
         assert.ok(task.contract.filesAllowed.includes(testPath));
+        assert.ok(task.contract.filesAllowed.includes(PRODUCT_ENTRY));
         assert.equal((await engine.getState()).lastReview, "FAIL");
-        const passing = [
-          'import test from "node:test";',
-          `test(${JSON.stringify(`${bug} @p0`)}, () => {});`,
-          "",
-        ].join("\n");
-        await mkdir(join(dir, "tests", "unit", "regression"), { recursive: true });
-        await writeFile(join(dir, testPath), passing, "utf8");
         const result = await engine.execute(task.id, { fix: true });
         assert.equal(result.status, "done");
         assert.equal((await store.readTask(task.id)).data.status, "done");
+        assert.equal(existsSync(join(dir, ...PRODUCT_ENTRY.split("/"))), true);
+        const testBody = await readFile(join(dir, ...testPath.split("/")), "utf8");
+        assert.match(testBody, /this does not reproduce/);
+        assert.match(testBody, /mod\.ok/);
       },
-      { skillsDir },
+      {
+        skillsDir,
+        fakeArtifacts: [{ path: PRODUCT_ENTRY, content: "export const ok = true;\n" }],
+      },
+    );
+  });
+});
+
+test("fix execute reverts product files that are not in filesAllowed", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedPlanReady(store, { phase: "executing", lastReview: "PASS", task: { status: "done" } });
+        initGitRepo(dir);
+        const task = await engine.fix("unlisted extra");
+        assert.equal(task.contract.filesAllowed.includes("src/secret.ts"), false);
+        const result = await engine.execute(task.id, { fix: true });
+        assert.equal(result.status, "blocked");
+        assert.ok(result.tasks[0].extrasReverted.includes("src/secret.ts"));
+        assert.equal(existsSync(join(dir, "src", "secret.ts")), false);
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [{ path: "src/secret.ts", content: "export const leaked = true;\n" }],
+      },
     );
   });
 });
@@ -198,7 +223,9 @@ test("fix files a type:bug P0 task from a RED template", async () => {
     const task = await engine.fix("tap misses");
     assert.equal(task.type, "bug");
     assert.equal(task.priority, "P0");
-    assert.match(task.contract.filesAllowed[0], /@p0|regression/);
+    assert.match(task.contract.filesAllowed[0], /regression/);
+    assert.ok(task.contract.filesAllowed.includes("src/main.js"));
+    assert.ok(task.contract.filesAllowed.includes("src/main.ts"));
     assert.equal((await store.readTask(task.id)).data.type, "bug");
   });
 });

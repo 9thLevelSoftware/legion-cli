@@ -29,6 +29,10 @@ export {
 export { HEAD_MOVED_WARNING, revertExtras } from "./revert.js";
 export {
   ensureRegressionTest,
+  fixFilesAllowed,
+  LIKELY_PRODUCT_PATHS,
+  PRODUCT_ENTRY,
+  productSourcePaths,
   regressionSlug,
   regressionTestPath,
   regressionTestSource,

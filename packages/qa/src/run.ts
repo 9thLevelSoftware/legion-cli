@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import type { QAScore, Spec } from "@9thlevelsoftware/legion-cli-schema";
-import { extractJsonPayload } from "./reports.js";
+import { extractJsonPayload, reportFailClosed } from "./reports.js";
 import { scoreSpecReports, type QaMode } from "./score.js";
 import { specHasUi } from "./tags.js";
 
@@ -120,6 +120,7 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
     playwrightRan = Boolean(pwCapture.started && playwrightReport && typeof playwrightReport === "object");
   }
 
+  const failClosed = !unitCapture.started || reportFailClosed(unitReport);
   const score = scoreSpecReports({
     spec: opts.spec,
     mode: opts.mode,
@@ -129,6 +130,7 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
     id: opts.id,
     createdAt: opts.createdAt,
     evidencePaths,
+    failClosed,
   });
   return { score, evidencePaths, playwrightRan };
 }

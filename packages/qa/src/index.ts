@@ -5,7 +5,7 @@ export {
   writeChecklist,
 } from "./checklist.js";
 export type { QaChecklistReceipt } from "./checklist.js";
-export { extractJsonPayload, parseTestReport } from "./reports.js";
+export { extractJsonPayload, parseTestReport, reportFailClosed } from "./reports.js";
 export type { ParsedTest } from "./reports.js";
 export {
   DEFAULT_PLAYWRIGHT_COMMAND,

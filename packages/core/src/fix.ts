@@ -1,6 +1,18 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+
+/** Default product files a bug fix is allowed to create or edit. */
+export const LIKELY_PRODUCT_PATHS = [
+  "src/main.js",
+  "src/main.ts",
+  "src/index.js",
+  "src/index.ts",
+  "src/board.js",
+  "src/board.ts",
+] as const;
+
+export const PRODUCT_ENTRY = "src/main.js";
 
 export function regressionSlug(bug: string): string {
   const slug = bug
@@ -29,11 +41,49 @@ export function regressionTestSource(bug: string): string {
     'import assert from "node:assert/strict";',
     'import test from "node:test";',
     "",
-    `test(${JSON.stringify(title)}, () => {`,
-    '  assert.fail("this does not reproduce");',
+    `test(${JSON.stringify(title)}, async () => {`,
+    `  const mod = await import(new URL("../../../${PRODUCT_ENTRY}", import.meta.url).href);`,
+    '  assert.equal(mod.ok, true, "this does not reproduce");',
     "});",
     "",
   ].join("\n");
+}
+
+function walkSourceFiles(projectRoot: string, rel: string, add: (posix: string) => void): void {
+  const abs = join(projectRoot, ...rel.split("/"));
+  let entries;
+  try {
+    entries = readdirSync(abs, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.name === "node_modules" || entry.name === "dist") continue;
+    const posix = `${rel}/${entry.name}`;
+    if (entry.isDirectory()) {
+      walkSourceFiles(projectRoot, posix, add);
+    } else if (entry.isFile() && /\.(ts|js|mjs|cjs|tsx|jsx)$/.test(entry.name)) {
+      add(posix);
+    }
+  }
+}
+
+/** Concrete product paths the bug task may write (v0 has no globs). */
+export function productSourcePaths(projectRoot: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (posix: string) => {
+    if (seen.has(posix)) return;
+    seen.add(posix);
+    out.push(posix);
+  };
+  for (const path of LIKELY_PRODUCT_PATHS) add(path);
+  walkSourceFiles(projectRoot, "src", add);
+  return out.slice(0, 16);
+}
+
+export function fixFilesAllowed(projectRoot: string, testPath: string): string[] {
+  return [testPath, ...productSourcePaths(projectRoot).filter((path) => path !== testPath)];
 }
 
 export async function ensureRegressionTest(projectRoot: string, testPath: string, bug: string): Promise<boolean> {
