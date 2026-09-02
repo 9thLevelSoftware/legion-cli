@@ -282,6 +282,17 @@ test("task amend --adapter wins over unused bad --route", async () => {
   });
 });
 
+test("task amend --route constructor refuses inherited prototype keys", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedFrozen(dir);
+    await engine.store.writeConfig(withNamedAdapter(await engine.store.readConfig(), "ui", "grok"));
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["task", "amend", "TSK-0001", "--route", "constructor", "--project", dir]);
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /unknown named route constructor/);
+  });
+});
+
 test("task amend --route unknown refuses before write", async () => {
   await withTempDir(async (dir) => {
     await seedFrozen(dir);

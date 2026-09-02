@@ -10,9 +10,13 @@ export function expandNamedAdapter(
   config: Pick<LegionConfig, "adapter">,
   route: string,
 ): AdapterId {
-  const id = config.adapter.named?.[route];
-  if (!id) refuse(`unknown named route ${route}`, HINT.doctor);
-  return id;
+  const named = config.adapter.named;
+  if (!named || !Object.hasOwn(named, route)) {
+    refuse(`unknown named route ${route}`, HINT.doctor);
+  }
+  const parsed = AdapterIdSchema.safeParse(named[route]);
+  if (!parsed.success) refuse(`unknown named route ${route}`, HINT.doctor);
+  return parsed.data;
 }
 
 export function parseAdapterFlag(raw: string | undefined): AdapterId | undefined {
@@ -40,7 +44,7 @@ export function resolvePersistAdapter(
     refuse("--clear-adapter cannot be combined with --adapter or --route", HINT.amend);
   }
   if (flags.clearAdapter) return { clearAdapter: true };
-  if (hasAdapter) return { adapter: parseAdapterFlag(flags.adapter) };
-  if (hasRoute) return { adapter: expandNamedAdapter(config, flags.route as string) };
+  if (flags.adapter !== undefined) return { adapter: parseAdapterFlag(flags.adapter) };
+  if (flags.route !== undefined) return { adapter: expandNamedAdapter(config, flags.route) };
   return {};
 }
