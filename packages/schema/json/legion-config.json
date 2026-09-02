@@ -127,11 +127,155 @@
               }
             }
           }
+        },
+        "routes": {
+          "type": "object",
+          "properties": {
+            "interview": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax"
+              ]
+            },
+            "discuss": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax"
+              ]
+            },
+            "spec": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax"
+              ]
+            },
+            "ingest": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax"
+              ]
+            },
+            "plan": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax"
+              ]
+            },
+            "execute": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax"
+              ]
+            },
+            "verify": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax"
+              ]
+            },
+            "review": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax"
+              ]
+            },
+            "qa": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "named": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "generic",
+              "fake",
+              "grok",
+              "openai",
+              "codex",
+              "mimo",
+              "minimax"
+            ]
+          }
         }
       },
       "required": [
         "default"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ingest": {
       "default": {
@@ -233,14 +377,207 @@
         "type": "object",
         "properties": {
           "adapter": {
-            "type": "object",
-            "properties": {
-              "default": {
-                "const": "generic"
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "default": {
+                    "const": "generic"
+                  }
+                },
+                "required": [
+                  "default"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "interview": {
+                        "const": "generic"
+                      }
+                    },
+                    "required": [
+                      "interview"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "discuss": {
+                        "const": "generic"
+                      }
+                    },
+                    "required": [
+                      "discuss"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "spec": {
+                        "const": "generic"
+                      }
+                    },
+                    "required": [
+                      "spec"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "ingest": {
+                        "const": "generic"
+                      }
+                    },
+                    "required": [
+                      "ingest"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "plan": {
+                        "const": "generic"
+                      }
+                    },
+                    "required": [
+                      "plan"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "execute": {
+                        "const": "generic"
+                      }
+                    },
+                    "required": [
+                      "execute"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "verify": {
+                        "const": "generic"
+                      }
+                    },
+                    "required": [
+                      "verify"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "review": {
+                        "const": "generic"
+                      }
+                    },
+                    "required": [
+                      "review"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "qa": {
+                        "const": "generic"
+                      }
+                    },
+                    "required": [
+                      "qa"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "named": {
+                    "type": "object",
+                    "not": {
+                      "additionalProperties": {
+                        "not": {
+                          "const": "generic"
+                        }
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "named"
+                ]
               }
-            },
-            "required": [
-              "default"
             ]
           }
         },

@@ -18,7 +18,9 @@ import {
   PhaseSchema,
   ProjectFileSchema,
   QAScoreSchema,
+  ResumeFileSchema,
   SCHEMA_VERSION,
+  SessionBriefSchema,
   SkillContractSchema,
   SpecSchema,
   StateFileSchema,
@@ -455,6 +457,153 @@ test("LegionConfig requires adapter.default and defaults ingest.autoCommit", () 
   );
 });
 
+test("adapter routing: generic-if-routed, strict HTTP keys, named keys, optional task/resume/brief", () => {
+  const configBase = { schemaVersion: "legion-cli-config/v1" };
+
+  assert.equal(
+    LegionConfigSchema.parse({
+      ...configBase,
+      adapter: { default: "claude", routes: { plan: "grok" } },
+    }).adapter.routes.plan,
+    "grok",
+  );
+
+  assert.equal(
+    LegionConfigSchema.safeParse({
+      ...configBase,
+      adapter: { default: "claude", routes: { plan: "generic" } },
+    }).success,
+    false,
+  );
+
+  assert.equal(
+    LegionConfigSchema.parse({
+      ...configBase,
+      adapter: {
+        default: "claude",
+        routes: { plan: "generic" },
+        generic: { binary: "claude", args: ["-p"] },
+      },
+    }).adapter.routes.plan,
+    "generic",
+  );
+
+  assert.equal(
+    LegionConfigSchema.safeParse({
+      ...configBase,
+      adapter: { default: "claude", named: { ui: "generic" } },
+    }).success,
+    false,
+  );
+
+  assert.equal(
+    LegionConfigSchema.parse({
+      ...configBase,
+      adapter: {
+        default: "claude",
+        named: { ui: "generic" },
+        generic: { binary: "claude", args: ["-p"] },
+      },
+    }).adapter.named.ui,
+    "generic",
+  );
+
+  assert.equal(
+    LegionConfigSchema.parse({
+      ...configBase,
+      adapter: { default: "claude", named: { ui: "grok", api: "codex" } },
+    }).adapter.named.ui,
+    "grok",
+  );
+
+  for (const key of ["claude", "generic", "fake", "grok", "openai", "codex", "mimo", "minimax"]) {
+    assert.equal(
+      LegionConfigSchema.safeParse({
+        ...configBase,
+        adapter: { default: "claude", named: { [key]: "grok" } },
+      }).success,
+      false,
+      `named key ${key} must not be an AdapterId`,
+    );
+  }
+
+  for (const extra of [{ apiKey: "sk" }, { apiBase: "https://api" }, { model: "gpt-4" }, { provider: "openai" }]) {
+    assert.equal(
+      LegionConfigSchema.safeParse({
+        ...configBase,
+        adapter: { default: "claude", ...extra },
+      }).success,
+      false,
+      `HTTP-router key ${Object.keys(extra)[0]} must fail parse`,
+    );
+  }
+
+  const task = {
+    schemaVersion: "legion-cli-task/v1",
+    id: "TSK-0002",
+    title: "in/out button",
+    status: "ready",
+    type: "feature",
+    priority: "P0",
+    specId: "spec-checkin",
+    blockedBy: [],
+    blocks: [],
+    contract: {
+      filesAllowed: ["src/main.ts"],
+      filesForbidden: [".git/**"],
+      expectedArtifacts: ["src/main.ts"],
+      verificationCommands: ["pnpm test"],
+    },
+    assignee: "agent",
+    notes: "",
+  };
+  assert.equal(TaskSchema.parse(task).adapter, undefined);
+  assert.equal(TaskSchema.parse({ ...task, adapter: "grok" }).adapter, "grok");
+  assert.equal(TaskSchema.safeParse({ ...task, adapter: "not-a-cli" }).success, false);
+
+  const resume = {
+    schemaVersion: "legion-cli-resume/v1",
+    runId: "run-1",
+    skillId: "execute",
+    preSpawnRef: "abc123",
+    startedAt: "2026-09-01T12:00:00Z",
+  };
+  assert.equal(ResumeFileSchema.parse(resume).adapterId, undefined);
+  assert.deepEqual(
+    ResumeFileSchema.parse({
+      ...resume,
+      adapterId: "grok",
+      binary: "grok",
+      argvSummary: "--model grok-4 {{pointer}}",
+      resolutionSource: "task",
+    }).resolutionSource,
+    "task",
+  );
+  assert.equal(
+    ResumeFileSchema.safeParse({ ...resume, resolutionSource: "named" }).success,
+    false,
+  );
+
+  const brief = {
+    schemaVersion: "legion-cli-brief/v1",
+    project: { name: "Checkin", mode: "greenfield", controlMode: "guarded" },
+    phase: "executing",
+    currentTask: { id: "TSK-0100", title: "settings screen" },
+    blockers: [],
+    decisions: [],
+    wiki: [],
+    characterCount: 0,
+  };
+  assert.equal(SessionBriefSchema.parse(brief).currentTask.adapter, undefined);
+  assert.equal(
+    SessionBriefSchema.parse({
+      ...brief,
+      currentTask: { ...brief.currentTask, adapter: "grok" },
+    }).currentTask.adapter,
+    "grok",
+  );
+});
+
 test("Task.blockedBy and blocks reject empty ids", () => {
   const task = {
     schemaVersion: "legion-cli-task/v1",
@@ -554,5 +703,37 @@ test("JSON Schema overlays reject .git paths, no-browser pass, and generic witho
       adapter: { default: "generic", generic: { binary: "claude", args: ["-p"] } },
     }),
     true,
+  );
+  assert.equal(
+    validateConfig({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "claude", routes: { plan: "generic" } },
+    }),
+    false,
+  );
+  assert.equal(
+    validateConfig({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "claude", routes: { plan: "grok" } },
+    }),
+    true,
+  );
+  assert.equal(
+    validateConfig({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: {
+        default: "claude",
+        routes: { plan: "generic" },
+        generic: { binary: "claude", args: ["-p"] },
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    validateConfig({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "claude", named: { ui: "generic" } },
+    }),
+    false,
   );
 });

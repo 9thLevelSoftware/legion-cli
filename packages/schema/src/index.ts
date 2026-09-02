@@ -37,6 +37,8 @@ export {
 
 export {
   AcceptanceCriterionSchema,
+  AdapterResolutionSourceSchema,
+  AdapterRoutesSchema,
   AssumptionSchema,
   AuditEventSchema,
   BrownfieldRunIdSchema,
@@ -56,6 +58,7 @@ export {
   IntentMappedSchema,
   IntentRoundSchema,
   LegionConfigSchema,
+  NamedAdapterRoutesSchema,
   PacketSchema,
   ProjectFileSchema,
   QaBucketsSchema,
@@ -69,6 +72,8 @@ export {
 } from "./schemas.js";
 export type {
   AcceptanceCriterion,
+  AdapterResolutionSource,
+  AdapterRoutes,
   Assumption,
   AuditEvent,
   BrownfieldRun,
@@ -86,6 +91,7 @@ export type {
   IntentMapped,
   IntentRound,
   LegionConfig,
+  NamedAdapterRoutes,
   Packet,
   ProjectFile,
   QaBuckets,

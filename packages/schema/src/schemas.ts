@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ConcretePosixPathSchema, PosixAllowedRootSchema } from "./paths.js";
 import {
+  ADAPTER_IDS,
   AdapterIdSchema,
   ControlModeSchema,
   PhaseSchema,
@@ -86,6 +87,43 @@ export const ExtraAdapterConfigSchema = z.object({
 });
 export type ExtraAdapterConfig = z.infer<typeof ExtraAdapterConfigSchema>;
 
+export const AdapterRoutesSchema = z
+  .object({
+    interview: AdapterIdSchema.optional(),
+    discuss: AdapterIdSchema.optional(),
+    spec: AdapterIdSchema.optional(),
+    ingest: AdapterIdSchema.optional(),
+    plan: AdapterIdSchema.optional(),
+    execute: AdapterIdSchema.optional(),
+    verify: AdapterIdSchema.optional(),
+    review: AdapterIdSchema.optional(),
+    qa: AdapterIdSchema.optional(),
+  })
+  .strict();
+export type AdapterRoutes = z.infer<typeof AdapterRoutesSchema>;
+
+export const NamedAdapterRoutesSchema = z.record(
+  z
+    .string()
+    .regex(/^[a-z][a-z0-9-]{0,31}$/)
+    .refine((key) => !(ADAPTER_IDS as readonly string[]).includes(key), {
+      message: "adapter.named keys must not be AdapterIds",
+    }),
+  AdapterIdSchema,
+);
+export type NamedAdapterRoutes = z.infer<typeof NamedAdapterRoutesSchema>;
+
+function adapterTargetsGeneric(adapter: {
+  default: z.infer<typeof AdapterIdSchema>;
+  routes?: AdapterRoutes;
+  named?: NamedAdapterRoutes;
+}): boolean {
+  if (adapter.default === "generic") return true;
+  const routed = adapter.routes ? Object.values(adapter.routes) : [];
+  const named = adapter.named ? Object.values(adapter.named) : [];
+  return routed.includes("generic") || named.includes("generic");
+}
+
 export const LegionConfigSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.config),
   adapter: z
@@ -107,9 +145,12 @@ export const LegionConfigSchema = z.object({
       codex: ExtraAdapterConfigSchema.optional(),
       mimo: ExtraAdapterConfigSchema.optional(),
       minimax: ExtraAdapterConfigSchema.optional(),
+      routes: AdapterRoutesSchema.optional(),
+      named: NamedAdapterRoutesSchema.optional(),
     })
-    .refine((adapter) => adapter.default !== "generic" || adapter.generic !== undefined, {
-      message: "adapter.generic is required when adapter.default is generic",
+    .strict()
+    .refine((adapter) => !adapterTargetsGeneric(adapter) || adapter.generic !== undefined, {
+      message: "adapter.generic is required when adapter.default or any routes/named target is generic",
       path: ["generic"],
     }),
   ingest: z
@@ -175,6 +216,7 @@ export const TaskSchema = z.object({
   type: z.enum(["feature", "fix", "bug"]),
   priority: PrioritySchema,
   specId: z.string().min(1),
+  adapter: AdapterIdSchema.optional(),
   parentId: z.string().min(1).nullable().optional(),
   blockedBy: z.array(z.string().min(1)),
   blocks: z.array(z.string().min(1)),
@@ -245,6 +287,9 @@ export const AuditEventSchema = z.object({
 });
 export type AuditEvent = z.infer<typeof AuditEventSchema>;
 
+export const AdapterResolutionSourceSchema = z.enum(["cli", "task", "route", "default"]);
+export type AdapterResolutionSource = z.infer<typeof AdapterResolutionSourceSchema>;
+
 export const ResumeFileSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.resume),
   runId: z.string().min(1),
@@ -253,6 +298,10 @@ export const ResumeFileSchema = z.object({
   preSpawnRef: z.string().min(1),
   startedAt: z.string().min(1),
   pid: z.number().int().positive().nullable().optional(),
+  adapterId: AdapterIdSchema.optional(),
+  binary: z.string().min(1).optional(),
+  argvSummary: z.string().optional(),
+  resolutionSource: AdapterResolutionSourceSchema.optional(),
 });
 export type ResumeFile = z.infer<typeof ResumeFileSchema>;
 
@@ -407,6 +456,7 @@ export const SessionBriefSchema = z.object({
     .object({
       id: z.string().min(1),
       title: z.string().min(1),
+      adapter: AdapterIdSchema.optional(),
     })
     .nullable()
     .optional(),

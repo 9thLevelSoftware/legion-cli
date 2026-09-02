@@ -101,14 +101,38 @@ function overlayJsonSchema(
   json: Record<string, unknown>,
 ): Record<string, unknown> {
   if (name === "legion-config") {
+    const genericAdapterIf = (clause: Record<string, unknown>): Record<string, unknown> => ({
+      type: "object",
+      properties: clause,
+      required: Object.keys(clause),
+    });
     return withAllOf(json, {
       if: {
         type: "object",
         properties: {
           adapter: {
-            type: "object",
-            properties: { default: { const: "generic" } },
-            required: ["default"],
+            anyOf: [
+              genericAdapterIf({ default: { const: "generic" } }),
+              ...SkillIdSchema.options.map((skillId) =>
+                genericAdapterIf({
+                  routes: {
+                    type: "object",
+                    properties: { [skillId]: { const: "generic" } },
+                    required: [skillId],
+                  },
+                }),
+              ),
+              {
+                type: "object",
+                properties: {
+                  named: {
+                    type: "object",
+                    not: { additionalProperties: { not: { const: "generic" } } },
+                  },
+                },
+                required: ["named"],
+              },
+            ],
           },
         },
         required: ["adapter"],
