@@ -122,13 +122,26 @@ async function readOptionalProject(store: LegionReader): Promise<ProjectFile | n
   return (await store.readProject()).data;
 }
 
-async function readOptionalConfig(store: LegionReader): Promise<LegionConfig | null> {
+export async function readOptionalConfig(store: LegionReader): Promise<LegionConfig | null> {
   if (!(await store.pathExists(".legion-cli/config.yaml"))) return null;
   try {
     return await store.readConfig();
   } catch {
     return null;
   }
+}
+
+export async function readFeatureFlags(store: LegionReader): Promise<{
+  mcpApps: boolean;
+  webmcp: boolean;
+  parallelExecute: boolean;
+}> {
+  const config = await readOptionalConfig(store);
+  return {
+    mcpApps: config?.flags.mcpApps === true,
+    webmcp: config?.flags.webmcp === true,
+    parallelExecute: config?.flags.parallelExecute === true,
+  };
 }
 
 function viewerUrl(config: LegionConfig | null): string {
