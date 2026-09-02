@@ -4,6 +4,7 @@ import { DEFAULT_GENERIC_ARGS, isResolvedAdapterSpawnable } from "@9thlevelsoftw
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import {
   readAuditEvents,
+  redactSecrets,
   summarizeAuditMetrics,
   type LocalMetrics,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -101,19 +102,23 @@ function isFrozenGenericArgs(args: readonly string[] | undefined): boolean {
   return sameArgs(args, DEFAULT_GENERIC_ARGS);
 }
 
+function formatArgsTrustWarning(label: string, args: readonly string[]): string {
+  return `${label} are set (trust warning): ${redactSecrets(args.join(" "))}`;
+}
+
 function pushArgsTrustWarnings(config: LegionConfig, warnings: string[]): void {
   const extraArgs = config.adapter.claude?.extraArgs ?? [];
   if (extraArgs.length > 0) {
-    warnings.push(`claude extraArgs are set (trust warning): ${extraArgs.join(" ")}`);
+    warnings.push(formatArgsTrustWarning("claude extraArgs", extraArgs));
   }
   const genericArgs = config.adapter.generic?.args;
   if (!isFrozenGenericArgs(genericArgs) && genericArgs) {
-    warnings.push(`generic args are set (trust warning): ${genericArgs.join(" ")}`);
+    warnings.push(formatArgsTrustWarning("generic args", genericArgs));
   }
   for (const id of EXTRA_ADAPTER_IDS) {
     const args = config.adapter[id]?.args;
     if (!isFrozenGenericArgs(args) && args) {
-      warnings.push(`${id} args are set (trust warning): ${args.join(" ")}`);
+      warnings.push(formatArgsTrustWarning(`${id} args`, args));
     }
   }
 }
