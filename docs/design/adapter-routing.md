@@ -540,7 +540,7 @@ argvSummary: z.string().optional(),    // template argv, redacted, truncated 240
 resolutionSource: z.enum(["cli", "task", "route", "default"]).optional(),
 ```
 
-Do not bump `legion-cli-resume/v1`. `argvSummary` = `redactSecrets(templateArgv(...).argv.join(" ")).slice(0, 240)`. Core already depends on persist, so `redactSecrets` from `packages/persist/src/redact.ts` is fine in `spawn.ts`. Do **not** persist env.
+Do not bump `legion-cli-resume/v1`. `argvSummary` = `argvSummarySafe(templateArgv(...).argv)` in `packages/core/src/spawn.ts`: keep flag names and `{{pointer}}`, replace attached values (`--api-key=secret`, `-pSECRET`) and non-flag tokens with `<redacted>`, then truncate 240. Pattern-based `redactSecrets` is **not** enough. Do **not** persist env.
 
 **Audit (v1):** extend **existing** execute and timeout payloads only. Do not add new audit types `plan` / `review` / `verify` / `spawn-skip` in this feature (resume covers those spawns).
 
@@ -860,8 +860,8 @@ Used only by CLI `task amend --route` and `ticket create --route`. Spawn never c
 | Topic | Handling |
 | --- | --- |
 | **Threat: Legion grows an HTTP completions client and harvests keys** | Non-goal. Adapter object `.strict()` rejects `apiKey`/`apiBase`/`model`/`provider`. Legion never writes keys into `.legion-cli/config.yaml` or task files. |
-| **Env allowlist (inherit-if-set, never written by Legion)** | `packages/agents/src/env.ts` `ENV_ALLOWLIST`: `PATH`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `ComSpec`, `CLAUDE_API_KEY`, `GROK_API_KEY`, `XAI_API_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY`, `TERM`. Windows inherit: `SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`, `PATHEXT`. `SSH_AUTH_SOCK` inherited when present, never injected into a blank env. Child CLIs may need those keys; Legion still does not store them. `argvSummary` must **not** persist env. |
-| **Threat: extraArgs smuggle secrets into argv and audit** | Doctor trust-warns extra args. Template `argvSummary` runs `redactSecrets`. Audit `data` is local jsonl; `DO_NOT_TRACK` still means no phone-home (`doctor --metrics`). |
+| **Env allowlist (inherit-if-set, never written by Legion)** | Base keys in `packages/agents/src/env.ts`: `PATH`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `ComSpec`, `TERM`. Provider credentials are **per spawned adapter** via `ADAPTER_CREDENTIAL_KEYS` (`filterSpawnEnv(env, adapterId)`): `claude` → `CLAUDE_API_KEY`; `grok` → `GROK_API_KEY`/`XAI_API_KEY`; `openai`/`codex` → `OPENAI_API_KEY`; `minimax` → `MINIMAX_API_KEY`; `fake`/`generic`/`mimo` → none. Never pass every vendor key to every child. Windows inherit: `SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`, `PATHEXT`. `SSH_AUTH_SOCK` inherited when present, never injected. Legion never writes keys into config or tasks. `argvSummary` must **not** persist env. |
+| **Threat: extraArgs smuggle secrets into argv and audit** | Doctor trust-warns extra args through `argvSummarySafe` (value-free). Resume/audit use the same helper, not pattern-only `redactSecrets`. Audit `data` is local jsonl; `DO_NOT_TRACK` still means no phone-home (`doctor --metrics`). |
 | **Threat: spawn writes `.legion-cli/config.yaml` to retarget later tasks** | Still implicit-forbidden; revert after `wait()`. |
 | **Threat: plan spawn sets `adapter: fake` on every task** | Valid enum, so it parses. Execute then refuses unless `LEGION_CLI_ADAPTER=fake`. SKILL.md forbids it. Optional later harden: plan FAIL if `Task.adapter === "fake"` outside tests. Not required for v1 of this feature. |
 | **Auth** | Unchanged: whatever the installed CLI already uses (Claude Code login, `codex` ChatGPT subscription, `grok` login, `mcode` login). Legion never logs in on the user’s behalf. |
@@ -904,7 +904,7 @@ Alerting: none (local CLI). The refuse message **is** the alert: it names the ro
 
 **Feature flag:** none. Routing is inert without `routes` / `Task.adapter` / `--adapter`. That is the flag.
 
-**Rollback:** revert the PR series. Current `TaskSchema` strips unknown keys: an **old** CLI reading a **new** task file with `adapter: grok` will **strip** the field and run default — safe. A **new** CLI is required to honor routes. Rolling back code while leaving `Task.adapter` on disk is therefore safe. Adapter-object `.strict()` is new-CLI-only; old CLIs already stripped `apiKey`. Rolling back schema tests must keep optional fields or strip fixtures.
+**Rollback:** revert the PR series **and** strip routing fields before an old CLI executes. An old CLI reading a new task file with `adapter: grok` **strips** the field and silently launches `adapter.default` — that is **not** safe if the operator chose a different CLI. Same for leftover `adapter.routes`. Before running an older binary against a routing-aware workspace: remove `Task.adapter` / `adapter.routes` / `adapter.named`, or keep a CLI that understands them. Adapter-object `.strict()` is new-CLI-only; old CLIs already stripped `apiKey`. Rolling back schema tests must keep optional fields or strip fixtures.
 
 **Staged rollout:** internal repo first (this workspace). No npm-user migration. Publish whenever the normal tag-triggered flow runs; no special publish for routing.
 
