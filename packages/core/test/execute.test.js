@@ -125,6 +125,7 @@ test("execute opts.adapter records resolutionSource cli", async () => {
     await withEngine(async ({ engine, store, dir }) => {
       await initProject(engine);
       await seedExecute(store, { task: { adapter: "grok" } });
+      await writeUnspawnableGrok(store);
       initGitRepo(dir);
       const result = await engine.execute("auto", { adapter: "fake" });
       assert.equal(result.status, "done");

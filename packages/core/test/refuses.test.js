@@ -170,6 +170,7 @@ const cases = [
     act: ({ engine }) => engine.plan("spec-checkin"),
     message: /plan needs a spawnable adapter \(grok, via route\)/,
     phaseAfter: "spec_frozen",
+    fakeAdapter: true,
   },
   {
     name: "ship if last QA pass is not true",
@@ -378,20 +379,24 @@ const cases = [
 
 for (const row of cases) {
   test(`§2.5 refuses: ${row.name}`, async () => {
-    await withEngine(async (ctx) => {
-      await row.setup(ctx);
-      await assert.rejects(
-        () => row.act(ctx),
-        (err) => {
-          isRefuse(err, row.hint);
-          if (row.message) assert.match(err.message, row.message);
-          return true;
-        },
-      );
-      if (row.phaseAfter) {
-        assert.equal((await ctx.engine.getState()).phase, row.phaseAfter);
-      }
-    });
+    const run = async () => {
+      await withEngine(async (ctx) => {
+        await row.setup(ctx);
+        await assert.rejects(
+          () => row.act(ctx),
+          (err) => {
+            isRefuse(err, row.hint);
+            if (row.message) assert.match(err.message, row.message);
+            return true;
+          },
+        );
+        if (row.phaseAfter) {
+          assert.equal((await ctx.engine.getState()).phase, row.phaseAfter);
+        }
+      });
+    };
+    if (row.fakeAdapter) await withFakeAdapter(run);
+    else await run();
   });
 }
 
