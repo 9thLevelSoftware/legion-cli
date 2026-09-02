@@ -65,11 +65,23 @@ export function genericArgsOrDefault(args: readonly string[]): string[] {
   return args.length === 0 ? [...DEFAULT_GENERIC_ARGS] : [...args];
 }
 
-/** Empty extra-adapter args use that id's frozen argv (`codex exec {{pointer}}` for openai/codex). */
-export function extraArgsOrDefault(id: ExtraAdapterId, args: readonly string[] = []): string[] {
-  if (args.length > 0) return [...args];
-  const frozen = FROZEN_ARGV_TABLE[id].argv;
-  return frozen ? [...frozen] : [...DEFAULT_GENERIC_ARGS];
+function basenameBinary(binary: string): string {
+  return binary.replaceAll("\\", "/").split("/").pop()?.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() ?? "";
+}
+
+function needsCodexExec(id: ExtraAdapterId, binary?: string): boolean {
+  if (id !== "openai" && id !== "codex") return false;
+  return basenameBinary(binary ?? ASSUMED_EXTRA_BINARIES[id]) === "codex";
+}
+
+/** Empty extra-adapter args use that id's frozen argv. Codex-binary openai/codex start with `exec`. */
+export function extraArgsOrDefault(id: ExtraAdapterId, args: readonly string[] = [], binary?: string): string[] {
+  if (args.length === 0) {
+    const frozen = FROZEN_ARGV_TABLE[id].argv;
+    return frozen ? [...frozen] : [...DEFAULT_GENERIC_ARGS];
+  }
+  if (needsCodexExec(id, binary) && args[0] !== "exec") return ["exec", ...args];
+  return [...args];
 }
 
 export function buildGenericArgv(args: readonly string[], pointerPrompt: string): string[] {

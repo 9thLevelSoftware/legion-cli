@@ -25,7 +25,7 @@ export class ExtraAdapter implements AgentAdapter {
   constructor(id: ExtraAdapterId, config: ExtraAdapterConfig = {}) {
     this.id = id;
     this.binary = config.binary ?? ASSUMED_EXTRA_BINARIES[id];
-    this.#args = extraArgsOrDefault(id, config.args ?? []);
+    this.#args = extraArgsOrDefault(id, config.args ?? [], this.binary);
   }
 
   async detect(): Promise<DetectResult> {

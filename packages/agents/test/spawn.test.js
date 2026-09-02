@@ -176,6 +176,13 @@ test("filterSpawnEnv scopes provider credentials to the selected adapter", () =>
   const generic = filterSpawnEnv(source, "generic");
   assert.equal(generic.OPENAI_API_KEY, undefined);
   assert.equal(generic.CLAUDE_API_KEY, undefined);
+  const genericClaude = filterSpawnEnv(source, "generic", "claude");
+  assert.equal(genericClaude.CLAUDE_API_KEY, "c");
+  assert.equal(genericClaude.OPENAI_API_KEY, undefined);
+  const genericCodex = filterSpawnEnv(source, "generic", "C:\\npm\\codex.cmd");
+  assert.equal(genericCodex.OPENAI_API_KEY, "o");
+  assert.equal(genericCodex.CLAUDE_API_KEY, undefined);
+  assert.equal(generic.CLAUDE_API_KEY, undefined);
   assert.equal(generic.SECRET, undefined);
 });
 

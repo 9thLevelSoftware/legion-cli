@@ -177,7 +177,7 @@ export async function optionalSkillSpawn(opts: {
     pointerPrompt: buildPointerPrompt(runId, opts.skillId),
     cwd: opts.projectRoot,
     timeoutMs: DEFAULT_TIMEOUT_MS,
-    env: filterSpawnEnv(process.env, adapter.id),
+    env: filterSpawnEnv(process.env, adapter.id, adapter.binary),
     expectedArtifacts: opts.fakeArtifacts,
   });
   await writeResume(handle.pid);

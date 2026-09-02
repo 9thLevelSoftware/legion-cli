@@ -94,7 +94,9 @@ test("frozen argv table marks extra adapters spawnable with fillable generic-sty
   assert.deepEqual(extraArgsOrDefault("openai"), ["exec", "{{pointer}}"]);
   assert.deepEqual(extraArgsOrDefault("codex"), ["exec", "{{pointer}}"]);
   assert.deepEqual(extraArgsOrDefault("grok"), [...DEFAULT_GENERIC_ARGS]);
-  assert.deepEqual(extraArgsOrDefault("openai", ["{{pointer}}"]), ["{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("openai", ["{{pointer}}"]), ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("codex", ["exec", "{{pointer}}"]), ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("openai", ["{{pointer}}"], process.execPath), ["{{pointer}}"]);
   assert.equal(FROZEN_ARGV_TABLE.fake.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.claude.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.generic.spawnable, true);

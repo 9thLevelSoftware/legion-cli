@@ -26,27 +26,50 @@ export const ADAPTER_CREDENTIAL_KEYS = {
 /** Windows CreateProcess / node.exe fail without these even when PATH is set. */
 const WINDOWS_INHERIT = ["SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATHEXT"] as const;
 
-function allowKey(key: string, adapterId?: AgentAdapterId): boolean {
+function inferAdapterIdFromBinary(binary?: string): AgentAdapterId | undefined {
+  if (!binary) return undefined;
+  const base =
+    binary.replaceAll("\\", "/").split("/").pop()?.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() ?? "";
+  if (base === "claude") return "claude";
+  if (base === "codex") return "codex";
+  if (base === "grok") return "grok";
+  if (base === "mimo") return "mimo";
+  if (base === "mcode") return "minimax";
+  return undefined;
+}
+
+function credentialKeysFor(adapterId?: AgentAdapterId, binary?: string): readonly string[] {
+  if (adapterId && adapterId !== "generic" && adapterId !== "fake") {
+    return ADAPTER_CREDENTIAL_KEYS[adapterId];
+  }
+  if (adapterId === "generic") {
+    const inferred = inferAdapterIdFromBinary(binary);
+    if (inferred) return ADAPTER_CREDENTIAL_KEYS[inferred];
+  }
+  return adapterId ? ADAPTER_CREDENTIAL_KEYS[adapterId] : [];
+}
+
+function allowKey(key: string, adapterId?: AgentAdapterId, binary?: string): boolean {
   const upper = key.toUpperCase();
   if (BASE_ENV_ALLOWLIST.some((name) => name.toUpperCase() === upper)) return true;
   if (process.platform === "win32" && WINDOWS_INHERIT.some((name) => name === upper)) return true;
-  const creds = adapterId ? ADAPTER_CREDENTIAL_KEYS[adapterId] : [];
-  return creds.some((name) => name.toUpperCase() === upper);
+  return credentialKeysFor(adapterId, binary).some((name) => name.toUpperCase() === upper);
 }
 
 /**
  * Build a spawn env from the user process.
  * SSH_AUTH_SOCK is inherited when present, never injected into a blank env.
- * Provider credentials are included only for `adapterId`.
+ * Provider credentials are included only for `adapterId` (generic infers from binary).
  */
 export function filterSpawnEnv(
   source: NodeJS.ProcessEnv = process.env,
   adapterId?: AgentAdapterId,
+  binary?: string,
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(source)) {
     if (value === undefined) continue;
-    if (allowKey(key, adapterId) || key.toUpperCase() === "SSH_AUTH_SOCK") {
+    if (allowKey(key, adapterId, binary) || key.toUpperCase() === "SSH_AUTH_SOCK") {
       out[key] = value;
     }
   }
