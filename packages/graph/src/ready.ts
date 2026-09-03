@@ -58,6 +58,7 @@ function hasOpenBlockingAssumption(task: Task, ctx: ReadyContext): boolean {
 /**
  * §4.1: a task is ready iff deps are done, the contract is valid, the phase
  * allows execute, control mode is not advisory, and v0 is serial.
+ * flags.parallelExecute is a later door (founding §5.4); unread here.
  */
 export function isTaskReady(task: Task, ctx: ReadyContext): boolean {
   if (ctx.phase !== "plan_ready" && ctx.phase !== "executing") return false;

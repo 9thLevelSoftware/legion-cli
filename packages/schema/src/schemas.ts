@@ -204,6 +204,7 @@ export const LegionConfigSchema = z.object({
     .object({
       mcpApps: z.boolean().default(false),
       webmcp: z.boolean().default(false),
+      /** Later door (founding §5.4); unread by execute / isTaskReady. */
       parallelExecute: z.boolean().default(false),
     })
     .default({ mcpApps: false, webmcp: false, parallelExecute: false }),

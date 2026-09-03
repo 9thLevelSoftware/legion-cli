@@ -36,6 +36,10 @@ function viewerUrl(config: LegionConfig | null): string {
   return `http://${bind}:${port}`;
 }
 
+function shouldHintCompact(slice: readonly { status: string }[]): boolean {
+  return slice.some((task) => task.status === "done") && !slice.some((task) => task.status === "in_progress");
+}
+
 function formatHuman(input: {
   project: ProjectFile | null;
   state: StateFile;
@@ -44,8 +48,9 @@ function formatHuman(input: {
   viewer: string;
   blockersOnly: boolean;
   currentTaskAdapter: AdapterId | null;
+  compactHint: boolean;
 }): string {
-  const { project, state, next, blockers, viewer, blockersOnly, currentTaskAdapter } = input;
+  const { project, state, next, blockers, viewer, blockersOnly, currentTaskAdapter, compactHint } = input;
   if (blockersOnly) {
     if (blockers.length === 0) return "No blockers.";
     return ["Blockers:", ...blockers.map((item) => `  ${item.detail}`)].join("\n");
@@ -69,6 +74,7 @@ function formatHuman(input: {
   if (state.lastReview) lines.push(`Review: ${state.lastReview}`);
   lines.push(`Next up: ${next.hint}`);
   lines.push(`Run:  ${next.run}`);
+  if (compactHint) lines.push("Hint: legion-cli context compact");
   lines.push(`Viewer: ${viewer}  (legion-cli dashboard)`);
   if (blockers.length > 0) {
     lines.push("Blockers:");
@@ -144,6 +150,7 @@ export async function runStatus(opts: CliOpts): Promise<number> {
       viewer,
       blockersOnly: opts.blockers,
       currentTaskAdapter,
+      compactHint: shouldHintCompact(slice),
     }),
   );
   return code;
