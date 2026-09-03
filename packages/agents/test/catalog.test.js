@@ -160,6 +160,14 @@ test("listSkillCatalog of the repo skills tree has nine valid entries", () => {
     [],
   );
   assert.equal(catalog.skills.length, 9);
+  for (const skill of catalog.skills) {
+    assert.deepEqual(skill.resources, { scripts: [], references: [], assets: [] }, skill.skillId);
+    assert.deepEqual(listLevel3Resources(join(repoSkills, skill.skillId)), {
+      scripts: [],
+      references: [],
+      assets: [],
+    });
+  }
   for (const skillId of REQUIRED_SKILL_IDS) {
     const entry = catalog.skills.find((skill) => skill.skillId === skillId);
     assert.ok(entry, `missing required ${skillId}`);

@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { installLocalDir } from "@9thlevelsoftware/legion-cli-design-system";
 import { readAuditEvents, summarizeAuditMetrics } from "@9thlevelsoftware/legion-cli-persist";
-import { argvSummarySafe, HEAD_MOVED_WARNING, LegionRefuseError, optionalSkillSpawn, revertExtras } from "../dist/index.js";
+import {
+  argvSummarySafe,
+  HEAD_MOVED_WARNING,
+  LegionEngine,
+  LegionRefuseError,
+  optionalSkillSpawn,
+  revertExtras,
+} from "../dist/index.js";
 import { snapshotGitPolicy } from "../dist/revert.js";
 import {
   git,
@@ -24,6 +31,7 @@ import {
 } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
+const l3FooFixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "references", "foo.md");
 const designFixture = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -32,6 +40,7 @@ const designFixture = join(
   "design-systems",
   "_fixture-neutral",
 );
+const L3_FOO_BODY_TOKEN = "UNIQUE_L3_FOO_BODY_TOKEN";
 
 test("argvSummarySafe keeps flag names and redacts attached values", () => {
   assert.equal(
@@ -507,6 +516,8 @@ test("execute prompt.md starts with SessionBrief and FileContract after SkillCon
       assert.ok(prompt.startsWith("## SessionBrief\nProject:"));
       assert.match(prompt, /Skills:/);
       assert.match(prompt, /execute \(active\)/);
+      assert.match(prompt, /## Active skill\nskillId: execute/);
+      assert.match(prompt, /Level 3 files \(read only if the skill body names them\):\n- \(none\)/);
       assert.match(prompt, /Task: TSK-0001 in\/out button/);
       assert.match(prompt, /maxFilesTouched: 20/);
       const skillIdx = prompt.indexOf("## skill");
@@ -538,6 +549,64 @@ test("execute prompt.md starts with SessionBrief when a design-system package is
       assert.ok(prompt.indexOf("## FileContract") < prompt.indexOf("## USAGE.md"));
       assert.ok(prompt.indexOf("## FileContract") < prompt.indexOf("## skill"));
       assert.equal(prompt.slice(prompt.indexOf("## USAGE.md")).includes("## FileContract"), false);
+    });
+  });
+});
+
+test("execute prompt.md lists Level 3 paths and does not inline references/foo.md", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store);
+      const overlay = join(dir, "skills-l3");
+      await cp(skillsDir, overlay, { recursive: true });
+      await mkdir(join(overlay, "execute", "references"), { recursive: true });
+      const fixtureBody = await readFile(l3FooFixture, "utf8");
+      await writeFile(join(overlay, "execute", "references", "foo.md"), fixtureBody, "utf8");
+      const gated = new LegionEngine(dir, undefined, { skillsDir: overlay });
+      initGitRepo(dir);
+      const result = await gated.execute("auto");
+      assert.equal(result.status, "done");
+      const runId = result.tasks[0].runId;
+      const prompt = await readFile(join(dir, ".legion-cli", "cache", "runs", runId, "prompt.md"), "utf8");
+      assert.match(prompt, /## Active skill\nskillId: execute/);
+      assert.match(prompt, /Level 3 files \(read only if the skill body names them\):\n- references\/foo\.md/);
+      assert.doesNotMatch(prompt, new RegExp(L3_FOO_BODY_TOKEN));
+      assert.equal(prompt.includes(fixtureBody.trim()), false);
+      assert.equal(
+        await readFile(join(dir, ".legion-cli", "cache", "skills", runId, "references", "foo.md"), "utf8"),
+        fixtureBody,
+      );
+    });
+  });
+});
+
+test("optionalSkillSpawn lists Level 3 paths and does not inline references/foo.md", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      const overlay = join(dir, "skills-l3");
+      await cp(skillsDir, overlay, { recursive: true });
+      await mkdir(join(overlay, "execute", "references"), { recursive: true });
+      const fixtureBody = await readFile(l3FooFixture, "utf8");
+      await writeFile(join(overlay, "execute", "references", "foo.md"), fixtureBody, "utf8");
+      const config = await store.readConfig();
+      const spawned = await optionalSkillSpawn({
+        projectRoot: dir,
+        config,
+        skillId: "execute",
+        promptBody: "Task: TSK-0001 narrative only",
+        fileContract: makeTask().contract,
+        skillsDir: overlay,
+        required: true,
+      });
+      assert.equal(spawned.spawned, true);
+      const prompt = await readLatestRunPrompt(dir, "execute");
+      assert.match(prompt, /Level 3 files \(read only if the skill body names them\):\n- references\/foo\.md/);
+      assert.doesNotMatch(prompt, new RegExp(L3_FOO_BODY_TOKEN));
+      assert.equal(prompt.includes(fixtureBody.trim()), false);
+      const staged = join(dir, ".legion-cli", "cache", "skills", spawned.runId, "references", "foo.md");
+      assert.equal(await readFile(staged, "utf8"), fixtureBody);
     });
   });
 });
