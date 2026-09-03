@@ -100,6 +100,7 @@ for (const skillId of REQUIRED_SKILL_IDS) {
             (err) =>
               isRefuse(err, /execute requires valid skills\/execute\/SKILL.md frontmatter/, /legion-cli next \/ legion-cli execute/),
           );
+          assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
         } else {
           await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
           await assert.rejects(
@@ -123,6 +124,20 @@ test("optional verify spawn returns spawned false on invalid frontmatter", async
       const result = await gated.verify();
       assert.equal(result.spawned, false);
     });
+  });
+});
+
+test("engine.brief includes Level 1 catalog without an active skill", async () => {
+  await withEngine(async ({ engine }) => {
+    await initProject(engine);
+    const brief = await engine.brief();
+    assert.ok(brief.skills && brief.skills.length > 0);
+    assert.ok(brief.skills.some((skill) => skill.skillId === "execute"));
+    assert.ok(brief.skills.some((skill) => skill.skillId === "plan"));
+    assert.equal(
+      brief.skills.some((skill) => skill.active),
+      false,
+    );
   });
 });
 

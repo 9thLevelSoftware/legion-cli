@@ -152,6 +152,9 @@ importers:
 
   packages/mcp:
     dependencies:
+      '@9thlevelsoftware/legion-cli-agents':
+        specifier: workspace:*
+        version: link:../agents
       '@9thlevelsoftware/legion-cli-dashboard':
         specifier: workspace:*
         version: link:../dashboard

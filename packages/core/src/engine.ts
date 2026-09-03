@@ -1,5 +1,6 @@
 import {
   isResolvedAdapterSpawnable,
+  listSkillCatalog,
   parseSkillFrontmatter,
   resolveAdapterId,
   type FakeArtifact,
@@ -482,7 +483,17 @@ export class LegionEngine {
       if (state.phase === "uninitialized") {
         refuse("Brief needs a Legion CLI project first", HINT.init);
       }
-      return buildSessionBrief(this.store);
+      const skillsDir = this.#skillsDir ?? findSkillsDir();
+      const { catalog } = skillsDir
+        ? listSkillCatalog(skillsDir)
+        : { catalog: { schemaVersion: SCHEMA_VERSION.skillCatalog, skills: [] } };
+      return buildSessionBrief(this.store, {
+        skills: catalog.skills.map((skill) => ({
+          skillId: skill.skillId,
+          name: skill.name,
+          description: skill.description,
+        })),
+      });
     });
   }
 
@@ -601,6 +612,7 @@ export class LegionEngine {
             "Do not write src/** or other product files.",
           ].join("\n"),
           skillsDir: this.#skillsDir,
+          store: this.store,
           fakeArtifacts: this.#fakeArtifacts,
           throwAfterWrite: this.#fakeThrowAfterWrite,
           timedOut: this.#fakeTimedOut,
@@ -836,6 +848,7 @@ export class LegionEngine {
           "Do not git add or git commit. Do not write packets.",
         ].join("\n"),
         skillsDir: this.#skillsDir,
+        store: this.store,
         fakeArtifacts: this.#fakeArtifacts,
         throwAfterWrite: this.#fakeThrowAfterWrite,
         timedOut: this.#fakeTimedOut,
@@ -895,6 +908,7 @@ export class LegionEngine {
           "Do not git add or git commit. Do not write packets.",
         ].join("\n"),
         skillsDir: this.#skillsDir,
+        store: this.store,
         fakeArtifacts: this.#fakeArtifacts,
         throwAfterWrite: this.#fakeThrowAfterWrite,
         timedOut: this.#fakeTimedOut,
@@ -1406,6 +1420,12 @@ export class LegionEngine {
       assertCanTransition(state.phase, "executing");
     }
 
+    await this.#writeState({
+      ...(await this.#readState()),
+      phase: "executing",
+      currentTaskId: task.id,
+    });
+
     const extraAllowed = [...task.contract.filesAllowed, ...task.contract.expectedArtifacts];
     const promptBody = [
       `Task: ${task.id} ${task.title}`,
@@ -1414,16 +1434,6 @@ export class LegionEngine {
       `Read .legion-cli/specs/${task.specId}/SPEC.md.`,
       "Write only the files listed in FileContract. Do not git add or git commit.",
       "Copy AC.priority into new test names as @p0/@p1/@p2.",
-      "",
-      "## FileContract",
-      "filesAllowed:",
-      ...task.contract.filesAllowed.map((path) => `- ${path}`),
-      "expectedArtifacts:",
-      ...task.contract.expectedArtifacts.map((path) => `- ${path}`),
-      "verificationCommands:",
-      ...task.contract.verificationCommands.map((cmd) => `- ${cmd}`),
-      "filesForbidden:",
-      ...task.contract.filesForbidden.map((path) => `- ${path}`),
     ]
       .filter((line) => line !== "")
       .join("\n");
@@ -1435,9 +1445,11 @@ export class LegionEngine {
       specId: task.specId,
       taskId: task.id,
       promptBody,
+      fileContract: task.contract,
       extraAllowedRoots: extraAllowed,
       filesForbidden: task.contract.filesForbidden,
       skillsDir: this.#skillsDir,
+      store: this.store,
       fakeArtifacts: this.#fakeArtifacts,
       throwAfterWrite: this.#fakeThrowAfterWrite,
       timedOut: this.#fakeTimedOut,
@@ -1445,6 +1457,9 @@ export class LegionEngine {
       cliAdapter: opts.adapter,
       taskAdapter: task.adapter,
     });
+    if (result.spawned) {
+      await this.#transitionTaskTo(task.id, "in_progress");
+    }
 
     const revert = result.revert;
     const extras = revert?.extrasReverted ?? [];
@@ -2110,6 +2125,7 @@ export class LegionEngine {
       specId,
       promptBody,
       skillsDir: this.#skillsDir,
+      store: this.store,
       fakeArtifacts: this.#fakeArtifacts,
       throwAfterWrite: this.#fakeThrowAfterWrite,
       timedOut: this.#fakeTimedOut,

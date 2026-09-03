@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { installLocalDir } from "@9thlevelsoftware/legion-cli-design-system";
 import { readAuditEvents, summarizeAuditMetrics } from "@9thlevelsoftware/legion-cli-persist";
-import { argvSummarySafe, HEAD_MOVED_WARNING, LegionRefuseError, revertExtras } from "../dist/index.js";
+import { argvSummarySafe, HEAD_MOVED_WARNING, LegionRefuseError, optionalSkillSpawn, revertExtras } from "../dist/index.js";
 import { snapshotGitPolicy } from "../dist/revert.js";
 import {
   git,
@@ -14,11 +16,22 @@ import {
   initProject,
   makeTask,
   passingVerificationCommand,
+  readLatestRunPrompt,
   seedPlanReady,
   withEngine,
   withFakeAdapter,
   writeUnspawnableGrok,
 } from "./helpers.js";
+
+const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
+const designFixture = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "..",
+  "design-systems",
+  "_fixture-neutral",
+);
 
 test("argvSummarySafe keeps flag names and redacts attached values", () => {
   assert.equal(
@@ -108,6 +121,7 @@ test("execute refuses without a spawnable adapter", async () => {
         return true;
       },
     );
+    assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
   });
 });
 
@@ -451,5 +465,156 @@ test("until-blocked stops when a task is blocked by extras", async () => {
         fakeArtifacts: [{ path: "src/secret.ts", content: "export const leaked = true;\n" }],
       },
     );
+  });
+});
+
+function assertPromptOrder(prompt, opts = {}) {
+  assert.ok(prompt.startsWith("## SessionBrief\n"), prompt.slice(0, 120));
+  const sessionIdx = prompt.indexOf("## SessionBrief");
+  const activeIdx = prompt.indexOf("## Active skill");
+  const skillContractIdx = prompt.indexOf("## SkillContract");
+  const fileContractIdx = prompt.indexOf("## FileContract");
+  const usageIdx = prompt.search(/^## (usage|USAGE\.md)\b/m);
+  const designIdx = prompt.search(/^## DESIGN\.md\b/m);
+  const skillIdx = prompt.search(/^## skill\b/m);
+  assert.equal(sessionIdx, 0);
+  assert.ok(activeIdx > sessionIdx);
+  assert.ok(skillContractIdx > activeIdx);
+  if (opts.expectFileContract) {
+    assert.ok(fileContractIdx > skillContractIdx, "FileContract must follow SkillContract");
+    if (usageIdx !== -1) assert.ok(fileContractIdx < usageIdx);
+    if (designIdx !== -1) assert.ok(fileContractIdx < designIdx);
+    if (skillIdx !== -1) assert.ok(fileContractIdx < skillIdx);
+    assert.equal(prompt.split("## FileContract").length - 1, 1, "exactly one FileContract heading");
+  } else {
+    assert.equal(fileContractIdx, -1);
+  }
+}
+
+test("execute prompt.md starts with SessionBrief and FileContract after SkillContract", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store);
+      initGitRepo(dir);
+      const result = await engine.execute("auto");
+      assert.equal(result.status, "done");
+      const prompt = await readFile(
+        join(dir, ".legion-cli", "cache", "runs", result.tasks[0].runId, "prompt.md"),
+        "utf8",
+      );
+      assertPromptOrder(prompt, { expectFileContract: true });
+      assert.ok(prompt.startsWith("## SessionBrief\nProject:"));
+      assert.match(prompt, /Skills:/);
+      assert.match(prompt, /execute \(active\)/);
+      assert.match(prompt, /Task: TSK-0001 in\/out button/);
+      assert.match(prompt, /maxFilesTouched: 20/);
+      const skillIdx = prompt.indexOf("## skill");
+      if (skillIdx !== -1) {
+        assert.equal(prompt.slice(skillIdx).includes("## FileContract"), false);
+      }
+    });
+  });
+});
+
+test("execute prompt.md starts with SessionBrief when a design-system package is active", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store);
+      await installLocalDir({ projectRoot: dir, source: designFixture });
+      initGitRepo(dir);
+      const result = await engine.execute("auto");
+      assert.equal(result.status, "done");
+      const prompt = await readFile(
+        join(dir, ".legion-cli", "cache", "runs", result.tasks[0].runId, "prompt.md"),
+        "utf8",
+      );
+      assertPromptOrder(prompt, { expectFileContract: true });
+      assert.ok(prompt.startsWith("## SessionBrief\nProject:"));
+      assert.match(prompt, /^## USAGE\.md$/m);
+      assert.match(prompt, /^## DESIGN\.md$/m);
+      assert.match(prompt, /^## skill$/m);
+      assert.ok(prompt.indexOf("## FileContract") < prompt.indexOf("## USAGE.md"));
+      assert.ok(prompt.indexOf("## FileContract") < prompt.indexOf("## skill"));
+      assert.equal(prompt.slice(prompt.indexOf("## USAGE.md")).includes("## FileContract"), false);
+    });
+  });
+});
+
+test("optionalSkillSpawn omits SessionBrief body without store and still renders FileContract", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      const config = await store.readConfig();
+      const spawned = await optionalSkillSpawn({
+        projectRoot: dir,
+        config,
+        skillId: "execute",
+        promptBody: "Task: TSK-0001 narrative only",
+        fileContract: makeTask().contract,
+        skillsDir,
+        required: true,
+      });
+      assert.equal(spawned.spawned, true);
+      const prompt = await readLatestRunPrompt(dir, "execute");
+      assert.ok(prompt.startsWith("## SessionBrief\n(no store; test-only spawn)"));
+      assert.match(prompt, /## FileContract/);
+      assert.match(prompt, /Task: TSK-0001 narrative only/);
+      assert.match(prompt, /filesAllowed:\n- src\/main\.ts/);
+      assert.match(prompt, /maxFilesTouched: 20/);
+      assert.ok(prompt.indexOf("## FileContract") > prompt.indexOf("## SkillContract"));
+    });
+  });
+});
+
+test("until-blocked SessionBrief FileContract matches the spawned task, not the previous one", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      const verify = [passingVerificationCommand()];
+      await seedExecute(store, {
+        verify,
+        extraTasks: [
+          makeTask({
+            id: "TSK-0002",
+            title: "board view",
+            status: "todo",
+            blockedBy: ["TSK-0001"],
+            contract: {
+              filesAllowed: ["src/board.ts"],
+              expectedArtifacts: ["src/board.ts"],
+              verificationCommands: verify,
+            },
+          }),
+        ],
+      });
+      const result = await engine.execute("auto", { untilBlocked: true });
+      assert.equal(result.status, "done");
+      assert.deepEqual(
+        result.tasks.map((item) => item.taskId),
+        ["TSK-0001", "TSK-0002"],
+      );
+      const first = await readFile(
+        join(dir, ".legion-cli", "cache", "runs", result.tasks[0].runId, "prompt.md"),
+        "utf8",
+      );
+      const second = await readFile(
+        join(dir, ".legion-cli", "cache", "runs", result.tasks[1].runId, "prompt.md"),
+        "utf8",
+      );
+      const firstBrief = first.slice(0, first.indexOf("## Active skill"));
+      const secondBrief = second.slice(0, second.indexOf("## Active skill"));
+      assert.match(firstBrief, /Phase: executing/);
+      assert.match(firstBrief, /Current task: TSK-0001 in\/out button/);
+      assert.match(firstBrief, /filesAllowed: src\/main\.ts/);
+      assert.doesNotMatch(firstBrief, /src\/board\.ts/);
+      assert.match(secondBrief, /Phase: executing/);
+      assert.match(secondBrief, /Current task: TSK-0002 board view/);
+      assert.match(secondBrief, /filesAllowed: src\/board\.ts/);
+      assert.doesNotMatch(secondBrief, /src\/main\.ts/);
+      assert.match(second, /## FileContract\nfilesAllowed:\n- src\/board\.ts/);
+      assert.match(second, /maxFilesTouched: 20/);
+    });
   });
 });
