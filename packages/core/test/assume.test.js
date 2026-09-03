@@ -7,7 +7,15 @@ import { queryIndex } from "@9thlevelsoftware/legion-cli-persist";
 import { WIKI_INDEX_STORE_PATH } from "@9thlevelsoftware/legion-cli-wiki";
 
 import { HINT, LegionRefuseError } from "../dist/index.js";
-import { initProject, seedPlanReady, withEngine } from "./helpers.js";
+import {
+  initProject,
+  makeTask,
+  seedFrozenSpec,
+  seedPlanReady,
+  withEngine,
+  withFakeAdapter,
+  writeTask,
+} from "./helpers.js";
 
 function makeAssumption(overrides = {}) {
   return {
@@ -121,6 +129,29 @@ test("confirming a blocking assumption unblocks isTaskReady", async () => {
       (await engine.nextTasks()).map((task) => task.id),
       ["TSK-0001"],
     );
+  });
+});
+
+test("plan with a blocking assumption leaves todo; assumeAnswer promotes to ready", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedFrozenSpec(store);
+      await writeTask(store, makeTask({ status: "todo" }));
+      await store.writeAssumption(makeAssumption(), "Need office wifi\n");
+      await engine.plan("spec-checkin");
+      assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
+      assert.deepEqual(
+        (await engine.nextTasks()).map((task) => task.id),
+        [],
+      );
+      await engine.assumeAnswer("ASM-0001", "confirmed");
+      assert.deepEqual(
+        (await engine.nextTasks()).map((task) => task.id),
+        ["TSK-0001"],
+      );
+      assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
+    });
   });
 });
 

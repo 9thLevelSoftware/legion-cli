@@ -13,6 +13,14 @@ test("registers bin legion-cli only", () => {
   assert.deepEqual(Object.keys(pkg.bin), ["legion-cli"]);
 });
 
+function helpSection(out, header, nextHeader) {
+  const start = out.indexOf(header);
+  assert.notEqual(start, -1, `missing ${header}`);
+  const from = out.slice(start);
+  const end = nextHeader ? from.indexOf(`\n${nextHeader}`, header.length) : -1;
+  return end === -1 ? from : from.slice(0, end);
+}
+
 function assertLayer1(out) {
   assert.match(out, /pnpm exec legion-cli/);
   assert.match(out, /status/);
@@ -72,9 +80,14 @@ test("help --all lists the grouped command surface", () => {
   assert.match(out, /spec approve/);
   assert.match(out, /spec new/);
   assert.match(out, /qa checklist/);
-  assert.match(out, /Always-on operations:[\s\S]*index rebuild/);
-  assert.match(out, /Board extras:[\s\S]*assume list/);
-  assert.match(out, /Board extras:[\s\S]*assume answer/);
+  const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");
+  assert.match(alwaysOn, /index rebuild/);
+  assert.doesNotMatch(alwaysOn, /assume list/);
+  assert.doesNotMatch(alwaysOn, /assume answer/);
+  const board = helpSection(out, "Board extras:", "Shipped adjacent");
+  assert.match(board, /assume list/);
+  assert.match(board, /assume answer/);
+  assert.doesNotMatch(board, /index rebuild/);
 });
 
 test("help --all lists dashboard as shipped adjacent", () => {

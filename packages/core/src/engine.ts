@@ -619,6 +619,15 @@ export class LegionEngine {
       }
       const next: Assumption = { ...doc.data, status };
       await this.store.writeAssumption(next, doc.body);
+      if (state.activeSpecId) {
+        let controlMode: ControlMode = "guarded";
+        try {
+          controlMode = (await this.#readConfig()).control_mode;
+        } catch {
+          // missing config
+        }
+        await this.#promoteReadyTasks(state.activeSpecId, state.phase, controlMode);
+      }
       await this.store.rebuild();
       await this.#refreshWikiCatalogLocked();
       return next;

@@ -76,5 +76,10 @@ test("help --all lists ingest search show brief wiki trust as always-on operatio
   assert.match(out, /search/);
   assert.match(out, /^ {2}show <page>$/m);
   assert.match(out, /^ {2}brief$/m);
-  assert.match(out, /Always-on operations:[\s\S]*index rebuild/);
+  const alwaysOnStart = out.indexOf("Always-on operations:");
+  const boardStart = out.indexOf("Board extras:");
+  assert.ok(alwaysOnStart >= 0 && boardStart > alwaysOnStart);
+  const alwaysOn = out.slice(alwaysOnStart, boardStart);
+  assert.match(alwaysOn, /index rebuild/);
+  assert.doesNotMatch(alwaysOn, /assume list/);
 });
