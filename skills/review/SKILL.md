@@ -2,7 +2,7 @@
 
 Spec-level review of a terminal slice (every task `done` or `blocked`). Required: Legion CLI refuses if no spawnable adapter is configured.
 
-PASS is decided by the engine: only if this spawn created zero new task ids. Filing any task (`type: fix` or otherwise) is FAIL and requires another review after those tasks are done. Do not write packets (v1).
+PASS is decided by the engine: only if this spawn created zero new task ids. Filing any task (`type: fix` or otherwise) is FAIL and requires another review after those tasks are done. Do not write `.legion-cli/packets/**`. Packets are a human verb (`legion-cli packet new`); this spawn files fix tasks or extra.json only.
 
 ## Contract
 
