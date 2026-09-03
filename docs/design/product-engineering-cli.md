@@ -43,7 +43,7 @@ These are the defaults this document commits to. Former open questions are recor
 | KD9 | **Human gates** | Intent confirm, spec approve, skip-QA, ship, and **diff-detectable** scope/deps/schema/infra are engine-hard. Architecture/API-shape without a path heuristic are prompt-only in v0 and are **not** called hard. | Agents will not reliably self-escalate. Only checks the core can evaluate are “hard.” |
 | KD10 | **Interview UX** | Never more than two questions at a time; fixed question bank; answers map onto SPEC fields; LLM polish is optional. | Shipyard `/start`. Works with templates if the adapter is down. `legion-cli doctor` requires **one spawnable** adapter matching `adapter.default` in config. |
 | KD11 | **Scope creep** | Extra work becomes a linked ticket, never an in-place expansion. `filesAllowed` is concrete paths only in v0 (reject `*` / `**`). | beads DAG + Legion contracts. |
-| KD12 | **Design systems / wireframes** | v0: shipped `craft/` + optional hand-dropped `.legion-cli/design/DESIGN.md`. Wireframes stay **4-colour through v0 ship**. v1: packages + optional restyle after a package is installed. | User decision. No baked-in product look. |
+| KD12 | **Design systems / wireframes** | Shipped `craft/` + optional hand-dropped `.legion-cli/design/DESIGN.md`. Wireframes stay **4-colour through v0 ship**. **Shipped extra:** design-system packages (local copy, generate-from-brief, OpenDesign importer). **Later:** `github:` install and optional restyle after a remote package is installed. | User decision. No baked-in product look. |
 | KD13 | **v0 runtime** | Windows or Unix laptop with git, Node 22, pnpm, and one spawnable adapter set in config. No cloud. `init` requires `--adapter`. `--mode brownfield` is a **shipped extra** (engineer-operated). Greenfield execute stays in-place. **npm publish in v0** (tag-triggered, provenance). | User sets `adapter.default`. Brownfield is not a v1 unlock. |
 | KD14 | **Control mode** | Legion CLI-owned boolean matrix (below). Default `guarded`. Every spawn is surgical against that skill’s `SkillContract`; execute also intersects `FileContract`. `advisory` blocks execute. `autonomous` rejected in v0. | Not “see Legion.” Modes are flags the core evaluates. |
 | KD15 | **Wiki vs run artifacts** | Durable knowledge: `.legion-cli/wiki/` + `.legion-cli/decisions/`. Brownfield runs (shipped extra) write `.legion-cli/runs/<id>/` and are not the wiki. | grok-brownfield run-scoped docs vs CodeAlmanac durable wiki (run artifacts taken from the research report, not re-read in this revision). |
@@ -88,7 +88,7 @@ The result is scope creep, untested “done,” and a terminal wall that scares 
 4. **Skipped QA** — the model declaring done is treated as done.
 5. **Context re-derivation** — every session re-explains the product from scratch.
 6. **Terminal-only UX** — non-coders cannot see path, timeline, or current task (viewer, not a second product).
-7. **Brand baked into skills** — company guardrails cannot be swapped (v1 packages; v0 craft + optional DESIGN.md).
+7. **Brand baked into skills** — company guardrails cannot be swapped (shipped extra: packages; craft + optional DESIGN.md always).
 
 ### Prior art (cited, not copied wholesale)
 
@@ -106,13 +106,13 @@ The result is scope creep, untested “done,” and a terminal wall that scares 
 | Parse existing Markdown, wikilinks, aliases, tags; backlinks / neighbors / hubs | [obsidian-vault-graph](https://github.com/kartikkabadi/obsidian-vault-graph) | Graph queries over the wiki, not a second wiki | research-only |
 | Running app as demo; intent brief; assumptions register; code as evidence | [grok-brownfield](https://github.com/kartikkabadi/grok-brownfield) README | Brownfield **shipped extra** | README re-read; `SKILL.md` research-only |
 | LSP + diagram agents; committed architecture markdown + fingerprints | [CodeBoarding](https://github.com/CodeBoarding/CodeBoarding) | Brownfield map **v1**. Do not implement LSP from a README claim in v0. | research-only |
-| Run-scoped intent/assumptions/analysis/design + JSON resume; not the long-term wiki | grok-brownfield `SKILL.md` | `.legion-cli/runs/<id>/` in v1 | research-only |
+| Run-scoped intent/assumptions/analysis/design + JSON resume; not the long-term wiki | grok-brownfield `SKILL.md` | `.legion-cli/runs/<id>/` shipped extra (brownfield) | research-only |
 | Session briefing; compact closed work | Daem0n-MCP; beads | Brief on the way in. Compaction is a **shipped extra** (`legion-cli context compact`). | research-only |
 | Page-registered tools; `document.modelContext.registerTool` | [WebMCP draft](https://webmachinelearning.github.io/webmcp) (CG draft, 26 Aug 2026) | v1 progressive enhancement only. Chrome origin-trial/flags: research-report claim, not independently verified against Chromium docs. | spec re-read |
 | Interactive HTML in the MCP host, text fallback | [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview) | v1 in-host dashboard | re-read |
 | CLI engine of record; spawn coding-agent CLIs as write engine; local wiki viewer | CodeAlmanac serve; Legion CLI policy | Write isolation. **Not** beads-mcp (that server writes). RUDR9 Kanban and Open Design MCP: research-only. | mixed |
 | Design-system package = manifest + DESIGN.md + tokens; craft layer; brand wins on conflict | [OpenDesign](https://github.com/nexu-io/open-design) | Compose order. Schema is **forked**; v1 importer maps `od-design-system-project/v1` → `legion-cli-design-system/v1`. | re-read |
-| Generate a project-owned design system from a brief; brand violation is a blocker | Legion `design-workflows` | v1 generate-from-brief | re-read (skill) |
+| Generate a project-owned design system from a brief; brand violation is a blocker | Legion `design-workflows` | Shipped extra: generate-from-brief | re-read (skill) |
 | Brand as optional input; mode-specific generation; brand lint vs quality/safety guardrails | Row-Bot Designer Studio | v1. Overflow/CSS-variable list is from an architecture post (research report already warns). | research-only |
 
 **Invented in this document (not present in any one source):** the split product-phase / task-status machine; the `.legion-cli/` on-disk contract; CLI-first UX with an HTTP viewer (MCP Apps + WebMCP as later surfaces); design-system packages composed into *product engineering* (shipped extra); the degraded-QA path; progressive disclosure of the command surface; FileContract revert algorithm as specified here.
@@ -468,7 +468,7 @@ CREATE VIRTUAL TABLE pages_fts USING fts5(
   content='pages',
   content_rowid='rowid'
 );
--- v0 rebuild (legion-cli index rebuild); ingest also inserts:
+-- store.rebuild() (ingest also inserts); CLI `index rebuild` is not-yet-CLI:
 -- INSERT INTO pages_fts(rowid, title, body, path)
 --   SELECT rowid, title, body, path FROM pages;
 CREATE TABLE links (
@@ -701,7 +701,7 @@ adapter:
     args: ["-p", "--output-format", "json", "{{pointer}}"]
 ```
 
-There is no product-wide default: `legion-cli init` writes `adapter.default` as a commented placeholder and `legion-cli doctor` fails until the user sets it.
+There is no product-wide default: `legion-cli init` requires `--adapter` (or a TTY prompt) and writes that id as `adapter.default`. `legion-cli doctor` fails if `adapter.default` is missing or not spawnable.
 
 **Spawn routing** (`resolveAdapterId` in `packages/agents/src/resolve.ts`). Yields an existing `AdapterId`, then the current `createAdapter` / `detect` / `spawn` path. Precedence:
 
@@ -1073,7 +1073,7 @@ sequenceDiagram
     participant G as git
     participant Q as QA runner
 
-    P->>F: pnpm exec legion-cli init --name Checkin
+    P->>F: pnpm exec legion-cli init --name Checkin --adapter claude
     F->>G: write .legion-cli templates (no auto-commit)
     P->>F: legion-cli intent  (question bank, two at a time)
     P->>F: confirm brief
@@ -1187,9 +1187,13 @@ Not registered. Do not list them as available. Do **not** list them under “not
 ### Example session (non-coder)
 
 ```text
-$ pnpm exec legion-cli init --name Checkin
+$ pnpm exec legion-cli init --name Checkin --adapter claude
 Legion CLI created a project in this folder.
-Set adapter.default in .legion-cli/config.yaml (required). Supported command: pnpm exec legion-cli
+mode: greenfield
+adapter.default: claude
+Supported command: pnpm exec legion-cli
+Next: legion-cli intent
+
 I'll ask two questions at a time. Answer in your own words.
 
 1. Who is this for, in one sentence?
@@ -1306,9 +1310,15 @@ export interface LegionEngine {
   fix(bug: string): Promise<Task>;
   ship(opts: ShipOptions): Promise<ShipReceipt>;
   abandon(message: string): Promise<void>;
-  assumeAnswer(id: string, status: "confirmed" | "rejected"): Promise<void>;
+  assumeAnswer(id: string, status: "confirmed" | "rejected"): Promise<void>; // engine-only until CLI E6
   brief(): Promise<SessionBrief>;
   search(q: string, opts?: { includeUntrusted?: boolean }): Promise<SearchHit[]>;
+  // shipped extras — same engine, off the 10-verb core
+  newPacket(input: NewPacket): Promise<PacketResult>;
+  respondPacket(input: PacketRespondInput): Promise<PacketResult>; // files one ticket; does not execute
+  compactContext(opts?: CompactOptions): Promise<CompactResult>;
+  garden(): Promise<GardenReport>;
+  brownfield(opts?: BrownfieldOptions): Promise<BrownfieldResult>;
 }
 ```
 
@@ -1535,7 +1545,7 @@ export interface QAScore {
   createdAt: string;
 }
 
-export interface DesignSystemPackage { // v1
+export interface DesignSystemPackage { // shipped extra; github: install later
   schemaVersion: "legion-cli-design-system/v1";
   id: string;
   name: string;
@@ -1546,7 +1556,7 @@ export interface DesignSystemPackage { // v1
   integrity?: { sha256: string };
 }
 
-export interface DesignActive { // v1 active.yaml; v0 omitted
+export interface DesignActive { // shipped extra; craft-only when packageId omitted
   schemaVersion: "legion-cli-design-active/v1";
   packageId?: string;
   craft: string[];
@@ -1564,9 +1574,23 @@ export interface SessionBrief {
   lastQa?: { total: number; pass: boolean };
   characterCount: number;
 }
+
+export interface Packet { // shipped extra; off the 10-verb core
+  schemaVersion: "legion-cli-packet/v1";
+  id: string;
+  title: string;
+  status: "open" | "responded";
+  requester: "pm" | "designer" | "human";
+  request: string;
+  specId?: string | null;
+  ticketIds: string[];
+  createdAt: string;
+  respondedAt?: string | null;
+  response?: string | null;
+}
 ```
 
-Packet types are v1 and are not required for PR-03.
+Packets are a **shipped extra**; off the 10-verb core. `packet respond` files one ticket and does not execute.
 
 ### Example markdown
 
@@ -1611,7 +1635,7 @@ v0 is first persistence. Additive fields may land in `legion-cli-spec/v1.1`. Bre
 
 ### Concurrency
 
-`.legion-cli/index/engine.lock` (gitignored). CLI takes an exclusive lock (create/wx or `proper-lockfile`) before any state write or spawn. Timeout 30s → refuse “another legion-cli is running.” Dashboard v0 only reads; it does not take the write lock. Compact (v1) requires the lock and skips if any task is `in_progress`.
+`.legion-cli/index/engine.lock` (gitignored). CLI and dashboard POSTs take `engine.lock` via `LegionEngine` (`#mutate` / `withLock`) before any state write or spawn. GET/SSE do not. Timeout 30s → refuse “another legion-cli is running.” Compaction is a **shipped extra**: lock-held; skips a `done` task when a **same-spec** sibling is `in_progress` (as §3.6).
 
 Execute does not `git commit`. `legion-cli ship` stages `filesAllowed` unions of done tasks plus `.legion-cli/` (except `index/` and `cache/`) and prints the diff; `--commit` creates the commit after Y/n.
 
@@ -1679,7 +1703,7 @@ Execute does not `git commit`. `legion-cli ship` stages `filesAllowed` unions of
 | Dashboard used as a write channel | **High** | Allowlist `ticket \| wikiTrust \| qaChecklist` only. `X-Legion-Cli-Token` from HTML meta, never a cookie, Origin allowlist. No execute/ship/plan/review/packet/intent. |
 | Local HTTP bound to `0.0.0.0` | **High** | Default `127.0.0.1`; `--expose` required |
 | CSRF against POSTs | **Med** | Token bootstrap: HTML meta, header required, never cookie, Origin allowlist |
-| Skill / design-system supply chain | **High** | v0: bundled skills + craft only. v1: local dir copy; `github:` rejected until pin/sha256 PR |
+| Skill / design-system supply chain | **High** | Bundled skills + craft. Shipped extra: local dir copy; `github:` rejected until pin/sha256 PR |
 | Secrets in transcripts | **Med** | Redact patterns (incomplete); `legion-cli doctor` scan |
 | Agent CLI has broad FS + network (not OS-sandboxed) | **High** | After-the-fact revert; surgical execute; document trust model; no claim of isolation |
 | SSRF from ingest URLs | **Med** | Deny list + resolve-then-connect |
