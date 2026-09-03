@@ -36,6 +36,6 @@ Write optional walkthrough notes to `.legion-cli/qa/verify.md` (or `.legion-cli/
 
 If you find fix work, file a child task (`type: fix`, `parentId`) under `.legion-cli/tasks/` or write `.legion-cli/cache/runs/<id>/extra.json`. Do not expand a live task's `filesAllowed`. Extra work is a linked ticket.
 
-Do not mark the spec review PASS. That is `legion-cli review`. Do not write packets (v1).
+Do not mark the spec review PASS. That is `legion-cli review`. Do not write `.legion-cli/packets/**`. Packets are a human verb (`legion-cli packet new`); this spawn files fix tasks or extra.json only.
 
 When finished, write a short summary to `.legion-cli/cache/runs/<id>/summary.md`.

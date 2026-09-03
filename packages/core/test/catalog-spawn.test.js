@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { listSkillCatalog } from "@9thlevelsoftware/legion-cli-agents";
 import { findSkillsDir, LegionEngine, LegionRefuseError } from "../dist/index.js";
 import {
   initProject,
@@ -125,16 +126,17 @@ test("optional verify spawn returns spawned false on invalid frontmatter", async
   });
 });
 
-test("malformed optional qa SKILL.md does not throw from list path used by spawn", async () => {
-  await withFakeAdapter(async () => {
-    await withEngine(async ({ dir, engine, store }) => {
-      await initProject(engine);
-      await seedPlanReady(store, { phase: "executing" });
-      const skillsDir = join(dir, "skills");
-      await writeSkillTree(skillsDir, { raw: { qa: "---\n{{{{{\n---\n" } });
-      const gated = new LegionEngine(dir, undefined, { skillsDir });
-      const result = await gated.verify();
-      assert.equal(typeof result.spawned, "boolean");
-    });
+test("malformed optional qa SKILL.md does not throw from listSkillCatalog", async () => {
+  await withEngine(async ({ dir }) => {
+    const skillsDir = join(dir, "skills");
+    await writeSkillTree(skillsDir, { raw: { qa: "---\n{{{{{\n---\n" } });
+    const result = listSkillCatalog(skillsDir);
+    assert.ok(result.skipped.some((row) => row.path === "skills/qa/SKILL.md" && row.required === false));
+    assert.ok(result.catalog.skills.some((skill) => skill.skillId === "execute"));
+    assert.ok(result.catalog.skills.some((skill) => skill.skillId === "plan"));
+    assert.equal(
+      result.catalog.skills.some((skill) => skill.skillId === "qa"),
+      false,
+    );
   });
 });
