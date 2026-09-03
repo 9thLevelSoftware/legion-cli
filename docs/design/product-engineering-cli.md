@@ -4,11 +4,11 @@
 | --- | --- |
 | **Title** | Legion CLI: a CLI-owned product development lifecycle engine |
 | **Author** | Systems Architecture (founding draft) |
-| **Date** | 2026-09-01 |
-| **Status** | Draft (rev 9 — KD5 extras spawnable; adapter routing) |
+| **Date** | 2026-09-03 |
+| **Status** | Draft (rev 10 — shipped extras vs 10-verb lifecycle core) |
 | **Product** | **Legion CLI** (binary: `legion-cli`, npm: `@9thlevelsoftware/legion-cli`) |
 | **Audience** | Senior engineers implementing v0/v1; product leads reviewing scope |
-| **Workspace** | `D:\product-engineer-helper` (greenfield; no existing code, package.json, or ADRs) |
+| **Workspace** | `D:\legion-cli` |
 
 ---
 
@@ -16,11 +16,11 @@
 
 **Legion CLI** is a local-first **CLI** that turns product knowledge into shipped, verified software. It is aimed at product-knowledgeable people who may barely have used AI and may never have coded, with a smaller secondary audience of engineers who operate and extend the engine. It is the Product Engineering engine in the Legion brand. It is **not** the existing `@9thlevelsoftware/legion` plugin installer (bin `legion`, `npx @9thlevelsoftware/legion --claude`).
 
-The CLI is the engine of record and the v0 product surface. Users run a small set of verbs (`init`, `intent`, `discuss`, `spec`, `plan`, `execute`, `verify`, `review`, `qa`, `ship`). A local HTTP dashboard is a **read-only viewer** of path, timeline, current task, and audit trail so people who are scared of pure terminal output still have something they can see. It does not replace the CLI in v0 and it does not own state.
+The CLI is the engine of record and the default product surface. The **small set** is the **10-verb lifecycle core**: `init`, `intent`, `discuss`, `spec`, `plan`, `execute`, `verify`, `review`, `qa`, `ship`. Bare `legion-cli` prints status plus the single next command. A local HTTP dashboard is a **viewer** of path, timeline, current task, and audit trail (optional token-gated POSTs: `ticket | wikiTrust | qaChecklist` — Goal 13 shipped) so people who are scared of pure terminal output still have something they can see. It does not replace the CLI and it does not own state.
 
 The engine consumes reference material once, interviews the user two questions at a time, freezes a short human-approved SPEC, captures product and implementation decisions *before* any plan, then executes only unblocked, file-contract-bounded tasks **until every task of the active spec is `done` or `blocked`**. It refuses to ship until in-process `verificationCommands` have passed on those tasks, a spec-level review PASSes, a numeric QA gate passes, and a human reviews the result. There is no v0 command to choose a subset of the DAG.
 
-v0 is greenfield on a laptop (git, Node 22, pnpm, and one spawnable adapter the user sets in `config.yaml`). There is **no product-default adapter**. Extra adapters (`grok`, `openai`, `codex`, `mimo`, `minimax`) are already **spawnable** with generic-style argv (KD5); they are not detect-only. Company design-system *packages*, brownfield mode, MCP, WebMCP, review packets, and **verified vendor extra-adapter argv** (conformance suite) are v1. v0 still injects shipped brand-agnostic `craft/` rules and will use a hand-dropped `.legion-cli/design/DESIGN.md` when present. v0 **publishes to npm** as `@9thlevelsoftware/legion-cli` (bin `legion-cli`) plus `@9thlevelsoftware/legion-cli-*` libraries. The workspace root stays private; published packages are public.
+v0 is a laptop (git, Node 22, pnpm, and one spawnable adapter the user sets in `config.yaml`). There is **no product-default adapter**. Extra adapters (`grok`, `openai`, `codex`, `mimo`, `minimax`) are already **spawnable** with generic-style argv (KD5); they are not detect-only. `init` requires `--adapter` (or a TTY prompt) and is **not** greenfield-only (`--mode brownfield` ships). **Shipped extras** (off the 10-verb core and off the default window): review packets (`packet new` / `packet respond` — spawn tickets, not execute), closed-work compaction (`context compact`), brownfield worktrees, MCP stdio (read-only), wiki garden, design-system packages, dashboard tiny POSTs. **Later, not this series:** `map` / `wireframe` / `skills list|install` / `serve` / `control-mode`, WebMCP, verified vendor extra-adapter argv (conformance suite). v0 still injects shipped brand-agnostic `craft/` rules and will use a hand-dropped `.legion-cli/design/DESIGN.md` when present. v0 **publishes to npm** as `@9thlevelsoftware/legion-cli` (bin `legion-cli`) plus `@9thlevelsoftware/legion-cli-*` libraries. The workspace root stays private; published packages are public.
 
 This is a mashup of proven *mechanisms* from open-source tools (BMAD, GSD Core, ajaywadhara/shipyard, 9thLevelSoftware/legion, OpenAI Symphony, beads, CodeAlmanac, and others). No inspected source combines them into one product. That combination is invented here and is an unproven product bet; mitigations are progressive disclosure, inspectable artifacts, a two-question interview, and a visual **viewer**.
 
@@ -32,25 +32,25 @@ These are the defaults this document commits to. Former open questions are recor
 
 | # | Decision | Default | Rationale |
 | --- | --- | --- | --- |
-| KD1 | **Name, binary, npm** | Product **Legion CLI**. Binary **`legion-cli`**. On-disk **`.legion-cli/`**. npm org **`@9thlevelsoftware`**. CLI package **`@9thlevelsoftware/legion-cli`** (public, bin `legion-cli`). Libraries `@9thlevelsoftware/legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard}`. Workspace **root** `"private": true`. Does **not** take the `legion` bin — that belongs to [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion) (plugin installer). Local git repo may stay `product-engineer-helper` until moved under the 9thLevelSoftware GitHub org. | User: lean into the Legion brand. Sibling products, not a replace: installer stays `npx @9thlevelsoftware/legion --claude`; this engine is `npx @9thlevelsoftware/legion-cli`. `legion-cli doctor` lists `legion` and `legion-cli` on PATH so the installer is not shadowed. Supported invocation: **`pnpm exec legion-cli`**. After `npm i -g @9thlevelsoftware/legion-cli`, `legion-cli` is global. |
+| KD1 | **Name, binary, npm** | Product **Legion CLI**. Binary **`legion-cli`**. On-disk **`.legion-cli/`**. npm org **`@9thlevelsoftware`**. CLI package **`@9thlevelsoftware/legion-cli`** (public, bin `legion-cli`). Libraries `@9thlevelsoftware/legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard,design-system}`. Workspace **root** `"private": true`. Does **not** take the `legion` bin — that belongs to [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion) (plugin installer). Workspace is `D:\legion-cli`. | User: lean into the Legion brand. Sibling products, not a replace: installer stays `npx @9thlevelsoftware/legion --claude`; this engine is `npx @9thlevelsoftware/legion-cli`. `legion-cli doctor` lists `legion` and `legion-cli` on PATH so the installer is not shadowed. Supported invocation: **`pnpm exec legion-cli`**. After `npm i -g @9thlevelsoftware/legion-cli`, `legion-cli` is global. |
 | KD2 | **Language / toolchain** | TypeScript on Node.js 22+, pnpm workspaces, ESM | MCP SDK and a future WebMCP page host are first-class in JS/TS. One language for CLI, engine, and dashboard. |
 | KD3 | **CLI framework** | Commander | Subcommands map 1:1 to lifecycle verbs a non-coder can read. |
-| KD4 | **Persistence** | Git-reviewed markdown under `.legion-cli/` plus a derived, gitignored SQLite index | Humans and git review the wiki, specs, and tasks. SQLite is a cache. Rebuild with `legion-cli index rebuild`. Single-writer lock on `.legion-cli/index/engine.lock`. **Ingest auto-commits** wiki pages on success (`--no-commit` to skip). **Execute does not auto-commit.** `legion-cli ship` stages and shows the diff. |
-| KD5 | **Agents (v0)** | Spawn installed CLIs. Available: `claude` + `fake` + `generic` plus extras `grok` / `openai` / `codex` / `mimo` / `minimax`. Extras are **spawnable** (`DETECT_ONLY_ADAPTER_IDS` is empty; `ExtraAdapter` generic-style argv). `openai` is an **alias id** for the Codex CLI (assumed binary `codex`); prefer `codex` in named examples and human docs. **No product-default adapter** — `adapter.default` is required in `.legion-cli/config.yaml`. Spawn routing: CLI `--adapter` > `Task.adapter` (execute/verify) > `adapter.routes[skillId]` > `adapter.default`. Model pin is argv-only (`claude.extraArgs` / `adapter.<id>.args`). The adapter object is `.strict()` so `apiKey` / `apiBase` / `model` / `provider` fail parse. | User always chooses. Doctor fails if `adapter.default` is missing or that adapter is not spawnable, and fail-closed on required-skill routes (`plan` / `execute` / `review`). Details: [`docs/design/adapter-routing.md`](adapter-routing.md). |
-| KD6 | **Dashboard (v0)** | Loopback HTTP **viewer** on `127.0.0.1` (GET + SSE only). MCP Apps and WebMCP are v1, flags default off. | WebMCP is a W3C CG draft (26 Aug 2026), not a Standard. The viewer exists so non-coders can see path/timeline/task; they still run CLI verbs. |
-| KD7 | **Write isolation** | Code writes: only spawned agent CLIs under a `FileContract` (after-the-fact revert, **not** OS isolation). State writes: **CLI only in v0**. MCP (v1): read-only tools. WebMCP (v1): page UI only. Dashboard: no POSTs in v0. | Legion CLI policy, plus CodeAlmanac `serve` as the read-only-viewer prior art. beads-mcp is **not** read-only (it has `init`/`create`); do not cite it for write isolation. |
+| KD4 | **Persistence** | Git-reviewed markdown under `.legion-cli/` plus a derived, gitignored SQLite index | Humans and git review the wiki, specs, and tasks. SQLite is a cache. Rebuild via `store.rebuild()` (`legion-cli index rebuild` is **not-yet-CLI**). Single-writer lock on `.legion-cli/index/engine.lock`. **Ingest auto-commits** wiki pages on success (`--no-commit` to skip). **Execute does not auto-commit.** `legion-cli ship` stages and shows the diff. |
+| KD5 | **Agents (v0)** | Spawn installed CLIs. Available: `claude` + `fake` + `generic` plus extras `grok` / `openai` / `codex` / `mimo` / `minimax`. Extras are **spawnable** (`DETECT_ONLY_ADAPTER_IDS` is empty; `ExtraAdapter` generic-style argv). `openai` is an **alias id** for the Codex CLI (assumed binary `codex`); prefer `codex` in named examples and human docs. **No product-default adapter** — `adapter.default` is required in `.legion-cli/config.yaml`. Spawn routing: CLI `--adapter` > `Task.adapter` (execute/verify) > `adapter.routes[skillId]` > `adapter.default`. Model pin is argv-only (`claude.extraArgs` / `adapter.<id>.args`). The top-level adapter object is `.strict()` so `apiKey` / `apiBase` / `model` / `provider` fail parse. Nested extra blocks (`adapter.grok` etc.) still strip unknown keys. | User always chooses. Doctor fails if `adapter.default` is missing or that adapter is not spawnable, and fail-closed on required-skill routes (`plan` / `execute` / `review`). Details: [`docs/design/adapter-routing.md`](adapter-routing.md). |
+| KD6 | **Dashboard** | Loopback HTTP **viewer** on `127.0.0.1` (GET + SSE). Optional token-gated POSTs: `ticket \| wikiTrust \| qaChecklist` (Goal 13 shipped). Never execute/ship/plan/review/packet/intent. No interview modal. No approve button. MCP stdio is a shipped extra (read-only). MCP Apps and WebMCP stay later, flags default off. | WebMCP is a W3C CG draft (26 Aug 2026), not a Standard. The viewer exists so non-coders can see path/timeline/task; they still run CLI verbs. Tiny POSTs are not a second engine of record. |
+| KD7 | **Write isolation** | Code writes: only spawned agent CLIs under a `FileContract` (after-the-fact revert, **not** OS isolation). State writes: **CLI is engine of record**. MCP (shipped extra): read-only tools. WebMCP (later): page UI only. Dashboard: optional token-gated POSTs for `ticket \| wikiTrust \| qaChecklist` only. | Legion CLI policy, plus CodeAlmanac `serve` as the read-only-viewer prior art. beads-mcp is **not** read-only (it has `init`/`create`); do not cite it for write isolation. |
 | KD8 | **Lifecycle** | Product phase ≠ task status. Slice = all tasks with `specId === activeSpecId` (no human subset in v0). CONCERNS is `lastReadiness` on `plan_ready`, not a phase. Stay in `executing` until every slice task is `done` or `blocked`. `lastReview: PASS` only when the review spawn created zero new tasks. | QA/ship are spec gates. `legion-cli review` then `legion-cli qa` from slice-terminal `executing`. |
 | KD9 | **Human gates** | Intent confirm, spec approve, skip-QA, ship, and **diff-detectable** scope/deps/schema/infra are engine-hard. Architecture/API-shape without a path heuristic are prompt-only in v0 and are **not** called hard. | Agents will not reliably self-escalate. Only checks the core can evaluate are “hard.” |
 | KD10 | **Interview UX** | Never more than two questions at a time; fixed question bank; answers map onto SPEC fields; LLM polish is optional. | Shipyard `/start`. Works with templates if the adapter is down. `legion-cli doctor` requires **one spawnable** adapter matching `adapter.default` in config. |
 | KD11 | **Scope creep** | Extra work becomes a linked ticket, never an in-place expansion. `filesAllowed` is concrete paths only in v0 (reject `*` / `**`). | beads DAG + Legion contracts. |
 | KD12 | **Design systems / wireframes** | v0: shipped `craft/` + optional hand-dropped `.legion-cli/design/DESIGN.md`. Wireframes stay **4-colour through v0 ship**. v1: packages + optional restyle after a package is installed. | User decision. No baked-in product look. |
-| KD13 | **v0 runtime** | Windows or Unix laptop with git, Node 22, pnpm, and one spawnable adapter set in config. No cloud. Greenfield only. **npm publish in v0** (tag-triggered, provenance). | User sets `adapter.default`. Brownfield is v1. |
+| KD13 | **v0 runtime** | Windows or Unix laptop with git, Node 22, pnpm, and one spawnable adapter set in config. No cloud. `init` requires `--adapter`. `--mode brownfield` is a **shipped extra** (engineer-operated). Greenfield execute stays in-place. **npm publish in v0** (tag-triggered, provenance). | User sets `adapter.default`. Brownfield is not a v1 unlock. |
 | KD14 | **Control mode** | Legion CLI-owned boolean matrix (below). Default `guarded`. Every spawn is surgical against that skill’s `SkillContract`; execute also intersects `FileContract`. `advisory` blocks execute. `autonomous` rejected in v0. | Not “see Legion.” Modes are flags the core evaluates. |
-| KD15 | **Wiki vs run artifacts** | Durable knowledge: `.legion-cli/wiki/` + `.legion-cli/decisions/`. Brownfield runs (v1) write `.legion-cli/runs/<id>/` and are not the wiki. | grok-brownfield run-scoped docs vs CodeAlmanac durable wiki (run artifacts taken from the research report, not re-read in this revision). |
+| KD15 | **Wiki vs run artifacts** | Durable knowledge: `.legion-cli/wiki/` + `.legion-cli/decisions/`. Brownfield runs (shipped extra) write `.legion-cli/runs/<id>/` and are not the wiki. | grok-brownfield run-scoped docs vs CodeAlmanac durable wiki (run artifacts taken from the research report, not re-read in this revision). |
 | KD16 | **QA bar** | Legion CLI scores Playwright/unit JSON itself. P0/P1/P2 from `@p0`/`@p1`/`@p2` tags (from `AC.priority`). Pass = `mode==full` AND `total≥85` AND `p0.failed==0` AND `visual.regressions==0`. Visual-bucket zero on a UI spec is a ship blocker. | Shipyard buckets, with the 85-with-visual-fail hole closed. No 8-agent loop in v0. |
-| KD17 | **Monorepo layout** | pnpm workspaces under `packages/*`. v0: `legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard}` plus `cli` (`@9thlevelsoftware/legion-cli`). `mcp` and `design-system` land in v1. Root private; packages public. | User decision. Not a single package. Prefix avoids colliding with `@9thlevelsoftware/legion`. |
-| KD18 | **v0 cut** | Shippable increment: lifecycle + wiki + DAG + QA + ship + read-only dashboard + one configured adapter + **npm publish**. Extras already spawn generic-style (KD5); that is not a v1 unlock. Not brownfield, MCP, WebMCP, packets, compaction, verified vendor extra-adapter argv, or github design-system install. | Twenty PRs that secretly ship v1 is not a v0. |
-| KD19 | **Brownfield execute (v1)** | Engineer-operated `legion-cli brownfield --execute` uses **git worktrees**. v0 greenfield execute stays in-place. | User decision. Isolation for existing-code PRs; simpler path for v0. |
+| KD17 | **Monorepo layout** | pnpm workspaces under `packages/*`. Lifecycle packages: `legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard}` plus `cli` (`@9thlevelsoftware/legion-cli`). `mcp` and `design-system` are **shipped extras**, off the 10-verb core. Root private; packages public. | User decision. Not a single package. Prefix avoids colliding with `@9thlevelsoftware/legion`. |
+| KD18 | **v0 cut / small set** | **Small set** = the 10-verb lifecycle core (`init`, `intent`, `discuss`, `spec`, `plan`, `execute`, `verify`, `review`, `qa`, `ship`) + wiki + DAG + QA + ship + dashboard viewer + one configured adapter + **npm publish**. Extras already spawn generic-style (KD5); that is not a v1 unlock. **Shipped extras** (off the default window): packets, compaction, brownfield worktrees, MCP, garden, design-system, dashboard tiny POSTs. **Later, not this series:** `map` / `wireframe` / `skills list\|install` / `serve` / `control-mode`, WebMCP, verified vendor extra-adapter argv, github design-system install. `assume list` / `assume answer` / `index rebuild` stay in the founding v0 table as **not-yet-CLI** until registered. | Twenty PRs that secretly ship a second product is not a v0. Docs follow shipped code when the code matches the product bet. |
+| KD19 | **Brownfield execute (shipped extra)** | Engineer-operated `legion-cli brownfield --execute` uses **git worktrees**. Greenfield execute stays in-place. | User decision. Isolation for existing-code PRs; simpler path for greenfield. |
 
 **Control-mode matrix (KD14)** — evaluated by `@9thlevelsoftware/legion-cli-core`, not by the model:
 
@@ -78,7 +78,7 @@ The result is scope creep, untested “done,” and a terminal wall that scares 
 
 ### Current state of this repo
 
-`D:\product-engineer-helper` contains only this design document. There is no application code to extend. This document *is* the founding architecture.
+`D:\legion-cli` is the workspace. The engine exists as TypeScript on Node 22+, pnpm workspaces, ESM, packages under `@9thlevelsoftware/legion-cli-*`. This document is the founding architecture of record, reconciled in rev 10 with shipped code (packets, compaction, brownfield, MCP, garden, design-system, dashboard tiny POSTs are extras, not a second product).
 
 ### Pain points the mashup must kill
 
@@ -101,13 +101,13 @@ The result is scope creep, untested “done,” and a terminal wall that scares 
 | Two-question interviews; interviewed PRD; clickable HTML wireframes; 8-agent QA ≥ 85; Playwright-before-fix; 4-colour palette | [ajaywadhara/shipyard](https://github.com/ajaywadhara/shipyard) | Discovery UX, visual artifacts, hard QA (8-agent loop is v1) | re-read |
 | File contracts; authority matrix; control modes; review → fix → re-review; three-lens design review | [9thLevelSoftware/legion](https://github.com/9thLevelSoftware/legion) | Bounded writes, human approval, review loop. Legion CLI copies a **Legion CLI-owned** matrix, not “see Legion.” | re-read |
 | Dependency graph of ready/unblocked work; extra work → linked ticket | beads ([steveyegge/beads](https://github.com/steveyegge/beads), [gastownhall/beads](https://github.com/gastownhall/beads)) | Task DAG, anti-creep | re-read (README-level) |
-| Review packets for PMs/designers | OpenAI Symphony | v1 packets. Not other “Symphony” repos. | re-read (announcement-level) |
+| Review packets for PMs/designers | OpenAI Symphony | Shipped extra: `packet new` / `packet respond` spawn tickets, not execute. Not other “Symphony” repos. | re-read (announcement-level) |
 | Git-reviewed markdown wiki + derived SQLite; ingest files/URLs/transcripts; local **read-only** viewer; no public MCP package; `DO_NOT_TRACK` telemetry bar | [CodeAlmanac](https://github.com/AlmanacCode/codealmanac) | Wiki model, ingest, `serve` as viewer prior art | re-read |
 | Parse existing Markdown, wikilinks, aliases, tags; backlinks / neighbors / hubs | [obsidian-vault-graph](https://github.com/kartikkabadi/obsidian-vault-graph) | Graph queries over the wiki, not a second wiki | research-only |
-| Running app as demo; intent brief; assumptions register; code as evidence | [grok-brownfield](https://github.com/kartikkabadi/grok-brownfield) README | Brownfield **v1** | README re-read; `SKILL.md` research-only |
+| Running app as demo; intent brief; assumptions register; code as evidence | [grok-brownfield](https://github.com/kartikkabadi/grok-brownfield) README | Brownfield **shipped extra** | README re-read; `SKILL.md` research-only |
 | LSP + diagram agents; committed architecture markdown + fingerprints | [CodeBoarding](https://github.com/CodeBoarding/CodeBoarding) | Brownfield map **v1**. Do not implement LSP from a README claim in v0. | research-only |
 | Run-scoped intent/assumptions/analysis/design + JSON resume; not the long-term wiki | grok-brownfield `SKILL.md` | `.legion-cli/runs/<id>/` in v1 | research-only |
-| Session briefing; compact closed work | Daem0n-MCP; beads | Brief on the way in. Compaction is v1. | research-only |
+| Session briefing; compact closed work | Daem0n-MCP; beads | Brief on the way in. Compaction is a **shipped extra** (`legion-cli context compact`). | research-only |
 | Page-registered tools; `document.modelContext.registerTool` | [WebMCP draft](https://webmachinelearning.github.io/webmcp) (CG draft, 26 Aug 2026) | v1 progressive enhancement only. Chrome origin-trial/flags: research-report claim, not independently verified against Chromium docs. | spec re-read |
 | Interactive HTML in the MCP host, text fallback | [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview) | v1 in-host dashboard | re-read |
 | CLI engine of record; spawn coding-agent CLIs as write engine; local wiki viewer | CodeAlmanac serve; Legion CLI policy | Write isolation. **Not** beads-mcp (that server writes). RUDR9 Kanban and Open Design MCP: research-only. | mixed |
@@ -115,7 +115,7 @@ The result is scope creep, untested “done,” and a terminal wall that scares 
 | Generate a project-owned design system from a brief; brand violation is a blocker | Legion `design-workflows` | v1 generate-from-brief | re-read (skill) |
 | Brand as optional input; mode-specific generation; brand lint vs quality/safety guardrails | Row-Bot Designer Studio | v1. Overflow/CSS-variable list is from an architecture post (research report already warns). | research-only |
 
-**Invented in this document (not present in any one source):** the split product-phase / task-status machine; the `.legion-cli/` on-disk contract; CLI-first UX with a read-only HTTP viewer (MCP Apps + WebMCP as later surfaces); design-system packages composed into *product engineering* (v1); the degraded-QA path; progressive disclosure of the command surface; FileContract revert algorithm as specified here.
+**Invented in this document (not present in any one source):** the split product-phase / task-status machine; the `.legion-cli/` on-disk contract; CLI-first UX with an HTTP viewer (MCP Apps + WebMCP as later surfaces); design-system packages composed into *product engineering* (shipped extra); the degraded-QA path; progressive disclosure of the command surface; FileContract revert algorithm as specified here.
 
 **Product risk:** sources specify mechanisms; they do not empirically prove the mashup works for non-coders. See [Risks](#risks).
 
@@ -125,27 +125,27 @@ The result is scope creep, untested “done,” and a terminal wall that scares 
 
 ### Goals (v0)
 
-1. A product person with git, Node 22, pnpm, and one spawnable adapter can go from empty folder to a frozen SPEC, a bounded plan, **all DAG tasks executed**, verified QA, and a ship checklist — without reading the engine source. They **will** use the terminal (~15 verbs). The dashboard is a viewer, not a replacement CLI.
+1. A product person with git, Node 22, pnpm, and one spawnable adapter can go from empty folder to a frozen SPEC, a bounded plan, **all DAG tasks executed**, verified QA, and a ship checklist — without reading the engine source. They **will** use the terminal (10-verb lifecycle core; operations and extras behind `help --all`). The dashboard is a viewer, not a replacement CLI.
 2. Every session starts from a briefing of wiki + decisions + current task + open assumptions, not from a blank context window.
 3. The CLI refuses illegal transitions (plan without approved spec, execute without file contract, ship without QA, expand a live task, execute a blocked task).
-4. A local **read-only** dashboard shows path, timeline, current task, dependencies, and audit trail. It never owns state and it has no mutation routes in v0.
+4. A local dashboard shows path, timeline, current task, dependencies, and audit trail. It never owns state. Optional token-gated POSTs are `ticket | wikiTrust | qaChecklist` only (Goal 13 shipped).
 5. Inspectable artifacts (intent brief, PRD, SPEC, clickable HTML wireframes, task files) that a non-coder can open in the dashboard or a browser and correct before approval.
 6. The CLI is installable from npm: `npx @9thlevelsoftware/legion-cli`, `npm i -g @9thlevelsoftware/legion-cli`, or `pnpm exec legion-cli` in this repo. Publish is tag-triggered with provenance.
 
-### Goals (v1)
+### Goals (shipped extras vs later)
 
-7. Brownfield onboarding of an existing running app (demo → intent brief → assumptions → architecture map → improvement SPEC). Engineer `--execute` uses git worktrees.
-8. MCP read-only server; MCP Apps dashboard inside visual MCP hosts; WebMCP tools on the local page when the browser supports them.
-9. Wiki gardening, architecture fingerprint refresh, optional embeddings, compaction of closed work.
-10. Review packets that PMs/designers can file without living in the task graph.
-11. Verified vendor argv for extra adapters (`grok`, `codex`, …) plus a conformance suite. Extras already spawn generic-style (KD5); this is not a detect-only unlock.
-12. Design-system packages (local copy, then pinned github), generate-from-brief, OpenDesign importer.
-13. Optional dashboard write surface (thin CLI-equivalent POSTs with CSRF token) — still not a second source of truth.
+7. **Shipped extra:** brownfield onboarding of an existing running app (demo → intent brief → assumptions → improvement SPEC). Engineer `--execute` uses git worktrees. Architecture map (`legion-cli map`) is **later, not this series**.
+8. **Shipped extra:** MCP read-only stdio server. MCP Apps dashboard inside visual MCP hosts and WebMCP tools stay **later**.
+9. **Shipped extra:** wiki gardening (`legion-cli garden`) and compaction of closed work (`legion-cli context compact`). Architecture fingerprint refresh and embeddings stay **later**. Compaction is manual; no auto-compact on ship.
+10. **Shipped extra:** review packets that PMs/designers can file without living in the task graph (`packet new` / `packet respond`). Packets spawn tickets, not execute.
+11. Verified vendor argv for extra adapters (`grok`, `codex`, …) plus a conformance suite — **later**. Extras already spawn generic-style (KD5); this is not a detect-only unlock.
+12. **Shipped extra:** design-system packages (local copy), generate-from-brief, OpenDesign importer. Pinned github install stays **later**.
+13. **Shipped (Goal 13):** optional dashboard write surface — `POST /engine/{ticket,wikiTrust,qaChecklist}` with CSRF token — still not a second source of truth. Do not grow the set.
 
 ### Non-goals
 
 - **No cloud control plane in v0 or v1.** No hosted accounts, no remote wiki sync, no telemetry that uploads source, prompts, or paths.
-- **Not an IDE, and not a dashboard-first product in v0.**
+- **Not an IDE, and not a dashboard-first product.**
 - **Not a replacement for the coding agent.** Legion CLI orchestrates; the user-configured adapter CLI writes code.
 - **Not a generic chatbot.** Unbounded chat that does not produce artifacts is a failure mode.
 - **Not a second wiki or a second issue tracker.**
@@ -163,10 +163,10 @@ The result is scope creep, untested “done,” and a terminal wall that scares 
 
 #### 1.1 This product’s source repo (what we will build)
 
-v0 layout for `D:\product-engineer-helper`:
+Layout for `D:\legion-cli`:
 
 ```text
-product-engineer-helper/
+legion-cli/
 ├── package.json                  # private workspace root, packageManager: pnpm@9
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json
@@ -182,7 +182,9 @@ product-engineer-helper/
 │   ├── graph/                    # @9thlevelsoftware/legion-cli-graph
 │   ├── agents/                   # @9thlevelsoftware/legion-cli-agents   — fake, generic, claude
 │   ├── qa/                       # @9thlevelsoftware/legion-cli-qa
-│   ├── dashboard/                # @9thlevelsoftware/legion-cli-dashboard — GET viewer
+│   ├── dashboard/                # @9thlevelsoftware/legion-cli-dashboard — viewer + tiny POSTs
+│   ├── mcp/                      # @9thlevelsoftware/legion-cli-mcp — shipped extra, read-only
+│   ├── design-system/            # @9thlevelsoftware/legion-cli-design-system — shipped extra
 │   └── cli/                      # @9thlevelsoftware/legion-cli    — bin: legion-cli
 ├── craft/                        # shipped; copied into .legion-cli/design/craft/ on init
 │   ├── typography.md
@@ -202,9 +204,9 @@ product-engineer-helper/
 └── fixtures/
 ```
 
-v1 adds `packages/mcp`, `packages/design-system`, and `design-systems/_fixture-neutral/`.
+`packages/mcp`, `packages/design-system`, and `design-systems/_fixture-neutral/` are **shipped extras**.
 
-The workspace **root** is `"private": true`. Published packages are public: `@9thlevelsoftware/legion-cli` (CLI, bin `legion-cli`) plus `@9thlevelsoftware/legion-cli-*` libraries. v0 **does** publish to npm on git tags (`v*`) with provenance, using **GitHub Actions trusted publisher** on the `@9thlevelsoftware` org (same path as [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion)). Local git repo name may stay `product-engineer-helper` until moved.
+The workspace **root** is `"private": true`. Published packages are public: `@9thlevelsoftware/legion-cli` (CLI, bin `legion-cli`) plus `@9thlevelsoftware/legion-cli-*` libraries. v0 **does** publish to npm on git tags (`v*`) with provenance, using **GitHub Actions trusted publisher** on the `@9thlevelsoftware` org (same path as [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion)). Workspace is `D:\legion-cli`.
 
 Supported invocation: **`pnpm exec legion-cli`**, or `npx @9thlevelsoftware/legion-cli`, or a global `npm i -g @9thlevelsoftware/legion-cli`. `legion-cli doctor` lists every `legion` and `legion-cli` binary on PATH so the existing installer is not mistaken for this engine. A global install is collision-checked; it is not required. Do **not** register bin `legion`.
 
@@ -244,7 +246,7 @@ their-product/
 └── tests/
 ```
 
-v1 may add `.legion-cli/packets/`, `.legion-cli/design/packages/`, `.legion-cli/map/`, `.legion-cli/runs/`.
+Shipped extras may add `.legion-cli/packets/`, `.legion-cli/design/packages/`, `.legion-cli/runs/`. `.legion-cli/map/` is **later, not this series**. `.legion-cli/coord/` is the later isolation door only — do not create it now.
 
 `.legion-cli/wiki/` **is** the vault. We parse its Markdown, wikilinks, aliases, and tags. We do not create a parallel Obsidian vault.
 
@@ -312,7 +314,7 @@ Illegal transitions throw `LegionRefuseError` with a next-command hint. Document
 ```text
 todo → ready → in_progress → verifying → done
                  ↘ blocked
-done → (v1 compacted)
+done → compacted   (shipped extra: legion-cli context compact)
 ```
 
 | Task status | Meaning |
@@ -323,7 +325,7 @@ done → (v1 compacted)
 | `verifying` | Spawn exited; engine is running `verificationCommands` |
 | `blocked` | Contract violation, failed `verificationCommands`, or open blocking assumption |
 | `done` | `verificationCommands` PASS for this task (`legion-cli verify` notes are optional) |
-| `compacted` | v1 only |
+| `compacted` | shipped extra — `legion-cli context compact` rewrites a `done` task (title + ≤500-char outcome + audit pointer); `isDoneForDeps` treats it as done |
 
 Fix work is a **new child task** (`type: fix`, `parentId: TSK-x`), not a phantom product phase.
 
@@ -370,7 +372,7 @@ Prompt-only items are written into `CONTEXT.md` and the execute skill. They are 
 | `legion-cli plan` before `spec_frozen` | Yes | `legion-cli spec` or `legion-cli spec approve` |
 | `legion-cli execute` with no FileContract / empty `verificationCommands` | Yes | `legion-cli plan` |
 | `legion-cli execute TSK-x` if not `ready` | Yes | `legion-cli status --blockers` |
-| `legion-cli execute` in `advisory` | Yes | `legion-cli` (switch mode is v1 `legion-cli control-mode`; v0 edit `config.yaml` then doctor) |
+| `legion-cli execute` in `advisory` | Yes | `legion-cli` (`control-mode` is later, not this series; edit `config.yaml` then doctor) |
 | Extra paths after **any** spawn | Revert extras (algorithm in §5.2), mark blocked / refuse the phase | `legion-cli task amend` / `legion-cli ticket` |
 | `legion-cli execute` from `plan_failed` | Yes | fix the FAIL list, then `legion-cli plan` |
 | `legion-cli qa` if any slice task is `todo`/`ready`/`in_progress`/`verifying` | Yes | `legion-cli next` / `legion-cli execute` |
@@ -384,8 +386,8 @@ Prompt-only items are written into `CONTEXT.md` and the execute skill. They are 
 | `filesAllowed` containing `*`, `**`, `?`, or `.git/**` | Plan FAIL | concrete paths |
 | Ingest of private-network URL or `file:` outside the workspace | Yes | in-repo path |
 | `control_mode: autonomous` | Config rejected | `guarded` or `surgical` |
-| `legion-cli init --mode brownfield` in v0 | Yes | greenfield, or wait for v1 |
-| `legion-cli mcp` / `legion-cli packet` / `legion-cli brownfield` / `legion-cli design-system` in v0 | Unknown command | listed as v1 |
+| `legion-cli init --mode brownfield` | No (shipped extra; `--adapter` still required) | greenfield remains the default |
+| `legion-cli mcp` / `legion-cli packet` / `legion-cli brownfield` / `legion-cli design-system` / `legion-cli context compact` / `legion-cli garden` | No — shipped extras, off the 10-verb core | `legion-cli help --all` |
 
 ---
 
@@ -440,7 +442,7 @@ Redaction before wiki write (best-effort, not complete): `AKIA[0-9A-Z]{16}`, `\b
 - YAML frontmatter: `title`, `aliases`, `tags`, `trust`, `updated`, `schemaVersion`
 - `topics.yaml` as a cross-folder index
 
-Graph queries: backlinks, neighbors (depth 1), hubs (highest in-degree). Orphan listing is v1 `legion-cli garden`.
+Graph queries: backlinks, neighbors (depth 1), hubs (highest in-degree). Orphan listing is the shipped extra `legion-cli garden` (read-only report).
 
 #### 3.4 Derived SQLite index (gitignored)
 
@@ -513,13 +515,13 @@ Every mutating command and every agent spawn starts with a `SessionBrief` inject
 5. Wiki hubs + pages linked from the current spec: **title + 2-line summary for `trust=reviewed` only; title+path for `untrusted`**
 6. FileContract of the current task, if any
 7. Last QA score and open review findings
-8. “Closed task logs live in `.legion-cli/audit/`; do not reload them.” (compaction itself is v1)
+8. “Closed task logs live in `.legion-cli/audit/`; do not reload them.” (compaction is a shipped extra; this sentence is always present)
 
 If over cap, drop 5’s summaries first (keep titles), never drop 1–3. `tokenEstimate` on the type is a character count in v0 (`characterCount`).
 
 #### 3.6 Compaction
 
-**v1.** `legion-cli context compact` / `legion-cli garden`. v0 does not rewrite `done` task bodies. When it exists: compact only `status: done` tasks with no `in_progress` sibling in the spec; hold the engine lock.
+**Shipped extra.** `legion-cli context compact` (manual; hold `engine.lock`). Compact only `status: done` tasks with no `in_progress` sibling in the **same spec**; rewrite body to title + ≤500-char outcome + audit pointer; set `status: compacted`. `isDoneForDeps` and `p0TasksNotDone` treat `compacted` as done. No auto-compact on ship. `legion-cli garden` is the wiki hygiene verb (read-only report; does not compact tasks).
 
 ---
 
@@ -529,7 +531,7 @@ If over cap, drop 5’s summaries first (keep titles), never drop 1–3. `tokenE
 
 A task is **ready** iff:
 
-- all `blockedBy` tasks are `done` (v1: or `compacted`)
+- all `blockedBy` tasks are `done` or `compacted`
 - `verificationCommands.length ≥ 1`
 - `filesAllowed` is non-empty, concrete POSIX paths, no `.git/**`
 - no open *blocking* assumption with `escalatesTo: user` in its subgraph
@@ -549,7 +551,7 @@ flowchart LR
   T3 --> T4
 ```
 
-Parallel execute is v1 (`flags.parallelExecute`).
+Parallel execute is a **later door**, not this series (`flags.parallelExecute` stays false and unread by execute). See §5.4.
 
 #### 4.2 File contract
 
@@ -567,7 +569,14 @@ Extra work: spawn must stop expanding; the engine files `legion-cli ticket creat
 
 #### 4.3 Review packets
 
-**v1.** `legion-cli packet new` / `legion-cli packet respond`. Not a v0 noun.
+**Shipped extra**, off the 10-verb lifecycle core and off the default window.
+
+| Verb | Behavior | Must not |
+| --- | --- | --- |
+| `legion-cli packet new --title` | Write `.legion-cli/packets/PKT-NNNN.md`, status `open`, `ticketIds: []` | Spawn, change phase, write `src/` |
+| `legion-cli packet respond <id>` | File one ticket, mark `responded`, print “Packets spawn tickets, not execute.” | Call `optionalSkillSpawn`, `execute`, mark the ticket `in_progress` |
+
+Review skill must not write `.legion-cli/packets/**`. Dashboard has no packet POST. Founding PR-12 “No packets” is historical.
 
 ---
 
@@ -703,7 +712,7 @@ There is no product-wide default: `legion-cli init` writes `adapter.default` as 
 
 `adapter.named` expands at **write** time in the CLI (`task amend --route ui` writes `adapter: grok`). Spawn does not consult named keys.
 
-**Model stays argv.** There is no `model`, `provider`, `apiKey`, or `apiBase` field on `LegionConfig` or `Task`. Pin a model with `adapter.claude.extraArgs` or extra/generic `args` (must keep `{{pointer}}` or `detect()` fails). The adapter object is `.strict()` so those HTTP-router keys **fail config parse** instead of stripping. Task schema stays strip-unknown except the optional `adapter` enum.
+**Model stays argv.** There is no `model`, `provider`, `apiKey`, or `apiBase` field on `LegionConfig` or `Task`. Pin a model with `adapter.claude.extraArgs` or extra/generic `args` (must keep `{{pointer}}` or `detect()` fails). The **top-level** adapter object is `.strict()` so those HTTP-router keys **fail config parse** instead of stripping. Nested extra blocks (`adapter.grok` etc.) still strip unknown keys. Task schema stays strip-unknown except the optional `adapter` enum.
 
 Legion CLI does not call vendor HTTP APIs. Auth is whatever the installed CLI already uses. Full routing contract: [`docs/design/adapter-routing.md`](adapter-routing.md).
 
@@ -778,7 +787,24 @@ This is **after-the-fact policy**, not a sandbox. Vendor CLIs can still use the 
 
 #### 5.3 Skills staging
 
-Copy (not symlink) the skill directory into `.legion-cli/cache/skills/<run-id>/`. v0 also copies `craft/*.md` into that tree. Optional `.legion-cli/design/DESIGN.md` is appended to `prompt.md` if present. Design-system *packages* are v1.
+Copy (not symlink) the skill directory into `.legion-cli/cache/skills/<run-id>/`. v0 also copies `craft/*.md` into that tree. Optional `.legion-cli/design/DESIGN.md` is appended to `prompt.md` if present. Design-system *packages* are a shipped extra.
+
+#### 5.4 Later isolation door (not this series)
+
+v0 isolation stays as coded: SkillContract ∩ FileContract, extra-file revert after `wait()`, serial `in_progress` (`isTaskReady` refuses a second), brownfield `--execute` worktrees. `flags.parallelExecute` stays **false** and **unread** by execute. Do **not** implement concurrent workers in this series.
+
+If concurrent workers are ever allowed, the door is:
+
+1. **Opt-in flag** `flags.parallelExecute: true` plus an explicit `legion-cli execute --parallel` that still refuses unless the flag is on (no silent parallelism).
+2. **One git worktree per in_progress task** under `.legion-cli/worktrees/<taskId>/` on branch `worker/<taskId>`, created with `gitWorktreeAdd` (reuse brownfield helper; do not `-B` reset). Greenfield default remains in-place serial.
+3. **File-ownership / task-boundary contracts** as git-reviewed markdown `.legion-cli/coord/OWNERSHIP.md` listing `taskId → filesAllowed`. Overlapping `filesAllowed` remains a refuse — worktrees isolate dirty trees, they do **not** make overlapping contracts legal.
+4. **Revert still runs** in each worktree after `wait()` against that worker’s `preSpawnRef`.
+5. **Merge is a human/ship problem**, not an agent problem. Do not auto-merge worker branches. `legion-cli ship` stays the commit gate on the operator’s tree.
+6. **No second orchestration UI.** No dashboard worker board, no chat dispatcher, no MCP write tool to launch workers. Status continues to show one `currentTaskId` or, if parallel ever lands, a list on `status --blockers` / `next` only.
+7. **Worktrees do not replace the worker CLI’s own permissions.** Legion still does not OS-sandbox vendor CLIs.
+8. Open Dynamic Workflows’ throwaway `git worktree add --detach` + unified diff + remove is acceptable as an implementation note for **throwaway** workers; Legion’s durable extra-file revert still applies inside the worktree.
+
+This door is documented so a future PR cannot invent a dashboard-first orchestrator. **Do not implement it** except comments on `flags.parallelExecute`.
 
 ---
 
@@ -890,13 +916,13 @@ A visual regression therefore **cannot** ship even if P0+P1+P2 = 85.
 | `no-browser` | unit + `legion-cli qa checklist` | **70 cap** | Blocked unless `legion-cli ship --allow-degraded-qa` |
 | `off` | forbidden | — | — |
 
-Checklist items = spec ACs. Human ticks via **`legion-cli qa checklist`** (TTY), not the dashboard in v0. Receipt records `qa.mode`.
+Checklist items = spec ACs. Human ticks via **`legion-cli qa checklist`** (TTY) or the optional dashboard `qaChecklist` POST. Receipt records `qa.mode`. No interview modal and no approve button on the dashboard.
 
 ---
 
 ### 8. Visual dashboard
 
-v0 is **one** surface: local HTTP viewer. MCP Apps and WebMCP are v1. **Invented combination** for later; v0 is CodeAlmanac-style serve + Legion CLI state.
+Default surface is the CLI. Local HTTP is a **viewer with optional writes**. MCP Apps and WebMCP are later. **Invented combination** for later; the page is CodeAlmanac-style serve + Legion CLI state. Page copy: “Viewer with optional writes. CLI remains the source of truth.”
 
 ```mermaid
 flowchart TB
@@ -905,9 +931,10 @@ flowchart TB
     CORE --> DB["sqlite index"]
     HTTP["GET 127.0.0.1:7420 viewer"] --> MD
     HTTP --> DB
+    POST["POST /engine/ticket|wikiTrust|qaChecklist"] --> CORE
 ```
 
-#### 8.1 Local HTTP (v0)
+#### 8.1 Local HTTP (viewer + tiny POSTs)
 
 `legion-cli dashboard` binds `127.0.0.1:7420`. `0.0.0.0` requires `--expose` and a warning.
 
@@ -920,47 +947,50 @@ flowchart TB
 | `GET /audit` | Event trail |
 | `GET /api/state` | JSON snapshot |
 | `GET /events` | SSE of audit events |
+| `POST /engine/ticket` | File a ticket (same as CLI `ticket create`; no `adapter` on POST) |
+| `POST /engine/wikiTrust` | Trust a wiki page |
+| `POST /engine/qaChecklist` | Tick QA checklist items |
 
-**No `POST /engine/*` in v0.** Approvals, tickets, checklists, execute, ship are CLI verbs.
+Allowlist `ENGINE_WRITE_METHODS = ticket | wikiTrust | qaChecklist`. Mint a random token at server start, embed `<meta name="legion-cli-token" content="…">` in the first HTML, require header `X-Legion-Cli-Token` on POSTs, **never a cookie**, Origin allowlist, no CORS `*`. POSTs call the same `LegionEngine` methods as the CLI. **No** interview modal, **no** approve button, **no** execute/ship/plan/review/packet/intent routes.
 
-Depends on persist + wiki + graph, **not** on ship. Kanban works as soon as tasks exist (even `todo`).
+Approvals, execute, and ship stay CLI verbs. Depends on persist + wiki + graph. Kanban works as soon as tasks exist (even `todo`).
 
-#### 8.2 MCP (v1)
+#### 8.2 MCP (shipped extra; Apps later)
 
-`legion-cli mcp` stdio. Read-only tools: `legion_cli_status`, `legion_cli_search`, `legion_cli_show`, `legion_cli_task_graph`, `legion_cli_brief`, `legion_cli_current_task`, `legion_cli_audit_trail`, `legion_cli_wiki_backlinks`. Package must not import `execute()`.
+`legion-cli mcp` stdio is a **shipped extra** (off the 10-verb core). Read-only tools: `legion_cli_status`, `legion_cli_search`, `legion_cli_show`, `legion_cli_task_graph`, `legion_cli_brief`, `legion_cli_current_task`, `legion_cli_audit_trail`, `legion_cli_wiki_backlinks`. Package must not import `execute()`.
 
-MCP Apps resources (`ui://legion-cli/dashboard`, …) are v1, CSP `'self'`, text fallback = `legion-cli status`.
+MCP Apps resources (`ui://legion-cli/dashboard`, …) are **later**, CSP `'self'`, text fallback = `legion-cli status`.
 
-#### 8.3 WebMCP (v1)
+#### 8.3 WebMCP (later, not this series)
 
-Feature-detect `document.modelContext?.registerTool`. Serve dashboard with COOP/COEP (or the headers the draft needs for origin-keyed agents) **when `flags.webmcp` is true**. `http://127.0.0.1:7420` is potentially trustworthy but `registerTool` may still throw without an origin-keyed cluster; catch and keep the HTTP page unchanged. Tools: `filter_board`, `open_task`, `show_timeline`, `highlight_blockers` (`readOnlyHint: true`). **Not a v0 requirement. Not a polyfill.**
+Feature-detect `document.modelContext?.registerTool`. Serve dashboard with COOP/COEP (or the headers the draft needs for origin-keyed agents) **when `flags.webmcp` is true**. `http://127.0.0.1:7420` is potentially trustworthy but `registerTool` may still throw without an origin-keyed cluster; catch and keep the HTTP page unchanged. Tools: `filter_board`, `open_task`, `show_timeline`, `highlight_blockers` (`readOnlyHint: true`). **Not this series. Not a polyfill.**
 
-#### 8.4 v1 dashboard writes (specified now so PR-14 does not invent them)
+#### 8.4 Dashboard writes (Goal 13 shipped)
 
-If Goal 13 lands: mint a random token at server start, embed `<meta name="legion-cli-token" content="…">` in the first HTML, require header `X-Legion-Cli-Token` on POSTs, **never a cookie**, Origin allowlist, no CORS `*`. POSTs call the same `LegionEngine` methods as the CLI. Until then, do not implement POST.
+Token, Origin allowlist, and the three-method POST set in §8.1. Do not grow `ENGINE_WRITE_METHODS`. MCP remains read-only.
 
 #### 8.5 Write-path isolation
 
 | Actor | `.legion-cli` state | `src/` |
 | --- | --- | --- |
 | `legion-cli` CLI | Yes | Only by spawning an adapter |
-| Dashboard v0 | No | No |
-| Dashboard v1 POST | Yes (engine) | No |
-| MCP tools v1 | No | No |
-| WebMCP tools v1 | No | No |
+| Dashboard GET + SSE | No | No |
+| Dashboard POST (`ticket` / `wikiTrust` / `qaChecklist`) | Yes (engine) | No |
+| MCP tools (shipped extra) | No | No |
+| WebMCP tools (later) | No | No |
 | Coding-agent CLI | Task files via contract if listed (usually not) | `filesAllowed` only, after-the-fact |
 
 ---
 
-### 9. Design-system packages (mostly v1)
+### 9. Design-system packages (shipped extra)
 
-#### 9.1 v0
+#### 9.1 Craft + optional DESIGN.md
 
 On init, copy `craft/` into `.legion-cli/design/craft/`. Execute/spec prompts append those files. If the user copies a `DESIGN.md` into `.legion-cli/design/DESIGN.md`, append it too (project-owned, no installer).
 
-No `legion-cli design-system` command in v0. No github install. No URL extraction.
+`legion-cli design-system show | install | import-od | generate` is a **shipped extra**, off the 10-verb core. No github install. No URL extraction.
 
-#### 9.2 v1 package shape (fork, not drop-in)
+#### 9.2 Package shape (fork, not drop-in)
 
 ```text
 .legion-cli/design/packages/<id>/
@@ -971,11 +1001,11 @@ No `legion-cli design-system` command in v0. No github install. No URL extractio
 
 `schemaVersion: "legion-cli-design-system/v1"`. OpenDesign folders use `od-design-system-project/v1` plus `category`. **Importer:** `legion-cli design-system import-od <dir>` reads OD manifest, writes a Legion CLI (`legion-cli-design-system/v1`) manifest (one-way). Do not claim a raw OpenDesign folder installs.
 
-Install grammar v1: **local directory copy only** until signed-skill PR. Reject `github:` until that PR. `integrity.sha256` optional on import, **required** for any remote install.
+Install grammar: **local directory copy only** until signed-skill PR. Reject `github:` until that PR. `integrity.sha256` optional on import, **required** for any remote install.
 
 Compose order (when packages exist): USAGE.md → DESIGN.md → tokens.css → component index → craft slugs → skill body. Brand tokens win; craft covers the rest.
 
-Generate-from-brief (v1): two-question interview, work type / platforms / WCAG, **no URL fetch** until SSRF suite exists; path-or-none for brand files. Three-lens review; brand violation blocks spec freeze for UI work.
+Generate-from-brief (shipped extra): two-question interview, work type / platforms / WCAG, **no URL fetch** until SSRF suite exists; path-or-none for brand files. Three-lens review; brand violation blocks spec freeze for UI work.
 
 Craft files actually shipped: `typography.md`, `color.md`, `anti-ai-slop.md`, `accessibility-baseline.md`, `overflow-and-clipping.md`.
 
@@ -983,14 +1013,14 @@ Craft files actually shipped: `typography.md`, `color.md`, `anti-ai-slop.md`, `a
 
 ### 10. Greenfield vs brownfield
 
-v0: `legion-cli init` is greenfield only.
+`legion-cli init` defaults to greenfield and requires `--adapter`. `--mode brownfield` is a **shipped extra**.
 
-| | Greenfield (v0) | Brownfield (v1) |
+| | Greenfield | Brownfield (shipped extra) |
 | --- | --- | --- |
 | Starting point | Empty or near-empty product | Running app the user can demo |
 | Code | Created under contracts after spec freeze | Evidence, not ground truth |
-| First artifacts | Intent interview, PRD, wireframes, SPEC | Intent brief, assumptions, map, then SPEC |
-| Map | Optional notes | `.legion-cli/map/` + fingerprints (not v0 LSP) |
+| First artifacts | Intent interview, PRD, wireframes, SPEC | Intent brief, assumptions, then SPEC |
+| Map | Optional notes | `.legion-cli/map/` + fingerprints are **later, not this series** (not LSP) |
 | Runs | Execute runs under `.legion-cli/cache/runs/` | `.legion-cli/runs/<id>/` analysis; `legion-cli run promote` |
 | Acceptance | Spec AC + tests + contract porcelain | Same + no unrelated debt in this task |
 | Execute isolation | In-place working tree | **git worktrees** for `legion-cli brownfield --execute` |
@@ -1002,13 +1032,13 @@ v0: `legion-cli init` is greenfield only.
 ```mermaid
 flowchart TB
     USER[Product person] --> CLI[pnpm exec legion-cli]
-    USER --> UI[Read-only dashboard]
+    USER --> UI[Dashboard viewer]
     CLI --> CORE
     UI --> PER
     UI --> WIKI
     UI --> GRAPH
 
-    subgraph v0 [v0 packages]
+    subgraph pkgs [packages]
       CORE[@9thlevelsoftware/legion-cli-core]
       SCH[@9thlevelsoftware/legion-cli-schema]
       PER[@9thlevelsoftware/legion-cli-persist]
@@ -1077,16 +1107,20 @@ sequenceDiagram
 
 **The tables in this section are authoritative.** Every `legion-cli …` verb mentioned in Proposed Design appears here with a version.
 
+**Small set** = the 10-verb lifecycle core (`init`, `intent`, `discuss`, `spec`, `plan`, `execute`, `verify`, `review`, `qa`, `ship`). Default window (Layer 0): status + one next command. Always-on operations (`search`, `brief`, `wiki trust`, `show`, `doctor`, `ingest`, `help`) and shipped extras (`packet`, `context compact`, `brownfield`, `mcp`, `garden`, `design-system`, dashboard POSTs) are off that window. Do not rewrite the happy-path example into a 30-verb tour.
+
 Progressive disclosure: bare `legion-cli` is status + the one next command. Full help: `legion-cli help --all`. `--json` for scripts.
 
 Global flags: `--project <dir>`, `--json`, `--yes` (non-gate confirms only), `--verbose`.
 
-### v0 commands
+### v0 commands (lifecycle core + operations)
+
+`assume list` / `assume answer` / `index rebuild` stay in this founding table as **not-yet-CLI** (intent already writes `ASM-*.md`; `store.rebuild()` exists; the verbs are not registered until a later PR). Do not list them as shipped.
 
 | Command | What a non-coder thinks it does | Flags |
 | --- | --- | --- |
 | `legion-cli` / `legion-cli status` | Where am I? What next? | `--blockers`, `--plain` |
-| `legion-cli init` | Start a product in this folder | `--name`, `--adapter claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax` (greenfield only; adapter required) |
+| `legion-cli init` | Start a product in this folder | `--name`, `--adapter claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax` (adapter required; `--mode brownfield` is a shipped extra) |
 | `legion-cli doctor` | Is my laptop ready? | `--metrics` |
 | `legion-cli ingest <src…>` | Teach Legion CLI from these files/links | `--transcript`, `--diff`, `--no-commit` |
 | `legion-cli wiki trust <page>` | I have read this ingested page; treat it as real | — |
@@ -1107,39 +1141,48 @@ Global flags: `--project <dir>`, `--json`, `--yes` (non-gate confirms only), `--
 | `legion-cli qa checklist` | Tick AC items when no browser | — |
 | `legion-cli fix <bug>` | Test first (must stay RED), then fix | `--adapter <id>` (forwards into execute; routing RFC) |
 | `legion-cli ship` | Final human review; stage diff | `--allow-degraded-qa`, `--pr`, `--commit` |
-| `legion-cli dashboard` | Open the visual board (viewer) | `--no-open`, `--port`, `--expose` |
+| `legion-cli dashboard` | Open the visual board (viewer with optional writes; not the source of truth) | `--no-open`, `--port`, `--expose` |
 | `legion-cli search <q>` | Search the wiki | `--mentions`, `--include-untrusted` |
 | `legion-cli show <page>` | Open one wiki/spec/task page | — |
 | `legion-cli brief` | Print what the next agent will see | — |
-| `legion-cli assume list` | Open questions that block work | — |
-| `legion-cli assume answer <id>` | Confirm or reject an assumption | `--status confirmed\|rejected` |
-| `legion-cli index rebuild` | Repair search | — |
+| `legion-cli assume list` | Open questions that block work | **not-yet-CLI** (not registered) |
+| `legion-cli assume answer <id>` | Confirm or reject an assumption | **not-yet-CLI** (`--status confirmed\|rejected`) |
+| `legion-cli index rebuild` | Repair search | **not-yet-CLI** (not registered; `store.rebuild()` exists) |
 | `legion-cli abandon` | Stop this spec without shipping | `--message` |
 | `legion-cli help` | Commands | `--all` |
 
-`init --adapter` already accepts every AdapterId. Spawn `--adapter` on plan/execute/review/verify/fix and `--adapter` / `--route` / `--clear-adapter` on `task amend` / `ticket create` are the routing contract ([adapter-routing.md](adapter-routing.md)); they land with the routing CLI PR (not on those verbs in the CLI yet). No `--adapter` on intent/discuss/spec in v1 of routing.
+`init --adapter` already accepts every AdapterId. Spawn `--adapter` on plan/execute/review/verify/fix and `--adapter` / `--route` / `--clear-adapter` on `task amend` / `ticket create` have **landed** ([adapter-routing.md](adapter-routing.md)). No `--adapter` on intent/discuss/spec. Nested extra blocks (`adapter.grok` etc.) still strip unknown keys; the top-level adapter object stays `.strict()`.
 
-`legion-cli doctor` prints: Node, pnpm, git, every `legion-cli`/`legion-cli.cmd`/`legion-cli.exe` on PATH (`where`/`command -v`), Playwright (`pnpm exec playwright --version` if present), lockfile presence, schemaVersions, and the adapter matrix. **`adapter.default` is required** in `.legion-cli/config.yaml` (no product default). **Spawnable** means `resolveAdapter(config, { id })` then `detect()`: `claude` detect+spawn, extras (`grok` / `openai` / `codex` / `mimo` / `minimax`) with `{{pointer}}` in args and the assumed binary on PATH, `generic` with `adapter.generic.binary` on PATH, or `fake` when `LEGION_CLI_ADAPTER=fake` (tests). Doctor **fails** if `adapter.default` is missing or that adapter is not spawnable, and fail-closed on **required-skill routes** (`adapter.routes.plan` / `execute` / `review`) via the same `isResolvedAdapterSpawnable` path — never PATH-only and never bare `createAdapter(id)`. Doctor **warns** on optional-skill routes, `adapter.named` targets, parseable active-slice `Task.adapter` that is not spawnable, extra/generic `args` that are not the frozen default, and a configured binary missing from PATH. The informational PATH matrix still lists every id, including both `openai` and `codex`. Adapter-object HTTP-router keys (`apiKey` / `apiBase` / `model` / `provider`) fail config parse (`.strict()`), so doctor never sees them.
+`legion-cli doctor` prints: Node, pnpm, git, every `legion-cli`/`legion-cli.cmd`/`legion-cli.exe` on PATH (`where`/`command -v`), Playwright (`pnpm exec playwright --version` if present), lockfile presence, schemaVersions, and the adapter matrix. **`adapter.default` is required** in `.legion-cli/config.yaml` (no product default). **Spawnable** means `resolveAdapter(config, { id })` then `detect()`: `claude` detect+spawn, extras (`grok` / `openai` / `codex` / `mimo` / `minimax`) with `{{pointer}}` in args and the assumed binary on PATH, `generic` with `adapter.generic.binary` on PATH, or `fake` when `LEGION_CLI_ADAPTER=fake` (tests). Doctor **fails** if `adapter.default` is missing or that adapter is not spawnable, and fail-closed on **required-skill routes** (`adapter.routes.plan` / `execute` / `review`) via the same `isResolvedAdapterSpawnable` path — never PATH-only and never bare `createAdapter(id)`. Doctor **warns** on optional-skill routes, `adapter.named` targets, parseable active-slice `Task.adapter` that is not spawnable, extra/generic `args` that are not the frozen default, and a configured binary missing from PATH. The informational PATH matrix still lists every id, including both `openai` and `codex`. Top-level adapter-object HTTP-router keys (`apiKey` / `apiBase` / `model` / `provider`) fail config parse (`.strict()`), so doctor never sees them. Nested extra blocks still strip unknown keys.
 
-### v1 commands
+### Shipped extras (not the 10-verb core)
+
+Off the default window. Packets spawn tickets, not execute. Compaction is manual.
 
 | Command | Notes |
 | --- | --- |
-| `legion-cli brownfield` | Effort 1–5, `--execute`, `--resume` |
+| `legion-cli brownfield` | Effort 1–5, `--execute`, `--resume`; `--execute` uses git worktrees |
+| `legion-cli garden` | Stale wiki, orphans, duplicates (read-only report) |
+| `legion-cli context compact` | Manual compaction of `done` tasks (no `in_progress` sibling) |
+| `legion-cli mcp` | Read-only stdio server |
+| `legion-cli run promote` | Copy brownfield run pages into the wiki |
+| `legion-cli packet new \| respond` | PM/designer request without the DAG; respond files one ticket |
+| `legion-cli design-system show \| install \| import-od \| generate` | Local dir only until signed remote |
+| `legion-cli init --mode brownfield` | Shipped; `--adapter` still required |
+
+### Later, not this series
+
+Not registered. Do not list them as available. Do **not** list them under “not in this product” (that phrase is for chat / HTTP router / bin `legion`).
+
+| Command | Notes |
+| --- | --- |
 | `legion-cli map` / `legion-cli map --refresh` | Architecture markdown + fingerprints |
-| `legion-cli garden` | Stale wiki, orphans, duplicates |
-| `legion-cli context compact` | Manual compaction of `done` tasks |
 | `legion-cli wireframe` | Re-generate HTML wireframes after spec edits |
 | `legion-cli skills list \| install` | Pinned local bundles; remote later |
-| `legion-cli mcp` | Read-only stdio server |
 | `legion-cli serve` | Dashboard + mcp HTTP |
-| `legion-cli run promote` | Copy brownfield run pages into the wiki |
 | `legion-cli control-mode` | Show/set guarded \| surgical \| advisory |
-| `legion-cli packet new \| respond` | PM/designer request without the DAG |
-| `legion-cli design-system show \| install \| import-od \| generate` | Local dir only until signed remote |
-| `legion-cli init --mode brownfield` | Unlocked in v1 |
 
-`autonomous` remains a hidden refused value.
+`autonomous` remains a hidden refused value. `assume` / `index rebuild` are not in this later table — they stay in the founding v0 table as not-yet-CLI.
 
 ### Example session (non-coder)
 
@@ -1269,9 +1312,9 @@ export interface LegionEngine {
 }
 ```
 
-CLI is a thin wrapper. v0 HTTP does not call this except by the user running CLI. v1 POST `/engine/:method` maps 1:1 to these method names.
+CLI is a thin wrapper. Dashboard POST `/engine/:method` is **not** 1:1 to these method names. Allowlist is `ticket | wikiTrust | qaChecklist` only.
 
-Read-only queries (`status`, `show`, dashboard GET) live on `LegionReader` in `@9thlevelsoftware/legion-cli-persist` + `@9thlevelsoftware/legion-cli-graph` so `packages/dashboard` and future `packages/mcp` do not import `execute`.
+Read-only queries (`status`, `show`, dashboard GET) live on `LegionReader` in `@9thlevelsoftware/legion-cli-persist` + `@9thlevelsoftware/legion-cli-graph` so `packages/dashboard` and `packages/mcp` do not import `execute`.
 
 ---
 
@@ -1294,7 +1337,7 @@ export type Phase =
 
 export type TaskStatus =
   | "todo" | "ready" | "in_progress" | "verifying" | "blocked" | "done"
-  | "compacted"; // compacted written only in v1
+  | "compacted"; // shipped (`legion-cli context compact`)
 
 export type ControlMode = "guarded" | "surgical" | "advisory";
 
@@ -1358,7 +1401,7 @@ export interface SkillContract {
 
 export interface LegionConfig {  // config.yaml
   schemaVersion: "legion-cli-config/v1";
-  adapter: { // .strict() — apiKey / apiBase / model / provider fail parse
+  adapter: { // top-level .strict() — apiKey / apiBase / model / provider fail parse; nested extra blocks still strip
     default: AdapterId; // required; no engine fallback
     claude?: { extraArgs: string[] };
     generic?: { binary: string; args: string[] }; // required if default or any routes/named target is generic
@@ -1374,7 +1417,7 @@ export interface LegionConfig {  // config.yaml
   control_mode: ControlMode;
   qa: { mode: "full" | "no-browser"; passScore: 85; unitCommand?: string };
   dashboard: { port: number; bind: "127.0.0.1" };
-  flags: { mcpApps: false; webmcp: false; parallelExecute: false };
+  flags: { mcpApps: false; webmcp: false; parallelExecute: false }; // parallelExecute later door; unread by execute
 }
 
 export interface Spec {
@@ -1586,7 +1629,7 @@ Execute does not `git commit`. `legion-cli ship` stages `filesAllowed` unions of
 
 - **Pros:** Friendlier for non-coders.
 - **Cons:** Second source of truth; accounts; contradicts CLI-of-record; v0 cloud non-goal.
-- **Decision:** CLI owns state. v0 dashboard is a viewer (UX option A).
+- **Decision:** CLI owns state. Dashboard is a viewer with optional token-gated POSTs (`ticket | wikiTrust | qaChecklist`) — still not a second engine (UX option A).
 
 ### A3. Store state in SQLite (or JSON) as primary, markdown as export
 
@@ -1633,9 +1676,9 @@ Execute does not `git commit`. `legion-cli ship` stages `filesAllowed` unions of
 | Threat | Severity | Mitigation |
 | --- | --- | --- |
 | Prompt injection via ingested wiki/URL/transcript | **High** | Literal UNTRUSTED wrapper; untrusted **bodies omitted from SessionBrief**; `legion-cli wiki trust`; golden test in PR-08; FileContract revert as defense in depth, not the only control |
-| Dashboard used as a write channel | **High** | v0: GET only. v1 POSTs: `X-Legion-Cli-Token` from HTML meta, never a cookie, Origin allowlist |
+| Dashboard used as a write channel | **High** | Allowlist `ticket \| wikiTrust \| qaChecklist` only. `X-Legion-Cli-Token` from HTML meta, never a cookie, Origin allowlist. No execute/ship/plan/review/packet/intent. |
 | Local HTTP bound to `0.0.0.0` | **High** | Default `127.0.0.1`; `--expose` required |
-| CSRF against future POSTs | **Med** | No POSTs in v0; v1 token bootstrap specified |
+| CSRF against POSTs | **Med** | Token bootstrap: HTML meta, header required, never cookie, Origin allowlist |
 | Skill / design-system supply chain | **High** | v0: bundled skills + craft only. v1: local dir copy; `github:` rejected until pin/sha256 PR |
 | Secrets in transcripts | **Med** | Redact patterns (incomplete); `legion-cli doctor` scan |
 | Agent CLI has broad FS + network (not OS-sandboxed) | **High** | After-the-fact revert; surgical execute; document trust model; no claim of isolation |
@@ -1653,7 +1696,7 @@ v0: OS user is the operator. No cloud tokens stored by Legion CLI.
 - Knowledge stays in the repo and `~/.legion-cli/` (adapter default, telemetry off).
 - Default telemetry: **off**. Honor `DO_NOT_TRACK=1`. If ever enabled: CodeAlmanac bar (no code, paths, prompts, transcripts, repo ids).
 
-### MCP (v1)
+### MCP (shipped extra)
 
 `packages/mcp` depends on reader APIs + schema, not `execute()`.
 
@@ -1683,7 +1726,7 @@ See `LegionConfig`. `mcpApps`, `webmcp`, `parallelExecute` stay false. `adapter.
 1. Internal dogfood after PR-04 (lifecycle) exists — engineers still use CLI.
 2. Design-partner product people — greenfield, configured adapter, HTTP **viewer**.
 3. v0 tag — doctor path, fixtures, degraded QA, lockfile.
-4. v1 — brownfield, MCP, WebMCP, packages, packets, compaction, verified vendor extra-adapter argv.
+4. Shipped extras already in tree — brownfield, MCP, packets, compaction, garden, design-system, dashboard tiny POSTs. Later: WebMCP, `map` / `wireframe` / `skills list|install` / `serve` / `control-mode`, verified vendor extra-adapter argv.
 
 ### Rollback
 
@@ -1700,10 +1743,10 @@ Pin the npm package. `git revert` `.legion-cli/` commits. Index rebuild. Bad exe
 | Risk | Severity | Mitigation |
 | --- | --- | --- |
 | Mashup unproven for non-coders | **High** | Question bank; inspectable artifacts; viewer; dogfood; ~15 CLI verbs disclosed honestly |
-| FileContract is after-the-fact (no OS sandbox) | **High** | Revert algorithm; surgical execute; do not claim isolation; v1 worktrees/sandbox |
+| FileContract is after-the-fact (no OS sandbox) | **High** | Revert algorithm; surgical execute; do not claim isolation; later door is worktrees + `OWNERSHIP.md` (§5.4), still not a sandbox |
 | QA 85 bar too heavy for v0 laptop | **Med** | In-process scorer, not 8 agents; degraded waiver |
 | `legion` vs `legion-cli` PATH (existing installer, Kali `legion`, other Legion CLIs) | **Med** | This product’s bin is **`legion-cli` only**. Doctor lists both. `pnpm exec legion-cli` / `npx @9thlevelsoftware/legion-cli`. |
-| Wiki rot | **Med** | ingest receipts; v1 garden |
+| Wiki rot | **Med** | ingest receipts; shipped extra `garden` |
 | WebMCP never a Standard | **Low** | Not on the v0 path |
 | `claude -p` flags drift | **Med** | Frozen argv table; `generic` escape hatch; extraArgs warning |
 | Configured adapter unavailable | **Med** | Doctor fails closed on default and required-skill routes; extras spawn generic-style when on PATH; user sets `adapter.default` / per-id `args` |
@@ -1715,7 +1758,7 @@ Pin the npm package. `git revert` `.legion-cli/` commits. Index rebuild. Bad exe
 User decisions (final, including later audibles):
 
 1. **npm / GitHub.** **Yes, publish to npm in v0** on **`@9thlevelsoftware`**. Tag-triggered trusted publisher (same as `@9thlevelsoftware/legion` and `legion-ascended`).
-2. **v1 brownfield `--execute`.** Git **worktrees**. v0 greenfield execute stays in-place.
+2. **Brownfield `--execute` (shipped extra).** Git **worktrees**. Greenfield execute stays in-place.
 3. **Adapter default.** None at the product level. Users set `adapter.default` in `.legion-cli/config.yaml`.
 4. **Wireframes.** 4-colour through v0 ship.
 5. **Ingest auto-commit.** Default **true**. `--no-commit` to skip. Execute does not auto-commit.
@@ -1746,13 +1789,13 @@ No remaining open questions.
 - Legion `skills/design-workflows/SKILL.md`
 - Row-Bot Designer Studio — research-only for overflow/CSS-variable list
 - Internal research report: `wf_01a05d7d285b7213a7d1440e7f04d13f/scratch/report.md` (status Partial; 24/24 claims verified; mashup unproven)
-- Adapter routing RFC: [`docs/design/adapter-routing.md`](adapter-routing.md) — spawn-CLI routing (not an HTTP model router); `openai` alias for Codex CLI
+- Adapter routing RFC: [`docs/design/adapter-routing.md`](adapter-routing.md) (rev 5) — spawn-CLI routing (not an HTTP model router); `openai` alias for Codex CLI; CLI `--adapter` landed on plan/execute/review/verify/fix; nested extra blocks still strip unknown keys
 
 ---
 
 ## PR Plan
 
-Incremental, independently reviewable PRs from an empty repo. **PR-01–PR-16 are v0.** Later numbers are v1 and must not be required to tag v0.
+Historical founding series from an empty repo. **PR-01–PR-16 were v0.** Packets (PR-21), compaction + garden (PR-22), brownfield (PR-19), MCP (PR-17), design-system (PR-18), and dashboard POSTs (PR-24) have **landed as shipped extras** (rev 10). `map` / `wireframe` / `skills list|install` / `serve` / `control-mode` stay **later, not this series**.
 
 ### v0 series
 
@@ -1814,7 +1857,7 @@ Incremental, independently reviewable PRs from an empty repo. **PR-01–PR-16 ar
 
 - **Files/components:** `packages/dashboard/**`, `legion-cli dashboard`, GET routes in §8.1, SSE
 - **Depends on:** PR-03, PR-08, PR-09
-- **Description:** Bind `127.0.0.1`. **No POST.** Kanban works before execute exists. Not blocked on ship.
+- **Description:** Bind `127.0.0.1`. Historical: **No POST** at landing; Goal 13 tiny POSTs shipped later (rev 10). Kanban works before execute exists. Not blocked on ship.
 
 ### PR-11 — Execute + post-spawn revert
 
@@ -1826,7 +1869,7 @@ Incremental, independently reviewable PRs from an empty repo. **PR-01–PR-16 ar
 
 - **Files/components:** `skills/verify`, `skills/review`, `legion-cli verify|review`, fix child tasks
 - **Depends on:** PR-11
-- **Description:** `legion-cli verify` is optional notes (not a ship gate). Spec `legion-cli review` when the slice is terminal. After spawn, if any new task id exists → `lastReview: FAIL` and stay `executing`; PASS only when zero new tasks. `legion-cli qa` then requires a later PASS review. Review spawn SkillContract `.legion-cli/qa/**` + `.legion-cli/tasks/**`. No packets.
+- **Description:** `legion-cli verify` is optional notes (not a ship gate). Spec `legion-cli review` when the slice is terminal. After spawn, if any new task id exists → `lastReview: FAIL` and stay `executing`; PASS only when zero new tasks. `legion-cli qa` then requires a later PASS review. Review spawn SkillContract `.legion-cli/qa/**` + `.legion-cli/tasks/**`. Historical: “No packets” — packets later shipped as an extra (PR-21; rev 10).
 
 ### PR-13 — QA scoring, Playwright-before-fix, degraded path, `fix`
 
@@ -1852,7 +1895,7 @@ Incremental, independently reviewable PRs from an empty repo. **PR-01–PR-16 ar
 - **Depends on:** PR-14, PR-10, PR-01 publish workflow
 - **Description:** v0 tag candidate. Golden QA line is `94 (… visual 15/15, regressions 0)` per §7.2, not a prorated visual bucket. First public npm tag is this PR’s release.
 
-### v1 series (not required to tag v0)
+### Extra / later series (not required to tag v0; several have landed — see rev 10)
 
 ### PR-17 — Read-only MCP server
 
@@ -1902,4 +1945,4 @@ Incremental, independently reviewable PRs from an empty repo. **PR-01–PR-16 ar
 - **Depends on:** PR-10, PR-14
 - **Description:** Still not a second source of truth. MCP remains read-only.
 
-**Later still:** architecture fingerprints / LSP map; embeddings; signed remote skill install; 8-agent QA behind `qa.loop: full`; `control_mode: autonomous` (off). Brownfield `--execute` worktrees are already in PR-19 (KD19).
+**Later, not this series:** `map` / `wireframe` / `skills list|install` / `serve` / `control-mode`; architecture fingerprints / LSP; embeddings; signed remote skill install; 8-agent QA behind `qa.loop: full`; `control_mode: autonomous` (off). Brownfield `--execute` worktrees, packets, compaction, MCP, garden, design-system, and dashboard tiny POSTs have landed as shipped extras (rev 10). The later isolation door (§5.4) is specified, not built.

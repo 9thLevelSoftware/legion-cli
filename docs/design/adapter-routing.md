@@ -4,18 +4,18 @@
 | --- | --- |
 | **Title** | Adapter routing: per-task and per-skill selection of which coding-agent CLI to spawn |
 | **Author** | Systems Architecture |
-| **Date** | 2026-09-02 |
-| **Status** | Draft (rev 4 — spawn/doctor routing landed; CLI `--adapter` override remaining) |
+| **Date** | 2026-09-03 |
+| **Status** | Draft (rev 5 — CLI `--adapter` landed; nested extra blocks still strip) |
 | **Product** | Legion CLI (`legion-cli`, npm `@9thlevelsoftware/legion-cli`) |
 | **Audience** | Senior engineers implementing the feature; product leads reviewing scope |
-| **Design of record** | `docs/design/product-engineering-cli.md` (rev 9 — KD5 extras spawnable; adapter routing) |
+| **Design of record** | `docs/design/product-engineering-cli.md` (rev 10 — shipped extras vs 10-verb lifecycle core) |
 | **Git author** | 9thLevelSoftware / engineering@9thlevelsoftware.com |
 
 ---
 
 ## Overview
 
-Legion CLI already knows how to start a coding-agent program that is installed on the laptop (`claude`, `generic`, `fake`, `grok`, `openai`, `codex`, `mimo`, `minimax`). `mcode` is the assumed PATH binary for `minimax`, not an AdapterId. It does **not** call OpenAI / xAI / MiniMax HTTP APIs, does **not** store API keys, and does **not** pick a model through a provider table. Schema already has `adapter.routes` / `adapter.named` / `Task.adapter` (adapter object `.strict()`). Agents already export `resolveAdapterId` (cli > task > route > default) and extras spawn via `ExtraAdapter`. Engine spawn (`optionalSkillSpawn`) calls `resolveAdapterId` / `isResolvedAdapterSpawnable` and persists resume adapter fields. Doctor fail-closes on required `adapter.routes` via the same spawnable path. CLI `--adapter` is still init-only. This design is the remaining one-shot CLI override.
+Legion CLI already knows how to start a coding-agent program that is installed on the laptop (`claude`, `generic`, `fake`, `grok`, `openai`, `codex`, `mimo`, `minimax`). `mcode` is the assumed PATH binary for `minimax`, not an AdapterId. It does **not** call OpenAI / xAI / MiniMax HTTP APIs, does **not** store API keys, and does **not** pick a model through a provider table. Schema already has `adapter.routes` / `adapter.named` / `Task.adapter` (top-level adapter object `.strict()`). Agents already export `resolveAdapterId` (cli > task > route > default) and extras spawn via `ExtraAdapter`. Engine spawn (`optionalSkillSpawn`) calls `resolveAdapterId` / `isResolvedAdapterSpawnable` and persists resume adapter fields. Doctor fail-closes on required `adapter.routes` via the same spawnable path. CLI `--adapter` has landed on `plan` / `execute` / `review` / `verify` / `fix` (not init-only). Nested extra blocks (`adapter.grok` etc.) still strip unknown keys; the top-level adapter object stays `.strict()` so `adapter.apiKey` fails parse. This RFC remains the routing contract.
 
 This design adds a **second resolution step** that still yields an existing `AdapterId`. The engine then calls the current `createAdapter` / `detect` / `spawn` path unchanged. Routing is how a user gets “task A on Grok CLI, task B on Codex CLI”: Legion chooses **which already-signed-in coding CLI to launch**; that CLI talks to the model. Optional `--model` (or any other vendor flag) stays in per-id `extraArgs` / `args` argv. Existing projects that only set `adapter.default` keep today’s behavior.
 
@@ -35,16 +35,16 @@ The product clarification (treat as definition):
 - Legion starts a program already on the machine. That program is already signed in. It talks to the model.
 - The same user goal (“this task on Grok, that task on MiniMax”) is achieved by routing **which coding CLI to launch**, with optional argv `--model` if the user wants that CLI to pin a model.
 
-### Current state (snapshot 2026-09-02)
+### Current state (snapshot 2026-09-03)
 
-Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1), agents resolver (PR-2), core spawn (PR-3), and doctor fail-closed routes (PR-5) have landed; CLI `--adapter` / `--clear-adapter` on plan/execute/review/verify/fix have not.
+Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1), agents resolver (PR-2), core spawn (PR-3), doctor fail-closed routes (PR-5), and CLI `--adapter` / `--clear-adapter` on plan/execute/review/verify/fix (PR-4) have landed. Nested `ExtraAdapterConfig` (`adapter.grok` etc.) is **not** `.strict()` — unknown keys there still strip. The top-level adapter object stays `.strict()`.
 
-**Already landed (schema + agents + core spawn + doctor)**
+**Already landed (schema + agents + core spawn + doctor + CLI `--adapter`)**
 
 | Surface | Path | What it does |
 | --- | --- | --- |
 | Adapter ids | `packages/schema/src/versions.ts` | `ADAPTER_IDS = claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax`. `EXTRA_ADAPTER_IDS` + `ASSUMED_EXTRA_BINARIES`: grok→`grok`, openai→`codex`, codex→`codex`, mimo→`mimo`, minimax→`mcode`. **`openai` and `codex` share assumed binary `codex`.** `mcode` is not an AdapterId. |
-| Config | `packages/schema/src/schemas.ts` `LegionConfigSchema` | Required `adapter.default`. Per-id knobs: `claude.extraArgs`; `generic.binary`/`args`; `ExtraAdapterConfig { binary?, args? }` for extras. Optional `adapter.routes` / `adapter.named`. **No `model` / `provider` / `apiKey` / `apiBase` field.** Adapter object is **`.strict()`** — those HTTP-router keys fail parse. Generic required when default **or** any route/named target is `generic`. |
+| Config | `packages/schema/src/schemas.ts` `LegionConfigSchema` | Required `adapter.default`. Per-id knobs: `claude.extraArgs`; `generic.binary`/`args`; `ExtraAdapterConfig { binary?, args? }` for extras. Optional `adapter.routes` / `adapter.named`. **No `model` / `provider` / `apiKey` / `apiBase` field.** Top-level adapter object is **`.strict()`** — those HTTP-router keys fail parse. Nested extra blocks (`adapter.grok` etc.) are **not** `.strict()` and still strip unknown keys. Generic required when default **or** any route/named target is `generic`. |
 | Task | `TaskSchema` same file | Optional `adapter?: AdapterId`. Fixture `packages/persist/test/fixtures/project/legion-cli/tasks/TSK-0002.md` has no adapter key — **leave it that way.** Task is not `.strict()` (strip-unknown except the enum field). |
 | Resume | `ResumeFileSchema` | Optional `adapterId`, `binary`, `argvSummary` (template), `resolutionSource`. Old resume files without them still parse. |
 | Session brief | `SessionBriefSchema.currentTask` | Optional **raw** `adapter?: AdapterId`. |
@@ -59,22 +59,22 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 | Audit | `packages/persist/src/audit.ts` + engine `#audit("execute", …)` | Execute and timeout events carry `data.adapterId` / `binary` / `argvSummary` / `resolutionSource`; `formatAuditDayLine` appends `adapter=`. Plan/review/verify do not currently emit spawn audit types. |
 | Dashboard writes | `packages/dashboard/src/write.ts` | `ENGINE_WRITE_METHODS = ticket \| wikiTrust \| qaChecklist`. `parseTicket` does not read `adapter`. Viewer may show raw `Task.adapter`. |
 | Wiki brief | `packages/wiki/src/brief.ts` | Depends on persist + schema only — **not** agents. May copy **raw** `Task.adapter`; does not call `resolveAdapterId`. |
+| CLI `--adapter` | `packages/cli/src/cli.ts` | **Landed** on `plan` / `execute` / `review` / `verify` / `fix` (one-shot; does not write `Task.adapter` or `adapter.default`). Init still writes `adapter.default`. `task amend --adapter` / `--route` / `--clear-adapter` and `ticket create --adapter` / `--route` persist. `legion-cli fix` forwards into `ExecuteOptions.adapter`. No `--adapter` on intent/discuss/spec. |
 
-**Still to land (this RFC — CLI override)**
+**Still to land (out of this RFC)**
 
 | Surface | Path | What it does today |
 | --- | --- | --- |
-| Plan prompt | `engine.plan` `promptBody` + `skills/plan/SKILL.md` | Lists required task frontmatter keys. **Does not mention `adapter`.** extra.json example has no `adapter`. |
-| CLI `--adapter` | `packages/cli/src/cli.ts` + `init.ts` | **Init only** (already accepts every AdapterId). `execute` / `plan` / `review` / `verify` / `fix` have no adapter flag. `legion-cli fix` calls `engine.execute(task.id, { fix: true })` (`packages/cli/src/fix.ts`). Persistent task adapter is `task amend --adapter` / `--clear-adapter` once those flags exist. |
+| Nested extra HTTP keys | `ExtraAdapterConfigSchema` | Not `.strict()`. `adapter.grok.apiKey` **strips**. Do not treat this series as nested-key hardening. |
 
-**Design of record (rev 9):** KD5 and §5.1 of `docs/design/product-engineering-cli.md` say extras are **spawnable** (`DETECT_ONLY_ADAPTER_IDS` empty; `AdapterNotEnabled` is a dead path). Pre-rev-9 text said `grok`/`codex` were v0 detect-only. This design **does not** put extras back on detect-only. It builds on the spawnable extras that already exist.
+**Design of record (rev 10):** KD5 and §5.1 of `docs/design/product-engineering-cli.md` say extras are **spawnable** (`DETECT_ONLY_ADAPTER_IDS` empty; `AdapterNotEnabled` is a dead path). Pre-rev-9 text said `grok`/`codex` were v0 detect-only. This design **does not** put extras back on detect-only. It builds on the spawnable extras that already exist. CLI `--adapter` on spawn verbs is landed (rev 10 snapshot).
 
 ### Pain points
 
-1. One workspace, one CLI: a UI-heavy task cannot run on Grok while a backend task runs on Codex without rewriting `adapter.default` between commands — unless the user sets `Task.adapter` / `adapter.routes` (landed) or a one-shot CLI `--adapter` (not landed).
-2. Changing `adapter.default` is a workspace-wide footgun (plan, review, and the next execute all move) without per-invocation override.
+1. One workspace, one CLI: a UI-heavy task cannot run on Grok while a backend task runs on Codex without rewriting `adapter.default` between commands — unless the user sets `Task.adapter` / `adapter.routes` or a one-shot CLI `--adapter` (all landed).
+2. Changing `adapter.default` is a workspace-wide footgun (plan, review, and the next execute all move) without per-invocation override — `--adapter` on spawn verbs is that override.
 3. Resume now records which CLI ran; execute audit includes the same fields. Plan/review/verify still lack dedicated spawn audit types.
-4. Doctor fail-closes on default and required-skill routes via `isResolvedAdapterSpawnable`. Remaining gap is the CLI `--adapter` flag so a one-shot override does not require editing the task file.
+4. Doctor fail-closes on default and required-skill routes via `isResolvedAdapterSpawnable`. Nested extra blocks still strip unknown keys (`adapter.grok.apiKey`); top-level adapter object `.strict()` already rejects `adapter.apiKey`.
 
 ### Constraints carried forward (no exception unless noted)
 
@@ -96,7 +96,7 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 2. **Per-task routing:** `TSK-0001` → Grok CLI, `TSK-0002` → Codex CLI, persisted on the task file and git-reviewed.
 3. **Skill-level routing:** optional config so `plan` can spawn Grok while `execute` defaults to Claude, without a product-default adapter.
 4. **One-shot override:** `--adapter <id>` on `plan`, `execute`, `review`, `verify`, and `fix` (fix forwards into `ExecuteOptions.adapter`). No intent/discuss/spec CLI flags in v1.
-5. **Model choice stays argv:** `--model` via existing `claude.extraArgs` / `generic.args` / `adapter.<id>.args`. No `provider` / `model` / `apiKey` / `apiBase` fields. Config parse **rejects** those HTTP-router keys on the adapter object (`.strict()`).
+5. **Model choice stays argv:** `--model` via existing `claude.extraArgs` / `generic.args` / `adapter.<id>.args`. No `provider` / `model` / `apiKey` / `apiBase` fields. Config parse **rejects** those HTTP-router keys on the **top-level** adapter object (`.strict()`). Nested extra blocks still strip unknown keys.
 6. **Fail-closed on the routed adapter:** required skills (`plan`, `execute`, `review`) refuse if the **resolved** id is not spawnable (`resolveAdapter(config, { id })` then `await isSpawnable`, same as spawn); optional skills skip spawn. Doctor fail-closed covers default **and required-skill routes** (`routes.plan` / `routes.execute` / `routes.review`). Optional-skill routes, named aliases, and `Task.adapter` warn only.
 7. **Observability:** every spawn writes `adapterId` / template `argvSummary` on `resume.json` **before** `wait()`. Existing execute/timeout audit events gain the same fields. Brief/next/dashboard show **raw** `Task.adapter`. Resolved id is execute/fix outcome only.
 8. **Compatibility:** a project with only `adapter.default` behaves exactly as today. Do not edit the TSK-0002 persist fixture.
@@ -125,7 +125,7 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 
 | # | Decision | Default | Rationale |
 | --- | --- | --- | --- |
-| KD-R1 | **Routing is spawn-CLI selection, not a model router** | Resolve to `AdapterId` → existing `createAdapter`. No HTTP, no provider table. Adapter object is `.strict()` so `apiKey`/`apiBase`/`model`/`provider` fail config parse. | Product definition. Strip-unknown would silently eat an HTTP table. |
+| KD-R1 | **Routing is spawn-CLI selection, not a model router** | Resolve to `AdapterId` → existing `createAdapter`. No HTTP, no provider table. Top-level adapter object is `.strict()` so `apiKey`/`apiBase`/`model`/`provider` fail config parse. Nested `ExtraAdapterConfig` (`adapter.grok` etc.) is **not** `.strict()` and still strips unknown keys. | Product definition. Strip-unknown on the adapter object would silently eat an HTTP table. Nested reject is a separate schema PR. |
 | KD-R2 | **Where routing lives (layered)** | Persist per-task on `Task.adapter`. Skill policy on `adapter.routes`. One-shot on CLI `--adapter`. Named aliases on `adapter.named` expand at **write** time in the CLI (`expandNamedAdapter`). SkillContract stays write-isolation only. | Task files are git-reviewed and survive resume. Skill routes cover plan/review (no task). CLI is for the operator without mutating the board. |
 | KD-R3 | **Precedence** | CLI `--adapter` > `Task.adapter` (execute/verify when a task is in scope) > `adapter.routes[skillId]` > `adapter.default`. | Operator present beats durable task beats workspace policy beats required fallback. |
 | KD-R4 | **`adapter.default` stays required** | Missing default still fails `LegionConfigSchema` and doctor. Fallback is only that user-set id. | KD5 of the design of record. Routing must not create a hidden product default. |
@@ -385,7 +385,7 @@ Empty `routes: {}` and omitted `routes` are equivalent. `init` does **not** writ
 
 ### 6. Model choice (argv, not a new abstraction)
 
-There is **no** `model`, `provider`, `apiKey`, `apiBase`, or `temperature` field on `LegionConfig` or `Task`. Those keys on `adapter:` fail parse (`.strict()`).
+There is **no** `model`, `provider`, `apiKey`, `apiBase`, or `temperature` field on `LegionConfig` or `Task`. Those keys on the **adapter object** fail parse (`.strict()`). Nested extra blocks (`adapter.grok.apiKey`) still strip.
 
 | Adapter | How to pin a model |
 | --- | --- |
@@ -922,7 +922,7 @@ None remain open. The product choices that the first draft left implicit are **c
 | Doctor fail-closed set | Default + required-skill routes only; optional-skill routes warn. Uses `resolveAdapter(config, { id })` + `await isSpawnable` (not bare `createAdapter`, not PATH-only). CLI adds agents dep. (KD-R6) |
 | Brief / next / dashboard adapter | Raw `Task.adapter`. Brief render suffixes `(grok)` when set. Status suffixes the **current-task** line + JSON `currentTaskAdapter` (not the ready board). `next` is the ready table. Resolved id only on execute/fix outcome. Wiki does not import agents. (KD-R15) |
 | v1 `--adapter` verbs | plan, execute, review, verify, **fix**. No intent/discuss/spec flags. (KD-R10) |
-| HTTP-router keys in config | `.strict()` on the adapter object — fail parse, do not strip. (KD-R1) |
+| HTTP-router keys in config | `.strict()` on the **top-level** adapter object — fail parse, do not strip. Nested extra blocks still strip. (KD-R1) |
 | `argvSummary` | Template argv with `{{pointer}}` unexpanded. (KD-R7) |
 | Dashboard ticket POST | Does not accept `adapter`. (KD-R11, non-goals) |
 
@@ -932,7 +932,7 @@ If product later wants a request-time picker, that is a dashboard write-surface 
 
 ## References
 
-- Design of record: `docs/design/product-engineering-cli.md` (rev 9 — KD5 extras spawnable, §5.1 frozen argv, doctor, SkillContract table, PR-06 / PR-23).
+- Design of record: `docs/design/product-engineering-cli.md` (rev 10 — shipped extras vs 10-verb lifecycle core; KD5 extras spawnable, §5.1 frozen argv, doctor, SkillContract table, PR-06 / PR-23).
 - Adapter ids and extras: `packages/schema/src/versions.ts` (`openai`/`codex` both → `codex`).
 - Config / Task / Resume: `packages/schema/src/schemas.ts`.
 - Resolve + create: `packages/agents/src/resolve.ts`, `packages/agents/src/types.ts`, `packages/agents/src/adapters/extra.ts`, `packages/agents/src/argv.ts`.
@@ -941,13 +941,13 @@ If product later wants a request-time picker, that is a dashboard write-surface 
 - Engine asserts + execute/plan/review: `packages/core/src/engine.ts` (`plan(specId?)` writes `planning` after assert).
 - Plan skill: `skills/plan/SKILL.md`.
 - SkillContract constants: `packages/core/src/contracts.ts`.
-- Doctor: `packages/cli/src/doctor.ts` (today PATH-only; no agents dep).
+- Doctor: `packages/cli/src/doctor.ts` (required-skill routes fail-closed via `isResolvedAdapterSpawnable`; CLI depends on agents).
 - JSON Schema overlays: `packages/schema/src/json-schema.ts` (`overlayJsonSchema`).
 - Brief render: `packages/wiki/src/brief.ts` `renderSessionBrief` (`Current task: ${id} ${title}` today).
 - Status current-task line: `packages/cli/src/status.ts` `formatHuman` / JSON `currentTaskId`.
 - Fix → execute: `packages/cli/src/fix.ts`.
 - Audit: `packages/persist/src/audit.ts`.
-- Init-only `--adapter` today: `packages/cli/src/cli.ts`, `packages/cli/src/init.ts`.
+- CLI `--adapter` on plan/execute/review/verify/fix plus init: `packages/cli/src/cli.ts`, `packages/cli/src/init.ts`. Nested extra blocks still strip: `ExtraAdapterConfigSchema` in `packages/schema/src/schemas.ts`.
 - Task persist fixture (leave adapter-less): `packages/persist/test/fixtures/project/legion-cli/tasks/TSK-0002.md`.
 - Wiki brief (no agents dep): `packages/wiki/src/brief.ts`.
 - Dashboard writes: `packages/dashboard/src/write.ts` (`ENGINE_WRITE_METHODS`, `parseTicket`).

@@ -42,7 +42,7 @@ export const PhaseSchema = z.enum([
 ]);
 export type Phase = z.infer<typeof PhaseSchema>;
 
-/** `compacted` is written only in v1. */
+/** `compacted` is shipped (`legion-cli context compact`). */
 export const TaskStatusSchema = z.enum([
   "todo",
   "ready",
