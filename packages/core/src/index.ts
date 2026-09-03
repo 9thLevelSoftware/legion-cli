@@ -75,6 +75,7 @@ export { BROWNFIELD_PAGES } from "./brownfield.js";
 export type {
   Actor,
   AmendTaskOptions,
+  Assumption,
   BrownfieldOptions,
   BrownfieldResult,
   CompactOptions,

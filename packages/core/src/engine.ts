@@ -585,6 +585,57 @@ export class LegionEngine {
     }
   }
 
+  async assumeList(): Promise<Assumption[]> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("assume list needs a Legion CLI project first", HINT.init);
+      }
+      return (await this.#listAssumptions()).sort((a, b) => a.id.localeCompare(b.id));
+    });
+  }
+
+  async assumeAnswer(id: string, status: "confirmed" | "rejected"): Promise<Assumption> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("assume answer needs a Legion CLI project first", HINT.init);
+      }
+      if (status !== "confirmed" && status !== "rejected") {
+        refuse("assume answer status must be confirmed or rejected", HINT.assumeAnswer);
+      }
+      const trimmed = id.trim();
+      if (!trimmed) {
+        refuse("assume answer requires an id", HINT.assumeAnswer);
+      }
+      let doc: { data: Assumption; body: string };
+      try {
+        doc = await this.store.readAssumption(trimmed);
+      } catch (err) {
+        if (err instanceof PathEscapeError) {
+          refuse("unknown assumption", HINT.assumeList);
+        }
+        refuse(`unknown assumption ${trimmed}`, HINT.assumeList);
+      }
+      const next: Assumption = { ...doc.data, status };
+      await this.store.writeAssumption(next, doc.body);
+      await this.store.rebuild();
+      await this.#refreshWikiCatalogLocked();
+      return next;
+    });
+  }
+
+  async indexRebuild(): Promise<void> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("index rebuild needs a Legion CLI project first", HINT.init);
+      }
+      await this.store.rebuild();
+      await this.#refreshWikiCatalogLocked();
+    });
+  }
+
   /** Execute-spawn helper: wrap untrusted bodies if they are injected at all. */
   wrapUntrustedForSpawn(source: string, body: string): string {
     return wrapUntrustedContent(source, body);

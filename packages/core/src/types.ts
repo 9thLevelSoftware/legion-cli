@@ -3,6 +3,7 @@ import type { GardenReport, SearchHit } from "@9thlevelsoftware/legion-cli-wiki"
 import type {
   AdapterId,
   AdapterResolutionSource,
+  Assumption,
   ControlMode,
   DiscussDecision,
   FileContract,
@@ -231,6 +232,7 @@ export type CompactOptions = {
 };
 
 export type {
+  Assumption,
   FileContract,
   GardenReport,
   IngestReceipt,

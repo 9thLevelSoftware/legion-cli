@@ -6,6 +6,7 @@ import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
 import { DesignSystemError } from "@9thlevelsoftware/legion-cli-design-system";
 import { ADAPTER_ID_HELP } from "@9thlevelsoftware/legion-cli-schema";
 import { runAbandon } from "./abandon.js";
+import { runAssumeAnswer, runAssumeList } from "./assume.js";
 import { runBrief } from "./brief.js";
 import { runBrownfield } from "./brownfield.js";
 import { runDashboard } from "./dashboard.js";
@@ -14,6 +15,7 @@ import { runDoctor } from "./doctor.js";
 import { runExecute } from "./execute.js";
 import { runFix } from "./fix.js";
 import { formatHelpLayer1, printHelpAll, printHelpLayer1 } from "./help-all.js";
+import { runIndexRebuild } from "./index-rebuild.js";
 import { runIngest } from "./ingest.js";
 import { runInit } from "./init.js";
 import { runIntent } from "./intent.js";
@@ -179,6 +181,19 @@ export function createProgram(): Command {
       process.exitCode = code;
     },
   );
+
+  const index = addGlobalOptions(program.command("index").description("Repair search"));
+  index.allowExcessArguments(false).action(() => {
+    writeErr("index requires rebuild\nNext: legion-cli index rebuild");
+    process.exitCode = 1;
+  });
+  addGlobalOptions(index.command("rebuild").description("Repair search"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runIndexRebuild(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
   addGlobalOptions(program.command("mcp").description("Read-only stdio MCP server"))
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
@@ -338,6 +353,27 @@ export function createProgram(): Command {
     .action(async (opts, cmd: Command) => {
       const flags = opts as { message?: string };
       const code = await runAbandon(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+
+  const assume = addGlobalOptions(program.command("assume").description("Open questions that block work"));
+  assume.allowExcessArguments(false).action(() => {
+    writeErr("assume requires list or answer\nNext: legion-cli assume list");
+    process.exitCode = 1;
+  });
+  addGlobalOptions(assume.command("list").description("Open questions that block work"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runAssumeList(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+  addGlobalOptions(assume.command("answer").description("Confirm or reject an assumption"))
+    .argument("<id>", "assumption id")
+    .requiredOption("--status <status>", "confirmed | rejected")
+    .allowExcessArguments(false)
+    .action(async (id: string, opts, cmd: Command) => {
+      const flags = opts as { status?: string };
+      const code = await runAssumeAnswer(resolveOpts(cmd), id, flags);
       process.exitCode = code;
     });
 

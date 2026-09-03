@@ -76,4 +76,5 @@ test("help --all lists ingest search show brief wiki trust as always-on operatio
   assert.match(out, /search/);
   assert.match(out, /^ {2}show <page>$/m);
   assert.match(out, /^ {2}brief$/m);
+  assert.match(out, /Always-on operations:[\s\S]*index rebuild/);
 });

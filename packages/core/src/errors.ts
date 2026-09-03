@@ -51,6 +51,9 @@ export const HINT = {
   packet: "legion-cli packet new --title <title>",
   packetRespond: (id = "<id>") => `legion-cli packet respond ${id}`,
   compact: "legion-cli context compact",
+  assumeList: "legion-cli assume list",
+  assumeAnswer: "legion-cli assume answer <id> --status confirmed|rejected",
+  indexRebuild: "legion-cli index rebuild",
 } as const;
 
 export function refuseKind(nextHint: string): string {

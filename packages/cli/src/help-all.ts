@@ -43,6 +43,7 @@ const ALWAYS_ON = [
   ["search <q>", "Search the wiki", "--mentions, --include-untrusted"],
   ["show <page>", "Open one wiki/spec/task page", ""],
   ["brief", "Print what the next agent will see", ""],
+  ["index rebuild", "Repair search", ""],
   ["help", "Commands", "--all"],
 ] as const;
 
@@ -52,6 +53,8 @@ const BOARD_EXTRAS = [
   ["task amend", "Human changes a file contract", "--allow-deps, --adapter, --route, --clear-adapter"],
   ["fix <bug>", "Test first (must stay RED), then fix", "--adapter"],
   ["abandon", "Stop this spec without shipping", "--message"],
+  ["assume list", "Open questions that block work", ""],
+  ["assume answer <id>", "Confirm or reject an assumption", "--status confirmed|rejected"],
 ] as const;
 
 const SHIPPED_ADJACENT = [

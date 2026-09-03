@@ -25,6 +25,9 @@ function assertLayer1(out) {
   assert.doesNotMatch(out, /\bbrief\b/);
   assert.doesNotMatch(out, /wiki trust/);
   assert.doesNotMatch(out, /\bshow\b/);
+  assert.doesNotMatch(out, /assume list/);
+  assert.doesNotMatch(out, /assume answer/);
+  assert.doesNotMatch(out, /index rebuild/);
 }
 
 test("help mentions pnpm exec legion-cli and does not take bin legion", () => {
@@ -69,9 +72,9 @@ test("help --all lists the grouped command surface", () => {
   assert.match(out, /spec approve/);
   assert.match(out, /spec new/);
   assert.match(out, /qa checklist/);
-  assert.doesNotMatch(out, /assume list/);
-  assert.doesNotMatch(out, /assume answer/);
-  assert.doesNotMatch(out, /index rebuild/);
+  assert.match(out, /Always-on operations:[\s\S]*index rebuild/);
+  assert.match(out, /Board extras:[\s\S]*assume list/);
+  assert.match(out, /Board extras:[\s\S]*assume answer/);
 });
 
 test("help --all lists dashboard as shipped adjacent", () => {
