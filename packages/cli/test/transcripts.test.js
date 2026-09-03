@@ -63,6 +63,27 @@ async function assertTranscript(actual, name) {
   assert.equal(normalize(actual), expected);
 }
 
+async function seedExecutingSlice(dir, tasks) {
+  const engine = createLegionEngine(dir);
+  await engine.init({ name: "Checkin", adapter: "fake" });
+  for (const task of tasks) {
+    await engine.store.writeTask(makeReadyTask(task), `${task.title ?? task.id ?? "task"}.\n`);
+  }
+  const state = await engine.store.readState();
+  const currentTaskId = tasks.find((task) => task.status === "in_progress")?.id ?? null;
+  await engine.store.writeState(
+    {
+      ...state.data,
+      phase: "executing",
+      activeSpecId: "spec-checkin",
+      currentTaskId,
+      lastReadiness: "PASS",
+    },
+    state.body,
+  );
+  return engine;
+}
+
 test("bare legion-cli is uninitialized status (golden)", async () => {
   await withTempDir(async (dir) => {
     const result = runCli(["--project", dir]);
@@ -236,6 +257,67 @@ test("status exits 1 on FAIL readiness", async () => {
     assert.equal(result.status, 1, result.stderr);
     assert.match(normalize(result.stdout), /Readiness: FAIL/);
     assert.match(normalize(result.stdout), /legion-cli plan/);
+  });
+});
+
+test("status hints context compact below Run when a done task has no in_progress sibling", async () => {
+  await withTempDir(async (dir) => {
+    await seedExecutingSlice(dir, [
+      { status: "done" },
+      {
+        id: "TSK-0002",
+        title: "board",
+        status: "todo",
+        contract: {
+          filesAllowed: ["src/board.ts"],
+          expectedArtifacts: ["src/board.ts"],
+          verificationCommands: [passingVerify()],
+        },
+      },
+    ]);
+    const result = runCli(["status", "--project", dir]);
+    assert.equal(result.status, 0, result.stderr);
+    const out = normalize(result.stdout);
+    assert.match(
+      out,
+      /Run:  legion-cli execute\nHint: legion-cli context compact\nViewer: http:\/\/127\.0\.0\.1:7420  \(legion-cli dashboard\)/,
+    );
+    const json = runCli(["status", "--json", "--project", dir]);
+    assert.equal(JSON.parse(json.stdout).next.run, "legion-cli execute");
+  });
+});
+
+test("status omits compact hint when a done task has an in_progress sibling", async () => {
+  await withTempDir(async (dir) => {
+    await seedExecutingSlice(dir, [
+      { status: "done" },
+      {
+        id: "TSK-0002",
+        title: "board",
+        status: "in_progress",
+        contract: {
+          filesAllowed: ["src/board.ts"],
+          expectedArtifacts: ["src/board.ts"],
+          verificationCommands: [passingVerify()],
+        },
+      },
+    ]);
+    const result = runCli(["status", "--project", dir]);
+    assert.equal(result.status, 0, result.stderr);
+    const out = normalize(result.stdout);
+    assert.match(out, /Run:  legion-cli execute\nViewer: http:\/\/127\.0\.0\.1:7420  \(legion-cli dashboard\)/);
+    assert.doesNotMatch(out, /Hint: legion-cli context compact/);
+  });
+});
+
+test("status omits compact hint when slice tasks are compacted rather than done", async () => {
+  await withTempDir(async (dir) => {
+    await seedExecutingSlice(dir, [{ status: "compacted" }]);
+    const result = runCli(["status", "--project", dir]);
+    assert.equal(result.status, 0, result.stderr);
+    const out = normalize(result.stdout);
+    assert.doesNotMatch(out, /Hint: legion-cli context compact/);
+    assert.match(out, /Viewer: http:\/\/127\.0\.0\.1:7420  \(legion-cli dashboard\)/);
   });
 });
 
