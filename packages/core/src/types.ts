@@ -174,6 +174,7 @@ export type IngestOpts = {
 
 export type IngestResult = IngestReceipt & {
   distillSkipped?: string;
+  distillRan?: boolean;
 };
 
 export type NewTicket = {

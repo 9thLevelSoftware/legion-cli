@@ -32,7 +32,6 @@ import {
   gitCommitIndex,
   gitDiffCached,
   gitHasStaged,
-  gitDiscoverChanges,
   gitPorcelainPaths,
   gitResetMixed,
   gitRestoreStaged,
@@ -490,6 +489,7 @@ export class LegionEngine {
       }
       let receipt: IngestReceipt;
       let distillSkipped: string | undefined;
+      let distillRan = false;
       let extraWikiPaths: string[] = [];
       try {
         const materialized = await materializeIngestSources({
@@ -506,6 +506,7 @@ export class LegionEngine {
           const distill = await this.#maybeDistillLocked(receipt, materialized);
           distillSkipped = distill.skipped;
           extraWikiPaths = distill.extraWikiPaths;
+          distillRan = Boolean(distill.ran);
         }
         await this.#refreshWikiCatalogLocked();
         if (autoCommit) {
@@ -539,7 +540,11 @@ export class LegionEngine {
       if (after.phase !== phaseBefore) {
         await this.#writeState({ ...after, phase: phaseBefore });
       }
-      return distillSkipped ? { ...receipt, distillSkipped } : receipt;
+      return {
+        ...receipt,
+        ...(distillSkipped ? { distillSkipped } : {}),
+        ...(distillRan ? { distillRan: true } : {}),
+      };
     });
   }
 
@@ -2615,7 +2620,7 @@ export class LegionEngine {
   async #maybeDistillLocked(
     receipt: IngestReceipt,
     materialized: MaterializedIngest,
-  ): Promise<{ skipped?: string; extraWikiPaths: string[] }> {
+  ): Promise<{ skipped?: string; extraWikiPaths: string[]; ran?: boolean }> {
     let config: LegionConfig;
     try {
       config = await this.#readConfig();
@@ -2632,7 +2637,7 @@ export class LegionEngine {
       return { skipped: "source too large", extraWikiPaths: [] };
     }
     if (source.chars === 0) {
-      return { extraWikiPaths: [] };
+      return { skipped: "no source", extraWikiPaths: [] };
     }
 
     const wikiBefore = await snapshotWikiRaw(this.projectRoot, this.store.paths.wikiDir);
@@ -2656,18 +2661,21 @@ export class LegionEngine {
       required: false,
     });
     if (!result.spawned) {
-      return { skipped: "no spawnable adapter", extraWikiPaths: [] };
+      return { skipped: "skill unavailable", extraWikiPaths: [] };
     }
     if (result.revert?.incident) {
       refuse("inspect .git — spawn touched .git/", HINT.inRepo);
     }
-    const extraWikiPaths = await this.#clampSpawnWrittenWikiPages(
-      wikiBefore,
-      result.revert?.preSpawnRef ?? tryGitHead(this.projectRoot),
-    );
+    const extraWikiPaths = await this.#clampSpawnWrittenWikiPages(wikiBefore);
     // Spawn writes are on disk but not yet in sqlite; catalog reads the index.
     await this.store.rebuild();
-    return { extraWikiPaths };
+    if (result.timedOut) {
+      return { skipped: "timed out", extraWikiPaths };
+    }
+    if (result.error) {
+      return { skipped: "spawn failed", extraWikiPaths };
+    }
+    return { extraWikiPaths, ran: true };
   }
 
   async #collectDistillSource(
@@ -2696,30 +2704,19 @@ export class LegionEngine {
     return { chars, wrapped };
   }
 
-  async #clampSpawnWrittenWikiPages(
-    before: Map<string, string>,
-    preSpawnRef: string | null,
-  ): Promise<string[]> {
-    const candidates = new Set<string>();
-    for (const path of gitDiscoverChanges(this.projectRoot, preSpawnRef)) {
-      const posix = path.replaceAll("\\", "/");
-      if (posix.startsWith(".legion-cli/wiki/") && posix.endsWith(".md")) candidates.add(posix);
-    }
+  async #clampSpawnWrittenWikiPages(before: Map<string, string>): Promise<string[]> {
+    const extraWikiPaths: string[] = [];
     for (const path of await listWikiStorePaths(this.store.paths.wikiDir)) {
-      if (!path.endsWith(".md")) continue;
+      if (!path.endsWith(".md") || isEngineWikiCatalogPath(path)) continue;
       let raw: string;
       try {
         raw = await readFile(toFsPath(this.projectRoot, path), "utf8");
       } catch {
         continue;
       }
-      if (before.get(path) !== raw) candidates.add(path);
-    }
-    const extraWikiPaths: string[] = [];
-    for (const storePath of candidates) {
-      if (isEngineWikiCatalogPath(storePath)) continue;
-      extraWikiPaths.push(storePath);
-      await this.#forceWikiTrustUntrusted(storePath);
+      if (before.get(path) === raw) continue;
+      extraWikiPaths.push(path);
+      await this.#forceWikiTrustUntrusted(path);
     }
     return extraWikiPaths;
   }

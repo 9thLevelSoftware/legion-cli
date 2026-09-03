@@ -31,10 +31,10 @@ export async function runIngest(opts: CliOpts, sources: string[], flags: IngestF
       `skipped: ${receipt.skipped.length}`,
       receipt.pagesCreated.length > 0 ? `pages: ${receipt.pagesCreated.join(", ")}` : "",
       flags.commit === false ? "commit: skipped (--no-commit)" : "commit: wiki pages auto-committed on success",
-      receipt.distillSkipped
-        ? `distill: skipped (${receipt.distillSkipped})`
-        : flags.distill
-          ? "distill: ran ingest skill (wiki pages remain untrusted)"
+      receipt.distillRan
+        ? "distill: ran ingest skill (wiki pages remain untrusted)"
+        : receipt.distillSkipped
+          ? `distill: skipped (${receipt.distillSkipped})`
           : "",
     ]
       .filter((line) => line.length > 0)
