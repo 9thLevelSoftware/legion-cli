@@ -121,6 +121,7 @@ test("execute refuses without a spawnable adapter", async () => {
         return true;
       },
     );
+    assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
   });
 });
 

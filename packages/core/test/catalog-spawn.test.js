@@ -100,6 +100,7 @@ for (const skillId of REQUIRED_SKILL_IDS) {
             (err) =>
               isRefuse(err, /execute requires valid skills\/execute\/SKILL.md frontmatter/, /legion-cli next \/ legion-cli execute/),
           );
+          assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
         } else {
           await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
           await assert.rejects(

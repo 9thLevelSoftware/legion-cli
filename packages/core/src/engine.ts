@@ -1420,7 +1420,6 @@ export class LegionEngine {
       assertCanTransition(state.phase, "executing");
     }
 
-    await this.#transitionTaskTo(task.id, "in_progress");
     await this.#writeState({
       ...(await this.#readState()),
       phase: "executing",
@@ -1458,6 +1457,9 @@ export class LegionEngine {
       cliAdapter: opts.adapter,
       taskAdapter: task.adapter,
     });
+    if (result.spawned) {
+      await this.#transitionTaskTo(task.id, "in_progress");
+    }
 
     const revert = result.revert;
     const extras = revert?.extrasReverted ?? [];
