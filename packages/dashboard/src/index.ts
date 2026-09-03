@@ -16,6 +16,7 @@ export {
 } from "./origin.js";
 export { startDashboard, resolveDashboardListen } from "./server.js";
 export type { DashboardHandle, DashboardOptions } from "./server.js";
+export { ENGINE_WRITE_METHODS } from "./write.js";
 export { loadSnapshot, LIFECYCLE_PATH, KANBAN_COLUMNS } from "./snapshot.js";
 export type { DashboardSnapshot } from "./snapshot.js";
 export {

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { startDashboard } from "../dist/index.js";
+import { ENGINE_WRITE_METHODS, startDashboard } from "../dist/index.js";
 import { todoTask, withStore, withTempDir } from "./helpers.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -69,6 +69,16 @@ test("package writes via LegionEngine and does not expose execute", async () => 
   assert.doesNotMatch(write, /\badapter\b/);
   assert.doesNotMatch(server, /\.execute\(/);
   assert.doesNotMatch(server, /Set-Cookie|set-cookie|cookie=/);
+});
+
+test("ENGINE_WRITE_METHODS is exactly ticket, wikiTrust, qaChecklist", () => {
+  assert.deepEqual(ENGINE_WRITE_METHODS, new Set(["ticket", "wikiTrust", "qaChecklist"]));
+  assert.equal(ENGINE_WRITE_METHODS.has("execute"), false);
+  assert.equal(ENGINE_WRITE_METHODS.has("packet"), false);
+  assert.equal(ENGINE_WRITE_METHODS.has("ship"), false);
+  assert.equal(ENGINE_WRITE_METHODS.has("plan"), false);
+  assert.equal(ENGINE_WRITE_METHODS.has("review"), false);
+  assert.equal(ENGINE_WRITE_METHODS.has("intent"), false);
 });
 
 test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, origin allowlist, token meta", async () => {
@@ -210,6 +220,9 @@ test("POST /engine/* requires token and origin; ticket/wikiTrust/qaChecklist mut
 
       const execute = await enginePost(handle, "/engine/execute", { id: "TSK-0002" }, { token });
       assert.equal(execute.status, 404);
+
+      const packet = await enginePost(handle, "/engine/packet", { title: "Dark mode" }, { token });
+      assert.equal(packet.status, 404);
 
       const ship = await enginePost(handle, "/engine/ship", {}, { token });
       assert.equal(ship.status, 404);
