@@ -132,9 +132,9 @@ test("help lists qa and fix", () => {
   const all = runCli(["help", "--all"]);
   assert.equal(all.status, 0, all.stderr);
   const out = normalize(all.stdout);
-  assert.match(out, /legion-cli qa/);
-  assert.match(out, /legion-cli qa checklist/);
-  assert.match(out, /legion-cli fix/);
+  assert.match(out, /^ {2}qa$/m);
+  assert.match(out, /qa checklist/);
+  assert.match(out, /^ {2}fix <bug>$/m);
   const qa = runCli(["help", "qa"]);
   assert.match(normalize(qa.stdout), /mode/);
   const fix = runCli(["help", "fix"]);
