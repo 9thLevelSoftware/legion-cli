@@ -13,10 +13,7 @@ test("registers bin legion-cli only", () => {
   assert.deepEqual(Object.keys(pkg.bin), ["legion-cli"]);
 });
 
-test("help mentions pnpm exec legion-cli and does not take bin legion", () => {
-  const result = runCli(["help"]);
-  assert.equal(result.status, 0, result.stderr);
-  const out = normalize(result.stdout);
+function assertLayer1(out) {
   assert.match(out, /pnpm exec legion-cli/);
   assert.match(out, /status/);
   assert.match(out, /init/);
@@ -28,6 +25,18 @@ test("help mentions pnpm exec legion-cli and does not take bin legion", () => {
   assert.doesNotMatch(out, /\bbrief\b/);
   assert.doesNotMatch(out, /wiki trust/);
   assert.doesNotMatch(out, /\bshow\b/);
+}
+
+test("help mentions pnpm exec legion-cli and does not take bin legion", () => {
+  const result = runCli(["help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assertLayer1(normalize(result.stdout));
+});
+
+test("--help prints Layer 1 and omits search/brief/wiki trust/show", () => {
+  const result = runCli(["--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assertLayer1(normalize(result.stdout));
 });
 
 test("help --all lists the grouped command surface", () => {
@@ -61,6 +70,7 @@ test("help --all lists the grouped command surface", () => {
   assert.match(out, /spec new/);
   assert.match(out, /qa checklist/);
   assert.doesNotMatch(out, /assume list/);
+  assert.doesNotMatch(out, /assume answer/);
   assert.doesNotMatch(out, /index rebuild/);
 });
 

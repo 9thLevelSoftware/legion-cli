@@ -74,17 +74,20 @@ function row(cols: readonly string[]): string {
   return flags ? `  ${cmd}\n      ${what}  ${flags}` : `  ${cmd}\n      ${what}`;
 }
 
-export function printHelpLayer1(): void {
+export function formatHelpLayer1(): string {
   const width = Math.max(...LAYER_1.map(([cmd]) => cmd.length));
-  writeOut(
-    [
-      "Legion CLI — Product Engineering lifecycle engine",
-      "Supported command: pnpm exec legion-cli",
-      "Does not register bin legion.",
-      "",
-      ...LAYER_1.map(([cmd, what]) => `${cmd.padEnd(width)}  ${what}`),
-    ].join("\n"),
-  );
+  const text = [
+    "Legion CLI — Product Engineering lifecycle engine",
+    "Supported command: pnpm exec legion-cli",
+    "Does not register bin legion.",
+    "",
+    ...LAYER_1.map(([cmd, what]) => `${cmd.padEnd(width)}  ${what}`),
+  ].join("\n");
+  return text.endsWith("\n") ? text : `${text}\n`;
+}
+
+export function printHelpLayer1(): void {
+  writeOut(formatHelpLayer1());
 }
 
 export function printHelpAll(): void {
