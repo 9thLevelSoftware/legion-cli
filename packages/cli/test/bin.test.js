@@ -13,6 +13,14 @@ test("registers bin legion-cli only", () => {
   assert.deepEqual(Object.keys(pkg.bin), ["legion-cli"]);
 });
 
+function helpSection(out, header, nextHeader) {
+  const start = out.indexOf(header);
+  assert.notEqual(start, -1, `missing ${header}`);
+  const from = out.slice(start);
+  const end = nextHeader ? from.indexOf(`\n${nextHeader}`, header.length) : -1;
+  return end === -1 ? from : from.slice(0, end);
+}
+
 function assertLayer1(out) {
   assert.match(out, /pnpm exec legion-cli/);
   assert.match(out, /status/);
@@ -25,6 +33,9 @@ function assertLayer1(out) {
   assert.doesNotMatch(out, /\bbrief\b/);
   assert.doesNotMatch(out, /wiki trust/);
   assert.doesNotMatch(out, /\bshow\b/);
+  assert.doesNotMatch(out, /assume list/);
+  assert.doesNotMatch(out, /assume answer/);
+  assert.doesNotMatch(out, /index rebuild/);
 }
 
 test("help mentions pnpm exec legion-cli and does not take bin legion", () => {
@@ -69,9 +80,14 @@ test("help --all lists the grouped command surface", () => {
   assert.match(out, /spec approve/);
   assert.match(out, /spec new/);
   assert.match(out, /qa checklist/);
-  assert.doesNotMatch(out, /assume list/);
-  assert.doesNotMatch(out, /assume answer/);
-  assert.doesNotMatch(out, /index rebuild/);
+  const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");
+  assert.match(alwaysOn, /index rebuild/);
+  assert.doesNotMatch(alwaysOn, /assume list/);
+  assert.doesNotMatch(alwaysOn, /assume answer/);
+  const board = helpSection(out, "Board extras:", "Shipped adjacent");
+  assert.match(board, /assume list/);
+  assert.match(board, /assume answer/);
+  assert.doesNotMatch(board, /index rebuild/);
 });
 
 test("help --all lists dashboard as shipped adjacent", () => {

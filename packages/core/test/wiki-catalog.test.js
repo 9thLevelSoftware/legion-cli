@@ -109,6 +109,39 @@ test("wikiTrust and compactContext refresh the engine catalog; garden does not",
   });
 });
 
+test("indexRebuild rebuilds FTS then refreshes the engine catalog", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    assert.equal(await store.pathExists(WIKI_INDEX_STORE_PATH), false);
+
+    await writeFile(join(dir, "notes.md"), "# Notes\n\nDurable fact.\n", "utf8");
+    const receipt = await engine.ingest(["notes.md"], { noCommit: true });
+    await writeFile(join(dir, ".legion-cli", "wiki", "index.md"), "spawn overwrote this\n", "utf8");
+
+    await engine.indexRebuild();
+
+    const index = await store.readWikiPage(WIKI_INDEX_STORE_PATH);
+    assert.equal(index.data.title, "Wiki index");
+    assert.equal(index.data.trust, "reviewed");
+    assert.match(index.body, /Catalog of compiled pages/);
+    assert.match(index.body, /\[\[ingested\/notes\]\]/);
+    assert.equal(await store.pathExists(receipt.pagesCreated[0]), true);
+  });
+});
+
+test("indexRebuild refuses until init", async () => {
+  await withEngine(async ({ engine }) => {
+    await assert.rejects(
+      () => engine.indexRebuild(),
+      (err) => {
+        assert.equal(err.name, "LegionRefuseError");
+        assert.match(err.nextHint, /legion-cli init/);
+        return true;
+      },
+    );
+  });
+});
+
 test("engine search empty query is []; untrusted body is not catalog last-resort", async () => {
   await withEngine(async ({ dir, engine }) => {
     await initProject(engine);
