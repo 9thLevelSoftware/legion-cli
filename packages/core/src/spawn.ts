@@ -9,6 +9,8 @@ import {
   findSkillsDir,
   isRequiredSkillId,
   isResolvedAdapterSpawnable,
+  listLevel3Resources,
+  listSkillCatalog,
   parseSkillFrontmatter,
   resolveAdapter,
   resolveAdapterId,
@@ -19,12 +21,15 @@ import {
   type FakeArtifact,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
+import type { LegionReader } from "@9thlevelsoftware/legion-cli-persist";
 import {
   SCHEMA_VERSION,
   type AdapterId,
+  type FileContract,
   type LegionConfig,
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
+import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
 import {
@@ -75,6 +80,88 @@ export type OptionalSpawnResult = {
   argvSummary?: string;
 };
 
+function formatLevel3(level3: { scripts: string[]; references: string[]; assets: string[] }): string[] {
+  const files = [...level3.scripts, ...level3.references, ...level3.assets];
+  if (files.length === 0) return ["- (none)"];
+  return files.map((path) => `- ${path}`);
+}
+
+function renderFileContractSection(contract: FileContract): string[] {
+  return [
+    "## FileContract",
+    "filesAllowed:",
+    ...contract.filesAllowed.map((path) => `- ${path}`),
+    "expectedArtifacts:",
+    ...contract.expectedArtifacts.map((path) => `- ${path}`),
+    "verificationCommands:",
+    ...contract.verificationCommands.map((cmd) => `- ${cmd}`),
+    "filesForbidden:",
+    ...contract.filesForbidden.map((path) => `- ${path}`),
+  ];
+}
+
+async function assembleSpawnPrompt(opts: {
+  projectRoot: string;
+  runId: string;
+  skillId: SkillId;
+  skillDir: string;
+  skillsDir: string;
+  promptBody: string;
+  allowedRoots: readonly string[];
+  fileContract?: FileContract;
+  store?: LegionReader;
+}): Promise<{ body: string; skipDesignAppend: boolean }> {
+  const catalogResult = listSkillCatalog(opts.skillsDir);
+  const skills = catalogResult.catalog.skills.map((skill) => ({
+    skillId: skill.skillId,
+    name: skill.name,
+    description: skill.description,
+    active: skill.skillId === opts.skillId,
+  }));
+  const brief = opts.store ? await buildSessionBrief(opts.store, { skills }) : null;
+
+  const level3 = listLevel3Resources(opts.skillDir);
+
+  const active = await readActive(opts.projectRoot);
+  let designBlock = "";
+  let skipDesignAppend = false;
+  if (active?.packageId) {
+    const composed = await composeDesignContext({
+      projectRoot: opts.projectRoot,
+      skillBody: opts.promptBody,
+    });
+    designBlock = composed.text;
+    skipDesignAppend = true;
+  } else {
+    designBlock = opts.promptBody;
+    skipDesignAppend = false;
+  }
+
+  const body = [
+    "## SessionBrief",
+    brief ? renderSessionBrief(brief).trimEnd() : "(no store; test-only spawn)",
+    "",
+    "## Active skill",
+    `skillId: ${opts.skillId}`,
+    `Level 2 body is at .legion-cli/cache/skills/${opts.runId}/SKILL.md`,
+    "Level 3 files (read only if the skill body names them):",
+    ...formatLevel3(level3),
+    "",
+    "## SkillContract",
+    `skillId: ${opts.skillId}`,
+    "allowedRoots:",
+    ...opts.allowedRoots.map((root) => `- ${root}`),
+    "",
+    "Do not write files outside allowedRoots. Do not git add or git commit.",
+    "",
+    ...(opts.fileContract ? renderFileContractSection(opts.fileContract) : []),
+    "",
+    designBlock.trimEnd(),
+  ].join("\n");
+
+  return { body, skipDesignAppend };
+}
+
 export async function optionalSkillSpawn(opts: {
   projectRoot: string;
   config: LegionConfig;
@@ -82,6 +169,7 @@ export async function optionalSkillSpawn(opts: {
   specId?: string;
   taskId?: string;
   promptBody: string;
+  fileContract?: FileContract;
   extraAllowedRoots?: readonly string[];
   filesForbidden?: readonly string[];
   skillsDir?: string;
@@ -91,6 +179,7 @@ export async function optionalSkillSpawn(opts: {
   required?: boolean;
   cliAdapter?: AdapterId;
   taskAdapter?: AdapterId;
+  store?: LegionReader;
 }): Promise<OptionalSpawnResult> {
   const runId = `${opts.skillId}-${Date.now().toString(36)}`;
   const resolution = resolveAdapterId({
@@ -111,7 +200,7 @@ export async function optionalSkillSpawn(opts: {
   const skillDir = skillsDir ? join(skillsDir, opts.skillId) : undefined;
   const skillMd = skillDir ? join(skillDir, "SKILL.md") : undefined;
   const required = Boolean(opts.required) || isRequiredSkillId(opts.skillId);
-  if (!skillDir || !skillMd || !existsSync(skillMd)) {
+  if (!skillsDir || !skillDir || !skillMd || !existsSync(skillMd)) {
     if (required) {
       refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
     }
@@ -147,17 +236,11 @@ export async function optionalSkillSpawn(opts: {
   const argvSummary = argvSummarySafe(tmpl.argv);
 
   const contract = skillContract(opts.skillId, { runId, specId: opts.specId });
-  const allowedRoots = [...contract.allowedRoots, ...(opts.extraAllowedRoots ?? [])];
-  const prompt = [
-    opts.promptBody.trim(),
-    "",
-    "## SkillContract",
-    `skillId: ${contract.skillId}`,
-    "allowedRoots:",
-    ...allowedRoots.map((root) => `- ${root}`),
-    "",
-    "Do not write files outside allowedRoots. Do not git add or git commit.",
-  ].join("\n");
+  const extraAllowedRoots =
+    opts.extraAllowedRoots ??
+    (opts.fileContract ? [...opts.fileContract.filesAllowed, ...opts.fileContract.expectedArtifacts] : []);
+  const filesForbidden = opts.filesForbidden ?? opts.fileContract?.filesForbidden;
+  const allowedRoots = [...contract.allowedRoots, ...extraAllowedRoots];
 
   await stageSkill({
     projectRoot: opts.projectRoot,
@@ -167,19 +250,22 @@ export async function optionalSkillSpawn(opts: {
       ? join(opts.projectRoot, ".legion-cli", "design", "craft")
       : undefined,
   });
-  const active = await readActive(opts.projectRoot);
-  let promptBody = prompt;
-  let skipDesignAppend = false;
-  if (active?.packageId) {
-    const composed = await composeDesignContext({ projectRoot: opts.projectRoot, skillBody: prompt });
-    promptBody = composed.text;
-    skipDesignAppend = true;
-  }
+  const assembled = await assembleSpawnPrompt({
+    projectRoot: opts.projectRoot,
+    runId,
+    skillId: opts.skillId,
+    skillDir,
+    skillsDir,
+    promptBody: opts.promptBody,
+    allowedRoots,
+    fileContract: opts.fileContract,
+    store: opts.store,
+  });
   const promptPath = await writeRunPrompt({
     projectRoot: opts.projectRoot,
     runId,
-    body: promptBody,
-    skipDesignAppend,
+    body: assembled.body,
+    skipDesignAppend: assembled.skipDesignAppend,
   });
   const preSpawnRef = recordPreSpawnRef(opts.projectRoot);
   const snapshot = preSpawnRef ? undefined : await snapshotPaths(opts.projectRoot);
@@ -239,7 +325,7 @@ export async function optionalSkillSpawn(opts: {
       projectRoot: opts.projectRoot,
       preSpawnRef,
       allowedRoots,
-      filesForbidden: opts.filesForbidden,
+      filesForbidden,
       snapshot,
       gitPolicy,
       dirtyAtStart,

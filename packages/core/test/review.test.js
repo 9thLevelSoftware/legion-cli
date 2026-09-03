@@ -11,6 +11,7 @@ import {
   makeQaScore,
   makeTask,
   passingVerificationCommand,
+  readLatestRunPrompt,
   seedPlanReady,
   withEngine,
   withFakeAdapter,
@@ -326,6 +327,26 @@ test("verify extras vs SkillContract FAIL the command", async () => {
         skillsDir,
         fakeArtifacts: [{ path: "src/leaked.ts", content: "export const leaked = true;\n" }],
       },
+    );
+  });
+});
+
+test("review prompt.md starts with SessionBrief and has no FileContract heading", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
+        const review = await engine.review();
+        assert.equal(review.verdict, "PASS");
+        const prompt = await readLatestRunPrompt(dir, "review");
+        assert.ok(prompt.startsWith("## SessionBrief\nProject:"));
+        assert.match(prompt, /## SkillContract/);
+        assert.match(prompt, /review \(active\)/);
+        assert.doesNotMatch(prompt, /^## FileContract$/m);
+        assert.ok(prompt.indexOf("## SessionBrief") < prompt.indexOf("## SkillContract"));
+      },
+      { skillsDir },
     );
   });
 });

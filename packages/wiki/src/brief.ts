@@ -134,6 +134,15 @@ export function renderSessionBrief(brief: SessionBrief): string {
       lines.push(`- ${decision.id}: ${decision.summary}`);
     }
   }
+  if (brief.skills && brief.skills.length > 0) {
+    lines.push("");
+    lines.push("Skills:");
+    for (const skill of brief.skills) {
+      const active = skill.active ? " (active)" : "";
+      const description = skill.description.trim();
+      lines.push(description.length > 0 ? `- ${skill.name}${active}: ${description}` : `- ${skill.name}${active}`);
+    }
+  }
   lines.push("");
   lines.push("Wiki:");
   if (brief.wiki.length === 0) {
@@ -180,6 +189,7 @@ export function assembleSessionBrief(input: {
   wiki: SessionBrief["wiki"];
   contract?: FileContract | null;
   lastQa?: SessionBrief["lastQa"];
+  skills?: SessionBrief["skills"];
 }): SessionBrief {
   const base = {
     schemaVersion: SCHEMA_VERSION.brief,
@@ -188,24 +198,37 @@ export function assembleSessionBrief(input: {
     currentTask: input.currentTask ?? null,
     blockers: input.blockers.slice(0, 5),
     decisions: input.decisions.slice(0, 10),
-    wiki: input.wiki,
     contract: input.contract ?? null,
     lastQa: input.lastQa ?? null,
   };
-  let rendered = renderSessionBrief(withCount(base, ""));
   let wiki = input.wiki;
+  let skills = input.skills;
+
+  const snapshot = (): Omit<SessionBrief, "characterCount"> => ({
+    ...base,
+    wiki,
+    ...(skills !== undefined ? { skills } : {}),
+  });
+  const render = (): string => renderSessionBrief(withCount(snapshot(), ""));
+
+  let rendered = render();
   if (rendered.length > SESSION_BRIEF_CHAR_CAP) {
     wiki = wiki.map((page) => ({ ...page, summary: null }));
-    rendered = renderSessionBrief(withCount({ ...base, wiki }, ""));
+    rendered = render();
   }
   while (rendered.length > SESSION_BRIEF_CHAR_CAP && wiki.length > 0) {
     wiki = wiki.slice(0, -1);
-    rendered = renderSessionBrief(withCount({ ...base, wiki }, ""));
+    rendered = render();
   }
-  if (rendered.length > SESSION_BRIEF_CHAR_CAP) {
-    rendered = rendered.slice(0, SESSION_BRIEF_CHAR_CAP);
+  if (rendered.length > SESSION_BRIEF_CHAR_CAP && skills && skills.length > 0) {
+    skills = skills.map((skill) => ({ ...skill, description: "" }));
+    rendered = render();
   }
-  return withCount({ ...base, wiki }, rendered);
+  if (rendered.length > SESSION_BRIEF_CHAR_CAP && skills && skills.length > 0) {
+    skills = skills.filter((skill) => skill.active === true);
+    rendered = render();
+  }
+  return withCount(snapshot(), rendered);
 }
 
 export function wikiIndexReady(projectRoot: string): boolean {
@@ -234,7 +257,7 @@ export async function ensureWikiIndex(
 
 export async function buildSessionBrief(
   store: LegionReader,
-  opts?: { rebuild?: boolean },
+  opts?: { rebuild?: boolean; skills?: SessionBrief["skills"] },
 ): Promise<SessionBrief> {
   await ensureWikiIndex(store, opts);
   const project = (await store.readProject()).data;
@@ -290,5 +313,6 @@ export async function buildSessionBrief(
     wiki,
     contract,
     lastQa,
+    skills: opts?.skills,
   });
 }

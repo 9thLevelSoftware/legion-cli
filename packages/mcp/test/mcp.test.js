@@ -68,6 +68,12 @@ test("status, current task, task graph, brief, show, search, backlinks", async (
       assert.equal(brief.json.project.name, "Checkin");
       assert.equal(brief.json.phase, "executing");
       assert.equal(brief.json.currentTask.id, "TSK-0002");
+      assert.ok(Array.isArray(brief.json.skills));
+      assert.ok(brief.json.skills.some((skill) => skill.skillId === "execute"));
+      assert.equal(
+        brief.json.skills.some((skill) => skill.active),
+        false,
+      );
 
       const shown = parseTool(
         await client.callTool({ name: "legion_cli_show", arguments: { page: "product/intent" } }),

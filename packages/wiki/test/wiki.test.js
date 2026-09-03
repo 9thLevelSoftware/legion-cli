@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { access, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { access, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { WIKI_PAGE_SCHEMA_VERSION } from "@9thlevelsoftware/legion-cli-persist";
@@ -179,6 +180,74 @@ test("buildSessionBrief omits currentTask.adapter when Task.adapter is unset", a
   });
 });
 
+const CLOSED_LOG = "Closed task logs live in `.legion-cli/audit/`; do not reload them.";
+const CONTRACT_TAIL = "src/overflow-contract-tail.ts";
+
+function overflowContract(filesAllowed) {
+  return {
+    filesAllowed,
+    filesForbidden: [".git/**"],
+    expectedArtifacts: [filesAllowed[0]],
+    verificationCommands: ["pnpm test"],
+    maxFilesTouched: 20,
+  };
+}
+
+function overflowSkills(activeId) {
+  return [
+    "interview",
+    "discuss",
+    "spec",
+    "ingest",
+    "plan",
+    "execute",
+    "verify",
+    "review",
+    "qa",
+  ].map((skillId) => ({
+    skillId,
+    name: skillId,
+    description: "d".repeat(400),
+    active: skillId === activeId,
+  }));
+}
+
+test("wiki source does not import agents", async () => {
+  const srcDir = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
+  const text = await readFile(join(srcDir, "brief.ts"), "utf8");
+  assert.doesNotMatch(text, /legion-cli-agents/);
+  assert.doesNotMatch(text, /rendered\.slice/);
+});
+
+test("renderSessionBrief emits Skills with the active skill flagged", () => {
+  const brief = assembleSessionBrief({
+    project: { name: "Checkin", mode: "greenfield", controlMode: "guarded" },
+    phase: "executing",
+    blockers: [],
+    decisions: [],
+    wiki: [],
+    skills: [
+      { skillId: "plan", name: "plan", description: "Break the spec into tasks." },
+      { skillId: "execute", name: "execute", description: "Write product code.", active: true },
+    ],
+  });
+  const rendered = renderSessionBrief(brief);
+  assert.match(rendered, /^Skills:$/m);
+  assert.match(rendered, /^- execute \(active\): Write product code\.$/m);
+  assert.match(rendered, /^- plan: Break the spec into tasks\.$/m);
+});
+
+test("buildSessionBrief accepts caller-parsed skills", async () => {
+  await withStore(async ({ store }) => {
+    const brief = await buildSessionBrief(store, {
+      skills: [{ skillId: "execute", name: "execute", description: "Write product code.", active: true }],
+    });
+    assert.equal(brief.skills?.[0]?.skillId, "execute");
+    assert.match(renderSessionBrief(brief), /Skills:/);
+    assert.match(renderSessionBrief(brief), /execute \(active\)/);
+  });
+});
+
 test("SessionBrief drops wiki summaries to stay under 24k characters", () => {
   const long = "x".repeat(3000);
   const wiki = Array.from({ length: 12 }, (_, i) => ({
@@ -193,11 +262,89 @@ test("SessionBrief drops wiki summaries to stay under 24k characters", () => {
     blockers: [],
     decisions: [],
     wiki,
+    contract: overflowContract(["src/main.ts"]),
   });
   const rendered = renderSessionBrief(brief);
   assert.ok(brief.characterCount <= SESSION_BRIEF_CHAR_CAP);
   assert.equal(brief.characterCount, rendered.length);
   assert.ok(brief.wiki.every((page) => page.summary == null || page.summary.length === 0) || rendered.length <= SESSION_BRIEF_CHAR_CAP);
+  assert.match(rendered, /FileContract:/);
+  assert.match(rendered, new RegExp(CLOSED_LOG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("overflow keeps FileContract and closed-log; never slices", () => {
+  const wiki = Array.from({ length: 40 }, (_, i) => ({
+    path: `.legion-cli/wiki/p${i}.md`,
+    title: `Page ${i} ${"w".repeat(180)}`,
+    summary: "s".repeat(3000),
+    trust: "reviewed",
+  }));
+  const filesAllowed = [
+    ...Array.from({ length: 360 }, (_, i) => `src/mod-${String(i).padStart(3, "0")}/component-${"n".repeat(48)}.ts`),
+    CONTRACT_TAIL,
+  ];
+  const brief = assembleSessionBrief({
+    project: { name: "Checkin", mode: "greenfield", controlMode: "guarded" },
+    phase: "executing",
+    currentTask: { id: "TSK-0100", title: "settings screen" },
+    blockers: [
+      {
+        schemaVersion: "legion-cli-assumption/v1",
+        id: "ASM-0001",
+        statement: "Keep identity blockers",
+        status: "open",
+        blocking: true,
+        escalatesTo: "user",
+        createdIn: "intent",
+      },
+    ],
+    decisions: [{ id: "DEC-0001", summary: "Keep accepted decisions" }],
+    wiki,
+    contract: overflowContract(filesAllowed),
+    lastQa: { total: 94, pass: true },
+    skills: overflowSkills("execute"),
+  });
+  const rendered = renderSessionBrief(brief);
+  assert.equal(brief.characterCount, rendered.length);
+  assert.match(rendered, /Project: Checkin/);
+  assert.match(rendered, /ASM-0001: Keep identity blockers/);
+  assert.match(rendered, /DEC-0001: Keep accepted decisions/);
+  assert.match(rendered, /FileContract:/);
+  assert.match(rendered, new RegExp(CONTRACT_TAIL));
+  assert.match(rendered, /Last QA: total 94 pass=true/);
+  assert.ok(rendered.includes(CLOSED_LOG));
+  assert.ok(rendered.endsWith(`${CLOSED_LOG}\n`));
+  assert.equal(brief.skills?.every((skill) => skill.description === ""), true);
+  assert.deepEqual(
+    brief.skills?.map((skill) => skill.skillId),
+    ["execute"],
+  );
+  assert.equal(brief.skills?.[0]?.active, true);
+  assert.match(rendered, /^- execute \(active\)$/m);
+  assert.doesNotMatch(rendered, /^- plan(?:\s|$)/m);
+});
+
+test("pathological FileContract may exceed the cap but is never sliced", () => {
+  const filesAllowed = [
+    ...Array.from({ length: 400 }, (_, i) => `src/file-${String(i).padStart(4, "0")}-${"x".repeat(60)}.ts`),
+    CONTRACT_TAIL,
+  ];
+  const brief = assembleSessionBrief({
+    project: { name: "Checkin", mode: "greenfield", controlMode: "guarded" },
+    phase: "executing",
+    blockers: [],
+    decisions: [],
+    wiki: [],
+    contract: overflowContract(filesAllowed),
+    lastQa: { total: 85, pass: true },
+  });
+  const rendered = renderSessionBrief(brief);
+  assert.ok(brief.characterCount > SESSION_BRIEF_CHAR_CAP);
+  assert.equal(brief.characterCount, rendered.length);
+  assert.match(rendered, new RegExp(CONTRACT_TAIL));
+  assert.ok(rendered.includes(CLOSED_LOG));
+  assert.ok(rendered.endsWith(`${CLOSED_LOG}\n`));
+  assert.match(rendered, /Last QA: total 85 pass=true/);
 });
 
 test("show and wiki trust round-trip a page", async () => {

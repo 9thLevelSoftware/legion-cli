@@ -126,6 +126,20 @@ test("optional verify spawn returns spawned false on invalid frontmatter", async
   });
 });
 
+test("engine.brief includes Level 1 catalog without an active skill", async () => {
+  await withEngine(async ({ engine }) => {
+    await initProject(engine);
+    const brief = await engine.brief();
+    assert.ok(brief.skills && brief.skills.length > 0);
+    assert.ok(brief.skills.some((skill) => skill.skillId === "execute"));
+    assert.ok(brief.skills.some((skill) => skill.skillId === "plan"));
+    assert.equal(
+      brief.skills.some((skill) => skill.active),
+      false,
+    );
+  });
+});
+
 test("malformed optional qa SKILL.md does not throw from listSkillCatalog", async () => {
   await withEngine(async ({ dir }) => {
     const skillsDir = join(dir, "skills");

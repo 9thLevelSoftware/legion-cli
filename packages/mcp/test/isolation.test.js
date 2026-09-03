@@ -21,6 +21,7 @@ test("package does not depend on core or execute", async () => {
     ...pkg.peerDependencies,
   };
   assert.equal(deps["@9thlevelsoftware/legion-cli-core"], undefined);
+  assert.ok(deps["@9thlevelsoftware/legion-cli-agents"]);
   assert.ok(deps["@9thlevelsoftware/legion-cli-persist"]);
   assert.ok(deps["@9thlevelsoftware/legion-cli-schema"]);
   assert.ok(deps["@9thlevelsoftware/legion-cli-wiki"]);
@@ -39,6 +40,7 @@ test("source must not import core/execute or take the engine lock", async () => 
       if (!/^\s*import\b/.test(line)) continue;
       assert.doesNotMatch(line, /legion-cli-core/, file);
       assert.doesNotMatch(line, /\bexecute\b/, file);
+      assert.doesNotMatch(line, /optionalSkillSpawn/, file);
     }
   }
 });

@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { findSkillsDir, listSkillCatalog } from "@9thlevelsoftware/legion-cli-agents";
 import { isTaskReady } from "@9thlevelsoftware/legion-cli-graph";
 import {
   createLegionStore,
@@ -206,7 +207,18 @@ export async function readShow(store: LegionReader, page: string) {
 
 export async function readBrief(store: LegionReader) {
   await assertInitialized(store);
-  return buildSessionBrief(store, { rebuild: false });
+  const skillsDir = findSkillsDir(store.projectRoot);
+  const { catalog } = skillsDir
+    ? listSkillCatalog(skillsDir)
+    : { catalog: { schemaVersion: SCHEMA_VERSION.skillCatalog, skills: [] } };
+  return buildSessionBrief(store, {
+    rebuild: false,
+    skills: catalog.skills.map((skill) => ({
+      skillId: skill.skillId,
+      name: skill.name,
+      description: skill.description,
+    })),
+  });
 }
 
 export async function readCurrentTask(store: LegionReader) {

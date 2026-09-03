@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LegionEngine } from "../dist/index.js";
@@ -63,6 +63,16 @@ export async function withEngine(fn, options) {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+export async function readLatestRunPrompt(dir, skillId) {
+  const runsDir = join(dir, ".legion-cli", "cache", "runs");
+  const names = (await readdir(runsDir)).filter((name) => name.startsWith(`${skillId}-`));
+  if (names.length === 0) {
+    throw new Error(`no ${skillId} run under ${runsDir}`);
+  }
+  names.sort();
+  return readFile(join(runsDir, names[names.length - 1], "prompt.md"), "utf8");
 }
 
 export async function withFakeAdapter(fn) {

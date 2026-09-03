@@ -9,6 +9,7 @@ import { LegionRefuseError } from "../dist/index.js";
 import {
   initProject,
   makeTask,
+  readLatestRunPrompt,
   seedFrozenSpec,
   seedPlanReady,
   withEngine,
@@ -504,6 +505,30 @@ test("plan spawn can emit a P0 task via fake fixture", async () => {
         const slice = await engine.listSliceTasks();
         assert.equal(slice[0].id, "TSK-0001");
         assert.equal(slice[0].priority, "P0");
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0001.md", content: taskMarkdown(p0) }],
+      },
+    );
+  });
+});
+
+test("plan prompt.md starts with SessionBrief and has no FileContract heading", async () => {
+  await withFakeAdapter(async () => {
+    const p0 = makeTask();
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
+        const readiness = await engine.plan("spec-checkin");
+        assert.equal(readiness, "CONCERNS");
+        const prompt = await readLatestRunPrompt(dir, "plan");
+        assert.ok(prompt.startsWith("## SessionBrief\nProject:"));
+        assert.match(prompt, /## SkillContract/);
+        assert.match(prompt, /plan \(active\)/);
+        assert.doesNotMatch(prompt, /^## FileContract$/m);
+        assert.ok(prompt.indexOf("## SessionBrief") < prompt.indexOf("## SkillContract"));
       },
       {
         skillsDir,
