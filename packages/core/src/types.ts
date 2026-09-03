@@ -169,6 +169,11 @@ export type IngestOpts = {
   noCommit?: boolean;
   transcript?: string;
   diff?: string;
+  distill?: boolean;
+};
+
+export type IngestResult = IngestReceipt & {
+  distillSkipped?: string;
 };
 
 export type NewTicket = {

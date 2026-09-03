@@ -38,7 +38,7 @@ const LIFECYCLE_CORE = [
 const ALWAYS_ON = [
   ["status (default)", "Where am I? What next?", "--blockers, --plain"],
   ["doctor", "Is my laptop ready?", "--metrics"],
-  ["ingest <src…>", "Teach Legion CLI from these files/links", "--transcript, --diff, --no-commit"],
+  ["ingest <src…>", "Teach Legion CLI from these files/links", "--transcript, --diff, --no-commit, --distill"],
   ["wiki trust <page>", "I have read this ingested page; treat it as real", ""],
   ["search <q>", "Search the wiki", "--mentions, --include-untrusted"],
   ["show <page>", "Open one wiki/spec/task page", ""],

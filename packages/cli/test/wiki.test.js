@@ -3,6 +3,8 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { DISTILL_SOURCE_MAX_CHARS } from "@9thlevelsoftware/legion-cli-core";
+
 import { normalize, runCli, withTempDir } from "./helpers.js";
 
 const INJECTION =
@@ -72,6 +74,7 @@ test("help --all lists ingest search show brief wiki trust as always-on operatio
   const out = normalize(result.stdout);
   assert.match(out, /Always-on operations:/);
   assert.match(out, /ingest/);
+  assert.match(out, /--distill/);
   assert.match(out, /wiki trust/);
   assert.match(out, /search/);
   assert.match(out, /^ {2}show <page>$/m);
@@ -82,4 +85,60 @@ test("help --all lists ingest search show brief wiki trust as always-on operatio
   const alwaysOn = out.slice(alwaysOnStart, boardStart);
   assert.match(alwaysOn, /index rebuild/);
   assert.doesNotMatch(alwaysOn, /assume list/);
+});
+
+test("ingest --help lists --distill", () => {
+  const result = runCli(["ingest", "--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(normalize(result.stdout), /--distill/);
+});
+
+test("ingest --distill skips when adapter is not spawnable", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    await writeFile(join(dir, "notes.md"), "# Notes\n\nDurable fact.\n", "utf8");
+    const result = runCli(["ingest", "--project", dir, "--no-commit", "--distill", "notes.md"]);
+    assert.equal(result.status, 0, result.stderr);
+    const out = normalize(result.stdout);
+    assert.match(out, /created: 1/);
+    assert.match(out, /distill: skipped \(no spawnable adapter\)/);
+  });
+});
+
+test("ingest --distill skips when source is too large", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    await writeFile(join(dir, "huge.md"), `# Huge\n\n${"a".repeat(DISTILL_SOURCE_MAX_CHARS)}\n`, "utf8");
+    const result = runCli(["ingest", "--project", dir, "--no-commit", "--distill", "huge.md"], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const out = normalize(result.stdout);
+    assert.match(out, /created: 1/);
+    assert.match(out, /distill: skipped \(source too large\)/);
+  });
+});
+
+test("ingest --distill with fake adapter keeps excerpt and prints distill ran", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    await writeFile(join(dir, "notes.md"), "# Notes\n\nDurable fact.\n", "utf8");
+    const result = runCli(["ingest", "--project", dir, "--no-commit", "--distill", "notes.md"], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const out = normalize(result.stdout);
+    assert.match(out, /created: 1/);
+    assert.match(out, /distill: ran ingest skill \(wiki pages remain untrusted\)/);
+    const shown = runCli(["show", "--project", dir, "ingested/notes.md"]);
+    assert.equal(shown.status, 0, shown.stderr);
+    assert.match(normalize(shown.stdout), /trust: untrusted/);
+    const index = runCli(["show", "--project", dir, "index"]);
+    assert.equal(index.status, 0, index.stderr);
+    assert.match(normalize(index.stdout), /trust: reviewed/);
+    assert.match(normalize(index.stdout), /Wiki index/);
+  });
 });
