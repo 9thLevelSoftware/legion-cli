@@ -32,7 +32,6 @@ import {
   trustWikiPage,
   UNTRUSTED_BEGIN,
   UNTRUSTED_END,
-  WIKI_INDEX_SEE_ALSO,
   WIKI_INDEX_STORE_PATH,
   WIKI_TOPICS_STORE_PATH,
   wrapUntrustedContent,
@@ -136,6 +135,13 @@ test("search excludes untrusted bodies unless include-untrusted", async () => {
     const titleHits = searchWiki(store.projectRoot, "Secret note");
     assert.ok(titleHits.some((hit) => hit.title === "Secret note"));
     assert.equal(titleHits.find((hit) => hit.title === "Secret note")?.snippet, "");
+
+    await writeWikiCatalog(store);
+    const stillHidden = searchWiki(store.projectRoot, "UNIQUE_UNTRUSTED_TOKEN");
+    assert.equal(stillHidden.length, 0);
+    assert.equal(stillHidden.some((hit) => hit.via === "catalog"), false);
+    const stillShown = searchWiki(store.projectRoot, "UNIQUE_UNTRUSTED_TOKEN", { includeUntrusted: true });
+    assert.ok(stillShown.some((hit) => hit.snippet.includes("UNIQUE_UNTRUSTED_TOKEN")));
   });
 });
 
@@ -584,7 +590,7 @@ test("writeWikiCatalog compiles reviewed index.md and topics.yaml from tags", as
     assert.doesNotMatch(index.body, /UNIQUE_UNTRUSTED_TOKEN/);
 
     const excerpt = await store.readWikiPage(".legion-cli/wiki/ingested/secret-note.md");
-    assert.match(excerpt.body, new RegExp(WIKI_INDEX_SEE_ALSO.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(excerpt.body, /See also: \[\[index\]\]/);
     assert.equal(excerpt.data.trust, "untrusted");
 
     const topics = TopicsFileSchema.parse(await store.readYaml(WIKI_TOPICS_STORE_PATH, TopicsFileSchema));

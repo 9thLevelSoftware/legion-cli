@@ -1,6 +1,5 @@
 export {
   WIKI_INDEX_ID,
-  WIKI_INDEX_SEE_ALSO,
   WIKI_INDEX_STORE_PATH,
   WIKI_TOPICS_STORE_PATH,
   writeWikiCatalog,

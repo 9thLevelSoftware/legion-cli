@@ -12,7 +12,6 @@ import { twoLineSummary } from "./parser.js";
 export const WIKI_INDEX_ID = "index";
 export const WIKI_INDEX_STORE_PATH = ".legion-cli/wiki/index.md";
 export const WIKI_TOPICS_STORE_PATH = ".legion-cli/wiki/topics.yaml";
-export const WIKI_INDEX_SEE_ALSO = "See also: [[index]]";
 
 type CatalogPage = WikiPageRow & { tags_json?: string };
 
@@ -29,23 +28,6 @@ function isIndexPage(page: { id: string; path: string }): boolean {
   return page.id === WIKI_INDEX_ID || path === WIKI_INDEX_STORE_PATH || path.endsWith("/wiki/index.md");
 }
 
-function isExcerptPage(page: { id: string; path: string }): boolean {
-  const path = posixPath(page.path);
-  const id = posixPath(page.id);
-  return path.includes("/wiki/ingested/") || id.startsWith("ingested/");
-}
-
-function hasIndexLink(body: string): boolean {
-  return /\[\[index(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/i.test(body);
-}
-
-function withIndexFooter(body: string): string {
-  if (hasIndexLink(body)) return body;
-  const trimmed = body.replaceAll("\r\n", "\n").replace(/\s+$/, "");
-  if (trimmed.length === 0) return `${WIKI_INDEX_SEE_ALSO}\n`;
-  return `${trimmed}\n\n${WIKI_INDEX_SEE_ALSO}\n`;
-}
-
 function pageTags(page: CatalogPage): string[] {
   try {
     const tags = JSON.parse(page.tags_json ?? "[]") as unknown;
@@ -54,15 +36,6 @@ function pageTags(page: CatalogPage): string[] {
   } catch {
     return [];
   }
-}
-
-function catalogSummary(body: string): string {
-  const stripped = body
-    .replaceAll("\r\n", "\n")
-    .split("\n")
-    .filter((line) => !/^\s*See also:\s*\[\[index/i.test(line))
-    .join("\n");
-  return twoLineSummary(stripped);
 }
 
 function loadCatalogPages(projectRoot: string): CatalogPage[] {
@@ -85,7 +58,7 @@ function renderWikiIndex(pages: readonly CatalogPage[]): string {
   ];
   for (const page of reviewed) {
     lines.push(`- [[${page.id}]] — ${page.title}`);
-    const summary = catalogSummary(page.body);
+    const summary = twoLineSummary(page.body);
     if (summary.length > 0) {
       for (const summaryLine of summary.split("\n")) {
         lines.push(`  ${summaryLine}`);
@@ -134,18 +107,41 @@ function indexFrontmatter(): WikiPage {
   };
 }
 
+function sameText(a: string, b: string): boolean {
+  return a.replaceAll("\r\n", "\n") === b.replaceAll("\r\n", "\n");
+}
+
+async function writeIndexIfChanged(store: LegionStore, body: string): Promise<void> {
+  try {
+    const existing = await store.readWikiPage(WIKI_INDEX_STORE_PATH);
+    if (
+      existing.data.title === "Wiki index" &&
+      existing.data.trust === "reviewed" &&
+      sameText(existing.body, body)
+    ) {
+      return;
+    }
+  } catch {
+    // missing or invalid; write engine catalog
+  }
+  await store.writeWikiPage(WIKI_INDEX_STORE_PATH, indexFrontmatter(), body);
+}
+
+async function writeTopicsIfChanged(store: LegionStore, topics: TopicsFile): Promise<void> {
+  try {
+    const existing = await store.readYaml(WIKI_TOPICS_STORE_PATH, TopicsFileSchema);
+    if (JSON.stringify(existing) === JSON.stringify(topics)) return;
+  } catch {
+    // missing or invalid; write engine topics
+  }
+  await store.writeYaml(WIKI_TOPICS_STORE_PATH, topics);
+}
+
 /** Engine-authored git-reviewed catalog. Persist must not import wiki or call this from rebuild(). */
 export async function writeWikiCatalog(store: LegionStore): Promise<void> {
   await ensureWikiIndex(store);
   const pages = loadCatalogPages(store.projectRoot);
-
-  for (const page of pages) {
-    if (!isExcerptPage(page) || isIndexPage(page) || hasIndexLink(page.body)) continue;
-    const doc = await store.readWikiPage(page.path);
-    await store.writeWikiPage(page.path, doc.data, withIndexFooter(doc.body));
-  }
-
-  await store.writeWikiPage(WIKI_INDEX_STORE_PATH, indexFrontmatter(), renderWikiIndex(pages));
-  await store.writeYaml(WIKI_TOPICS_STORE_PATH, topicsFromPages(pages));
+  await writeIndexIfChanged(store, renderWikiIndex(pages));
+  await writeTopicsIfChanged(store, topicsFromPages(pages));
   await store.rebuild();
 }

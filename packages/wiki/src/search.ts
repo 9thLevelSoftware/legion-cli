@@ -138,7 +138,7 @@ export function searchWiki(
     }
   }
 
-  if (hits.length === 0) {
+  if (matched.length === 0) {
     const catalog = pages.find(
       (page) =>
         page.id === "index" ||
