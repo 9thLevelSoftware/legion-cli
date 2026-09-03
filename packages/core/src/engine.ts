@@ -54,6 +54,7 @@ import {
   SsrfError,
   trustWikiPage,
   wrapUntrustedContent,
+  writeWikiCatalog,
   type GardenReport,
   type SearchHit,
 } from "@9thlevelsoftware/legion-cli-wiki";
@@ -454,6 +455,7 @@ export class LegionEngine {
         }
         throw err;
       }
+      await this.#refreshWikiCatalogLocked();
       const after = await this.#readState();
       if (after.phase !== phaseBefore) {
         await this.#writeState({ ...after, phase: phaseBefore });
@@ -474,6 +476,7 @@ export class LegionEngine {
         const message = err instanceof Error ? err.message : String(err);
         refuse(message, HINT.show);
       }
+      await this.#refreshWikiCatalogLocked();
     });
   }
 
@@ -553,6 +556,7 @@ export class LegionEngine {
             skipped: skipped.map((task) => task.id),
           });
         }
+        await this.#refreshWikiCatalogLocked();
         return { compacted, skipped };
       }, lockOpts);
     } catch (err) {
@@ -2463,6 +2467,11 @@ export class LegionEngine {
         throw err;
       }
     });
+  }
+
+  /** Persist must not import wiki; catalog is engine-authored while holding the lock. */
+  async #refreshWikiCatalogLocked(): Promise<void> {
+    await writeWikiCatalog(this.store);
   }
 
   async #applyReviewSnapshotsLocked(

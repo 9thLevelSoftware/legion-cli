@@ -23,6 +23,7 @@ import {
   SessionBriefSchema,
   SkillCatalogSchema,
   SkillContractSchema,
+  TopicsFileSchema,
   SpecSchema,
   StateFileSchema,
   TaskSchema,
@@ -92,6 +93,25 @@ test("unknown schemaVersion fail-closed", () => {
   assert.equal(spec.success, false);
 });
 
+test("TopicsFileSchema is legion-cli-topics/v1", () => {
+  const file = TopicsFileSchema.parse({
+    schemaVersion: "legion-cli-topics/v1",
+    topics: {
+      product: ["product/intent"],
+      wiki: ["index", "README"],
+    },
+  });
+  assert.equal(file.schemaVersion, "legion-cli-topics/v1");
+  assert.deepEqual(file.topics.wiki, ["index", "README"]);
+  assert.equal(
+    TopicsFileSchema.safeParse({
+      schemaVersion: "legion-cli-topics/v2",
+      topics: {},
+    }).success,
+    false,
+  );
+});
+
 test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.project, "legion-cli-project/v1");
   assert.equal(SCHEMA_VERSION.state, "legion-cli-state/v1");
@@ -109,6 +129,7 @@ test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.qa, "legion-cli-qa/v1");
   assert.equal(SCHEMA_VERSION.brief, "legion-cli-brief/v1");
   assert.equal(SCHEMA_VERSION.skillCatalog, "legion-cli-skill-catalog/v1");
+  assert.equal(SCHEMA_VERSION.topics, "legion-cli-topics/v1");
   assert.equal(SCHEMA_VERSION.designSystem, "legion-cli-design-system/v1");
   assert.equal(SCHEMA_VERSION.designActive, "legion-cli-design-active/v1");
   assert.equal(SCHEMA_VERSION.packet, "legion-cli-packet/v1");
