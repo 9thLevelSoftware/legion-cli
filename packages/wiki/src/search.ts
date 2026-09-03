@@ -7,7 +7,7 @@ export type SearchHit = {
   title: string;
   trust: "untrusted" | "reviewed";
   snippet: string;
-  via: "fts" | "neighbor" | "mentions";
+  via: "fts" | "neighbor" | "mentions" | "catalog";
 };
 
 function ftsPhrase(q: string): string {
@@ -138,7 +138,30 @@ export function searchWiki(
     }
   }
 
+  if (matched.length === 0) {
+    const catalog = pages.find(
+      (page) =>
+        page.id === "index" ||
+        page.path === ".legion-cli/wiki/index.md" ||
+        posixEndsWithWikiIndex(page.path),
+    );
+    if (catalog) {
+      hits.push({
+        id: catalog.id,
+        path: catalog.path,
+        title: catalog.title,
+        trust: catalog.trust,
+        snippet: snippetFor(catalog, includeUntrusted, query),
+        via: "catalog",
+      });
+    }
+  }
+
   return hits;
+}
+
+function posixEndsWithWikiIndex(path: string): boolean {
+  return path.replaceAll("\\", "/").endsWith("/wiki/index.md");
 }
 
 function twoLineFromBody(body: string): string {

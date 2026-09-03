@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { WIKI_PAGE_SCHEMA_VERSION } from "@9thlevelsoftware/legion-cli-persist";
+import { TopicsFileSchema } from "@9thlevelsoftware/legion-cli-schema";
 
 import {
   assembleSessionBrief,
@@ -31,7 +32,10 @@ import {
   trustWikiPage,
   UNTRUSTED_BEGIN,
   UNTRUSTED_END,
+  WIKI_INDEX_STORE_PATH,
+  WIKI_TOPICS_STORE_PATH,
   wrapUntrustedContent,
+  writeWikiCatalog,
 } from "../dist/index.js";
 import { withStore } from "./helpers.js";
 
@@ -131,6 +135,13 @@ test("search excludes untrusted bodies unless include-untrusted", async () => {
     const titleHits = searchWiki(store.projectRoot, "Secret note");
     assert.ok(titleHits.some((hit) => hit.title === "Secret note"));
     assert.equal(titleHits.find((hit) => hit.title === "Secret note")?.snippet, "");
+
+    await writeWikiCatalog(store);
+    const stillHidden = searchWiki(store.projectRoot, "UNIQUE_UNTRUSTED_TOKEN");
+    assert.equal(stillHidden.length, 0);
+    assert.equal(stillHidden.some((hit) => hit.via === "catalog"), false);
+    const stillShown = searchWiki(store.projectRoot, "UNIQUE_UNTRUSTED_TOKEN", { includeUntrusted: true });
+    assert.ok(stillShown.some((hit) => hit.snippet.includes("UNIQUE_UNTRUSTED_TOKEN")));
   });
 });
 
@@ -540,5 +551,89 @@ test("backslash wikilinks count as inbound for orphan listing", async () => {
       false,
       "[[product\\\\intent]] inbound keeps product/intent out of orphans",
     );
+  });
+});
+
+test("store ingest does not compile index.md or topics.yaml", async () => {
+  await withStore(async ({ dir, store }) => {
+    await writeFile(join(dir, "notes.md"), "# Notes\n\nDurable fact.\n", "utf8");
+    await store.ingest(["notes.md"], { noCommit: true });
+    assert.equal(await store.pathExists(WIKI_INDEX_STORE_PATH), false);
+    assert.equal(await store.pathExists(WIKI_TOPICS_STORE_PATH), false);
+  });
+});
+
+test("writeWikiCatalog compiles reviewed index.md and topics.yaml from tags", async () => {
+  await withStore(async ({ dir, store }) => {
+    await writeFile(
+      join(dir, "secret-note.md"),
+      "# Secret note\n\nUNIQUE_UNTRUSTED_TOKEN lives only in the body.\n",
+      "utf8",
+    );
+    await store.ingest(["secret-note.md"], { noCommit: true });
+    await writeWikiCatalog(store);
+
+    const index = await store.readWikiPage(WIKI_INDEX_STORE_PATH);
+    assert.equal(index.data.title, "Wiki index");
+    assert.equal(index.data.trust, "reviewed");
+    assert.deepEqual(index.data.aliases, ["catalog", "index"]);
+    assert.ok(index.data.tags.includes("wiki"));
+    assert.ok(index.data.tags.includes("catalog"));
+    assert.match(index.body, /^# Wiki index/m);
+    assert.match(index.body, /## Reviewed/);
+    assert.match(index.body, /\[\[product\/intent\]\]/);
+    assert.match(index.body, /Teammates tap/);
+    assert.match(index.body, /## Untrusted \(titles only; run legion-cli wiki trust\)/);
+    assert.match(index.body, /\[\[ingested\/secret-note\]\]/);
+    assert.match(index.body, /Secret note/);
+    assert.match(index.body, /\.legion-cli\/wiki\/ingested\/secret-note\.md/);
+    assert.doesNotMatch(index.body, /UNIQUE_UNTRUSTED_TOKEN/);
+
+    const excerpt = await store.readWikiPage(".legion-cli/wiki/ingested/secret-note.md");
+    assert.doesNotMatch(excerpt.body, /See also: \[\[index\]\]/);
+    assert.equal(excerpt.data.trust, "untrusted");
+
+    const topics = TopicsFileSchema.parse(await store.readYaml(WIKI_TOPICS_STORE_PATH, TopicsFileSchema));
+    assert.equal(topics.schemaVersion, "legion-cli-topics/v1");
+    assert.ok(topics.topics.product.includes("product/intent"));
+    assert.ok(topics.topics.wiki.includes("index"));
+    assert.ok(topics.topics.wiki.includes("README"));
+    assert.ok(topics.topics.catalog.includes("index"));
+  });
+});
+
+test("search empty query is [] and FTS miss falls back to via catalog", async () => {
+  await withStore(async ({ dir, store }) => {
+    await writeFile(join(dir, "notes.md"), "# Notes\n\nDurable fact.\n", "utf8");
+    await store.ingest(["notes.md"], { noCommit: true });
+    assert.deepEqual(searchWiki(store.projectRoot, ""), []);
+    assert.deepEqual(searchWiki(store.projectRoot, "   "), []);
+    const before = searchWiki(store.projectRoot, "xyzzy-catalog-miss-9f3a");
+    assert.equal(before.some((hit) => hit.via === "catalog"), false);
+
+    await writeWikiCatalog(store);
+    assert.deepEqual(searchWiki(store.projectRoot, ""), []);
+    const fallback = searchWiki(store.projectRoot, "xyzzy-catalog-miss-9f3a");
+    assert.equal(fallback.length, 1);
+    assert.equal(fallback[0].via, "catalog");
+    assert.equal(fallback[0].id, "index");
+    assert.equal(fallback[0].title, "Wiki index");
+    assert.equal(fallback[0].trust, "reviewed");
+    assert.notEqual(fallback[0].via, "fts");
+
+    const fts = searchWiki(store.projectRoot, "Intent");
+    assert.ok(fts.some((hit) => hit.via === "fts"));
+    assert.equal(fts.some((hit) => hit.via === "catalog"), false);
+  });
+});
+
+test("garden stays report-only and does not write the wiki catalog", async () => {
+  await withStore(async ({ store }) => {
+    assert.equal(await store.pathExists(WIKI_INDEX_STORE_PATH), false);
+    assert.equal(await store.pathExists(WIKI_TOPICS_STORE_PATH), false);
+    const report = gardenReport(store.projectRoot);
+    assert.ok(Array.isArray(report.orphans));
+    assert.equal(await store.pathExists(WIKI_INDEX_STORE_PATH), false);
+    assert.equal(await store.pathExists(WIKI_TOPICS_STORE_PATH), false);
   });
 });

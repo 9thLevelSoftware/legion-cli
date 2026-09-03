@@ -27,6 +27,7 @@ import {
   EngineLockedError,
   PersistError,
   ensureGitignore,
+  commitPaths,
   gitAdd,
   gitCommitIndex,
   gitDiffCached,
@@ -54,6 +55,9 @@ import {
   SsrfError,
   trustWikiPage,
   wrapUntrustedContent,
+  writeWikiCatalog,
+  WIKI_INDEX_STORE_PATH,
+  WIKI_TOPICS_STORE_PATH,
   type GardenReport,
   type SearchHit,
 } from "@9thlevelsoftware/legion-cli-wiki";
@@ -430,6 +434,10 @@ export class LegionEngine {
         assertIngestSourceAllowed(this.projectRoot, opts.transcript);
       }
       const phaseBefore = state.phase;
+      const autoCommit = opts?.noCommit !== true;
+      if (autoCommit && !isGitRepo(this.projectRoot)) {
+        refuse("ingest auto-commit requires a git repository", HINT.noCommit);
+      }
       let receipt: IngestReceipt;
       try {
         const materialized = await materializeIngestSources({
@@ -439,9 +447,22 @@ export class LegionEngine {
           diff: opts?.diff,
         });
         receipt = await this.store.ingest(materialized.files, {
-          noCommit: opts?.noCommit,
+          noCommit: true,
           documents: materialized.documents,
         });
+        await this.#refreshWikiCatalogLocked();
+        if (autoCommit) {
+          commitPaths(
+            this.projectRoot,
+            [
+              ...receipt.pagesCreated,
+              ...receipt.pagesUpdated,
+              WIKI_INDEX_STORE_PATH,
+              WIKI_TOPICS_STORE_PATH,
+            ],
+            `legion-cli ingest: ${receipt.id}`,
+          );
+        }
       } catch (err) {
         if (err instanceof PathEscapeError) {
           refuse("That file: URL is outside this folder", HINT.inRepo);
@@ -474,6 +495,7 @@ export class LegionEngine {
         const message = err instanceof Error ? err.message : String(err);
         refuse(message, HINT.show);
       }
+      await this.#refreshWikiCatalogLocked();
     });
   }
 
@@ -547,12 +569,12 @@ export class LegionEngine {
           compacted.push({ id: doc.data.id, title: doc.data.title });
         }
         if (compacted.length > 0) {
-          await this.store.rebuild();
           await this.#audit("context_compact", state.phase, "user", {
             compacted: compacted.map((task) => task.id),
             skipped: skipped.map((task) => task.id),
           });
         }
+        await this.#refreshWikiCatalogLocked();
         return { compacted, skipped };
       }, lockOpts);
     } catch (err) {
@@ -2463,6 +2485,11 @@ export class LegionEngine {
         throw err;
       }
     });
+  }
+
+  /** Persist must not import wiki; catalog is engine-authored while holding the lock. */
+  async #refreshWikiCatalogLocked(): Promise<void> {
+    await writeWikiCatalog(this.store);
   }
 
   async #applyReviewSnapshotsLocked(

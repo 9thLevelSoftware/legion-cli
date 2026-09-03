@@ -57,6 +57,12 @@ export const SkillCatalogSchema = z.object({
 });
 export type SkillCatalog = z.infer<typeof SkillCatalogSchema>;
 
+export const TopicsFileSchema = z.object({
+  schemaVersion: z.literal(SCHEMA_VERSION.topics),
+  topics: z.record(z.string().min(1), z.array(z.string().min(1))),
+});
+export type TopicsFile = z.infer<typeof TopicsFileSchema>;
+
 export const ProjectFileSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.project),
   name: z.string().min(1),

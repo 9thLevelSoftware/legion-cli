@@ -55,22 +55,29 @@ test("garden reports orphans, duplicates, and stale untrusted without deleting",
     const out = normalize(result.stdout);
     assert.match(out, /report only/);
     assert.match(out, /Orphans/);
-    assert.match(out, /Lonely Orphan/);
     assert.match(out, /Likely duplicates/);
     assert.match(out, /Check-in notes/);
     assert.match(out, /Stale untrusted/);
+    assert.match(out, /Lonely Orphan/);
     assert.match(out, /nothing deleted/);
 
     await access(join(dir, ".legion-cli", "wiki", "ingested", "lonely.md"));
     await access(join(dir, ".legion-cli", "wiki", "ingested", "check-in-notes.md"));
     await access(join(dir, ".legion-cli", "wiki", "ingested", "checkin-notes.md"));
+    await access(join(dir, ".legion-cli", "wiki", "index.md"));
+    await access(join(dir, ".legion-cli", "wiki", "topics.yaml"));
 
     const json = runCli(["garden", "--project", dir, "--json"]);
     assert.equal(json.status, 0, json.stderr);
     const payload = JSON.parse(json.stdout);
     assert.equal(payload.deleted, false);
-    assert.ok(payload.orphans.some((page) => page.title === "Lonely Orphan"));
-    assert.ok(payload.staleUntrusted.length >= 1);
+    assert.equal(
+      payload.orphans.some((page) => page.title === "Lonely Orphan"),
+      false,
+      "engine catalog [[wikilinks]] give ingested pages inbound links",
+    );
+    assert.ok(payload.staleUntrusted.some((page) => page.title === "Lonely Orphan"));
+    assert.ok(payload.duplicates.length >= 1);
   });
 });
 
