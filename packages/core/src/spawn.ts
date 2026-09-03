@@ -1,13 +1,15 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   AgentError,
   buildPointerPrompt,
   DEFAULT_TIMEOUT_MS,
   filterSpawnEnv,
+  findSkillsDir,
+  isRequiredSkillId,
   isResolvedAdapterSpawnable,
+  parseSkillFrontmatter,
   resolveAdapter,
   resolveAdapterId,
   stageSkill,
@@ -33,6 +35,8 @@ import {
   snapshotPaths,
   type RevertResult,
 } from "./revert.js";
+
+export { findSkillsDir };
 
 function skillMissingHint(skillId: SkillId): string {
   if (skillId === "execute") return HINT.execute;
@@ -71,34 +75,6 @@ export type OptionalSpawnResult = {
   argvSummary?: string;
 };
 
-export function findSkillsDir(from = process.cwd()): string | undefined {
-  const env = process.env.LEGION_CLI_SKILLS_DIR?.trim();
-  if (env) return env;
-  const starts = [from];
-  try {
-    starts.push(dirname(fileURLToPath(import.meta.url)));
-  } catch {
-    // ignore
-  }
-  for (const start of starts) {
-    let dir = start;
-    for (let i = 0; i < 10; i++) {
-      const candidate = join(dir, "skills");
-      if (
-        existsSync(join(candidate, "interview", "SKILL.md")) ||
-        existsSync(join(candidate, "plan", "SKILL.md")) ||
-        existsSync(join(candidate, "execute", "SKILL.md"))
-      ) {
-        return candidate;
-      }
-      const parent = dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-  }
-  return undefined;
-}
-
 export async function optionalSkillSpawn(opts: {
   projectRoot: string;
   config: LegionConfig;
@@ -133,9 +109,30 @@ export async function optionalSkillSpawn(opts: {
 
   const skillsDir = opts.skillsDir ?? findSkillsDir();
   const skillDir = skillsDir ? join(skillsDir, opts.skillId) : undefined;
-  if (!skillDir || !existsSync(join(skillDir, "SKILL.md"))) {
-    if (opts.required) {
+  const skillMd = skillDir ? join(skillDir, "SKILL.md") : undefined;
+  const required = Boolean(opts.required) || isRequiredSkillId(opts.skillId);
+  if (!skillDir || !skillMd || !existsSync(skillMd)) {
+    if (required) {
       refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
+    }
+    return { spawned: false, runId, revert: null, resolution };
+  }
+  let skillRaw: string;
+  try {
+    skillRaw = await readFile(skillMd, "utf8");
+  } catch {
+    if (required) {
+      refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
+    }
+    return { spawned: false, runId, revert: null, resolution };
+  }
+  const parsed = parseSkillFrontmatter(skillRaw, `skills/${opts.skillId}/SKILL.md`);
+  if (!parsed.ok) {
+    if (required) {
+      refuse(
+        `${opts.skillId} requires valid skills/${opts.skillId}/SKILL.md frontmatter (${parsed.reason})`,
+        skillMissingHint(opts.skillId),
+      );
     }
     return { spawned: false, runId, revert: null, resolution };
   }

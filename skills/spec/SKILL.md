@@ -1,3 +1,17 @@
+---
+name: spec
+description: >
+  Optional polish of SPEC.md and HTML wireframes after templates.
+  Activated only by `legion-cli spec` when a spawnable adapter exists. Do not load other skill bodies.
+license: UNLICENSED
+compatibility: "Legion CLI staging; not vendor auto-discovery"
+metadata:
+  legion:
+    skillId: spec
+    required: false
+    allowedRootsRef: SKILL_CONTRACTS.spec
+---
+
 # spec
 
 Optional polish of SPEC.md and HTML wireframes. Templates already produced a valid Spec.

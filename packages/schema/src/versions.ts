@@ -16,6 +16,7 @@ export const SCHEMA_VERSION = {
   run: "legion-cli-run/v1",
   qa: "legion-cli-qa/v1",
   brief: "legion-cli-brief/v1",
+  skillCatalog: "legion-cli-skill-catalog/v1",
   designSystem: "legion-cli-design-system/v1",
   designActive: "legion-cli-design-active/v1",
   packet: "legion-cli-packet/v1",

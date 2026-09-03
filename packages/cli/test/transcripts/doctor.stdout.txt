@@ -6,6 +6,9 @@ ok    pnpm (<version>)
 ok    git (<version>)
 ok    adapter.default (fake)
 ok    adapter spawnable (yes)
+ok    skill plan frontmatter (ok)
+ok    skill execute frontmatter (ok)
+ok    skill review frontmatter (ok)
 
 PATH
   legion-cli
@@ -31,6 +34,7 @@ schemaVersions
   legion-cli-run/v1
   legion-cli-qa/v1
   legion-cli-brief/v1
+  legion-cli-skill-catalog/v1
   legion-cli-design-system/v1
   legion-cli-design-active/v1
   legion-cli-packet/v1

@@ -1,3 +1,17 @@
+---
+name: discuss
+description: >
+  Optional spawn that proposes decisions for the human to accept or reject.
+  Activated only by `legion-cli discuss`. Do not load other skill bodies.
+license: UNLICENSED
+compatibility: "Legion CLI staging; not vendor auto-discovery"
+metadata:
+  legion:
+    skillId: discuss
+    required: false
+    allowedRootsRef: SKILL_CONTRACTS.discuss
+---
+
 # discuss
 
 Optional spawn that proposes decisions for the human to accept or reject.

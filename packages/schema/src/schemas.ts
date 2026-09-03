@@ -29,6 +29,34 @@ export const SkillContractSchema = z.object({
 });
 export type SkillContract = z.infer<typeof SkillContractSchema>;
 
+export const SkillCatalogEntrySchema = z.object({
+  schemaVersion: z.literal(SCHEMA_VERSION.skillCatalog).optional(),
+  skillId: SkillIdSchema,
+  name: z
+    .string()
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+    .max(64),
+  description: z.string().min(1).max(400),
+  required: z.boolean(),
+  compatibility: z.string().optional(),
+  resources: z
+    .object({
+      scripts: z.array(z.string()).default([]),
+      references: z.array(z.string()).default([]),
+      assets: z.array(z.string()).default([]),
+    })
+    .default({ scripts: [], references: [], assets: [] }),
+  bodyChars: z.number().int().min(0),
+  path: z.string().min(1),
+});
+export type SkillCatalogEntry = z.infer<typeof SkillCatalogEntrySchema>;
+
+export const SkillCatalogSchema = z.object({
+  schemaVersion: z.literal(SCHEMA_VERSION.skillCatalog),
+  skills: z.array(SkillCatalogEntrySchema),
+});
+export type SkillCatalog = z.infer<typeof SkillCatalogSchema>;
+
 export const ProjectFileSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.project),
   name: z.string().min(1),
@@ -482,6 +510,16 @@ export const SessionBriefSchema = z.object({
       pass: z.boolean(),
     })
     .nullable()
+    .optional(),
+  skills: z
+    .array(
+      z.object({
+        skillId: SkillIdSchema,
+        name: z.string(),
+        description: z.string(),
+        active: z.boolean().optional(),
+      }),
+    )
     .optional(),
   characterCount: z.number().int().min(0),
 });

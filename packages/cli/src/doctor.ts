@@ -2,11 +2,14 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   DEFAULT_GENERIC_ARGS,
+  REQUIRED_SKILL_IDS,
+  SKILL_BODY_WARN_CHARS,
   argsIncludePointer,
   extraArgsOrDefault,
   genericArgsOrDefault,
+  listSkillCatalog,
 } from "@9thlevelsoftware/legion-cli-agents";
-import { argvSummarySafe, createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
 import {
   readAuditEvents,
   summarizeAuditMetrics,
@@ -417,6 +420,54 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     }
 
     pushArgsTrustWarnings(config, warnings);
+  }
+
+  const skillsDir = findSkillsDir();
+  const catalogResult = skillsDir
+    ? listSkillCatalog(skillsDir)
+    : {
+        catalog: { schemaVersion: SCHEMA_VERSION.skillCatalog, skills: [] },
+        skipped: REQUIRED_SKILL_IDS.map((skillId) => ({
+          path: `skills/${skillId}/SKILL.md`,
+          reason: "skills dir not found",
+          required: true as const,
+        })),
+      };
+  const skippedBySkill = new Map(
+    catalogResult.skipped.map((row) => {
+      const id = row.path.replace(/^skills\//, "").replace(/\/SKILL\.md$/i, "");
+      return [id, row] as const;
+    }),
+  );
+  for (const skillId of REQUIRED_SKILL_IDS) {
+    const entry = catalogResult.catalog.skills.find((skill) => skill.skillId === skillId);
+    const skipped = skippedBySkill.get(skillId);
+    if (entry) {
+      checks.push({ ok: true, label: `skill ${skillId} frontmatter`, detail: "ok" });
+      if (entry.bodyChars > SKILL_BODY_WARN_CHARS) {
+        warnings.push(
+          `skills/${skillId}/SKILL.md body is ${entry.bodyChars} characters (warn at ${SKILL_BODY_WARN_CHARS})`,
+        );
+      }
+    } else {
+      checks.push({
+        ok: false,
+        label: `skill ${skillId} frontmatter`,
+        detail: skipped?.reason ?? "missing or invalid frontmatter",
+      });
+    }
+  }
+  for (const entry of catalogResult.catalog.skills) {
+    if ((REQUIRED_SKILL_IDS as readonly string[]).includes(entry.skillId)) continue;
+    if (entry.bodyChars > SKILL_BODY_WARN_CHARS) {
+      warnings.push(
+        `skills/${entry.skillId}/SKILL.md body is ${entry.bodyChars} characters (warn at ${SKILL_BODY_WARN_CHARS})`,
+      );
+    }
+  }
+  for (const skipped of catalogResult.skipped) {
+    if (skipped.required) continue;
+    warnings.push(`optional skill ${skipped.path}: ${skipped.reason}`);
   }
 
   const secrets: SecretHit[] = await scanWikiSecrets(engine.store.paths.wikiDir);

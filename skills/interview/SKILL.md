@@ -1,3 +1,17 @@
+---
+name: interview
+description: >
+  Optional polish of intent answers after the CLI question bank.
+  Activated only by `legion-cli intent` when a spawnable adapter exists. Do not load other skill bodies.
+license: UNLICENSED
+compatibility: "Legion CLI staging; not vendor auto-discovery"
+metadata:
+  legion:
+    skillId: interview
+    required: false
+    allowedRootsRef: SKILL_CONTRACTS.interview
+---
+
 # interview
 
 Optional polish after the CLI question bank.

@@ -53,6 +53,9 @@ importers:
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:../schema
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
 
   packages/cli:
     dependencies:

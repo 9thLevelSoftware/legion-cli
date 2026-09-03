@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-skill-catalog/v1"
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "legion-cli-skill-catalog/v1"
+          },
+          "skillId": {
+            "type": "string",
+            "enum": [
+              "interview",
+              "discuss",
+              "spec",
+              "ingest",
+              "plan",
+              "execute",
+              "verify",
+              "review",
+              "qa"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "compatibility": {
+            "type": "string"
+          },
+          "resources": {
+            "default": {
+              "scripts": [],
+              "references": [],
+              "assets": []
+            },
+            "type": "object",
+            "properties": {
+              "scripts": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "references": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "assets": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "bodyChars": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "skillId",
+          "name",
+          "description",
+          "required",
+          "bodyChars",
+          "path"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "skills"
+  ]
+}

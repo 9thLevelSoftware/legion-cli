@@ -1,5 +1,6 @@
 import {
   isResolvedAdapterSpawnable,
+  parseSkillFrontmatter,
   resolveAdapterId,
   type FakeArtifact,
 } from "@9thlevelsoftware/legion-cli-agents";
@@ -1636,9 +1637,20 @@ export class LegionEngine {
       refuse(spawnableAdapterRefuseMessage(skillId, resolution), HINT.doctor);
     }
     const skillsDir = this.#skillsDir ?? findSkillsDir();
-    if (!skillsDir || !existsSync(join(skillsDir, skillId, "SKILL.md"))) {
-      const hint = skillId === "execute" ? HINT.execute : skillId === "review" ? HINT.review : HINT.plan;
+    const hint = skillId === "execute" ? HINT.execute : skillId === "review" ? HINT.review : HINT.plan;
+    const skillMd = skillsDir ? join(skillsDir, skillId, "SKILL.md") : undefined;
+    if (!skillsDir || !skillMd || !existsSync(skillMd)) {
       refuse(`${skillId} requires skills/${skillId}/SKILL.md`, hint);
+    }
+    let raw: string;
+    try {
+      raw = await readFile(skillMd, "utf8");
+    } catch {
+      refuse(`${skillId} requires skills/${skillId}/SKILL.md`, hint);
+    }
+    const parsed = parseSkillFrontmatter(raw, `skills/${skillId}/SKILL.md`);
+    if (!parsed.ok) {
+      refuse(`${skillId} requires valid skills/${skillId}/SKILL.md frontmatter (${parsed.reason})`, hint);
     }
   }
 
