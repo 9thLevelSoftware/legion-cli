@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Command, CommanderError } from "commander";
+import { Command, CommanderError, Help } from "commander";
 import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
 import { DesignSystemError } from "@9thlevelsoftware/legion-cli-design-system";
 import { ADAPTER_ID_HELP } from "@9thlevelsoftware/legion-cli-schema";
@@ -13,7 +13,7 @@ import { runDiscuss } from "./discuss.js";
 import { runDoctor } from "./doctor.js";
 import { runExecute } from "./execute.js";
 import { runFix } from "./fix.js";
-import { printHelpAll } from "./help-all.js";
+import { formatHelpLayer1, printHelpAll, printHelpLayer1 } from "./help-all.js";
 import { runIngest } from "./ingest.js";
 import { runInit } from "./init.js";
 import { runIntent } from "./intent.js";
@@ -63,6 +63,8 @@ function printUnknownCommand(name: string): void {
   writeErr(`unknown command '${name}'\n(run legion-cli help --all)`);
 }
 
+const builtinHelp = new Help();
+
 export function createProgram(): Command {
   const program = new Command();
   addGlobalOptions(program);
@@ -77,6 +79,10 @@ export function createProgram(): Command {
     .showHelpAfterError(false)
     .exitOverride()
     .allowExcessArguments(true)
+    .configureHelp({
+      formatHelp: (cmd, helper) =>
+        cmd.parent == null ? formatHelpLayer1() : builtinHelp.formatHelp(cmd, helper),
+    })
     .configureOutput({
       outputError: (str, write) => {
         const match = /unknown command '([^']+)'/.exec(str);
@@ -526,7 +532,7 @@ export function createProgram(): Command {
     .command("help")
     .description("Commands")
     .argument("[command]", "command to show help for")
-    .option("--all", "show the full v0 command surface")
+    .option("--all", "show the full command surface")
     .action((command: string | undefined, opts: { all?: boolean }) => {
       if (opts.all) {
         printHelpAll();
@@ -542,7 +548,7 @@ export function createProgram(): Command {
         sub.outputHelp();
         return;
       }
-      program.outputHelp();
+      printHelpLayer1();
     });
 
   return program;

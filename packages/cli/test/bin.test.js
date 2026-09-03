@@ -13,48 +13,75 @@ test("registers bin legion-cli only", () => {
   assert.deepEqual(Object.keys(pkg.bin), ["legion-cli"]);
 });
 
-test("help mentions pnpm exec legion-cli and does not take bin legion", () => {
-  const result = runCli(["help"]);
-  assert.equal(result.status, 0, result.stderr);
-  const out = normalize(result.stdout);
+function assertLayer1(out) {
   assert.match(out, /pnpm exec legion-cli/);
   assert.match(out, /status/);
   assert.match(out, /init/);
   assert.match(out, /doctor/);
   assert.match(out, /Does not register bin legion/);
+  assert.match(out, /intent/);
+  assert.match(out, /help --all/);
+  assert.doesNotMatch(out, /\bsearch\b/);
+  assert.doesNotMatch(out, /\bbrief\b/);
+  assert.doesNotMatch(out, /wiki trust/);
+  assert.doesNotMatch(out, /\bshow\b/);
+}
+
+test("help mentions pnpm exec legion-cli and does not take bin legion", () => {
+  const result = runCli(["help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assertLayer1(normalize(result.stdout));
 });
 
-test("help --all lists the v0 command surface", () => {
+test("--help prints Layer 1 and omits search/brief/wiki trust/show", () => {
+  const result = runCli(["--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assertLayer1(normalize(result.stdout));
+});
+
+test("help --all lists the grouped command surface", () => {
   const result = runCli(["help", "--all"]);
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
-  assert.match(out, /Available now:/);
-  assert.match(out, /Full v0 command surface:/);
-  assert.match(out, /legion-cli intent/);
-  assert.match(out, /legion-cli plan/);
-  assert.match(out, /legion-cli next/);
-  assert.match(out, /legion-cli ticket create/);
-  assert.match(out, /legion-cli task amend/);
-  assert.match(out, /legion-cli dashboard/);
+  assert.match(out, /Lifecycle core:/);
+  assert.match(out, /Always-on operations:/);
+  assert.match(out, /Board extras:/);
+  assert.match(out, /Shipped adjacent/);
+  assert.doesNotMatch(out, /Available now:/);
+  assert.doesNotMatch(out, /Full v0 command surface:/);
+  assert.match(out, /^ {2}intent$/m);
+  assert.match(out, /^ {2}plan$/m);
+  assert.match(out, /^ {2}next$/m);
+  assert.match(out, /ticket create/);
+  assert.match(out, /task amend/);
+  assert.match(out, /^ {2}dashboard$/m);
   assert.match(out, /packet new/);
   assert.match(out, /packet respond/);
-  assert.match(out, /legion-cli verify/);
-  assert.match(out, /legion-cli review/);
-  assert.match(out, /legion-cli qa/);
-  assert.match(out, /legion-cli fix/);
-  assert.match(out, /legion-cli ship/);
-  assert.match(out, /legion-cli abandon/);
+  assert.match(out, /verify/);
+  assert.match(out, /^ {2}review$/m);
+  assert.match(out, /^ {2}qa$/m);
+  assert.match(out, /fix/);
+  assert.match(out, /^ {2}ship$/m);
+  assert.match(out, /abandon/);
   assert.match(out, /pnpm exec legion-cli/);
   assert.match(out, /--metrics/);
+  assert.match(out, /spec show/);
+  assert.match(out, /spec approve/);
+  assert.match(out, /spec new/);
+  assert.match(out, /qa checklist/);
+  assert.doesNotMatch(out, /assume list/);
+  assert.doesNotMatch(out, /assume answer/);
+  assert.doesNotMatch(out, /index rebuild/);
 });
 
-test("help --all lists dashboard as available now", () => {
+test("help --all lists dashboard as shipped adjacent", () => {
   const result = runCli(["help", "--all"]);
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
-  assert.match(out, /Available now:/);
+  assert.match(out, /Shipped adjacent/);
   assert.match(out, /dashboard/);
   assert.match(out, /--no-open, --port, --expose/);
+  assert.equal([...out.matchAll(/^ {2}dashboard$/gm)].length, 1);
 });
 
 test("mcp is a read-only stdio command", () => {
@@ -64,5 +91,5 @@ test("mcp is a read-only stdio command", () => {
   assert.match(out, /read-only/i);
   assert.match(out, /stdio/i);
   const all = runCli(["help", "--all"]);
-  assert.match(normalize(all.stdout), /Available now:[\s\S]*\bmcp\b/);
+  assert.match(normalize(all.stdout), /Shipped adjacent[\s\S]*\bmcp\b/);
 });

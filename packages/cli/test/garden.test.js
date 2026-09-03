@@ -152,10 +152,10 @@ test("help --all lists garden and context compact", () => {
   const result = runCli(["help", "--all"]);
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
-  assert.match(out, /Available now:/);
+  assert.match(out, /Shipped adjacent/);
   assert.match(out, /garden/);
   assert.match(out, /context compact/);
-  assert.match(out, /v1 commands:/);
+  assert.doesNotMatch(out, /v1 commands:/);
 });
 
 test("context compact refuses until init", async () => {
