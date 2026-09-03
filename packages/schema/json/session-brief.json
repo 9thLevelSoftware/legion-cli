@@ -278,6 +278,42 @@
         }
       ]
     },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "skillId": {
+            "type": "string",
+            "enum": [
+              "interview",
+              "discuss",
+              "spec",
+              "ingest",
+              "plan",
+              "execute",
+              "verify",
+              "review",
+              "qa"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "skillId",
+          "name",
+          "description"
+        ]
+      }
+    },
     "characterCount": {
       "type": "integer",
       "minimum": 0,

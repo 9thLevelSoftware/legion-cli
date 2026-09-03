@@ -21,6 +21,7 @@ import {
   ResumeFileSchema,
   SCHEMA_VERSION,
   SessionBriefSchema,
+  SkillCatalogSchema,
   SkillContractSchema,
   SpecSchema,
   StateFileSchema,
@@ -107,6 +108,7 @@ test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.run, "legion-cli-run/v1");
   assert.equal(SCHEMA_VERSION.qa, "legion-cli-qa/v1");
   assert.equal(SCHEMA_VERSION.brief, "legion-cli-brief/v1");
+  assert.equal(SCHEMA_VERSION.skillCatalog, "legion-cli-skill-catalog/v1");
   assert.equal(SCHEMA_VERSION.designSystem, "legion-cli-design-system/v1");
   assert.equal(SCHEMA_VERSION.designActive, "legion-cli-design-active/v1");
   assert.equal(SCHEMA_VERSION.packet, "legion-cli-packet/v1");
@@ -611,6 +613,62 @@ test("adapter routing: generic-if-routed, strict HTTP keys, named keys, optional
       currentTask: { ...brief.currentTask, adapter: "grok" },
     }).currentTask.adapter,
     "grok",
+  );
+  assert.equal(SessionBriefSchema.parse(brief).skills, undefined);
+  assert.equal(
+    SessionBriefSchema.parse({
+      ...brief,
+      skills: [
+        {
+          skillId: "execute",
+          name: "execute",
+          description: "Write product code. Activated only by legion-cli execute.",
+          active: true,
+        },
+      ],
+    }).skills[0].skillId,
+    "execute",
+  );
+});
+
+test("SkillCatalogSchema is legion-cli-skill-catalog/v1", () => {
+  const catalog = SkillCatalogSchema.parse({
+    schemaVersion: "legion-cli-skill-catalog/v1",
+    skills: [
+      {
+        skillId: "execute",
+        name: "execute",
+        description: "Write product code. Activated only by legion-cli execute.",
+        required: true,
+        bodyChars: 12,
+        path: "skills/execute/SKILL.md",
+      },
+    ],
+  });
+  assert.equal(catalog.schemaVersion, "legion-cli-skill-catalog/v1");
+  assert.deepEqual(catalog.skills[0].resources, { scripts: [], references: [], assets: [] });
+  assert.equal(
+    SkillCatalogSchema.safeParse({
+      schemaVersion: "legion-cli-skill-catalog/v2",
+      skills: [],
+    }).success,
+    false,
+  );
+  assert.equal(
+    SkillCatalogSchema.safeParse({
+      schemaVersion: "legion-cli-skill-catalog/v1",
+      skills: [
+        {
+          skillId: "execute",
+          name: "Execute",
+          description: "bad name",
+          required: true,
+          bodyChars: 0,
+          path: "skills/execute/SKILL.md",
+        },
+      ],
+    }).success,
+    false,
   );
 });
 

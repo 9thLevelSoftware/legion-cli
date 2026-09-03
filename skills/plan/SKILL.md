@@ -1,3 +1,17 @@
+---
+name: plan
+description: >
+  Break a frozen spec into a task board with FileContracts.
+  Activated only by `legion-cli plan`. Do not load other skill bodies.
+license: UNLICENSED
+compatibility: "Legion CLI staging; not vendor auto-discovery"
+metadata:
+  legion:
+    skillId: plan
+    required: true
+    allowedRootsRef: SKILL_CONTRACTS.plan
+---
+
 # plan
 
 Emit a task board with file contracts. Plan is required: Legion CLI refuses if no spawnable adapter is configured.

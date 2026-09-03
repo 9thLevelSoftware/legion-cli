@@ -1,3 +1,17 @@
+---
+name: review
+description: >
+  Spec-level review of a terminal slice; new task ids FAIL the review.
+  Activated only by `legion-cli review`. Do not load other skill bodies.
+license: UNLICENSED
+compatibility: "Legion CLI staging; not vendor auto-discovery"
+metadata:
+  legion:
+    skillId: review
+    required: true
+    allowedRootsRef: SKILL_CONTRACTS.review
+---
+
 # review
 
 Spec-level review of a terminal slice (every task `done` or `blocked`). Required: Legion CLI refuses if no spawnable adapter is configured.

@@ -14,6 +14,19 @@ export {
 } from "./argv.js";
 export { AdapterConfigError, AdapterNotEnabled, AgentError } from "./errors.js";
 export { filterSpawnEnv } from "./env.js";
+export {
+  REQUIRED_SKILL_IDS,
+  SKILL_BODY_WARN_CHARS,
+  SKILL_DESCRIPTION_MAX_CHARS,
+  SKILL_LEVEL1_LINE_MAX_CHARS,
+  findSkillsDir,
+  isRequiredSkillId,
+  listLevel3Resources,
+  listSkillCatalog,
+  parseSkillFrontmatter,
+  renderSkillCatalog,
+} from "./catalog.js";
+export type { ParsedSkill, SkillResourceKind } from "./catalog.js";
 export { buildPointerPrompt } from "./pointer.js";
 export { runCachePaths, writeRunPrompt } from "./paths.js";
 export { stageSkill } from "./stage.js";

@@ -1,3 +1,17 @@
+---
+name: verify
+description: >
+  Optional walkthrough notes; not a ship gate.
+  Activated only by `legion-cli verify`. Do not load other skill bodies.
+license: UNLICENSED
+compatibility: "Legion CLI staging; not vendor auto-discovery"
+metadata:
+  legion:
+    skillId: verify
+    required: false
+    allowedRootsRef: SKILL_CONTRACTS.verify
+---
+
 # verify
 
 Optional walkthrough notes. Verify is not a ship gate. In-process `verificationCommands` after execute already marked tasks `done`.

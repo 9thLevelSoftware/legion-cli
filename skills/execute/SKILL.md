@@ -1,6 +1,22 @@
+---
+name: execute
+description: >
+  Write product code for one ready Legion CLI task under FileContract.
+  Activated only by `legion-cli execute`. Do not load other skill bodies.
+license: UNLICENSED
+compatibility: "Legion CLI staging; not vendor auto-discovery"
+metadata:
+  legion:
+    skillId: execute
+    required: true
+    allowedRootsRef: SKILL_CONTRACTS.execute
+---
+
 # execute
 
 Write product code for one ready task. Execute is required: Legion CLI refuses if no spawnable adapter is configured.
+
+Level 3 files only as named; do not load other skills.
 
 This is after-the-fact policy, not OS isolation. The engine reverts extras vs FileContract after wait(). Do not claim a sandbox.
 
