@@ -21,6 +21,20 @@ test("stageSkill copies the skill tree and does not symlink", async () => {
   });
 });
 
+test("stageSkill recursively copies L3 dirs and stray files", async () => {
+  await withTempDir(async (dir) => {
+    const skillDir = join(dir, "skills", "execute");
+    await writeSkill(skillDir, "# execute\n");
+    await mkdir(join(skillDir, "references"), { recursive: true });
+    await writeFile(join(skillDir, "references", "foo.md"), "UNIQUE_L3_FOO_BODY_TOKEN\n", "utf8");
+    await writeFile(join(skillDir, "README.md"), "stray readme\n", "utf8");
+    const dest = await stageSkill({ projectRoot: dir, runId: "run-l3", skillDir });
+    assert.equal(await readFile(join(dest, "references", "foo.md"), "utf8"), "UNIQUE_L3_FOO_BODY_TOKEN\n");
+    assert.equal(await readFile(join(dest, "README.md"), "utf8"), "stray readme\n");
+    assert.equal(await readFile(join(dest, "SKILL.md"), "utf8"), "# execute\n");
+  });
+});
+
 test("stageSkill copies craft/*.md into the staged tree", async () => {
   await withTempDir(async (dir) => {
     const skillDir = join(dir, "skills", "execute");
