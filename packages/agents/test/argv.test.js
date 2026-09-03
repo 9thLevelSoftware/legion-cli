@@ -67,7 +67,10 @@ test("pointer prompt includes run/skill paths and forbids git commit", () => {
   assert.match(prompt, /skill=review/);
   assert.match(prompt, /\.legion-cli\/cache\/runs\/abc\/prompt\.md/);
   assert.match(prompt, /\.legion-cli\/cache\/skills\/abc\/SKILL\.md/);
-  assert.match(prompt, /BEGIN SHERPA UNTRUSTED CONTENT/);
+  assert.doesNotMatch(prompt, /SHERPA/);
+  assert.match(prompt, /BEGIN LEGION CLI UNTRUSTED CONTENT/);
+  assert.match(prompt, /do not load their bodies/);
+  assert.match(prompt, /Do not run legion-cli/);
   assert.match(prompt, /Do not `git add` or `git commit`/);
   assert.match(prompt, /\.legion-cli\/cache\/runs\/abc\/summary\.md/);
 });

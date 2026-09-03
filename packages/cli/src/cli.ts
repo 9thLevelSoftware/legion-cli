@@ -13,7 +13,7 @@ import { runDiscuss } from "./discuss.js";
 import { runDoctor } from "./doctor.js";
 import { runExecute } from "./execute.js";
 import { runFix } from "./fix.js";
-import { printHelpAll } from "./help-all.js";
+import { printHelpAll, printHelpLayer1 } from "./help-all.js";
 import { runIngest } from "./ingest.js";
 import { runInit } from "./init.js";
 import { runIntent } from "./intent.js";
@@ -526,7 +526,7 @@ export function createProgram(): Command {
     .command("help")
     .description("Commands")
     .argument("[command]", "command to show help for")
-    .option("--all", "show the full v0 command surface")
+    .option("--all", "show the full command surface")
     .action((command: string | undefined, opts: { all?: boolean }) => {
       if (opts.all) {
         printHelpAll();
@@ -542,7 +542,7 @@ export function createProgram(): Command {
         sub.outputHelp();
         return;
       }
-      program.outputHelp();
+      printHelpLayer1();
     });
 
   return program;

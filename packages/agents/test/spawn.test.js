@@ -278,7 +278,7 @@ test("windows .cmd shim receives the full multiline pointer", { skip: process.pl
     assert.equal(argv.at(-1), pointer);
     assert.match(argv.at(-1), /Do not `git add` or `git commit`/);
     assert.match(argv.at(-1), /\n/);
-    assert.match(argv.at(-1), /BEGIN SHERPA UNTRUSTED CONTENT/);
+    assert.match(argv.at(-1), /BEGIN LEGION CLI UNTRUSTED CONTENT/);
   });
 });
 

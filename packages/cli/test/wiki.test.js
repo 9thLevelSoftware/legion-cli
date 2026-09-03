@@ -66,11 +66,11 @@ test("search omits untrusted bodies; brief omits injection; wiki trust then show
   });
 });
 
-test("help --all lists ingest search show brief wiki trust as available", () => {
+test("help --all lists ingest search show brief wiki trust as always-on operations", () => {
   const result = runCli(["help", "--all"]);
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
-  assert.match(out, /Available now:/);
+  assert.match(out, /Always-on operations:/);
   assert.match(out, /ingest/);
   assert.match(out, /wiki trust/);
   assert.match(out, /search/);
