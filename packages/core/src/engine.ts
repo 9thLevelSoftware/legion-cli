@@ -1420,6 +1420,13 @@ export class LegionEngine {
       assertCanTransition(state.phase, "executing");
     }
 
+    await this.#transitionTaskTo(task.id, "in_progress");
+    await this.#writeState({
+      ...(await this.#readState()),
+      phase: "executing",
+      currentTaskId: task.id,
+    });
+
     const extraAllowed = [...task.contract.filesAllowed, ...task.contract.expectedArtifacts];
     const promptBody = [
       `Task: ${task.id} ${task.title}`,

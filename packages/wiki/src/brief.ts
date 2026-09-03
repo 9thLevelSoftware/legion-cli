@@ -224,7 +224,12 @@ export function assembleSessionBrief(input: {
     skills = skills.map((skill) => ({ ...skill, description: "" }));
     rendered = render();
   }
-  if (rendered.length > SESSION_BRIEF_CHAR_CAP && skills && skills.length > 0) {
+  if (
+    rendered.length > SESSION_BRIEF_CHAR_CAP &&
+    skills &&
+    skills.length > 0 &&
+    skills.some((skill) => skill.active === true)
+  ) {
     skills = skills.filter((skill) => skill.active === true);
     rendered = render();
   }

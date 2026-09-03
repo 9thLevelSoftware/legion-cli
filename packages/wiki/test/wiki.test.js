@@ -347,6 +347,34 @@ test("pathological FileContract may exceed the cap but is never sliced", () => {
   assert.match(rendered, /Last QA: total 85 pass=true/);
 });
 
+test("overflow without an active skill keeps the description-stripped catalog", () => {
+  const filesAllowed = [
+    ...Array.from({ length: 400 }, (_, i) => `src/file-${String(i).padStart(4, "0")}-${"x".repeat(60)}.ts`),
+    CONTRACT_TAIL,
+  ];
+  const brief = assembleSessionBrief({
+    project: { name: "Checkin", mode: "greenfield", controlMode: "guarded" },
+    phase: "executing",
+    blockers: [],
+    decisions: [],
+    wiki: [],
+    contract: overflowContract(filesAllowed),
+    lastQa: { total: 85, pass: true },
+    skills: overflowSkills(),
+  });
+  const rendered = renderSessionBrief(brief);
+  assert.ok(brief.characterCount > SESSION_BRIEF_CHAR_CAP);
+  assert.ok(brief.skills && brief.skills.length > 1);
+  assert.equal(brief.skills.every((skill) => skill.description === ""), true);
+  assert.equal(
+    brief.skills.some((skill) => skill.active === true),
+    false,
+  );
+  assert.match(rendered, /^- execute$/m);
+  assert.match(rendered, /^- plan$/m);
+  assert.match(rendered, new RegExp(CONTRACT_TAIL));
+});
+
 test("show and wiki trust round-trip a page", async () => {
   await withStore(async ({ store }) => {
     const shown = await showPage(store, "product/intent");

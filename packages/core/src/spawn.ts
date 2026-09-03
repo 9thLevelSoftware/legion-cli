@@ -97,6 +97,7 @@ function renderFileContractSection(contract: FileContract): string[] {
     ...contract.verificationCommands.map((cmd) => `- ${cmd}`),
     "filesForbidden:",
     ...contract.filesForbidden.map((path) => `- ${path}`),
+    `maxFilesTouched: ${contract.maxFilesTouched}`,
   ];
 }
 

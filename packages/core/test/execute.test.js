@@ -507,6 +507,7 @@ test("execute prompt.md starts with SessionBrief and FileContract after SkillCon
       assert.match(prompt, /Skills:/);
       assert.match(prompt, /execute \(active\)/);
       assert.match(prompt, /Task: TSK-0001 in\/out button/);
+      assert.match(prompt, /maxFilesTouched: 20/);
       const skillIdx = prompt.indexOf("## skill");
       if (skillIdx !== -1) {
         assert.equal(prompt.slice(skillIdx).includes("## FileContract"), false);
@@ -560,7 +561,59 @@ test("optionalSkillSpawn omits SessionBrief body without store and still renders
       assert.match(prompt, /## FileContract/);
       assert.match(prompt, /Task: TSK-0001 narrative only/);
       assert.match(prompt, /filesAllowed:\n- src\/main\.ts/);
+      assert.match(prompt, /maxFilesTouched: 20/);
       assert.ok(prompt.indexOf("## FileContract") > prompt.indexOf("## SkillContract"));
+    });
+  });
+});
+
+test("until-blocked SessionBrief FileContract matches the spawned task, not the previous one", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      const verify = [passingVerificationCommand()];
+      await seedExecute(store, {
+        verify,
+        extraTasks: [
+          makeTask({
+            id: "TSK-0002",
+            title: "board view",
+            status: "todo",
+            blockedBy: ["TSK-0001"],
+            contract: {
+              filesAllowed: ["src/board.ts"],
+              expectedArtifacts: ["src/board.ts"],
+              verificationCommands: verify,
+            },
+          }),
+        ],
+      });
+      const result = await engine.execute("auto", { untilBlocked: true });
+      assert.equal(result.status, "done");
+      assert.deepEqual(
+        result.tasks.map((item) => item.taskId),
+        ["TSK-0001", "TSK-0002"],
+      );
+      const first = await readFile(
+        join(dir, ".legion-cli", "cache", "runs", result.tasks[0].runId, "prompt.md"),
+        "utf8",
+      );
+      const second = await readFile(
+        join(dir, ".legion-cli", "cache", "runs", result.tasks[1].runId, "prompt.md"),
+        "utf8",
+      );
+      const firstBrief = first.slice(0, first.indexOf("## Active skill"));
+      const secondBrief = second.slice(0, second.indexOf("## Active skill"));
+      assert.match(firstBrief, /Phase: executing/);
+      assert.match(firstBrief, /Current task: TSK-0001 in\/out button/);
+      assert.match(firstBrief, /filesAllowed: src\/main\.ts/);
+      assert.doesNotMatch(firstBrief, /src\/board\.ts/);
+      assert.match(secondBrief, /Phase: executing/);
+      assert.match(secondBrief, /Current task: TSK-0002 board view/);
+      assert.match(secondBrief, /filesAllowed: src\/board\.ts/);
+      assert.doesNotMatch(secondBrief, /src\/main\.ts/);
+      assert.match(second, /## FileContract\nfilesAllowed:\n- src\/board\.ts/);
+      assert.match(second, /maxFilesTouched: 20/);
     });
   });
 });
