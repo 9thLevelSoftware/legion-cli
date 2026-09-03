@@ -8,7 +8,7 @@ export {
   skillContract,
 } from "./contracts.js";
 export { COMPACT_AUDIT_POINTER, compactTaskBody, outcomeFromTask } from "./compact.js";
-export { createLegionEngine, LegionEngine } from "./engine.js";
+export { createLegionEngine, DISTILL_SOURCE_MAX_CHARS, LegionEngine } from "./engine.js";
 export {
   assertIngestSourceAllowed,
   isGithubSource,
@@ -89,6 +89,7 @@ export type {
   GardenReport,
   IngestOpts,
   IngestReceipt,
+  IngestResult,
   IngestSource,
   InitOptions,
   IntentState,

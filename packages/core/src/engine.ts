@@ -41,9 +41,11 @@ import {
   shipReceiptBody,
   shipReceiptPath,
   toFsPath,
+  wikiIdFromStorePath,
   WIKI_PAGE_SCHEMA_VERSION,
   writeTextFile,
   type LegionStore,
+  type WikiPage,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   buildSessionBrief,
@@ -59,6 +61,7 @@ import {
   WIKI_INDEX_STORE_PATH,
   WIKI_TOPICS_STORE_PATH,
   type GardenReport,
+  type MaterializedIngest,
   type SearchHit,
 } from "@9thlevelsoftware/legion-cli-wiki";
 import {
@@ -139,6 +142,7 @@ import type {
   ExecuteOptions,
   ExecuteResult,
   IngestOpts,
+  IngestResult,
   ExecuteTaskResult,
   InitOptions,
   IntentState,
@@ -164,8 +168,53 @@ import {
   uniqueScreenPages,
 } from "./wireframes.js";
 
+/** Distill spawn is skipped when materialized source exceeds this many characters (64 KiB). */
+export const DISTILL_SOURCE_MAX_CHARS = 64 * 1024;
+
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function isEngineWikiCatalogPath(storePath: string): boolean {
+  const posix = storePath.replaceAll("\\", "/");
+  return posix === WIKI_INDEX_STORE_PATH || posix === WIKI_TOPICS_STORE_PATH;
+}
+
+async function listWikiStorePaths(wikiDir: string): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (rel: string): Promise<void> => {
+    const abs = rel ? join(wikiDir, ...rel.split("/")) : wikiDir;
+    let entries;
+    try {
+      entries = await readdir(abs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const posix = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) await walk(posix.replaceAll("\\", "/"));
+      else if (entry.isFile()) out.push(`.legion-cli/wiki/${posix.replaceAll("\\", "/")}`);
+    }
+  };
+  await walk("");
+  return out;
+}
+
+async function snapshotWikiRaw(projectRoot: string, wikiDir: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const path of await listWikiStorePaths(wikiDir)) {
+    try {
+      out.set(path, await readFile(toFsPath(projectRoot, path), "utf8"));
+    } catch {
+      // missing between list and read
+    }
+  }
+  return out;
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 function stateBody(state: StateFile): string {
@@ -418,7 +467,7 @@ export class LegionEngine {
     });
   }
 
-  async ingest(sources: string[], opts?: IngestOpts): Promise<IngestReceipt> {
+  async ingest(sources: string[], opts?: IngestOpts): Promise<IngestResult> {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
@@ -439,6 +488,9 @@ export class LegionEngine {
         refuse("ingest auto-commit requires a git repository", HINT.noCommit);
       }
       let receipt: IngestReceipt;
+      let distillSkipped: string | undefined;
+      let distillRan = false;
+      let extraWikiPaths: string[] = [];
       try {
         const materialized = await materializeIngestSources({
           projectRoot: this.projectRoot,
@@ -450,15 +502,24 @@ export class LegionEngine {
           noCommit: true,
           documents: materialized.documents,
         });
+        if (opts?.distill) {
+          const distill = await this.#maybeDistillLocked(receipt, materialized);
+          distillSkipped = distill.skipped;
+          extraWikiPaths = distill.extraWikiPaths;
+          distillRan = Boolean(distill.ran);
+        }
         await this.#refreshWikiCatalogLocked();
         if (autoCommit) {
           commitPaths(
             this.projectRoot,
             [
-              ...receipt.pagesCreated,
-              ...receipt.pagesUpdated,
-              WIKI_INDEX_STORE_PATH,
-              WIKI_TOPICS_STORE_PATH,
+              ...new Set([
+                ...receipt.pagesCreated,
+                ...receipt.pagesUpdated,
+                ...extraWikiPaths,
+                WIKI_INDEX_STORE_PATH,
+                WIKI_TOPICS_STORE_PATH,
+              ]),
             ],
             `legion-cli ingest: ${receipt.id}`,
           );
@@ -479,7 +540,11 @@ export class LegionEngine {
       if (after.phase !== phaseBefore) {
         await this.#writeState({ ...after, phase: phaseBefore });
       }
-      return receipt;
+      return {
+        ...receipt,
+        ...(distillSkipped ? { distillSkipped } : {}),
+        ...(distillRan ? { distillRan: true } : {}),
+      };
     });
   }
 
@@ -2550,6 +2615,155 @@ export class LegionEngine {
   /** Persist must not import wiki; catalog is engine-authored while holding the lock. */
   async #refreshWikiCatalogLocked(): Promise<void> {
     await writeWikiCatalog(this.store);
+  }
+
+  async #maybeDistillLocked(
+    receipt: IngestReceipt,
+    materialized: MaterializedIngest,
+  ): Promise<{ skipped?: string; extraWikiPaths: string[]; ran?: boolean }> {
+    let config: LegionConfig;
+    try {
+      config = await this.#readConfig();
+    } catch {
+      return { skipped: "no spawnable adapter", extraWikiPaths: [] };
+    }
+    const resolution = resolveAdapterId({ config, skillId: "ingest" });
+    if (!(await isResolvedAdapterSpawnable(config, resolution.id))) {
+      return { skipped: "no spawnable adapter", extraWikiPaths: [] };
+    }
+
+    const source = await this.#collectDistillSource(receipt, materialized);
+    if (source.chars > DISTILL_SOURCE_MAX_CHARS) {
+      return { skipped: "source too large", extraWikiPaths: [] };
+    }
+    if (source.chars === 0) {
+      return { skipped: "no source", extraWikiPaths: [] };
+    }
+
+    const wikiBefore = await snapshotWikiRaw(this.projectRoot, this.store.paths.wikiDir);
+    const result = await optionalSkillSpawn({
+      projectRoot: this.projectRoot,
+      config,
+      skillId: "ingest",
+      promptBody: [
+        "Distill the untrusted source below into compiled wiki notes under .legion-cli/wiki/.",
+        "Do not set trust: reviewed. Do not overwrite .legion-cli/wiki/index.md or .legion-cli/wiki/topics.yaml.",
+        "The engine clamps trust and overwrites the catalog after wait().",
+        "Link existing catalog titles. Do not write product code (src/**).",
+        "",
+        source.wrapped.trimEnd(),
+      ].join("\n"),
+      skillsDir: this.#skillsDir,
+      store: this.store,
+      fakeArtifacts: this.#fakeArtifacts,
+      throwAfterWrite: this.#fakeThrowAfterWrite,
+      timedOut: this.#fakeTimedOut,
+      required: false,
+    });
+    if (!result.spawned) {
+      return { skipped: "skill unavailable", extraWikiPaths: [] };
+    }
+    if (result.revert?.incident) {
+      refuse("inspect .git — spawn touched .git/", HINT.inRepo);
+    }
+    const extraWikiPaths = await this.#clampSpawnWrittenWikiPages(wikiBefore);
+    // Spawn writes are on disk but not yet in sqlite; catalog reads the index.
+    await this.store.rebuild();
+    if (result.timedOut) {
+      return { skipped: "timed out", extraWikiPaths };
+    }
+    if (result.error) {
+      return { skipped: "spawn failed", extraWikiPaths };
+    }
+    return { extraWikiPaths, ran: true };
+  }
+
+  async #collectDistillSource(
+    receipt: IngestReceipt,
+    materialized: MaterializedIngest,
+  ): Promise<{ chars: number; wrapped: string }> {
+    const parts: Array<{ source: string; body: string }> = [];
+    const seen = new Set<string>();
+    for (const pagePath of [...receipt.pagesCreated, ...receipt.pagesUpdated]) {
+      try {
+        const page = await this.store.readWikiPage(pagePath);
+        if (seen.has(pagePath)) continue;
+        seen.add(pagePath);
+        parts.push({ source: page.data.source ?? pagePath, body: page.body });
+      } catch {
+        // excerpt may be unreadable; skip that page
+      }
+    }
+    if (parts.length === 0) {
+      for (const doc of materialized.documents) {
+        parts.push({ source: doc.source, body: doc.body });
+      }
+    }
+    const chars = parts.reduce((n, part) => n + part.body.length, 0);
+    const wrapped = parts.map((part) => wrapUntrustedContent(part.source, part.body)).join("\n");
+    return { chars, wrapped };
+  }
+
+  async #clampSpawnWrittenWikiPages(before: Map<string, string>): Promise<string[]> {
+    const extraWikiPaths: string[] = [];
+    for (const path of await listWikiStorePaths(this.store.paths.wikiDir)) {
+      if (!path.endsWith(".md") || isEngineWikiCatalogPath(path)) continue;
+      let raw: string;
+      try {
+        raw = await readFile(toFsPath(this.projectRoot, path), "utf8");
+      } catch {
+        continue;
+      }
+      if (before.get(path) === raw) continue;
+      extraWikiPaths.push(path);
+      await this.#forceWikiTrustUntrusted(path);
+    }
+    return extraWikiPaths;
+  }
+
+  async #forceWikiTrustUntrusted(storePath: string): Promise<void> {
+    try {
+      const doc = await this.store.readWikiPage(storePath);
+      if (doc.data.trust === "untrusted") return;
+      await this.store.writeWikiPage(
+        storePath,
+        { ...doc.data, trust: "untrusted", updated: nowIso() },
+        doc.body,
+      );
+      return;
+    } catch {
+      // spawn may have written invalid or reviewed-looking frontmatter
+    }
+    let raw: string;
+    try {
+      raw = await readFile(toFsPath(this.projectRoot, storePath), "utf8");
+    } catch {
+      return;
+    }
+    try {
+      const parsed = parseMarkdownDocument(raw);
+      const fm =
+        parsed.frontmatter && typeof parsed.frontmatter === "object"
+          ? (parsed.frontmatter as Record<string, unknown>)
+          : {};
+      if (fm.trust === "untrusted") return;
+      const title =
+        typeof fm.title === "string" && fm.title.trim().length > 0
+          ? fm.title.trim()
+          : wikiIdFromStorePath(storePath);
+      const page: WikiPage = {
+        schemaVersion: WIKI_PAGE_SCHEMA_VERSION,
+        title,
+        aliases: stringList(fm.aliases),
+        tags: stringList(fm.tags),
+        trust: "untrusted",
+        updated: nowIso(),
+        ...(typeof fm.source === "string" ? { source: fm.source } : {}),
+      };
+      await this.store.writeWikiPage(storePath, page, parsed.body);
+    } catch {
+      // not a wiki markdown page
+    }
   }
 
   async #applyReviewSnapshotsLocked(

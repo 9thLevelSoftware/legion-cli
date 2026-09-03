@@ -34,7 +34,7 @@ Implicit forbidden still applies: `.git/**`, `.env*`, `.legion-cli/config.yaml`,
 
 ## Task
 
-Read the capped untrusted source in prompt.md.
+Read the capped untrusted source in prompt.md (engine cap: 64 KiB; over that this skill is not spawned).
 
 Write compiled wiki prose under `.legion-cli/wiki/`. Keep pages as notes, not raw dumps. Link existing catalog titles when you know them.
 

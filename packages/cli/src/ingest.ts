@@ -6,6 +6,7 @@ export type IngestFlags = {
   transcript?: string;
   diff?: string;
   commit?: boolean;
+  distill?: boolean;
 };
 
 export async function runIngest(opts: CliOpts, sources: string[], flags: IngestFlags): Promise<number> {
@@ -14,6 +15,7 @@ export async function runIngest(opts: CliOpts, sources: string[], flags: IngestF
     noCommit: flags.commit === false,
     transcript: flags.transcript,
     diff: flags.diff,
+    distill: Boolean(flags.distill),
   });
 
   if (opts.json) {
@@ -29,6 +31,11 @@ export async function runIngest(opts: CliOpts, sources: string[], flags: IngestF
       `skipped: ${receipt.skipped.length}`,
       receipt.pagesCreated.length > 0 ? `pages: ${receipt.pagesCreated.join(", ")}` : "",
       flags.commit === false ? "commit: skipped (--no-commit)" : "commit: wiki pages auto-committed on success",
+      receipt.distillRan
+        ? "distill: ran ingest skill (wiki pages remain untrusted)"
+        : receipt.distillSkipped
+          ? `distill: skipped (${receipt.distillSkipped})`
+          : "",
     ]
       .filter((line) => line.length > 0)
       .join("\n"),

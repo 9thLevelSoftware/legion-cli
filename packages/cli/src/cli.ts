@@ -144,8 +144,9 @@ export function createProgram(): Command {
     .option("--transcript <path>", "ingest an agent transcript")
     .option("--diff <range>", "ingest a git diff range")
     .option("--no-commit", "skip auto-commit of wiki pages")
+    .option("--distill", "optional ingest skill distill (still untrusted)")
     .action(async (sources: string[], opts, cmd: Command) => {
-      const flags = opts as { transcript?: string; diff?: string; commit?: boolean };
+      const flags = opts as { transcript?: string; diff?: string; commit?: boolean; distill?: boolean };
       const code = await runIngest(resolveOpts(cmd), sources, flags);
       process.exitCode = code;
     });
