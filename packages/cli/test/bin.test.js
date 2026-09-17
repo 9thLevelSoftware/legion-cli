@@ -92,6 +92,11 @@ function assertLayer1(out) {
   assert.doesNotMatch(out, /\bsearch\b/);
   assert.doesNotMatch(out, /\bbrief\b/);
   assert.doesNotMatch(out, /^chat {2}/m);
+  assert.doesNotMatch(out, /^map {2}/m);
+  assert.doesNotMatch(out, /^wireframe {2}/m);
+  assert.doesNotMatch(out, /^serve {2}/m);
+  assert.doesNotMatch(out, /^skills /m);
+  assert.doesNotMatch(out, /^brownfield {2}/m);
   assert.doesNotMatch(out, /wiki trust/);
   assert.doesNotMatch(out, /\bshow\b/);
   assert.doesNotMatch(out, /assume list/);
@@ -154,10 +159,13 @@ test("help --all lists the grouped command surface", () => {
   assert.match(board, /assume list/);
   assert.match(board, /assume answer/);
   assert.doesNotMatch(board, /index rebuild/);
-  const adjacent = helpSection(out, "Shipped adjacent", "");
+  const adjacent = helpSection(out, "Shipped adjacent");
   assert.match(adjacent, /skills list/);
   assert.match(adjacent, /skills show <id>/);
   assert.match(adjacent, /skills install <dir\|github:owner\/repo@tag>/);
+  assert.match(adjacent, /^ {2}brownfield$/m);
+  assert.match(adjacent, /effort 1–5/);
+  assert.match(adjacent, /--effort, --execute, --resume, --lsp/);
   assert.doesNotMatch(out, /Later, not this series/);
   assert.doesNotMatch(out, /Not in this product/);
 });
@@ -176,7 +184,7 @@ test("help --all lists serve as shipped adjacent and not later", () => {
   const result = runCli(["help", "--all"]);
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
-  const adjacent = helpSection(out, "Shipped adjacent", "");
+  const adjacent = helpSection(out, "Shipped adjacent");
   assert.match(adjacent, /^ {2}serve$/m);
   assert.match(adjacent, /--mcp-http\/--no-mcp-http/);
   assert.match(adjacent, /--webmcp/);

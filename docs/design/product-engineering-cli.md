@@ -594,7 +594,7 @@ Review skill must not write `.legion-cli/packets/**`. Dashboard has no packet PO
 
 ```ts
 // packages/agents/src/types.ts
-export type AdapterId = "fake" | "generic" | "claude" | "grok" | "openai" | "codex" | "mimo" | "minimax";
+export type AdapterId = "fake" | "generic" | "claude" | "grok" | "openai" | "codex" | "mimo" | "minimax" | "http";
 
 export interface AgentAdapter {
   id: AdapterId;
@@ -615,10 +615,11 @@ export interface AgentJob {
 
 export type SkillId =
   | "interview" | "discuss" | "spec" | "ingest"
-  | "plan" | "execute" | "verify" | "review" | "qa";
+  | "plan" | "execute" | "verify" | "review" | "qa"
+  | "map" | "wireframe" | "chat";
 
 export interface AgentHandle {
-  pid: number;
+  pid: number | null;
   wait(): Promise<AgentResult>;
   abort(): Promise<void>;         // process group; see below
 }
@@ -730,7 +731,7 @@ There is no product-wide default: `legion-cli init` requires `--adapter` (or a T
 
 Spawn-CLI auth is whatever the installed CLI already uses. `http` reads `process.env[apiKeyEnv]` in memory and never writes it to config, tasks, resume, or audit. Full routing contract: [`docs/design/adapter-routing.md`](adapter-routing.md).
 
-#### 5.2 Spawn lifecycle and revert (not OS isolation)
+#### 5.2 Spawn lifecycle and after-the-fact revert (OS sandbox is during-spawn)
 
 ```mermaid
 sequenceDiagram
@@ -936,7 +937,7 @@ Checklist items = spec ACs. Human ticks via **`legion-cli qa checklist`** (TTY) 
 
 ### 8. Visual dashboard
 
-Default surface is the CLI. Local HTTP is a **read-only viewer**: writes are CLI or token-gated HTTP POST (`ticket|wikiTrust|qaChecklist`). MCP Apps and WebMCP are later. **Invented combination** for later; the page is CodeAlmanac-style serve + Legion CLI state. Page copy: “Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist). CLI remains the source of truth.”
+Default surface is the CLI. Local HTTP is a **read-only viewer**: writes are CLI or token-gated HTTP POST (`ticket|wikiTrust|qaChecklist`). `legion-cli serve` is the long-running host. WebMCP is **shipped** as progressive enhancement (`flags.webmcp` default false; `serve --webmcp`). MCP Apps stay flagged (`flags.mcpApps`). The page is CodeAlmanac-style serve + Legion CLI state. Page copy: “Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist). CLI remains the source of truth.”
 
 ```mermaid
 flowchart TB
@@ -1724,9 +1725,9 @@ Execute does not `git commit`. `legion-cli ship` stages `filesAllowed` unions of
 | Dashboard used as a write channel | **High** | Allowlist `ticket \| wikiTrust \| qaChecklist` only. `X-Legion-Cli-Token` from HTML meta, never a cookie, Origin allowlist. No execute/ship/plan/review/packet/intent. |
 | Local HTTP bound to `0.0.0.0` | **High** | Default `127.0.0.1`; `--expose` required |
 | CSRF against POSTs | **Med** | Token bootstrap: HTML meta, header required, never cookie, Origin allowlist |
-| Skill / design-system supply chain | **High** | Bundled skills + craft. Shipped extra: local dir copy; `github:` rejected until pin/sha256 PR |
+| Skill / design-system supply chain | **High** | Bundled skills + craft. Shipped extra: local dir copy **or** `github:owner/repo@tag` with required `integrity.sha256` + minisign (persist binary fetch, no `--allow-host`) |
 | Secrets in transcripts | **Med** | Redact patterns (incomplete); `legion-cli doctor` scan |
-| Agent CLI has broad FS + network (not OS-sandboxed) | **High** | After-the-fact revert; surgical execute; document trust model; no claim of isolation |
+| Agent CLI has broad FS + network | **High** | Execute is OS-sandboxed (jail-as-project-root; copy-out `allowedWrites`; revert still runs). Network remains allowed for model APIs. Copy backend / `--allow-no-sandbox` still degrade. |
 | SSRF from ingest URLs | **Med** | Deny list + resolve-then-connect |
 | Path traversal in ingest | **Med** | realpath stays in workspace |
 | Writes to `.git/` | **High** | Always forbidden; incident path; no recursive delete of `.git` |
@@ -1771,7 +1772,7 @@ See `LegionConfig`. `mcpApps`, `webmcp`, `parallelExecute` stay false. `adapter.
 1. Internal dogfood after PR-04 (lifecycle) exists — engineers still use CLI.
 2. Design-partner product people — greenfield, configured adapter, HTTP **viewer**.
 3. v0 tag — doctor path, fixtures, degraded QA, lockfile.
-4. Shipped extras already in tree — brownfield, MCP, packets, compaction, garden, design-system, dashboard tiny POSTs. Always-on shipped CLI: `control-mode`. Verified vendor extra-adapter argv is **shipped**. Later: WebMCP, `map` / `wireframe` / `skills list|install` / `serve`.
+4. Shipped extras already in tree — brownfield (effort 1–5), MCP, `serve` + WebMCP, packets, compaction, garden, design-system (local + `github:`), dashboard tiny POSTs, `map` / fingerprints, `wireframe`, `skills list|install`, OS sandbox. Always-on shipped CLI: `control-mode`, `chat`. AdapterId `http` and PATH `legion` have **landed**. Verified vendor extra-adapter argv is **shipped**. **Still later (not the twelve):** embeddings; 8-agent QA; `control_mode: autonomous`; concurrent execute workers.
 
 ### Rollback
 
@@ -1788,11 +1789,11 @@ Pin the npm package. `git revert` `.legion-cli/` commits. Index rebuild. Bad exe
 | Risk | Severity | Mitigation |
 | --- | --- | --- |
 | Mashup unproven for non-coders | **High** | Question bank; inspectable artifacts; viewer; dogfood; ~15 CLI verbs disclosed honestly |
-| FileContract is after-the-fact (no OS sandbox) | **High** | Revert algorithm; surgical execute; do not claim isolation; later door is worktrees + `OWNERSHIP.md` (§5.4), still not a sandbox |
+| FileContract revert is after-the-fact; sandbox can degrade | **High** | Execute is OS-sandboxed (jail-as-project-root; copy-out `allowedWrites`); revert still runs. Copy backend / `--allow-no-sandbox` still degrade. §5.4 is concurrent workers only, not the sandbox. |
 | QA 85 bar too heavy for v0 laptop | **Med** | In-process scorer, not 8 agents; degraded waiver |
-| `legion` vs `legion-cli` PATH (existing installer, Kali `legion`, other Legion CLIs) | **Med** | This product’s bin is **`legion-cli` only**. Doctor lists both. Supported now: `pnpm exec legion-cli`. `npx` / global after first `v*`. |
+| `legion` vs `legion-cli` PATH (existing installer, Kali `legion`, other Legion CLIs) | **Med** | Both bins register (`legion-cli` and `legion`, same `dist/bin.js`). Installer first-args refuse (exit 2). Doctor lists both; warn if PATH `legion` is the plugin installer. Plugin installer is `npx @9thlevelsoftware/legion --claude` (bin `legion-plugins`). Supported now: `pnpm exec legion-cli` or PATH `legion`. |
 | Wiki rot | **Med** | ingest receipts; shipped extra `garden` |
-| WebMCP never a Standard | **Low** | Not on the v0 path |
+| WebMCP never a Standard | **Low** | Not a polyfill; `flags.webmcp` default false; `registerTool` throw leaves the HTTP page unchanged |
 | `claude -p` flags drift | **Med** | Frozen argv table; `generic` escape hatch; extraArgs warning |
 | Configured adapter unavailable | **Med** | Doctor fails closed on default and required-skill routes; extras spawn with verified vendor argv when on PATH; user sets `adapter.default` / per-id `args` |
 
@@ -1953,7 +1954,7 @@ Historical founding series from an empty repo. **PR-01–PR-16 were v0.** Packet
 
 - **Files/components:** `packages/design-system/**`, `legion-cli design-system *`
 - **Depends on:** PR-07, PR-06
-- **Description:** Local dir copy only. Reject `github:`. One-way OD importer. Same SSRF deny list if URL fetch is added later.
+- **Description:** Local dir copy only. Reject `github:`. One-way OD importer. Same SSRF deny list if URL fetch is added later. Rev 14 landed `github:owner/repo@tag` (integrity + minisign); this PR’s scope stayed local.
 
 ### PR-19 — Brownfield effort-1 + run artifacts
 
