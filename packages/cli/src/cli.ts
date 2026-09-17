@@ -509,9 +509,11 @@ export function createProgram(): Command {
   });
   addGlobalOptions(run.command("promote").description("Copy brownfield run pages into the wiki (untrusted until wiki trust)"))
     .argument("<id>", "brownfield run id")
+    .option("--trust", "explicit human gate: mark promoted pages reviewed (default untrusted)")
     .allowExcessArguments(false)
-    .action(async (id: string, _opts, cmd: Command) => {
-      const code = await runPromote(resolveOpts(cmd), id);
+    .action(async (id: string, opts, cmd: Command) => {
+      const flags = opts as { trust?: boolean };
+      const code = await runPromote(resolveOpts(cmd), id, flags);
       process.exitCode = code;
     });
 

@@ -20,7 +20,7 @@ import {
   type BrownfieldRun,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { HINT, refuse } from "./errors.js";
-import type { BrownfieldOptions, BrownfieldResult, PromoteRunResult } from "./types.js";
+import type { BrownfieldOptions, BrownfieldResult, PromoteRunOptions, PromoteRunResult } from "./types.js";
 
 export const BROWNFIELD_PAGES = [
   "intent.md",
@@ -261,7 +261,7 @@ function renderPages(input: {
       "",
       "## Recommended next",
       "1. Confirm A-001 / A-002 (code is evidence).",
-      `2. \`legion-cli run promote ${input.runId}\` if these pages should live in the wiki.`,
+      `2. \`legion-cli run promote ${input.runId}\` if these pages should live in the wiki (untrusted until wiki trust).`,
       "3. \`legion-cli spec\` for the improvement increment.",
       "",
       "## Execute isolation",
@@ -401,13 +401,18 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
   return toResult(run);
 }
 
-export async function promoteBrownfieldRun(store: LegionStore, runIdRaw: string): Promise<PromoteRunResult> {
+export async function promoteBrownfieldRun(
+  store: LegionStore,
+  runIdRaw: string,
+  opts: PromoteRunOptions = {},
+): Promise<PromoteRunResult> {
   const stateExists = await store.pathExists(".legion-cli/STATE.md");
   if (!stateExists) {
     refuse("run promote is refused until init", HINT.init);
   }
   const runId = parseRunId(runIdRaw);
   const run = await readRunResume(store, runId);
+  const trust = opts.trust === true ? "reviewed" : "untrusted";
   const copied: string[] = [];
   for (const name of run.pages) {
     if (!name.toLowerCase().endsWith(".md")) continue;
@@ -424,7 +429,7 @@ export async function promoteBrownfieldRun(store: LegionStore, runIdRaw: string)
         title: `Brownfield ${runId} ${title}`,
         aliases: [],
         tags: ["brownfield", "run"],
-        trust: "reviewed",
+        trust,
         updated: nowIso(),
         source: sourceStore,
       },
@@ -437,5 +442,5 @@ export async function promoteBrownfieldRun(store: LegionStore, runIdRaw: string)
   }
   await writeRunResume(store.projectRoot, { ...run, promoted: true });
   await store.rebuild();
-  return { runId, pages: copied };
+  return { runId, pages: copied, trust };
 }

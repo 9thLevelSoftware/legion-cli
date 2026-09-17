@@ -207,5 +207,7 @@ test("parent verbs require a subcommand and print Next", () => {
 test("run promote --help says untrusted until wiki trust", () => {
   const result = runCli(["run", "promote", "--help"]);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(normalize(result.stdout), /untrusted until wiki trust/);
+  const out = normalize(result.stdout);
+  assert.match(out, /untrusted until wiki trust/);
+  assert.match(out, /--trust/);
 });

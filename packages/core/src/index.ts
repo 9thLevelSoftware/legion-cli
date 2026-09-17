@@ -106,6 +106,7 @@ export type {
   PacketRespondInput,
   PacketResult,
   Phase,
+  PromoteRunOptions,
   PromoteRunResult,
   QaOptions,
   QAScore,
