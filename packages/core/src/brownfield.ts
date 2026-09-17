@@ -401,21 +401,21 @@ function runLockfileAudit(projectRoot: string): string[] {
   const argv = ["audit", "--json"];
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
-  const spawnOnce = (command: string) =>
-    spawnSync(command, argv, {
-      cwd: projectRoot,
-      encoding: "utf8",
-      windowsHide: true,
-      shell: false,
-      timeout: AUDIT_TIMEOUT_MS,
-      killSignal: "SIGKILL",
-      env,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-  let result = spawnOnce(bin);
-  if (result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT" && process.platform === "win32") {
-    result = spawnOnce(`${bin}.cmd`);
-  }
+  const spawnOpts = {
+    cwd: projectRoot,
+    encoding: "utf8" as const,
+    windowsHide: true,
+    shell: false,
+    timeout: AUDIT_TIMEOUT_MS,
+    killSignal: "SIGKILL" as const,
+    env,
+    maxBuffer: 8 * 1024 * 1024,
+  };
+  // Windows cannot spawn .cmd with shell:false (EINVAL); cmd.exe /c still keeps Node shell:false.
+  const result =
+    process.platform === "win32"
+      ? spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", [bin, ...argv].join(" ")], spawnOpts)
+      : spawnSync(bin, argv, spawnOpts);
   const timedOut =
     (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ||
     (result.signal === "SIGKILL" && result.status === null);

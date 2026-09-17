@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { access, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 
 import { HINT, LegionRefuseError } from "../dist/index.js";
@@ -370,6 +370,47 @@ test("effort 5 --lsp with no server refuses and does not persist the run", async
       },
     );
     assert.equal(await exists(join(dir, ".legion-cli", "runs", "56565656", "resume.json")), false);
+  });
+});
+
+test("effort 3 security.md names leftpad when audit stderr is noisy", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine, { mode: "brownfield" });
+    await writeFile(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+    const bin = join(dir, "fake-bin");
+    await mkdir(bin, { recursive: true });
+    const script = [
+      "const args = process.argv.slice(2);",
+      "if (args[0] === 'audit') {",
+      "  process.stderr.write('npm warn extra\\nthis is not json\\n');",
+      "  process.stdout.write(JSON.stringify({ vulnerabilities: { leftpad: {} } }));",
+      "  process.exit(0);",
+      "}",
+      "process.exit(1);",
+      "",
+    ].join("\n");
+    await writeFile(join(bin, "pnpm.mjs"), script, "utf8");
+    if (process.platform === "win32") {
+      await writeFile(
+        join(bin, "pnpm.cmd"),
+        `@echo off\r\n"${process.execPath}" "${join(bin, "pnpm.mjs")}" %*\r\n`,
+        "utf8",
+      );
+    } else {
+      await writeFile(join(bin, "pnpm"), `#!${process.execPath}\n${script}`, "utf8");
+      await chmod(join(bin, "pnpm"), 0o755);
+    }
+    initGitRepo(dir);
+    const previous = process.env.PATH;
+    process.env.PATH = `${bin}${delimiter}${previous ?? ""}`;
+    try {
+      const result = await engine.brownfield({ effort: 3, runId: "3a3a3a3a" });
+      const security = await readFile(join(dir, ".legion-cli", "runs", result.runId, "security.md"), "utf8");
+      assert.match(security, /leftpad/);
+      assert.doesNotMatch(security, /none named/);
+    } finally {
+      process.env.PATH = previous;
+    }
   });
 });
 
