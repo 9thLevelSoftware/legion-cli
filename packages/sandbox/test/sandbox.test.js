@@ -835,7 +835,8 @@ test("config backend copy uses copy even if LSM is available", async () => {
       assert.equal(handle.backend, "copy");
       assert.equal(handle.hardened, false);
       assert.equal(handle.spawnOpts().wrapper, undefined);
-      assert.equal(handle.copyInHashes.get("src/read.ts") !== undefined, true);
+      const out = await handle.copyOut();
+      assert.equal(out.dropped.includes("src/read.ts"), false);
     } finally {
       await handle.destroy();
     }

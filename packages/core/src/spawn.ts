@@ -1,9 +1,7 @@
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  ADAPTER_CREDENTIAL_KEYS,
   AgentError,
   buildPointerPrompt,
   DEFAULT_TIMEOUT_MS,
@@ -500,9 +498,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         Boolean(opts.allowNoSandbox) ||
         opts.config.sandbox.allowCopyJail ||
         !opts.config.sandbox.requireHardened,
-      credentialKeys: [...new Set(Object.values(ADAPTER_CREDENTIAL_KEYS).flat())].filter(
-        (key) => filtered[key] !== undefined,
-      ),
+      credentialKeys: Object.keys(filtered),
     });
   }
 
@@ -596,17 +592,6 @@ export async function finishStartedSpawn(
       for (const rel of dropped) {
         if (rel === ".git" || rel.startsWith(".git/")) incident = true;
         if (isAllowedPath(rel, started.revertCtx.allowedRoots)) continue;
-        const before = started.sandbox.copyInHashes.get(rel);
-        if (before !== undefined) {
-          try {
-            const after = createHash("sha256")
-              .update(await readFile(join(started.sandbox.jailRoot, ...rel.split("/"))))
-              .digest("hex");
-            if (after === before) continue;
-          } catch {
-            // missing/unreadable mutated read is an extra
-          }
-        }
         extrasReverted.add(rel);
       }
     }

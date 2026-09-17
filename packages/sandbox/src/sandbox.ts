@@ -33,7 +33,6 @@ export interface SandboxHandle {
   backend: SandboxBackend;
   hardened: boolean;
   jailRoot: string;
-  copyInHashes: ReadonlyMap<string, string>;
   spawnOpts(): { cwd: string; env: NodeJS.ProcessEnv; wrapper?: { bin: string; argvPrefix: string[] } };
   copyOut(): Promise<{ copied: string[]; dropped: string[] }>;
   destroy(): Promise<void>;
@@ -300,13 +299,8 @@ async function hashJailFiles(jailRoot: string): Promise<Map<string, string>> {
     } catch {
       continue;
     }
-    try {
-      const st = await lstat(src);
-      if (!st.isFile() || st.isSymbolicLink()) continue;
-      out.set(rel, createHash("sha256").update(await readFile(src)).digest("hex"));
-    } catch {
-      // skip unreadable
-    }
+    const hash = await fileSha256(src);
+    if (hash) out.set(rel, hash);
   }
   return out;
 }
@@ -647,10 +641,21 @@ async function unlinkAllowedIfGone(
   }
 }
 
+async function fileSha256(abs: string): Promise<string | undefined> {
+  try {
+    const st = await lstat(abs);
+    if (!st.isFile() || st.isSymbolicLink()) return undefined;
+    return createHash("sha256").update(await readFile(abs)).digest("hex");
+  } catch {
+    return undefined;
+  }
+}
+
 async function copyOutWrites(
   projectRoot: string,
   jailRoot: string,
   allowedWrites: readonly string[],
+  copyInHashes: ReadonlyMap<string, string>,
 ): Promise<{ copied: string[]; dropped: string[] }> {
   const copied: string[] = [];
   const dropped: string[] = [];
@@ -677,6 +682,8 @@ async function copyOutWrites(
       !isConcretePosixRepoRelativePath(rel) ||
       !matchesAllowed(rel, allowedWrites)
     ) {
+      const before = copyInHashes.get(rel);
+      if (before !== undefined && (await fileSha256(src)) === before) continue;
       dropped.push(rel);
       continue;
     }
@@ -797,7 +804,6 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
       backend,
       hardened,
       jailRoot,
-      copyInHashes,
       spawnOpts() {
         const next: { cwd: string; env: NodeJS.ProcessEnv; wrapper?: { bin: string; argvPrefix: string[] } } = {
           cwd: jailRoot,
@@ -807,7 +813,7 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
         return next;
       },
       copyOut() {
-        return copyOutWrites(projectRoot, jailRoot, allowedWrites);
+        return copyOutWrites(projectRoot, jailRoot, allowedWrites, copyInHashes);
       },
       async destroy() {
         await destroyCreated();
