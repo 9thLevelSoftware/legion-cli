@@ -2,10 +2,13 @@
 
 Local-first CLI that turns product knowledge into shipped, verified software.
 
-- **npm:** [`@9thlevelsoftware/legion-cli`](https://www.npmjs.com/package/@9thlevelsoftware/legion-cli)
 - **bin:** `legion-cli` only
+- **package (first `v*` tag):** `@9thlevelsoftware/legion-cli`
+- Workspace root npm name is the historical `product-engineer-helper` (`"private": true`). Do not publish the root. Do not rename it.
 
-This engine does **not** take bin `legion`. That belongs to the sibling [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion) plugin installer (`npx @9thlevelsoftware/legion --claude`).
+This engine does **not** take bin `legion`. That belongs to the sibling `@9thlevelsoftware/legion` plugin installer (`npx @9thlevelsoftware/legion --claude`).
+
+v0 bar is **workspace correctness**. Packages are `0.0.0` until the first `v*` tag. This README does **not** claim the CLI is already on npm.
 
 ## Requirements
 
@@ -14,9 +17,13 @@ This engine does **not** take bin `legion`. That belongs to the sibling [`@9thle
 
 ## Quick start
 
-Supported invocation: `pnpm exec legion-cli` or `npx @9thlevelsoftware/legion-cli`.
+Supported invocation: `pnpm exec legion-cli`.
 
-Init requires `--adapter` (`claude` | `generic` | `fake`). There is no product default. Dashboard is a **viewer**: `legion-cli dashboard`.
+The product is the **10-verb lifecycle core** plus extras in `legion-cli help --all`:
+
+`init` → `intent` → `discuss` → `spec` → `plan` → `execute` → `verify` → `review` → `qa` → `ship`
+
+Init requires `--adapter` (`claude` | `generic` | `fake` | extras). There is no product default. Dashboard is a **view-only** board: writes are CLI or token POST; it is not the source of truth.
 
 From this repo:
 
@@ -25,19 +32,17 @@ pnpm install
 pnpm exec legion-cli init --name Checkin --adapter fake
 pnpm exec legion-cli status
 LEGION_CLI_ADAPTER=fake pnpm exec legion-cli doctor
-pnpm exec legion-cli dashboard --no-open
+pnpm exec legion-cli intent
 ```
 
-From npm:
+`fake` is the test adapter; `doctor` treats it as spawnable only when `LEGION_CLI_ADAPTER=fake`. For `claude` or `generic`, doctor fails closed until that binary is on PATH.
 
-```bash
-npx @9thlevelsoftware/legion-cli init --name Checkin --adapter claude
-# or
-npm i -g @9thlevelsoftware/legion-cli
-legion-cli init --name Checkin --adapter claude
-```
+## Two brownfield surfaces (not one verb)
 
-`fake` is the test adapter; `doctor` treats it as spawnable only when `LEGION_CLI_ADAPTER=fake`. For `claude` or `generic`, doctor fails closed until that binary is on PATH. Brownfield `init` is v1.
+1. `init --mode brownfield` sets `project.mode` and the next command (`legion-cli brownfield`). After that, 10-verb `execute` is **in-place**.
+2. `legion-cli brownfield` is the effort-1 audit extra. `--execute` is the only worktree path.
+
+Do not merge these.
 
 Local metrics (never phones home): `legion-cli doctor --metrics`.
 

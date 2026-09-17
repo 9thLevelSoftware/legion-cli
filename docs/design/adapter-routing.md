@@ -8,7 +8,7 @@
 | **Status** | Draft (rev 5 — CLI `--adapter` landed; nested extra blocks still strip) |
 | **Product** | Legion CLI (`legion-cli`, npm `@9thlevelsoftware/legion-cli`) |
 | **Audience** | Senior engineers implementing the feature; product leads reviewing scope |
-| **Design of record** | `docs/design/product-engineering-cli.md` (rev 10 — shipped extras vs 10-verb lifecycle core) |
+| **Design of record** | `docs/design/product-engineering-cli.md` (rev 11 — claim-source: 10-verb + extras; control-mode + vendor argv are this series) |
 | **Git author** | 9thLevelSoftware / engineering@9thlevelsoftware.com |
 
 ---
@@ -80,7 +80,7 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 
 - Legion CLI does not call vendor HTTP APIs. Auth is whatever the installed CLI already uses. Never store API keys in Legion config.
 - No product-default adapter. `adapter.default` remains **required**.
-- Frozen/generic argv + pointer prompt. Extra adapters stay generic-style until vendor flags are verified.
+- Frozen/generic argv + pointer prompt. Extra adapters still spawn generic-style today; **verified vendor argv is a v0 gap; follow-up PR in this series** (not later).
 - Engine, not the spawn, writes `STATE.md`, task `status`, `lastReadiness`, `lastReview`.
 - FileContract / SkillContract revert after `wait()`.
 - Dashboard remains a viewer, not a completions proxy. Ticket POST does not accept `adapter`.
@@ -130,7 +130,7 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 | KD-R3 | **Precedence** | CLI `--adapter` > `Task.adapter` (execute/verify when a task is in scope) > `adapter.routes[skillId]` > `adapter.default`. | Operator present beats durable task beats workspace policy beats required fallback. |
 | KD-R4 | **`adapter.default` stays required** | Missing default still fails `LegionConfigSchema` and doctor. Fallback is only that user-set id. | KD5 of the design of record. Routing must not create a hidden product default. |
 | KD-R5 | **Model stays argv** | Pin a model with `adapter.grok.args: ["--model", "grok-4", "{{pointer}}"]` (or `claude.extraArgs`). Doctor trust-warns any non-default extra args. | Extra adapters are already generic-style (`argv.ts`). |
-| KD-R6 | **Refuse/doctor use `resolveAdapter(config, { id })` + `detect()`, not PATH-only and not bare `createAdapter(id)`** | One `#assertSkillSpawnable` helper, same message as spawn. Doctor calls `await isResolvedAdapterSpawnable(config, id)` (wraps `resolveAdapter(config, { id })` then `await isSpawnable` so per-id `args`/`extraArgs` and `LEGION_CLI_ADAPTER=fake` apply). Fail-closed: default + **required-skill routes** (`plan`/`execute`/`review`). Warn: optional-skill routes, named targets, parseable active-slice `Task.adapter`. Keep informational PATH matrix on `isSpawnableBinary`. CLI gains a **direct** `@9thlevelsoftware/legion-cli-agents` workspace dep in PR-5 (it has none today). | Bare `createAdapter("grok")` uses default `["{{pointer}}"]` and would green-light `adapter.grok.args: ["--model", "grok-4"]` (no pointer) while plan refuses. PATH-only has the same hole. Optional-skill routes must not fail a Claude-only laptop. |
+| KD-R6 | **Refuse/doctor use `resolveAdapter(config, { id })` + `detect()`, not PATH-only and not bare `createAdapter(id)`** | One `#assertSkillSpawnable` helper, same message as spawn. Doctor calls `await isResolvedAdapterSpawnable(config, id)` (wraps `resolveAdapter(config, { id })` then `await isSpawnable` so per-id `args`/`extraArgs` and `LEGION_CLI_ADAPTER=fake` apply). Fail-closed: default + **required-skill routes** (`plan`/`execute`/`review`). Warn: optional-skill routes, named targets, parseable active-slice `Task.adapter`. Keep informational PATH matrix on `isSpawnableBinary`. CLI **already depends** on `@9thlevelsoftware/legion-cli-agents` (direct workspace dep). | Bare `createAdapter("grok")` uses default `["{{pointer}}"]` and would green-light `adapter.grok.args: ["--model", "grok-4"]` (no pointer) while plan refuses. PATH-only has the same hole. Optional-skill routes must not fail a Claude-only laptop. |
 | KD-R7 | **Audit + resume record the resolved spawn** | `resume.json` (both pre-`wait()` writes) gains `adapterId`, `binary`, **template** `argvSummary` (`{{pointer}}` unexpanded), `resolutionSource`. Execute/timeout audit `data` gains the same. | Adapters do not expose argv. Substituted argv is mostly pointer-prompt text. |
 | KD-R8 | **Schema versions stay `/v1` with additive optional fields** | `Task.adapter?`, `adapter.routes?`, `adapter.named?`, resume extras. Existing YAML still parses. **Do not edit** `TSK-0002.md`. | Matches current schema practice. No migration tool. |
 | KD-R9 | **Named routes expand at write, not at spawn** | CLI `expandNamedAdapter` in PR-4. `task amend --route ui` writes `adapter: grok`. Engine `amendTask` takes an already-resolved `AdapterId`. Spawn never looks up named. | Git review sees the actual CLI. Changing `named.ui` later does not silently re-route shipped tasks. |

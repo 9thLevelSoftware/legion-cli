@@ -40,7 +40,6 @@ export const HINT = {
   noCommit: "legion-cli ingest --no-commit",
   show: "legion-cli show <page>",
   controlMode: "guarded or surgical",
-  greenfield: "greenfield, or wait for v1",
   designGenerate: "legion-cli design-system generate",
   initMode: "legion-cli init --mode greenfield|brownfield",
   brownfield: "legion-cli brownfield --effort 1",
@@ -61,7 +60,6 @@ export function refuseKind(nextHint: string): string {
   if (match?.[1]) return match[1];
   if (/concrete paths/i.test(nextHint)) return "plan";
   if (/in-repo path/i.test(nextHint)) return "ingest";
-  if (/greenfield/i.test(nextHint)) return "init";
   if (/guarded or surgical/i.test(nextHint)) return "control-mode";
   if (nextHint.trim() === "legion-cli") return "status";
   return "other";

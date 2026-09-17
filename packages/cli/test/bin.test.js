@@ -28,6 +28,14 @@ function assertLayer1(out) {
   assert.match(out, /doctor/);
   assert.match(out, /Does not register bin legion/);
   assert.match(out, /intent/);
+  assert.match(out, /discuss/);
+  assert.match(out, /spec/);
+  assert.match(out, /plan/);
+  assert.match(out, /execute/);
+  assert.match(out, /verify/);
+  assert.match(out, /review/);
+  assert.match(out, /\bqa\b/);
+  assert.match(out, /ship/);
   assert.match(out, /help --all/);
   assert.doesNotMatch(out, /\bsearch\b/);
   assert.doesNotMatch(out, /\bbrief\b/);
@@ -108,4 +116,74 @@ test("mcp is a read-only stdio command", () => {
   assert.match(out, /stdio/i);
   const all = runCli(["help", "--all"]);
   assert.match(normalize(all.stdout), /Shipped adjacent[\s\S]*\bmcp\b/);
+});
+
+test("unknown command still hints help --all", () => {
+  const result = runCli(["xyzzy"]);
+  assert.equal(result.status, 1);
+  const err = normalize(result.stderr);
+  assert.match(err, /unknown command 'xyzzy'/);
+  assert.match(err, /help --all/);
+});
+
+test("help --all does not call control-mode later", () => {
+  const result = runCli(["help", "--all"]);
+  assert.equal(result.status, 0, result.stderr);
+  const out = normalize(result.stdout);
+  const later = helpSection(out, "Later, not this series:", "v0 gap");
+  assert.doesNotMatch(later, /control-mode/);
+  assert.doesNotMatch(later, /vendor extra-adapter argv/);
+  assert.match(out, /v0 gap; follow-up PRs in this series/);
+  const gap = helpSection(out, "v0 gap; follow-up PRs in this series:", "Not in this product:");
+  assert.match(gap, /control-mode/);
+  assert.match(gap, /verified vendor extra-adapter argv/);
+});
+
+test("help --all init lists --mode; intent drops --resume; dashboard is view-only", () => {
+  const result = runCli(["help", "--all"]);
+  assert.equal(result.status, 0, result.stderr);
+  const out = normalize(result.stdout);
+  const lifecycle = helpSection(out, "Lifecycle core:", "Always-on operations:");
+  assert.match(lifecycle, /--mode greenfield\|brownfield/);
+  assert.doesNotMatch(lifecycle, /--resume/);
+  assert.match(lifecycle, /--done/);
+  assert.doesNotMatch(out, /optional writes/);
+  assert.match(out, /view-only/);
+  assert.match(out, /untrusted until wiki trust/);
+});
+
+test("init --mode help does not call brownfield v1", () => {
+  const result = runCli(["init", "--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  const out = normalize(result.stdout);
+  assert.match(out, /--mode/);
+  assert.doesNotMatch(out, /greenfield \(v0\)/);
+  assert.doesNotMatch(out, /brownfield \(v1\)/);
+});
+
+test("intent --help does not list --resume", () => {
+  const result = runCli(["intent", "--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  const out = normalize(result.stdout);
+  assert.doesNotMatch(out, /--resume/);
+  assert.match(out, /--done/);
+});
+
+test("parent verbs require a subcommand and print Next", () => {
+  const cases = [
+    [["wiki"], /wiki requires trust/, /legion-cli wiki trust/],
+    [["ticket"], /ticket requires create/, /legion-cli ticket create/],
+    [["task"], /task requires amend/, /legion-cli task amend/],
+    [["context"], /context requires compact/, /legion-cli context compact/],
+    [["run"], /run requires promote/, /legion-cli run promote/],
+  ];
+  for (const [argv, requires, next] of cases) {
+    const result = runCli(argv);
+    assert.equal(result.status, 1, argv.join(" "));
+    const err = normalize(result.stderr);
+    assert.match(err, requires);
+    assert.match(err, /Next:/);
+    assert.match(err, next);
+    assert.doesNotMatch(err, /too many arguments/);
+  }
 });
