@@ -973,6 +973,72 @@ test("JSON Schema overlays reject .git paths, no-browser pass, and generic witho
     }),
     false,
   );
+  assert.equal(
+    validateConfig({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "fake" },
+      map: { roots: ["src"] },
+    }),
+    true,
+  );
+  for (const roots of [["../.ssh"], ["/etc"], ["src/../secret"]]) {
+    assert.equal(
+      validateConfig({
+        schemaVersion: "legion-cli-config/v1",
+        adapter: { default: "fake" },
+        map: { roots },
+      }),
+      false,
+      `Ajv map.roots ${roots.join(",")} must fail`,
+    );
+  }
+  const loopbackHttp = {
+    schemaVersion: "legion-cli-config/v1",
+    adapter: {
+      default: "http",
+      http: {
+        baseUrl: "http://127.0.0.1:8080/v1",
+        model: "grok-4",
+        apiKeyEnv: "XAI_API_KEY",
+        allowLoopback: true,
+      },
+    },
+  };
+  assert.equal(validateConfig(loopbackHttp), true);
+  assert.equal(
+    validateConfig({
+      ...loopbackHttp,
+      adapter: {
+        ...loopbackHttp.adapter,
+        http: { ...loopbackHttp.adapter.http, allowLoopback: false },
+      },
+    }),
+    false,
+  );
+  for (const baseUrl of ["http://localhost:11434/v1", "http://[::1]/v1", "http://[::1]:8080/v1"]) {
+    assert.equal(
+      validateConfig({
+        ...loopbackHttp,
+        adapter: {
+          ...loopbackHttp.adapter,
+          http: { ...loopbackHttp.adapter.http, baseUrl },
+        },
+      }),
+      true,
+      `Ajv baseUrl ${baseUrl} with allowLoopback must pass`,
+    );
+    assert.equal(
+      validateConfig({
+        ...loopbackHttp,
+        adapter: {
+          ...loopbackHttp.adapter,
+          http: { ...loopbackHttp.adapter.http, baseUrl, allowLoopback: false },
+        },
+      }),
+      false,
+      `Ajv baseUrl ${baseUrl} without allowLoopback must fail`,
+    );
+  }
 });
 
 test("SkillId enum has twelve ids including map, wireframe, chat", () => {
@@ -1101,16 +1167,30 @@ test("ADAPTER_IDS includes http and spawn extras stay strict", () => {
       `baseUrl ${bad} must fail parse`,
     );
   }
-  assert.equal(
-    LegionConfigSchema.parse({
-      ...configBase,
-      adapter: {
-        default: "http",
-        http: { ...httpBlock, baseUrl: "http://127.0.0.1:8080/v1", allowLoopback: true },
-      },
-    }).adapter.http.baseUrl,
+  const loopbackUrls = [
     "http://127.0.0.1:8080/v1",
-  );
+    "http://localhost:11434/v1",
+    "http://[::1]/v1",
+    "http://[::1]:8080/v1",
+  ];
+  for (const baseUrl of loopbackUrls) {
+    assert.equal(
+      LegionConfigSchema.safeParse({
+        ...configBase,
+        adapter: { default: "http", http: { ...httpBlock, baseUrl } },
+      }).success,
+      false,
+      `baseUrl ${baseUrl} without allowLoopback must fail parse`,
+    );
+    assert.equal(
+      LegionConfigSchema.parse({
+        ...configBase,
+        adapter: { default: "http", http: { ...httpBlock, baseUrl, allowLoopback: true } },
+      }).adapter.http.baseUrl,
+      baseUrl,
+      `baseUrl ${baseUrl} with allowLoopback must parse`,
+    );
+  }
   for (const env of ["xai_api_key", "1ABC", "A", ""]) {
     assert.equal(
       LegionConfigSchema.safeParse({
@@ -1274,6 +1354,14 @@ test("FingerprintFileSchema, SkillOverlayPinSchema, ChatAction, ServeFileSchema"
     }).success,
     false,
   );
+  assert.equal(
+    SkillOverlayPinSchema.safeParse({
+      ...localPin,
+      source: { type: "github", origin: "https://github.com/acme/skills", ref: "v1.0.0" },
+      integrity: { sha256: hash, minisign: "sig" },
+    }).success,
+    false,
+  );
 
   assert.equal(ChatReadActionSchema.parse({ type: "status" }).type, "status");
   assert.equal(ChatReadActionSchema.parse({ type: "search", q: "where" }).q, "where");
@@ -1311,8 +1399,25 @@ test("FingerprintFileSchema, SkillOverlayPinSchema, ChatAction, ServeFileSchema"
     startedAt: "2026-09-17T00:00:00Z",
     turns: [{ role: "user", text: "where am I", action: { type: "status" } }],
   });
+  assert.equal(session.schemaVersion, "legion-cli-chat/v1");
+  assert.equal(session.id, "s1");
   assert.equal(session.turns.length, 1);
+  assert.equal(session.turns[0].role, "user");
+  assert.equal(session.turns[0].text, "where am I");
+  assert.deepEqual(session.turns[0].action, { type: "status" });
   assert.equal(ChatSessionFileSchema.safeParse({ ...session, extra: true }).success, false);
+  assert.equal(
+    ChatSessionFileSchema.safeParse({ ...session, schemaVersion: "legion-cli-chat/v2" }).success,
+    false,
+  );
+  assert.equal(
+    ChatSessionFileSchema.safeParse({
+      ...session,
+      turns: [{ role: "system", text: "nope" }],
+    }).success,
+    false,
+  );
+  assert.equal(ChatSessionFileSchema.safeParse({ ...session, id: "" }).success, false);
 
   const serve = ServeFileSchema.parse({
     schemaVersion: "legion-cli-serve/v1",
@@ -1398,6 +1503,14 @@ test("JSON Schema overlays refuse unsigned github pins and validate new files", 
     }),
     false,
   );
+  assert.equal(
+    validatePin({
+      ...localPin,
+      source: { type: "github", origin: "https://github.com/acme/skills", ref: "v1.0.0" },
+      integrity: { sha256: hash, minisign: "sig" },
+    }),
+    false,
+  );
 
   assert.equal(
     validateFingerprint({
@@ -1411,15 +1524,23 @@ test("JSON Schema overlays refuse unsigned github pins and validate new files", 
   );
   assert.equal(validateChat({ type: "next_verb" }), true);
   assert.equal(validateChat({ type: "search" }), false);
+  const sessionOk = {
+    schemaVersion: "legion-cli-chat/v1",
+    id: "s1",
+    startedAt: "2026-09-17T00:00:00Z",
+    turns: [{ role: "user", text: "where am I", action: { type: "status" } }],
+  };
+  assert.equal(validateSession(sessionOk), true);
+  assert.equal(validateSession({ ...sessionOk, schemaVersion: "legion-cli-chat/v2" }), false);
   assert.equal(
     validateSession({
-      schemaVersion: "legion-cli-chat/v1",
-      id: "s1",
-      startedAt: "2026-09-17T00:00:00Z",
-      turns: [],
+      ...sessionOk,
+      turns: [{ role: "system", text: "nope" }],
     }),
-    true,
+    false,
   );
+  assert.equal(validateSession({ ...sessionOk, id: "" }), false);
+  assert.equal(validateSession({ ...sessionOk, extra: true }), false);
   assert.equal(
     validateServe({
       schemaVersion: "legion-cli-serve/v1",

@@ -127,7 +127,7 @@ const SHA256_HEX_REGEX = /^[a-f0-9]{64}$/;
 export const Sha256HexSchema = z.string().regex(SHA256_HEX_REGEX);
 
 const HTTP_HEADER_SECRET_NAMES = ["authorization", "x-api-key"];
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 const GITHUB_OWNER_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 function httpBaseUrlIssue(baseUrl: string, allowLoopback: boolean): string | null {
@@ -141,7 +141,13 @@ function httpBaseUrlIssue(baseUrl: string, allowLoopback: boolean): string | nul
     return "adapter.http.baseUrl cannot include userinfo";
   }
   if (parsed.protocol === "https:") return null;
-  if (parsed.protocol === "http:" && allowLoopback && LOOPBACK_HOSTS.has(parsed.hostname)) {
+  const host = parsed.hostname;
+  const unwrapped = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (
+    parsed.protocol === "http:" &&
+    allowLoopback &&
+    (LOOPBACK_HOSTS.has(host) || LOOPBACK_HOSTS.has(unwrapped))
+  ) {
     return null;
   }
   return "adapter.http.baseUrl must be https: (http: loopback only with allowLoopback)";
