@@ -97,7 +97,7 @@ async function installerFingerprintWarning(legionPaths: string[]): Promise<strin
   const probe = pickLegionProbe(legionPaths);
   if (!probe) return undefined;
   const result = await runBounded(probe, ["--help"], 5_000);
-  if (result.timedOut) return undefined;
+  if (result.timedOut || result.truncated) return undefined;
   const text = `${result.stdout}\n${result.stderr}`;
   return looksLikeInstallerHelp(text) ? INSTALLER_PATH_WARNING : undefined;
 }

@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 import { bin, normalize, runCli, withTempDir } from "./helpers.js";
-import { runBounded } from "../dist/which.js";
+import { RUN_BOUNDED_MAX_BUFFER, runBounded } from "../dist/which.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8"));
@@ -376,6 +376,7 @@ test("runBounded timeout kills cmd grandchild / node target", async () => {
     const started = Date.now();
     const result = await runBounded(probe, ["--help"], 800);
     assert.equal(result.timedOut, true);
+    assert.equal(result.truncated, false);
     assert.ok(Date.now() - started < 4000);
     const deadline = Date.now() + 2000;
     while (!existsSync(pidFile) && Date.now() < deadline) {
@@ -387,6 +388,44 @@ test("runBounded timeout kills cmd grandchild / node target", async () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.equal(isAlive(pid), false, `grandchild pid ${pid} still alive`);
+  });
+});
+
+test("runBounded caps stdout at 1 MiB and kills the process tree", async () => {
+  await withTempDir(async (dir) => {
+    const flood = join(dir, "flood.cjs");
+    const pidFile = join(dir, "pid.txt");
+    await writeFile(
+      flood,
+      [
+        'const { writeFileSync } = require("node:fs");',
+        `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+        "const chunk = Buffer.alloc(64 * 1024, 97);",
+        "function flood() {",
+        "  while (process.stdout.write(chunk)) {}",
+        '  process.stdout.once("drain", flood);',
+        "}",
+        "flood();",
+        "",
+      ].join("\n"),
+    );
+    const started = Date.now();
+    const result = await runBounded(process.execPath, [flood], 10_000);
+    assert.equal(result.truncated, true, result.stderr);
+    assert.equal(result.timedOut, false);
+    assert.ok(Buffer.byteLength(result.stdout) <= RUN_BOUNDED_MAX_BUFFER);
+    assert.ok(Buffer.byteLength(result.stderr) <= RUN_BOUNDED_MAX_BUFFER);
+    assert.ok(Date.now() - started < 4000);
+    const deadline = Date.now() + 2000;
+    while (!existsSync(pidFile) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(existsSync(pidFile), "flood fixture never wrote pid");
+    const pid = Number(readFileSync(pidFile, "utf8").trim());
+    while (isAlive(pid) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(isAlive(pid), false, `flood pid ${pid} still alive`);
   });
 });
 
