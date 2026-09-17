@@ -309,6 +309,49 @@ test("POST /engine/* requires token and origin; ticket/wikiTrust/qaChecklist mut
   });
 });
 
+test("POST /engine/* returns 409 while a live spawn is in_progress", async () => {
+  await withStore(async ({ dir, store }) => {
+    const live = (await store.readTask("TSK-0002")).data;
+    await store.writeTask({ ...live, status: "in_progress" }, "Implement the in/out button.\n");
+    const resumeDir = join(dir, ".legion-cli", "cache", "runs", "execute-live");
+    await mkdir(resumeDir, { recursive: true });
+    await writeFile(
+      join(resumeDir, "resume.json"),
+      `${JSON.stringify(
+        {
+          schemaVersion: "legion-cli-resume/v1",
+          runId: "execute-live",
+          taskId: "TSK-0002",
+          skillId: "execute",
+          preSpawnRef: "UNBORN",
+          startedAt: new Date().toISOString(),
+          pid: process.pid,
+          adapterId: "fake",
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await store.rebuild();
+    await withServer(dir, async ({ handle, warns }) => {
+      const html = await (await fetch(handle.url)).text();
+      const token = handle.token;
+      assert.equal(tokenFromWarns(warns), token);
+      assertHtmlOmitsToken(html, token);
+      const ticketRes = await enginePost(handle, "/engine/ticket", { title: "park extra" }, { token });
+      assert.equal(ticketRes.status, 409, await ticketRes.clone().text());
+      const body = await ticketRes.json();
+      assert.match(body.error, /in_progress/);
+      assert.equal(body.next, "legion-cli status");
+      const trustRes = await enginePost(handle, "/engine/wikiTrust", { pageId: "notes" }, { token });
+      assert.equal(trustRes.status, 409);
+      const getState = await fetch(`${handle.url}/api/state`);
+      assert.equal(getState.status, 200);
+    });
+  });
+});
+
 test("SSE streams state; audit events appear on GET /audit", async () => {
   await withStore(async ({ dir, store }) => {
     await mkdir(store.paths.auditDir, { recursive: true });

@@ -82,6 +82,7 @@ export class LegionStore implements LegionReader {
   }
 
   async acquireLock(opts?: { timeoutMs?: number }): Promise<void> {
+    // Reentrancy is depth counting only — nested withLock does not drop engine.lock.
     if (this.#lockDepth > 0) {
       this.#lockDepth += 1;
       return;

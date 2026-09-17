@@ -220,20 +220,42 @@ test("engine.lock is single-writer and times out", async () => {
   });
 });
 
-test("empty or invalid engine.lock files are treated as stale", async () => {
+test("empty or invalid engine.lock files wait rather than steal", async () => {
   await withTempDir(async (dir) => {
     const store = new LegionStore(dir);
     await mkdir(store.paths.indexDir, { recursive: true });
     await writeFile(store.paths.lock, "", "utf8");
-    await store.acquireLock({ timeoutMs: 500 });
-    await store.releaseLock();
+    await assert.rejects(() => store.acquireLock({ timeoutMs: 200 }), EngineLockedError);
+    assert.equal(await readFile(store.paths.lock, "utf8"), "");
 
     await writeFile(store.paths.lock, "not-json\n", "utf8");
-    await store.acquireLock({ timeoutMs: 500 });
-    await store.releaseLock();
+    await assert.rejects(() => store.acquireLock({ timeoutMs: 200 }), EngineLockedError);
+    assert.equal(await readFile(store.paths.lock, "utf8"), "not-json\n");
 
     await writeFile(store.paths.lock, JSON.stringify({ pid: "nope" }), "utf8");
-    await store.acquireLock({ timeoutMs: 500 });
+    await assert.rejects(() => store.acquireLock({ timeoutMs: 200 }), EngineLockedError);
+  });
+});
+
+test("engine.lock payload includes a token; dead pid is still stolen", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LegionStore(dir);
+    await store.acquireLock({ timeoutMs: 200 });
+    const held = JSON.parse(await readFile(store.paths.lock, "utf8"));
+    assert.equal(held.pid, process.pid);
+    assert.equal(typeof held.token, "string");
+    assert.ok(held.token.length >= 16);
+    await store.releaseLock();
+
+    await mkdir(store.paths.indexDir, { recursive: true });
+    await writeFile(
+      store.paths.lock,
+      `${JSON.stringify({ pid: 2_000_000_000, createdAt: new Date().toISOString(), token: "dead" })}\n`,
+      "utf8",
+    );
+    await store.acquireLock({ timeoutMs: 200 });
+    const next = JSON.parse(await readFile(store.paths.lock, "utf8"));
+    assert.equal(next.pid, process.pid);
     await store.releaseLock();
   });
 });

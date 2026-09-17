@@ -40,11 +40,11 @@ export function isDetectOnly(id: AgentAdapterId): boolean {
 export function createAdapter(id: AgentAdapterId, options: AdapterCreateOptions = {}): AgentAdapter {
   switch (id) {
     case "fake":
-      return new FakeAdapter(
-        options.artifacts ?? [],
-        options.throwAfterWrite ?? false,
-        options.timedOut ?? false,
-      );
+      return new FakeAdapter(options.artifacts ?? [], options.throwAfterWrite ?? false, options.timedOut ?? false, {
+        holdWait: options.holdWait,
+        onWait: options.onWait,
+        handlePid: options.handlePid,
+      });
     case "claude":
       return new ClaudeAdapter(options.extraArgs ?? []);
     case "generic":
@@ -82,6 +82,9 @@ export function resolveAdapter(
     artifacts: options.artifacts,
     throwAfterWrite: options.throwAfterWrite,
     timedOut: options.timedOut,
+    holdWait: options.holdWait,
+    onWait: options.onWait,
+    handlePid: options.handlePid,
   });
 }
 

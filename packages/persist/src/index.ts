@@ -68,7 +68,7 @@ export {
   worktreeStorePath,
 } from "./layout.js";
 export type { LegionPaths } from "./layout.js";
-export { acquireEngineLock } from "./lock.js";
+export { acquireEngineLock, isPidAlive } from "./lock.js";
 export type { HeldLock } from "./lock.js";
 export {
   formatMarkdownDocument,

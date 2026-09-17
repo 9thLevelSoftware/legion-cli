@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { EngineLockedError } from "./errors.js";
@@ -5,6 +6,7 @@ import { DEFAULT_LOCK_TIMEOUT_MS } from "./layout.js";
 
 export type HeldLock = {
   release: () => Promise<void>;
+  token: string;
 };
 
 function delay(ms: number): Promise<void> {
@@ -13,7 +15,7 @@ function delay(ms: number): Promise<void> {
   });
 }
 
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -34,36 +36,36 @@ async function unlinkIfExists(lockPath: string): Promise<void> {
   }
 }
 
-function lockPid(raw: string): number | "stale" {
+type ParsedLockPid = { kind: "wait" } | { kind: "pid"; pid: number };
+
+/** Empty/partial/invalid payload is wait, not steal (KD-12). */
+function lockPid(raw: string): ParsedLockPid {
   const trimmed = raw.trim();
-  if (trimmed === "") return "stale";
+  if (trimmed === "") return { kind: "wait" };
   try {
     const parsed: unknown = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== "object") return "stale";
+    if (!parsed || typeof parsed !== "object") return { kind: "wait" };
     const pid = (parsed as { pid?: unknown }).pid;
-    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return "stale";
-    return pid;
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return { kind: "wait" };
+    return { kind: "pid", pid };
   } catch {
-    return "stale";
+    return { kind: "wait" };
   }
 }
 
 async function maybeRemoveStaleLock(lockPath: string): Promise<void> {
   try {
     const raw = await readFile(lockPath, "utf8");
-    const pid = lockPid(raw);
-    if (pid === "stale") {
-      await unlinkIfExists(lockPath);
-      return;
-    }
-    if (pid === process.pid) return;
-    if (!isPidAlive(pid)) {
+    const parsed = lockPid(raw);
+    if (parsed.kind === "wait") return;
+    if (parsed.pid === process.pid) return;
+    if (!isPidAlive(parsed.pid)) {
       await unlinkIfExists(lockPath);
     }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return;
-    await unlinkIfExists(lockPath);
+    // Unreadable lock: wait, do not steal.
   }
 }
 
@@ -78,22 +80,34 @@ export async function acquireEngineLock(
   while (true) {
     let created = false;
     try {
-      const handle = await open(lockPath, "wx");
+      const handle = await open(lockPath, "wx+");
       created = true;
+      const token = randomBytes(16).toString("hex");
       try {
         await handle.writeFile(
-          `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+          `${JSON.stringify({
+            pid: process.pid,
+            createdAt: new Date().toISOString(),
+            token,
+          })}\n`,
           "utf8",
         );
-      } finally {
-        await handle.close();
+      } catch (err) {
+        await handle.close().catch(() => undefined);
+        await unlinkIfExists(lockPath);
+        throw err;
       }
       let released = false;
       return {
+        token,
         async release() {
           if (released) return;
           released = true;
-          await unlinkIfExists(lockPath);
+          try {
+            await handle.close();
+          } finally {
+            await unlinkIfExists(lockPath);
+          }
         },
       };
     } catch (err) {

@@ -49,7 +49,7 @@ export {
   resolveAdapter,
   resolveAdapterId,
 } from "./resolve.js";
-export { FakeAdapter } from "./adapters/fake.js";
+export { FakeAdapter, FAKE_WAIT_READY_ENV, FAKE_WAIT_RELEASE_ENV, holdWaitFromEnv } from "./adapters/fake.js";
 export { ClaudeAdapter } from "./adapters/claude.js";
 export { GenericAdapter } from "./adapters/generic.js";
 export { ExtraAdapter } from "./adapters/extra.js";
@@ -69,6 +69,7 @@ export type {
   ExtraAdapterConfig,
   ExtraAdapterId,
   FakeArtifact,
+  FakeHoldWait,
   GenericAdapterConfig,
   SkillId,
   SpawnableAdapterId,

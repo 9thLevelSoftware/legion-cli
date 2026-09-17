@@ -8,6 +8,7 @@ import { specHasUi } from "./tags.js";
 
 export const DEFAULT_UNIT_COMMAND = "pnpm test -- --reporter=json";
 export const DEFAULT_PLAYWRIGHT_COMMAND = "pnpm exec playwright test --reporter=json";
+export const DEFAULT_QA_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 
 export function splitCommand(command: string): string[] {
   const out: string[] = [];
@@ -28,7 +29,7 @@ export type CommandCapture = {
   started: boolean;
 };
 
-function spawnArgv(argv: string[], cwd: string): ReturnType<typeof spawnSync> {
+function spawnArgv(argv: string[], cwd: string, timeoutMs = DEFAULT_QA_COMMAND_TIMEOUT_MS): ReturnType<typeof spawnSync> {
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
   return spawnSync(argv[0], argv.slice(1), {
@@ -37,6 +38,8 @@ function spawnArgv(argv: string[], cwd: string): ReturnType<typeof spawnSync> {
     windowsHide: true,
     shell: false,
     env,
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
   });
 }
 

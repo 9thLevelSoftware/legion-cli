@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -154,6 +154,51 @@ test("context compact rewrites only done tasks with no in_progress sibling", asy
     const still = await store.readTask("TSK-0001");
     assert.equal(still.data.status, "compacted");
     assert.equal(still.body, done.body);
+  });
+});
+
+test("context compact refuses while currentTaskId is in_progress with a live pid", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ status: "done" }), "Verbose log to compact.\n");
+    await writeTask(
+      store,
+      makeTask({
+        id: "TSK-0002",
+        status: "in_progress",
+        contract: { filesAllowed: ["src/board.ts"], expectedArtifacts: ["src/board.ts"] },
+      }),
+      "Running.\n",
+    );
+    await store.writeState(
+      { ...(await store.readState()).data, currentTaskId: "TSK-0002" },
+      "Current task: TSK-0002.\n",
+    );
+    const resumeDir = join(dir, ".legion-cli", "cache", "runs", "execute-live");
+    await mkdir(resumeDir, { recursive: true });
+    await writeFile(
+      join(resumeDir, "resume.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-resume/v1",
+        runId: "execute-live",
+        taskId: "TSK-0002",
+        skillId: "execute",
+        preSpawnRef: "UNBORN",
+        startedAt: new Date().toISOString(),
+        pid: process.pid,
+      })}\n`,
+      "utf8",
+    );
+    await assert.rejects(
+      () => engine.compactContext(),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /in_progress/);
+        assert.match(err.nextHint, /legion-cli status/);
+        return true;
+      },
+    );
+    assert.equal((await store.readTask("TSK-0001")).data.status, "done");
   });
 });
 

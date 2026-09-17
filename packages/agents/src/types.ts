@@ -87,6 +87,12 @@ export type ExtraAdapterConfig = {
   args?: string[];
 };
 
+export type FakeHoldWait = {
+  readyPath: string;
+  releasePath: string;
+  timeoutMs?: number;
+};
+
 export type AdapterCreateOptions = {
   extraArgs?: string[];
   generic?: GenericAdapterConfig;
@@ -98,4 +104,8 @@ export type AdapterCreateOptions = {
   artifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
   timedOut?: boolean;
+  holdWait?: FakeHoldWait;
+  onWait?: () => Promise<void>;
+  /** Fixture: AgentHandle.pid (default process.pid). Use an exited child to prove post-wait recovery. */
+  handlePid?: number;
 };

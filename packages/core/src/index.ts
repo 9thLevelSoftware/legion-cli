@@ -45,8 +45,8 @@ export {
   regressionTestSource,
   regressionVerifyCommand,
 } from "./fix.js";
-export { runVerificationCommands, splitCommand } from "./verify.js";
-export { argvSummarySafe, findSkillsDir, optionalSkillSpawn } from "./spawn.js";
+export { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands, splitCommand } from "./verify.js";
+export { argvSummarySafe, findSkillsDir, optionalSkillSpawn, resumeRunIsLive } from "./spawn.js";
 export { WIREFRAME_PALETTE, palettePresent, uniqueScreenPages } from "./wireframes.js";
 export {
   assertCanTransition,

@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, CommanderError, Help } from "commander";
-import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
+import { HINT, LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
 import { DesignSystemError } from "@9thlevelsoftware/legion-cli-design-system";
+import { EngineLockedError } from "@9thlevelsoftware/legion-cli-persist";
 import { ADAPTER_ID_HELP } from "@9thlevelsoftware/legion-cli-schema";
 import { runAbandon } from "./abandon.js";
 import { runAssumeAnswer, runAssumeList } from "./assume.js";
@@ -637,6 +638,10 @@ export async function runCli(argv: string[]): Promise<number> {
     await program.parseAsync(argv);
     return process.exitCode ?? 0;
   } catch (err) {
+    if (err instanceof EngineLockedError) {
+      printRefuse({ message: err.message, nextHint: HINT.status }, json);
+      return 1;
+    }
     if (err instanceof LegionRefuseError || err instanceof DesignSystemError) {
       printRefuse(err, json);
       return 1;

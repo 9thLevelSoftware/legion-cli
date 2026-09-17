@@ -610,6 +610,7 @@ test("adapter routing: generic-if-routed, strict HTTP keys, named keys, optional
     startedAt: "2026-09-01T12:00:00Z",
   };
   assert.equal(ResumeFileSchema.parse(resume).adapterId, undefined);
+  assert.equal(ResumeFileSchema.parse({ ...resume, enginePid: 1234, pid: 5678 }).enginePid, 1234);
   assert.deepEqual(
     ResumeFileSchema.parse({
       ...resume,
