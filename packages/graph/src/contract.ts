@@ -1,6 +1,10 @@
 import { isConcretePosixRepoRelativePath, type Task } from "@9thlevelsoftware/legion-cli-schema";
 
-/** Implicit FileContract denylist. Never allowed, even if listed in filesAllowed. */
+/**
+ * Revert-safe implicit denylist (KD-11 gate 3). Merged into filesForbidden.
+ * Do **not** put engine SoT (STATE.md, tasks/*.md) here — plan/review/verify
+ * must still persist TSK-*.md under SkillContract.allowedRoots.
+ */
 export const DEFAULT_FILES_FORBIDDEN = [
   ".git/**",
   ".legion-cli/config.yaml",
@@ -9,11 +13,15 @@ export const DEFAULT_FILES_FORBIDDEN = [
   ".env.*",
 ] as const;
 
-/** Same implicit denylist as SkillContract / execute revert. */
+/** Plan-time FileContract SoT (KD-11 gate 1). Tasks do not own `.legion-cli/**`. */
+export function isEngineSoTPath(posixPath: string): boolean {
+  return posixPath === ".legion-cli" || posixPath.startsWith(".legion-cli/");
+}
+
+/** Plan-time FileContract denylist. Broader than DEFAULT_FILES_FORBIDDEN. */
 export function isImplicitForbiddenPath(posixPath: string): boolean {
   if (posixPath === ".git" || posixPath.startsWith(".git/")) return true;
-  if (posixPath === ".legion-cli/config.yaml") return true;
-  if (posixPath.startsWith(".legion-cli/index/") || posixPath === ".legion-cli/index") return true;
+  if (isEngineSoTPath(posixPath)) return true;
   const base = posixPath.split("/").pop() ?? posixPath;
   if (base === ".env" || base.startsWith(".env.")) return true;
   return false;
@@ -24,6 +32,24 @@ export function filesAllowedFailsPlan(filesAllowed: readonly string[]): boolean 
     filesAllowed.length === 0 ||
     filesAllowed.some((path) => !isConcretePosixRepoRelativePath(path) || isImplicitForbiddenPath(path))
   );
+}
+
+/** expectedArtifacts is a subset of filesAllowed (same concrete + SoT checks). */
+export function expectedArtifactsFailsPlan(
+  filesAllowed: readonly string[],
+  expectedArtifacts: readonly string[],
+): boolean {
+  const allowed = new Set(filesAllowed);
+  return expectedArtifacts.some(
+    (path) => !isConcretePosixRepoRelativePath(path) || isImplicitForbiddenPath(path) || !allowed.has(path),
+  );
+}
+
+export function fileContractFailsPlan(
+  filesAllowed: readonly string[],
+  expectedArtifacts: readonly string[],
+): boolean {
+  return filesAllowedFailsPlan(filesAllowed) || expectedArtifactsFailsPlan(filesAllowed, expectedArtifacts);
 }
 
 /** v0 serial exclusive: two tasks must not share a filesAllowed path. */

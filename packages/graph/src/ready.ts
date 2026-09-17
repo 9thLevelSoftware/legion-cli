@@ -1,5 +1,5 @@
 import type { Assumption, ControlMode, Phase, Priority, Task } from "@9thlevelsoftware/legion-cli-schema";
-import { filesAllowedFailsPlan } from "./contract.js";
+import { fileContractFailsPlan } from "./contract.js";
 
 const PRIORITY_RANK: Record<Priority, number> = { P0: 0, P1: 1, P2: 2 };
 
@@ -65,7 +65,7 @@ export function isTaskReady(task: Task, ctx: ReadyContext): boolean {
   if (ctx.controlMode === "advisory") return false;
   if (task.status !== "todo" && task.status !== "ready") return false;
   if (task.contract.verificationCommands.length < 1) return false;
-  if (filesAllowedFailsPlan(task.contract.filesAllowed)) return false;
+  if (fileContractFailsPlan(task.contract.filesAllowed, task.contract.expectedArtifacts)) return false;
   if (unresolvedBlockers(task, ctx.tasks).length > 0) return false;
   if (hasOpenBlockingAssumption(task, ctx)) return false;
   if (ctx.tasks.some((other) => other.status === "in_progress" && other.id !== task.id)) {

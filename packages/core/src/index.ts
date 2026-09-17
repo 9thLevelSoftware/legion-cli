@@ -58,6 +58,7 @@ export {
 } from "./phases.js";
 export {
   evaluateReadiness,
+  expectedArtifactsFailsPlan,
   filesAllowedFailsPlan,
   overlappingFilesAllowed,
 } from "./readiness.js";

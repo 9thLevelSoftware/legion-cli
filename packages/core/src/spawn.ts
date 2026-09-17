@@ -269,7 +269,10 @@ export async function optionalSkillSpawn(opts: {
     skipDesignAppend: assembled.skipDesignAppend,
   });
   const preSpawnRef = recordPreSpawnRef(opts.projectRoot);
-  const snapshot = preSpawnRef ? undefined : await snapshotPaths(opts.projectRoot);
+  // Always snapshot the worktree, even when preSpawnRef is set. Gitignored
+  // extras are invisible to `git status --exclude-standard`; KD-11 forbids
+  // unioning raw `git status --ignored` (that would revert pre-existing ignored files).
+  const snapshot = await snapshotPaths(opts.projectRoot);
   const dirtyAtStart = snapshotDirtyPaths(opts.projectRoot, preSpawnRef);
   const gitPolicy = await snapshotGitPolicy(opts.projectRoot);
   const resumeDir = join(opts.projectRoot, ".legion-cli", "cache", "runs", runId);

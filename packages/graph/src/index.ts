@@ -1,6 +1,9 @@
 export {
   DEFAULT_FILES_FORBIDDEN,
+  expectedArtifactsFailsPlan,
+  fileContractFailsPlan,
   filesAllowedFailsPlan,
+  isEngineSoTPath,
   isImplicitForbiddenPath,
   mergeFilesForbidden,
   overlappingFilesAllowed,

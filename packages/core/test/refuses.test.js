@@ -79,13 +79,42 @@ const cases = [
     act: ({ engine }) => engine.execute("TSK-0001"),
   },
   {
-    name: "execute TSK-x if not ready",
+    name: "execute TSK-x if not graph-ready (blockedBy)",
     hint: /legion-cli status --blockers/,
+    message: /is not ready/,
     setup: async ({ engine, store }) => {
       await initProject(engine);
-      await seedPlanReady(store, { task: { status: "todo" } });
+      await seedPlanReady(store, {
+        task: { status: "ready", blockedBy: ["TSK-0002"] },
+        extraTasks: [
+          makeTask({
+            id: "TSK-0002",
+            status: "todo",
+            contract: { filesAllowed: ["src/board.ts"], expectedArtifacts: ["src/board.ts"] },
+          }),
+        ],
+      });
     },
     act: ({ engine }) => engine.execute("TSK-0001"),
+  },
+  {
+    name: "execute other-spec id is not a subset-DAG verb",
+    hint: /legion-cli status --blockers/,
+    message: /not in the active spec slice/,
+    setup: async ({ engine, store }) => {
+      await initProject(engine);
+      await seedPlanReady(store);
+      await writeTask(
+        store,
+        makeTask({
+          id: "TSK-9999",
+          specId: "spec-other",
+          status: "ready",
+          contract: { filesAllowed: ["src/other.ts"], expectedArtifacts: ["src/other.ts"] },
+        }),
+      );
+    },
+    act: ({ engine }) => engine.execute("TSK-9999"),
   },
   {
     name: "execute in advisory",

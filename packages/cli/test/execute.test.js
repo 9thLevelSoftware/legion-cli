@@ -175,6 +175,32 @@ test("doctor --metrics counts one execute timeout", async () => {
   });
 });
 
+test("execute other-spec id refuses", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir);
+    const engine = createLegionEngine(dir);
+    await engine.store.writeTask(
+      makeTask({
+        id: "TSK-9999",
+        specId: "spec-other",
+        status: "ready",
+        contract: {
+          filesAllowed: ["src/other.ts"],
+          expectedArtifacts: ["src/other.ts"],
+          verificationCommands: [passingVerify()],
+        },
+      }),
+      "Other spec task.\n",
+    );
+    const result = runCli(["execute", "TSK-9999", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /not in the active spec slice/);
+    assert.match(normalize(result.stderr), /Next: legion-cli status --blockers/);
+  });
+});
+
 test("execute --adapter grok refuses via cli when grok is unspawnable", async () => {
   await withTempDir(async (dir) => {
     const engine = await seedPlanReady(dir);

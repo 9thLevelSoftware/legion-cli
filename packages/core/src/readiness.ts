@@ -1,4 +1,5 @@
 import {
+  expectedArtifactsFailsPlan,
   filesAllowedFailsPlan,
   isImplicitForbiddenPath,
   overlappingFilesAllowed,
@@ -11,7 +12,7 @@ export type ReadinessReport = {
   concerns: string[];
 };
 
-export { filesAllowedFailsPlan, overlappingFilesAllowed };
+export { expectedArtifactsFailsPlan, filesAllowedFailsPlan, overlappingFilesAllowed };
 
 export function evaluateReadiness(input: {
   spec: Spec;
@@ -40,6 +41,11 @@ export function evaluateReadiness(input: {
       fails.push(`${task.id} filesAllowed includes a forbidden path`);
     } else if (filesAllowedFailsPlan(task.contract.filesAllowed)) {
       fails.push(`${task.id} filesAllowed must be concrete paths`);
+    }
+    if (task.contract.expectedArtifacts.some((path) => isImplicitForbiddenPath(path))) {
+      fails.push(`${task.id} expectedArtifacts includes a forbidden path`);
+    } else if (expectedArtifactsFailsPlan(task.contract.filesAllowed, task.contract.expectedArtifacts)) {
+      fails.push(`${task.id} expectedArtifacts must be a subset of filesAllowed`);
     }
   }
 
