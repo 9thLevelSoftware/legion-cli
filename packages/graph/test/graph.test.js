@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  expectedArtifactsFailsPlan,
   filesAllowedFailsPlan,
   isTaskReady,
   overlappingFilesAllowed,
@@ -55,7 +56,18 @@ test("filesAllowedFailsPlan rejects empty, globs, .git, and implicit forbidden",
   assert.equal(filesAllowedFailsPlan([".env.local"]), true);
   assert.equal(filesAllowedFailsPlan([".legion-cli/config.yaml"]), true);
   assert.equal(filesAllowedFailsPlan([".legion-cli/index/engine.lock"]), true);
+  assert.equal(filesAllowedFailsPlan([".legion-cli/STATE.md"]), true);
+  assert.equal(filesAllowedFailsPlan([".legion-cli/tasks/TSK-0001.md"]), true);
+  assert.equal(filesAllowedFailsPlan([".legion-cli/PROJECT.md"]), true);
   assert.equal(filesAllowedFailsPlan(["src/main.ts"]), false);
+});
+
+test("expectedArtifactsFailsPlan requires a concrete subset of filesAllowed", () => {
+  assert.equal(expectedArtifactsFailsPlan(["src/main.ts"], ["src/main.ts"]), false);
+  assert.equal(expectedArtifactsFailsPlan(["src/main.ts"], []), false);
+  assert.equal(expectedArtifactsFailsPlan(["src/main.ts"], ["src/other.ts"]), true);
+  assert.equal(expectedArtifactsFailsPlan(["src/main.ts"], ["src/**"]), true);
+  assert.equal(expectedArtifactsFailsPlan(["src/main.ts"], [".legion-cli/STATE.md"]), true);
 });
 
 test("overlapping filesAllowed is exclusive in v0", () => {

@@ -105,6 +105,7 @@ async function walk(root: string, rel: string, out: Set<string>): Promise<void> 
   for (const entry of entries) {
     const posix = toPosixPath(rel ? `${rel}/${entry.name}` : entry.name);
     if (posix === ".git" || posix.startsWith(".git/")) continue;
+    // Walk dist/node_modules too: gitignored extras there must still revert.
     if (isEngineOwned(posix)) continue;
     if (entry.isDirectory()) {
       await walk(root, posix, out);
@@ -177,6 +178,8 @@ export async function revertExtras(opts: {
   if (opts.snapshot) {
     const after = await snapshotPaths(opts.projectRoot);
     for (const posix of after) {
+      // New paths vs the pre-spawn filesystem snapshot (gitignored extras).
+      // Pre-existing ignored files stay in `opts.snapshot` so they are not extras.
       if (!opts.snapshot.has(posix)) candidates.add(posix);
     }
   }

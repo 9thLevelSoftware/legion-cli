@@ -162,7 +162,9 @@ function porcelainPaths(cwd: string): string[] {
 
 /**
  * Union of committed, staged, unstaged, and untracked paths since preSpawnRef.
- * Ignored files (cache, index) are excluded by git's standard excludes.
+ * Ignored files are excluded by git's standard excludes on purpose. Execute
+ * revert discovers gitignored extras via a filesystem snapshot, not
+ * `git status --ignored` (that would also revert pre-existing ignored files).
  */
 export function gitDiscoverChanges(cwd: string, preSpawnRef: string | null): string[] {
   if (!isGitRepo(cwd)) return [];

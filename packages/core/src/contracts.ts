@@ -14,6 +14,7 @@ export const SKILL_CONTRACTS: Record<SkillId, readonly string[]> = {
   qa: [".legion-cli/qa/**", ".legion-cli/cache/runs/<id>/**"],
 };
 
+/** Revert implicit denylist (KD-11 gate 3). Not the plan-time SoT list. */
 const IMPLICIT_FORBIDDEN = [
   ".git/**",
   ".env*",
@@ -31,7 +32,10 @@ export function skillContract(skillId: SkillId, opts: { runId: string; specId?: 
   return { skillId, allowedRoots: roots };
 }
 
-/** Execute allowed = SkillContract cache root ∪ FileContract.filesAllowed ∪ expectedArtifacts. */
+/**
+ * Execute allowed = SkillContract cache root ∪ FileContract.filesAllowed ∪ expectedArtifacts.
+ * KD-11 gate 2: `.legion-cli/**` except `cache/runs/<id>/**` is extra (SoT is not an execute write root).
+ */
 export function executeAllowedRoots(runId: string, contract: FileContract): string[] {
   const skill = skillContract("execute", { runId });
   return [...skill.allowedRoots, ...contract.filesAllowed, ...contract.expectedArtifacts];

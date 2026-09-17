@@ -10,9 +10,11 @@ import { readAuditEvents, summarizeAuditMetrics } from "@9thlevelsoftware/legion
 import {
   argvSummarySafe,
   HEAD_MOVED_WARNING,
+  HINT,
   LegionEngine,
   LegionRefuseError,
   optionalSkillSpawn,
+  regressionTestPath,
   revertExtras,
 } from "../dist/index.js";
 import { snapshotGitPolicy } from "../dist/revert.js";
@@ -27,6 +29,7 @@ import {
   seedPlanReady,
   withEngine,
   withFakeAdapter,
+  writeTask,
   writeUnspawnableGrok,
 } from "./helpers.js";
 
@@ -66,6 +69,7 @@ async function seedExecute(store, opts = {}) {
     },
     extraTasks: opts.extraTasks,
     phase: opts.phase,
+    lastReview: opts.lastReview,
   });
 }
 
@@ -685,5 +689,279 @@ test("until-blocked SessionBrief FileContract matches the spawned task, not the 
       assert.match(second, /## FileContract\nfilesAllowed:\n- src\/board\.ts/);
       assert.match(second, /maxFilesTouched: 20/);
     });
+  });
+});
+
+test("execute [id] of a graph-ready todo succeeds", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store, { task: { status: "todo" } });
+      initGitRepo(dir);
+      const result = await engine.execute("TSK-0001");
+      assert.equal(result.status, "done");
+      assert.equal((await store.readTask("TSK-0001")).data.status, "done");
+    });
+  });
+});
+
+test("execute [id] other-spec ready refuses", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedExecute(store);
+    await writeTask(
+      store,
+      makeTask({
+        id: "TSK-9999",
+        specId: "spec-other",
+        status: "ready",
+        contract: { filesAllowed: ["src/other.ts"], expectedArtifacts: ["src/other.ts"] },
+      }),
+    );
+    await assert.rejects(
+      () => engine.execute("TSK-9999"),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /not in the active spec slice/);
+        assert.match(err.nextHint, /status --blockers/);
+        return true;
+      },
+    );
+    assert.equal((await store.readTask("TSK-9999")).data.status, "ready");
+    assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
+  });
+});
+
+test("execute [id] with blockedBy refuses even if status is ready", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedExecute(store, {
+      task: { status: "ready", blockedBy: ["TSK-0002"] },
+      extraTasks: [
+        makeTask({
+          id: "TSK-0002",
+          status: "todo",
+          contract: { filesAllowed: ["src/board.ts"], expectedArtifacts: ["src/board.ts"] },
+        }),
+      ],
+    });
+    await assert.rejects(
+      () => engine.execute("TSK-0001"),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /is not ready/);
+        return true;
+      },
+    );
+  });
+});
+
+test("execute [id] with a sibling in_progress refuses even if status is ready", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedExecute(store, {
+      extraTasks: [
+        makeTask({
+          id: "TSK-0002",
+          status: "in_progress",
+          contract: { filesAllowed: ["src/board.ts"], expectedArtifacts: ["src/board.ts"] },
+        }),
+      ],
+    });
+    await assert.rejects(
+      () => engine.execute("TSK-0001"),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /is not ready/);
+        return true;
+      },
+    );
+  });
+});
+
+test("execute [id] with an open blocking assumption refuses even if status is ready", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedExecute(store);
+    await store.writeAssumption(
+      {
+        schemaVersion: "legion-cli-assumption/v1",
+        id: "ASM-0001",
+        statement: "Need office wifi",
+        status: "open",
+        blocking: true,
+        escalatesTo: "user",
+        createdIn: "intent",
+      },
+      "Need office wifi\n",
+    );
+    await assert.rejects(
+      () => engine.execute("TSK-0001"),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /is not ready/);
+        return true;
+      },
+    );
+  });
+});
+
+test("extra.json glob files a notes ticket and blocks instead of stuck in_progress", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+        assert.notEqual((await store.readTask("TSK-0001")).data.status, "in_progress");
+        const ticket = (await store.readTask("TSK-0002")).data;
+        assert.equal(ticket.title, "also glob");
+        assert.deepEqual(ticket.contract.filesAllowed, ["notes/TSK-0002.md"]);
+        assert.equal(ticket.parentId, "TSK-0001");
+        assert.equal(result.tasks[0].ticketId, "TSK-0002");
+      },
+      {
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "also glob",
+              parentId: "TSK-0001",
+              filesAllowed: ["src/**"],
+            }),
+          },
+        ],
+      },
+    );
+  });
+});
+
+test("ticket create overlapping filesAllowed refuses with ticket Next", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedExecute(store);
+    await assert.rejects(
+      () =>
+        engine.fileTicket({
+          title: "also main",
+          contract: { filesAllowed: ["src/main.ts"] },
+        }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /overlapping filesAllowed/);
+        assert.equal(err.nextHint, HINT.ticket("TSK-x"));
+        return true;
+      },
+    );
+  });
+});
+
+test("extra.json overlapping filesAllowed is coerced and blocks the parent", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+        const ticket = (await store.readTask("TSK-0002")).data;
+        assert.deepEqual(ticket.contract.filesAllowed, ["notes/TSK-0002.md"]);
+        assert.equal(result.tasks[0].ticketId, "TSK-0002");
+      },
+      {
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "also main",
+              parentId: "TSK-0001",
+              filesAllowed: ["src/main.ts"],
+            }),
+          },
+        ],
+      },
+    );
+  });
+});
+
+test("fix overlapping src/main.ts refuses before lastReview or regression tests", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedExecute(store, { phase: "executing", lastReview: "PASS" });
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.js"), "export const ok = false;\n", "utf8");
+    const testPath = regressionTestPath("crash on tap");
+    await assert.rejects(
+      () => engine.fix("crash on tap"),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /overlapping filesAllowed/);
+        assert.equal(err.nextHint, HINT.fix);
+        return true;
+      },
+    );
+    assert.equal((await engine.getState()).lastReview, "PASS");
+    assert.equal(existsSync(join(dir, ...testPath.split("/"))), false);
+  });
+});
+
+test("gitignore extras revert only new ignored paths, not pre-existing secret/keep", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        await mkdir(join(dir, "secret"), { recursive: true });
+        await writeFile(join(dir, "secret", "keep"), "keep-me\n", "utf8");
+        const gitignore = await readFile(join(dir, ".gitignore"), "utf8").catch(() => "");
+        await writeFile(join(dir, ".gitignore"), `${gitignore.endsWith("\n") ? gitignore : `${gitignore}\n`}secret/\n`, "utf8");
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.equal(existsSync(join(dir, "secret", "x")), false);
+        assert.ok(result.tasks[0].extrasReverted.includes("secret/x"));
+        assert.equal(result.tasks[0].extrasReverted.includes("secret/keep"), false);
+        assert.equal(existsSync(join(dir, "secret", "keep")), true);
+        const keep = (await readFile(join(dir, "secret", "keep"), "utf8")).replaceAll("\r\n", "\n");
+        assert.equal(keep, "keep-me\n");
+      },
+      {
+        fakeArtifacts: [{ path: "secret/x", content: "leaked\n" }],
+      },
+    );
+  });
+});
+
+test("gitignore extras under dist/ revert new files, not pre-existing dist/keep", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        await mkdir(join(dir, "dist"), { recursive: true });
+        await writeFile(join(dir, "dist", "keep"), "keep-me\n", "utf8");
+        const gitignore = await readFile(join(dir, ".gitignore"), "utf8").catch(() => "");
+        await writeFile(
+          join(dir, ".gitignore"),
+          `${gitignore.endsWith("\n") ? gitignore : `${gitignore}\n`}dist/\n`,
+          "utf8",
+        );
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.equal(existsSync(join(dir, "dist", "x")), false);
+        assert.ok(result.tasks[0].extrasReverted.includes("dist/x"));
+        assert.equal(result.tasks[0].extrasReverted.includes("dist/keep"), false);
+        assert.equal(existsSync(join(dir, "dist", "keep")), true);
+      },
+      {
+        fakeArtifacts: [{ path: "dist/x", content: "leaked\n" }],
+      },
+    );
   });
 });

@@ -4,10 +4,11 @@ import { refuse } from "./errors.js";
 /**
  * todo → ready → in_progress → verifying → done → compacted
  *                  ↘ blocked
+ * ready → todo when amend/assume invalidates graph-ready (KD-10).
  */
 export const LEGAL_TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   todo: ["ready", "blocked"],
-  ready: ["in_progress", "blocked"],
+  ready: ["in_progress", "blocked", "todo"],
   in_progress: ["verifying", "blocked"],
   verifying: ["done", "blocked"],
   blocked: ["todo", "ready"],

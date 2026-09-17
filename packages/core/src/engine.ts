@@ -6,6 +6,8 @@ import {
   type FakeArtifact,
 } from "@9thlevelsoftware/legion-cli-agents";
 import {
+  expectedArtifactsFailsPlan,
+  filesAllowedFailsPlan,
   isTaskReady,
   mergeFilesForbidden,
   overlappingFilesAllowed,
@@ -108,7 +110,7 @@ import {
   specIdFromName,
 } from "./intent.js";
 import { assertCanTransition, assertLegalPhase } from "./phases.js";
-import { evaluateReadiness, filesAllowedFailsPlan, type ReadinessReport } from "./readiness.js";
+import { evaluateReadiness, type ReadinessReport } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
 import { HEAD_MOVED_WARNING, restoreChangedTaskFiles, snapshotTaskFiles } from "./revert.js";
 import { findSkillsDir, optionalSkillSpawn, spawnableAdapterRefuseMessage } from "./spawn.js";
@@ -122,7 +124,7 @@ import {
   regressionVerifyCommand,
 } from "./fix.js";
 import { nextPacketId, packetFromInput, packetMarkdownBody } from "./packets.js";
-import { nextTaskId, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
+import { defaultTicketContract, nextTaskId, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
 import {
   displayStagedRoots,
   ghAvailable,
@@ -859,7 +861,7 @@ export class LegionEngine {
   }
 
   async fileTicket(input: NewTicket): Promise<Task> {
-    return this.#mutate(() => this.#fileTicketLocked(input));
+    return this.#mutate(async () => (await this.#fileTicketLocked(input)).task);
   }
 
   async newPacket(input: NewPacket): Promise<PacketResult> {
@@ -884,6 +886,9 @@ export class LegionEngine {
       if (filesAllowedFailsPlan(contract.filesAllowed)) {
         refuse("File paths must be concrete (no * or **)", HINT.concretePaths);
       }
+      if (expectedArtifactsFailsPlan(contract.filesAllowed, contract.expectedArtifacts)) {
+        refuse("expectedArtifacts must be a subset of filesAllowed", HINT.concretePaths);
+      }
       if (contract.verificationCommands.length === 0) {
         refuse("amend requires verificationCommands", HINT.plan);
       }
@@ -891,7 +896,9 @@ export class LegionEngine {
         ...contract,
         filesForbidden: mergeFilesForbidden(contract.filesForbidden),
       };
-      const others = (await this.#listTasks()).filter((task) => task.id !== id);
+      const others = (await this.#listTasks()).filter(
+        (task) => task.id !== id && task.status !== "done" && task.status !== "compacted",
+      );
       const overlaps = overlappingFilesAllowed([{ ...doc.data, contract: merged }, ...others]);
       if (overlaps.length > 0) {
         refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.amend);
@@ -910,6 +917,14 @@ export class LegionEngine {
         },
         doc.body,
       );
+      const state = await this.#readState();
+      let controlMode: ControlMode = "guarded";
+      try {
+        controlMode = (await this.#readConfig()).control_mode;
+      } catch {
+        // missing config
+      }
+      await this.#promoteReadyTasks(doc.data.specId, state.phase, controlMode);
     });
   }
 
@@ -1202,15 +1217,29 @@ export class LegionEngine {
         refuse("fix requires an active spec", HINT.spec);
       }
       const testPath = regressionTestPath(title);
-      await ensureRegressionTest(this.projectRoot, testPath, title);
+      const filesAllowed = fixFilesAllowed(this.projectRoot, testPath);
       const verifyCmd = regressionVerifyCommand(testPath);
+      if (filesAllowedFailsPlan(filesAllowed) || expectedArtifactsFailsPlan(filesAllowed, [testPath])) {
+        refuse("File paths must be concrete (no * or **)", HINT.concretePaths);
+      }
+      const live = (await this.#listTasks()).filter(
+        (task) => task.status !== "done" && task.status !== "compacted",
+      );
+      const probe = ticketFromInput("TSK-probe", specId, {
+        title,
+        contract: { filesAllowed, expectedArtifacts: [testPath], verificationCommands: [verifyCmd] },
+      });
+      const overlaps = overlappingFilesAllowed([probe, ...live]);
+      if (overlaps.length > 0) {
+        refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.fix);
+      }
+      await ensureRegressionTest(this.projectRoot, testPath, title);
       const red = runVerificationCommands(this.projectRoot, [verifyCmd]);
       if (red[0]?.ok) {
         refuse("this does not reproduce", HINT.fix);
       }
       await this.#failLastReviewLocked();
-      const filesAllowed = fixFilesAllowed(this.projectRoot, testPath);
-      return this.#fileTicketLocked({
+      return (await this.#fileTicketLocked({
         title,
         type: "bug",
         priority: "P0",
@@ -1220,7 +1249,7 @@ export class LegionEngine {
           expectedArtifacts: [testPath],
           verificationCommands: [verifyCmd],
         },
-      });
+      })).task;
     });
   }
 
@@ -1672,14 +1701,18 @@ export class LegionEngine {
       return { ...outcome, adapterId, resolutionSource };
     };
 
+    let extraJsonInvalid = false;
+    let extraJsonTicketIds: string[] = [];
     if (runId) {
-      await this.#fileExtrasFromRun(runId, task.specId);
+      const filed = await this.#fileExtrasFromRun(runId, task.specId);
+      extraJsonInvalid = filed.invalid;
+      extraJsonTicketIds = filed.ticketIds;
     }
 
-    if (incident || extras.length > 0) {
+    if (incident || extras.length > 0 || extraJsonInvalid) {
       let ticketId: string | undefined;
       if (extras.length > 0) {
-        const ticket = await this.#fileTicketLocked(
+        const { task: ticket } = await this.#fileTicketLocked(
           {
             title:
               extras.length === 1
@@ -1694,6 +1727,7 @@ export class LegionEngine {
         );
         ticketId = ticket.id;
       }
+      ticketId ??= extraJsonTicketIds[0];
       await this.#transitionTaskTo(task.id, "blocked");
       await this.#writeState({
         ...(await this.#readState()),
@@ -1775,12 +1809,23 @@ export class LegionEngine {
           refuse(`task ${taskId} is not in the active spec slice`, HINT.blockers);
         }
         task = loaded;
-      } catch {
+      } catch (err) {
+        if (err instanceof LegionRefuseError) throw err;
         refuse(`unknown task ${taskId}`, HINT.blockers);
       }
     }
-    if (task.status !== "ready") {
-      refuse(`task ${task.id} is ${task.status}, not ready`, HINT.blockers);
+    if (task.contract.filesAllowed.length === 0 || task.contract.verificationCommands.length === 0) {
+      refuse("This task needs a file contract and verification commands", HINT.plan);
+    }
+    if (
+      !isTaskReady(task, {
+        phase: state.phase,
+        controlMode: config.control_mode,
+        tasks: slice,
+        assumptions: await this.#listAssumptions(),
+      })
+    ) {
+      refuse(`task ${task.id} is not ready`, HINT.blockers);
     }
     return task;
   }
@@ -1903,16 +1948,18 @@ export class LegionEngine {
     runId: string,
     specId: string,
     defaults?: { type?: NewTicket["type"]; parentId?: string },
-  ): Promise<void> {
+  ): Promise<{ invalid: boolean; ticketIds: string[] }> {
     const abs = join(this.projectRoot, ".legion-cli", "cache", "runs", runId, "extra.json");
     let raw: unknown;
     try {
       raw = JSON.parse(await readFile(abs, "utf8"));
     } catch {
-      return;
+      return { invalid: false, ticketIds: [] };
     }
+    let invalid = false;
+    const ticketIds: string[] = [];
     for (const input of parseExtraJson(raw)) {
-      await this.#fileTicketLocked(
+      const { task, coerced } = await this.#fileTicketLocked(
         {
           ...input,
           fromAgent: true,
@@ -1921,10 +1968,16 @@ export class LegionEngine {
         },
         specId,
       );
+      if (coerced) invalid = true;
+      ticketIds.push(task.id);
     }
+    return { invalid, ticketIds };
   }
 
-  async #fileTicketLocked(input: NewTicket, specIdOverride?: string): Promise<Task> {
+  async #fileTicketLocked(
+    input: NewTicket,
+    specIdOverride?: string,
+  ): Promise<{ task: Task; coerced: boolean }> {
     const title = input.title.trim();
     if (!title) {
       refuse("ticket requires a title", HINT.ticket(input.parentId ?? "TSK-x"));
@@ -1950,12 +2003,31 @@ export class LegionEngine {
       }
     }
     const id = nextTaskId(tasks.map((task) => task.id));
-    const ticket = ticketFromInput(id, specId, {
+    let ticket = ticketFromInput(id, specId, {
       ...input,
       title,
       parentId,
       adapter: input.adapter ?? parentAdapter,
     });
+    const contractInvalid =
+      filesAllowedFailsPlan(ticket.contract.filesAllowed) ||
+      expectedArtifactsFailsPlan(ticket.contract.filesAllowed, ticket.contract.expectedArtifacts);
+    const live = tasks.filter((task) => task.status !== "done" && task.status !== "compacted");
+    const overlaps = overlappingFilesAllowed([ticket, ...live]);
+    let coerced = false;
+    if (contractInvalid || overlaps.length > 0) {
+      if (!input.fromAgent) {
+        if (contractInvalid) {
+          refuse("File paths must be concrete (no * or **)", HINT.concretePaths);
+        }
+        refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.ticket(parentId ?? "TSK-x"));
+      }
+      ticket = {
+        ...ticket,
+        contract: defaultTicketContract(id),
+      };
+      coerced = true;
+    }
     await this.store.writeTask(ticket, taskMarkdownBody(ticket));
     if (parentId) {
       const parentDoc = await this.store.readTask(parentId);
@@ -1968,7 +2040,7 @@ export class LegionEngine {
     }
     const promoted = await this.#promoteTicketIfReady(id, specId);
     await this.#failLastReviewLocked();
-    return promoted;
+    return { task: promoted, coerced };
   }
 
   async #newPacketLocked(input: NewPacket): Promise<PacketResult> {
@@ -2008,7 +2080,7 @@ export class LegionEngine {
       refuse(`packet ${id} already responded`, HINT.ticket(doc.data.ticketIds[0] ?? "TSK-x"));
     }
     const ticketTitle = input.title?.trim() || doc.data.title;
-    const ticket = await this.#fileTicketLocked({
+    const { task: ticket } = await this.#fileTicketLocked({
       title: ticketTitle,
       type: input.type,
       priority: input.priority,
@@ -2092,11 +2164,17 @@ export class LegionEngine {
     const assumptions = await this.#listAssumptions();
     const readyCtx = { phase, controlMode, tasks: slice, assumptions };
     for (const task of slice) {
-      if (task.status !== "todo") continue;
-      if (!isTaskReady(task, readyCtx)) continue;
-      const doc = await this.store.readTask(task.id);
-      assertTaskStatusTransition(doc.data.status, "ready");
-      await this.store.writeTask({ ...doc.data, status: "ready" }, doc.body);
+      if (task.status === "todo" && isTaskReady(task, readyCtx)) {
+        const doc = await this.store.readTask(task.id);
+        assertTaskStatusTransition(doc.data.status, "ready");
+        await this.store.writeTask({ ...doc.data, status: "ready" }, doc.body);
+        continue;
+      }
+      if (task.status === "ready" && !isTaskReady(task, readyCtx)) {
+        const doc = await this.store.readTask(task.id);
+        assertTaskStatusTransition(doc.data.status, "todo");
+        await this.store.writeTask({ ...doc.data, status: "todo" }, doc.body);
+      }
     }
   }
 

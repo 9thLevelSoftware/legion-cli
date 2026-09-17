@@ -294,6 +294,7 @@ test("amendTask updates FileContract and deps require --allow-deps", async () =>
     const amended = (await store.readTask("TSK-0001")).data;
     assert.deepEqual(amended.contract.filesAllowed, ["src/in-out.ts"]);
     assert.deepEqual(amended.blockedBy, ["TSK-0002"]);
+    assert.equal(amended.status, "todo");
     await engine.amendTask("TSK-0001", amended.contract, { adapter: "grok" });
     assert.equal((await store.readTask("TSK-0001")).data.adapter, "grok");
     assert.deepEqual((await store.readTask("TSK-0001")).data.contract.filesAllowed, ["src/in-out.ts"]);
@@ -365,10 +366,42 @@ test("plan spawn cannot stamp status done", async () => {
         const task = (await store.readTask("TSK-0001")).data;
         assert.equal(task.status, "ready");
         assert.notEqual(task.status, "done");
+        assert.equal(existsSync(join(store.paths.tasksDir, "TSK-0001.md")), true);
       },
       {
         skillsDir,
         fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0001.md", content: taskMarkdown(p0) }],
+      },
+    );
+  });
+});
+
+test("extra.json glob is filed as notes ticket, not PersistValidationError", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store }) => {
+        await initProject(engine);
+        await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
+        await writeTask(store, makeTask());
+        const readiness = await engine.plan("spec-checkin");
+        assert.equal(readiness, "CONCERNS");
+        const child = (await store.readTask("TSK-0002")).data;
+        assert.equal(child.title, "also glob");
+        assert.deepEqual(child.contract.filesAllowed, ["notes/TSK-0002.md"]);
+        assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "also glob",
+              parentId: "TSK-0001",
+              filesAllowed: ["src/**"],
+            }),
+          },
+        ],
       },
     );
   });
@@ -488,6 +521,24 @@ test("filesAllowed intersecting implicit forbidden is plan FAIL", async () => {
       );
       const configFail = await engine.plan("spec-checkin");
       assert.equal(configFail, "FAIL");
+      assert.ok(engine.getLastPlanReport().fails.some((line) => /forbidden path/.test(line)));
+    });
+  });
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
+      await writeTask(
+        store,
+        makeTask({
+          contract: {
+            filesAllowed: [".legion-cli/STATE.md"],
+            expectedArtifacts: [".legion-cli/STATE.md"],
+          },
+        }),
+      );
+      const stateFail = await engine.plan("spec-checkin");
+      assert.equal(stateFail, "FAIL");
       assert.ok(engine.getLastPlanReport().fails.some((line) => /forbidden path/.test(line)));
     });
   });
