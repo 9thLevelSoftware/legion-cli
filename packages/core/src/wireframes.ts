@@ -149,19 +149,73 @@ export function palettePresent(html: string): boolean {
 }
 
 const DENIED_TAGS = new Set(["script", "iframe", "object", "embed"]);
-const JS_URL_ATTRS = new Set(["href", "src", "xlink:href"]);
-const OPEN_TAG_RE = /<([a-zA-Z][\w:-]*)\b([^>]*)>/g;
+const JS_URL_ATTRS = new Set(["href", "src", "xlink:href", "action", "formaction"]);
 const ATTR_RE = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
 
 function stripHtmlComments(html: string): string {
   return html.replace(/<!--[\s\S]*?-->/g, "");
 }
 
+function codePoint(n: number): string {
+  if (!Number.isInteger(n) || n < 0 || n > 0x10ffff) return "";
+  try {
+    return String.fromCodePoint(n);
+  } catch {
+    return "";
+  }
+}
+
+/** Named + numeric entities, then &amp; last. Repeat so `&#106;avascript&colon;` still decodes. */
+function decodeHtmlEntities(value: string): string {
+  let prev = value;
+  for (let i = 0; i < 4; i++) {
+    const next = prev
+      .replace(/&colon;/gi, ":")
+      .replace(/&tab;/gi, "\t")
+      .replace(/&newline;/gi, "\n")
+      .replace(/&#x([0-9a-fA-F]+);?/g, (_, hex) => codePoint(parseInt(hex, 16)))
+      .replace(/&#([0-9]+);?/g, (_, dec) => codePoint(Number(dec)))
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&apos;/gi, "'")
+      .replace(/&amp;/gi, "&");
+    if (next === prev) break;
+    prev = next;
+  }
+  return prev;
+}
+
+function isJavascriptUrl(value: string): boolean {
+  const compact = decodeHtmlEntities(value).replace(/[\s\u00a0\u200b\u200c\u200d\ufeff]+/g, "");
+  return /^javascript:/i.test(compact);
+}
+
+/** Slash outside quotes is a tag-name separator (`<img/onclick=`). */
+function normalizeAttrSource(raw: string): string {
+  let out = "";
+  let quote: '"' | "'" | null = null;
+  for (const ch of raw) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      out += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    out += ch === "/" ? " " : ch;
+  }
+  return out;
+}
+
 function parseHtmlAttrs(raw: string): Array<{ name: string; value: string }> {
   const out: Array<{ name: string; value: string }> = [];
   const re = new RegExp(ATTR_RE.source, "g");
   let match: RegExpExecArray | null;
-  while ((match = re.exec(raw))) {
+  while ((match = re.exec(normalizeAttrSource(raw)))) {
     const name = match[1];
     if (!name || name === "/") continue;
     out.push({ name, value: match[2] ?? match[3] ?? match[4] ?? "" });
@@ -173,14 +227,56 @@ function relTokens(value: string): string[] {
   return value.trim().split(/\s+/).filter(Boolean);
 }
 
+/** Quote-aware: do not stop the tag at `>` inside attribute values. */
+function forEachOpenTag(html: string, visit: (tag: string, attrSource: string) => void): void {
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) break;
+    const next = html[lt + 1];
+    if (next === "!" || next === "/" || next === "?" || next === undefined) {
+      i = lt + 2;
+      continue;
+    }
+    let j = lt + 1;
+    if (!/[A-Za-z]/.test(html[j] ?? "")) {
+      i = lt + 1;
+      continue;
+    }
+    const tagStart = j;
+    while (j < html.length && /[A-Za-z0-9:-]/.test(html[j] ?? "")) j += 1;
+    const tag = html.slice(tagStart, j);
+    let quote: '"' | "'" | null = null;
+    const attrStart = j;
+    while (j < html.length) {
+      const ch = html[j] ?? "";
+      if (quote) {
+        if (ch === quote) quote = null;
+        j += 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        j += 1;
+        continue;
+      }
+      if (ch === ">") {
+        j += 1;
+        break;
+      }
+      j += 1;
+    }
+    const attrEnd = html[j - 1] === ">" ? j - 1 : j;
+    visit(tag, html.slice(attrStart, attrEnd));
+    i = j;
+  }
+}
+
 /** Fail-closed HTML policy. Attribute names matching /^on/i, not substring `on` in values. */
 export function assertWireframeHtml(html: string): void {
-  const stripped = stripHtmlComments(html);
-  const tagRe = new RegExp(OPEN_TAG_RE.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = tagRe.exec(stripped))) {
-    const tag = match[1].toLowerCase();
-    const attrs = parseHtmlAttrs(match[2] ?? "");
+  forEachOpenTag(stripHtmlComments(html), (rawTag, attrSource) => {
+    const tag = rawTag.toLowerCase();
+    const attrs = parseHtmlAttrs(attrSource);
     if (DENIED_TAGS.has(tag)) {
       throw new Error(`wireframe HTML denies <${tag}>`);
     }
@@ -194,11 +290,11 @@ export function assertWireframeHtml(html: string): void {
       if (/^on/i.test(attr.name)) {
         throw new Error(`wireframe HTML denies ${attr.name.toLowerCase()}`);
       }
-      if (JS_URL_ATTRS.has(attr.name.toLowerCase()) && /^\s*javascript:/i.test(attr.value)) {
+      if (JS_URL_ATTRS.has(attr.name.toLowerCase()) && isJavascriptUrl(attr.value)) {
         throw new Error(`wireframe HTML denies javascript: ${attr.name.toLowerCase()}`);
       }
     }
-  }
+  });
 }
 
 function escapeHtml(text: string): string {

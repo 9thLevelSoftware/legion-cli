@@ -1,5 +1,5 @@
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, rmdir, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
   designPaths,
   extractCssVars,
@@ -17,6 +17,7 @@ import {
   renderWireframeIndex,
   renderWireframeScreen,
   uniqueScreenPages,
+  WIREFRAME_CSS,
   WIREFRAME_PALETTE,
   type ScreenPage,
 } from "./wireframes.js";
@@ -36,11 +37,15 @@ export function screenPagesFor(screens: string[]): ScreenPage[] {
   return uniqueScreenPages(names);
 }
 
-export function wireframeStorePath(specId: string, fileName: string): string {
+function wireframeStorePath(specId: string, fileName: string): string {
   return `.legion-cli/specs/${specId}/wireframes/${fileName}`;
 }
 
-export function composeRestyleCss(tokensCss: string): string {
+function layoutCss(): string {
+  return WIREFRAME_CSS.replace(/:root\s*\{[\s\S]*?\}\n?/, "");
+}
+
+function composeRestyleCss(tokensCss: string): string {
   const vars = extractCssVars(tokensCss);
   const mapping: string[] = [];
   for (const { name, alias, fallback } of SHIPYARD_VARS) {
@@ -48,10 +53,10 @@ export function composeRestyleCss(tokensCss: string): string {
     mapping.push(vars[alias] ? `  ${name}: var(${alias});` : `  ${name}: ${fallback};`);
   }
   const mapBlock = mapping.length > 0 ? `\n:root {\n${mapping.join("\n")}\n}\n` : "\n";
-  return `${tokensCss.trimEnd()}\n${mapBlock}`;
+  return `${tokensCss.trimEnd()}\n${mapBlock}${layoutCss()}`;
 }
 
-export function replaceStyleBlock(html: string, css: string): string {
+function replaceStyleBlock(html: string, css: string): string {
   const block = `<style>\n${css.trimEnd()}\n</style>`;
   if (/<style\b[^>]*>[\s\S]*?<\/style>/i.test(html)) {
     return html.replace(/<style\b[^>]*>[\s\S]*?<\/style>/i, block);
@@ -60,6 +65,17 @@ export function replaceStyleBlock(html: string, css: string): string {
     return html.replace(/<\/head>/i, `  ${block}\n</head>`);
   }
   return `${block}\n${html}`;
+}
+
+function styleInner(html: string): string | null {
+  const match = html.match(/<style\b[^>]*>([\s\S]*?)<\/style>/i);
+  return match ? (match[1] ?? "") : null;
+}
+
+function keepStyleOnly(before: string, after: string): string {
+  const inner = styleInner(after);
+  if (inner == null) return before;
+  return replaceStyleBlock(before, inner);
 }
 
 export async function writeWireframeFiles(
@@ -87,23 +103,59 @@ export async function writeWireframeFiles(
   }
 }
 
-export async function deleteStaleWireframePages(dir: string, pages: ScreenPage[]): Promise<void> {
-  const keep = new Set([INDEX_NAME, ...pages.map((page) => `${page.slug}.html`)]);
-  let names: string[];
+async function listRelFiles(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (abs: string, rel: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await readdir(abs, { withFileTypes: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+    for (const entry of entries) {
+      const posix = rel ? `${rel}/${entry.name}` : entry.name;
+      const child = join(abs, entry.name);
+      if (entry.isDirectory()) await walk(child, posix.replaceAll("\\", "/"));
+      else if (entry.isFile()) out.push(posix.replaceAll("\\", "/"));
+    }
+  };
+  await walk(dir, "");
+  return out;
+}
+
+function absFromRel(dir: string, rel: string): string {
+  return join(dir, ...rel.split("/"));
+}
+
+async function removeRel(dir: string, rel: string): Promise<void> {
+  const abs = absFromRel(dir, rel);
   try {
-    names = await readdir(dir);
+    await unlink(abs);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw err;
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-  for (const name of names) {
-    if (!name.toLowerCase().endsWith(".html")) continue;
-    if (keep.has(name)) continue;
-    await unlink(join(dir, name));
+  let parent = dirname(abs);
+  while (parent.startsWith(dir) && parent !== dir) {
+    try {
+      await rmdir(parent);
+    } catch {
+      break;
+    }
+    parent = dirname(parent);
   }
 }
 
-export async function loadRestyleCss(projectRoot: string): Promise<string | null> {
+async function deleteStaleWireframePages(dir: string, pages: ScreenPage[]): Promise<void> {
+  const keep = new Set([INDEX_NAME, ...pages.map((page) => `${page.slug}.html`)]);
+  for (const rel of await listRelFiles(dir)) {
+    if (!rel.toLowerCase().endsWith(".html")) continue;
+    if (keep.has(rel)) continue;
+    await removeRel(dir, rel);
+  }
+}
+
+async function loadRestyleCss(projectRoot: string): Promise<string | null> {
   const active = await readActive(projectRoot);
   if (!active?.packageId) return null;
   const dir = designPaths(projectRoot).packageDir(active.packageId);
@@ -122,43 +174,59 @@ export async function loadRestyleCss(projectRoot: string): Promise<string | null
   }
 }
 
-async function listHtmlFiles(dir: string): Promise<string[]> {
-  let names: string[];
-  try {
-    names = await readdir(dir);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw err;
-  }
-  return names.filter((name) => name.toLowerCase().endsWith(".html"));
-}
-
-export async function snapshotHtmlDir(dir: string): Promise<Map<string, string>> {
+async function snapshotTree(dir: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  for (const name of await listHtmlFiles(dir)) {
-    out.set(name, await readFile(join(dir, name), "utf8"));
+  for (const rel of await listRelFiles(dir)) {
+    out.set(rel, await readFile(absFromRel(dir, rel), "utf8"));
   }
   return out;
 }
 
-export async function restoreHtmlDir(dir: string, snap: ReadonlyMap<string, string>): Promise<void> {
+async function restoreTree(dir: string, snap: ReadonlyMap<string, string>): Promise<void> {
   await mkdir(dir, { recursive: true });
-  for (const name of await listHtmlFiles(dir)) {
-    if (!snap.has(name)) await unlink(join(dir, name));
+  for (const rel of await listRelFiles(dir)) {
+    if (!snap.has(rel)) await removeRel(dir, rel);
   }
-  for (const [name, html] of snap) {
-    await writeFile(join(dir, name), html, "utf8");
+  for (const [rel, body] of snap) {
+    const abs = absFromRel(dir, rel);
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(abs, body, "utf8");
   }
 }
 
-export function spawnWireframePrompt(specId: string, restyled: boolean): string {
+async function readOptional(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+async function restoreOptional(path: string, snap: string | null): Promise<void> {
+  if (snap == null) {
+    try {
+      await unlink(path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    return;
+  }
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, snap, "utf8");
+}
+
+function spawnWireframePrompt(specId: string, restyled: boolean, frozen: boolean): string {
   const palette = restyled
     ? "Brand tokens from the active design-system package win. Keep --bg/--ink/--accent/--muted mapped."
     : "Keep the palette: background #f5f5f0, ink #222, accent #c45c26, muted #888.";
+  const task = frozen
+    ? "You may only change the <style> block. Do not add, remove, or rewrite screens or inner markup."
+    : "Rewrite inner markup of HTML files in the wireframes directory.";
   return [
-    `Rewrite inner markup of HTML files in .legion-cli/specs/${specId}/wireframes/.`,
+    `${task} Files: .legion-cli/specs/${specId}/wireframes/.`,
     "Leave INDEX.html as the index of screens.",
-    "Do not write SPEC.md or anything outside the wireframes directory.",
+    "Do not write SPEC.md, prd.md, or anything outside the wireframes directory.",
     palette,
     "Do not add <script>, <iframe>, <object>, <embed>, on* event attributes, or javascript: URLs.",
     "When done, write a short summary to .legion-cli/cache/runs/<id>/summary.md.",
@@ -166,8 +234,9 @@ export function spawnWireframePrompt(specId: string, restyled: boolean): string 
 }
 
 async function restyleExisting(dir: string, css: string): Promise<void> {
-  for (const name of await listHtmlFiles(dir)) {
-    const abs = join(dir, name);
+  for (const rel of await listRelFiles(dir)) {
+    if (!rel.toLowerCase().endsWith(".html")) continue;
+    const abs = absFromRel(dir, rel);
     const html = await readFile(abs, "utf8");
     await writeFile(abs, replaceStyleBlock(html, css), "utf8");
   }
@@ -186,16 +255,45 @@ function validateHtml(html: string, skipPalette: boolean): void {
 }
 
 async function validateDir(dir: string, skipPalette: boolean): Promise<void> {
-  const names = await listHtmlFiles(dir);
-  if (names.length === 0) return;
-  for (const name of names) {
-    validateHtml(await readFile(join(dir, name), "utf8"), skipPalette);
+  for (const rel of await listRelFiles(dir)) {
+    if (!rel.toLowerCase().endsWith(".html")) continue;
+    validateHtml(await readFile(absFromRel(dir, rel), "utf8"), skipPalette);
   }
 }
 
-export type WireframeRunInput = {
+async function dropNonHtmlExtras(dir: string, snap: ReadonlyMap<string, string>): Promise<void> {
+  for (const rel of await listRelFiles(dir)) {
+    if (rel.toLowerCase().endsWith(".html")) continue;
+    if (!snap.has(rel)) await removeRel(dir, rel);
+  }
+}
+
+async function applyFrozenCssOnly(dir: string, snap: ReadonlyMap<string, string>): Promise<void> {
+  for (const rel of await listRelFiles(dir)) {
+    if (!snap.has(rel)) await removeRel(dir, rel);
+  }
+  for (const [rel, before] of snap) {
+    const abs = absFromRel(dir, rel);
+    let after: string;
+    try {
+      after = await readFile(abs, "utf8");
+    } catch {
+      await mkdir(dirname(abs), { recursive: true });
+      await writeFile(abs, before, "utf8");
+      continue;
+    }
+    if (!rel.toLowerCase().endsWith(".html")) {
+      if (after !== before) await writeFile(abs, before, "utf8");
+      continue;
+    }
+    await writeFile(abs, keepStyleOnly(before, after), "utf8");
+  }
+}
+
+type WireframeRunInput = {
   projectRoot: string;
   dir: string;
+  specDir: string;
   spec: Spec;
   specBody: string;
   screens: string[];
@@ -236,16 +334,24 @@ export async function runWireframe(input: WireframeRunInput): Promise<WireframeR
   }
 
   const skipPalette = Boolean(input.opts.restyle && restyled);
-  const snapshot = await snapshotHtmlDir(dir);
+  const snapshot = await snapshotTree(dir);
+  const specMdPath = join(input.specDir, "SPEC.md");
+  const prdPath = join(input.specDir, "prd.md");
+  const specSnap = await readOptional(specMdPath);
+  const prdSnap = await readOptional(prdPath);
 
   if (input.opts.spawn && input.spawnSkill) {
-    const spawned = await input.spawnSkill(spawnWireframePrompt(spec.id, restyled));
+    const spawned = await input.spawnSkill(spawnWireframePrompt(spec.id, restyled, frozen));
+    await restoreOptional(specMdPath, specSnap);
+    await restoreOptional(prdPath, prdSnap);
+    if (frozen) await applyFrozenCssOnly(dir, snapshot);
+    else await dropNonHtmlExtras(dir, snapshot);
     let htmlFailed: unknown;
     try {
       await validateDir(dir, skipPalette);
     } catch (err) {
       htmlFailed = err;
-      await restoreHtmlDir(dir, snapshot);
+      await restoreTree(dir, snapshot);
     }
     if (spawned.revert?.incident) {
       refuse("inspect .git — spawn touched .git/", HINT.wireframe);
@@ -258,11 +364,12 @@ export async function runWireframe(input: WireframeRunInput): Promise<WireframeR
     }
     if (htmlFailed) throw htmlFailed;
     if (spawned.error) throw spawned.error;
+    if (!frozen) await deleteStaleWireframePages(dir, pages);
   } else {
     await validateDir(dir, skipPalette);
   }
 
-  const existing = new Set(await listHtmlFiles(dir));
+  const existing = new Set(await listRelFiles(dir));
   const resultPages = pages
     .filter((page) => existing.has(`${page.slug}.html`))
     .map((page) => wireframeStorePath(spec.id, `${page.slug}.html`));

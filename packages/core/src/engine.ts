@@ -1630,12 +1630,15 @@ export class LegionEngine {
       return runWireframe({
         projectRoot: this.projectRoot,
         dir: join(this.store.paths.specsDir, specId, "wireframes"),
+        specDir: join(this.store.paths.specsDir, specId),
         spec: specDoc.data,
         specBody: specDoc.body,
         screens: answers.mapped.screens,
         opts,
         writeSpec: (spec, body) => this.store.writeSpec(spec, body),
-        spawnSkill: opts.spawn ? (prompt) => this.#spawnWireframe(specId, prompt, opts.adapter) : undefined,
+        spawnSkill: opts.spawn
+          ? (prompt) => this.#runOptionalSpawn("wireframe", specId, prompt, opts.adapter)
+          : undefined,
       });
     });
   }
@@ -2488,32 +2491,6 @@ export class LegionEngine {
     await writeWireframeFiles(dir, spec, screenPagesFor(screens));
   }
 
-  async #spawnWireframe(
-    specId: string,
-    promptBody: string,
-    cliAdapter?: AdapterId,
-  ): Promise<OptionalSpawnResult> {
-    let config: LegionConfig;
-    try {
-      config = await this.#readConfig();
-    } catch {
-      return { spawned: false, runId: `wireframe-${Date.now().toString(36)}`, revert: null };
-    }
-    return optionalSkillSpawn({
-      projectRoot: this.projectRoot,
-      config,
-      skillId: "wireframe",
-      specId,
-      promptBody,
-      skillsDir: this.#skillsDir,
-      store: this.store,
-      fakeArtifacts: this.#fakeArtifacts,
-      throwAfterWrite: this.#fakeThrowAfterWrite,
-      timedOut: this.#fakeTimedOut,
-      cliAdapter,
-    });
-  }
-
   async #ensureWireframePalette(specId: string, screens: string[]): Promise<void> {
     const pages = screenPagesFor(screens);
     const dir = join(this.store.paths.specsDir, specId, "wireframes");
@@ -2535,19 +2512,19 @@ export class LegionEngine {
     }
   }
 
-  async #optionalSpawn(
-    skillId: "interview" | "discuss" | "spec",
+  async #runOptionalSpawn(
+    skillId: "interview" | "discuss" | "spec" | "wireframe",
     specId: string,
     promptBody: string,
     cliAdapter?: AdapterId,
-  ): Promise<void> {
+  ): Promise<OptionalSpawnResult> {
     let config: LegionConfig;
     try {
       config = await this.#readConfig();
     } catch {
-      return;
+      return { spawned: false, runId: `${skillId}-${Date.now().toString(36)}`, revert: null };
     }
-    const result = await optionalSkillSpawn({
+    return optionalSkillSpawn({
       projectRoot: this.projectRoot,
       config,
       skillId,
@@ -2560,6 +2537,15 @@ export class LegionEngine {
       timedOut: this.#fakeTimedOut,
       cliAdapter,
     });
+  }
+
+  async #optionalSpawn(
+    skillId: "interview" | "discuss" | "spec",
+    specId: string,
+    promptBody: string,
+    cliAdapter?: AdapterId,
+  ): Promise<void> {
+    const result = await this.#runOptionalSpawn(skillId, specId, promptBody, cliAdapter);
     if (!result.spawned || !result.revert) return;
     if (result.revert.incident) {
       refuse("inspect .git — spawn touched .git/", HINT.intent);

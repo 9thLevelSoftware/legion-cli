@@ -279,7 +279,7 @@ export function createProgram(): Command {
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
       const flags = opts as { restyle?: boolean; spawn?: boolean; adapter?: string; skipPaletteCheck?: boolean };
-      if (flags.skipPaletteCheck || process.argv.includes("--skip-palette-check")) {
+      if (flags.skipPaletteCheck) {
         refuseSkipPaletteCheck();
       }
       const code = await runWireframe(resolveOpts(cmd), flags);
