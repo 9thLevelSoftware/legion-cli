@@ -12,7 +12,7 @@ const LAYER_1 = [
   ["plan", "Break into tasks I can see on the board"],
   ["execute", "Do the next ready task"],
   ["verify", "Optional walkthrough notes (not a ship gate)"],
-  ["review", "Spec-level review; new tasks or in-place rewrites mean FAIL"],
+  ["review", "Spec-level review; fix tasks or in-place rewrites mean FAIL"],
   ["qa", "Score the product"],
   ["ship", "Final human review; stage the diff"],
   ["help --all", "Full command surface"],

@@ -302,7 +302,7 @@ stateDiagram-v2
 - `legion-cli review` is allowed only on a terminal slice (no `todo`/`ready`/`in_progress`/`verifying`).
 - After the review spawn: snapshot task ids **and content hashes of existing `TSK-*.md`** before `spawn`, then compare. **PASS is allowed only when the spawn created zero new tasks and every pre-existing task file is byte-identical.** If it created any (`type: fix` or otherwise) or rewrote an existing `TSK-*.md`, set `lastReview: FAIL`, revert in-place rewrites, and stay in `executing`. `legion-cli review` is required again after those tasks are `done` before `legion-cli qa`.
 - Any later command that adds a task (`legion-cli ticket create`, `legion-cli verify` filing fixes, `legion-cli fix`) also sets `lastReview: FAIL`.
-- `legion-cli qa` is allowed on a terminal slice when `lastReview == PASS` and no P0 task is `blocked` or not `done`. Blocked **non-P0** tasks do not block qa. A PASS review that created tasks cannot reach qa: `lastReview` is FAIL until a later review creates zero tasks.
+- `legion-cli qa` is allowed on a terminal slice when `lastReview == PASS` and no P0 task is `blocked` or not `done`. Blocked **non-P0** tasks do not block qa. A PASS review that created tasks cannot reach qa: `lastReview` is FAIL until a later review creates zero tasks **and** leaves existing `TSK-*.md` byte-identical.
 - On `qa.pass === true` and `lastReview == PASS`, transition `executing → ready_to_ship`.
 - `legion-cli ship` additionally refuses if any P0 task is not `done` (blocked P0 blocks ship).
 - `legion-cli verify` writes optional walkthrough notes and may file `type: fix` child tasks. It is **not** a ship gate. In-process `verificationCommands` after execute are the per-task gate that marks `done`.

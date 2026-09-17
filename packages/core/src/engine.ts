@@ -1064,6 +1064,7 @@ export class LegionEngine {
         required: true,
         cliAdapter: opts?.adapter,
       });
+      const rewrittenExistingTaskIds = await restoreChangedTaskFiles(this.store.paths.tasksDir, beforeFiles);
       if (result.runId) {
         await this.#fileExtrasFromRun(result.runId, specId);
       }
@@ -1073,8 +1074,15 @@ export class LegionEngine {
         await this.#clampSpawnedTaskStatuses(createdTaskIds);
         await this.#promoteReadyTasks(specId, "executing", config.control_mode);
       }
-      const rewrittenExistingTaskIds = await restoreChangedTaskFiles(this.store.paths.tasksDir, beforeFiles);
-      await this.#refuseSpawnContract("review", result.revert, result.error, createdTaskIds, before, after);
+      await this.#refuseSpawnContract(
+        "review",
+        result.revert,
+        result.error,
+        createdTaskIds,
+        before,
+        after,
+        rewrittenExistingTaskIds,
+      );
       const verdict = await this.#applyReviewSnapshotsLocked(
         await this.#readState(),
         before,
@@ -1096,9 +1104,8 @@ export class LegionEngine {
   }
 
   /**
-   * Models review-spawn comparison: PASS only when after has no ids that before
-   * lacked and no existing TSK file was rewritten (id-only helper; spawn path
-   * also snapshots file hashes).
+   * Id-only review comparison for tests: PASS iff after has no ids that before
+   * lacked. Spawn-path byte identity is `review()`, not this helper.
    */
   async applyReviewSnapshots(
     beforeTaskIds: readonly string[],
@@ -1861,11 +1868,17 @@ export class LegionEngine {
     createdTaskIds: readonly string[],
     before: readonly string[],
     after: readonly string[],
+    rewrittenExistingTaskIds: readonly string[] = [],
   ): Promise<void> {
     const failed = Boolean(revert?.incident) || Boolean(revert && revert.extrasReverted.length > 0) || Boolean(error);
     if (!failed) return;
-    if (createdTaskIds.length > 0) {
-      await this.#applyReviewSnapshotsLocked(await this.#readState(), before, after);
+    if (createdTaskIds.length > 0 || rewrittenExistingTaskIds.length > 0) {
+      await this.#applyReviewSnapshotsLocked(
+        await this.#readState(),
+        before,
+        after,
+        rewrittenExistingTaskIds,
+      );
     }
     const hint = skillId === "review" ? HINT.review : HINT.verify;
     if (revert?.incident) {

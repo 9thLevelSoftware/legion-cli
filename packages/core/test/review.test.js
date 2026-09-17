@@ -263,6 +263,43 @@ test("review spawn notes-only edit of existing TSK is FAIL and restores bytes", 
   });
 });
 
+test("review extra.json files a child without treating parent blocks as a rewrite", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store }) => {
+        await initProject(engine);
+        await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
+        const review = await engine.review();
+        assert.equal(review.verdict, "FAIL");
+        assert.ok(review.createdTaskIds.includes("TSK-0002"));
+        assert.deepEqual(review.rewrittenExistingTaskIds, []);
+        assert.equal((await engine.getState()).lastReview, "FAIL");
+        const child = (await store.readTask("TSK-0002")).data;
+        assert.equal(child.parentId, "TSK-0001");
+        assert.deepEqual(child.blockedBy, ["TSK-0001"]);
+        const parent = (await store.readTask("TSK-0001")).data;
+        assert.ok(parent.blocks.includes("TSK-0002"));
+        assert.equal(parent.status, "done");
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "fix contrast",
+              parentId: "TSK-0001",
+              type: "fix",
+              filesAllowed: ["src/fix.ts"],
+              verificationCommands: ["pnpm test"],
+            }),
+          },
+        ],
+      },
+    );
+  });
+});
+
 test("review extras vs SkillContract FAIL the command", async () => {
   await withFakeAdapter(async () => {
     await withEngine(
