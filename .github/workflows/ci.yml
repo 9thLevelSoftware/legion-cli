@@ -27,5 +27,8 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
       - name: Test
         run: pnpm test
