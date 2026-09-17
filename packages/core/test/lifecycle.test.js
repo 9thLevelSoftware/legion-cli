@@ -52,6 +52,18 @@ test("setControlMode persists config.yaml and PROJECT.md", async () => {
   });
 });
 
+test("setControlMode advisory demotes persisted ready tasks to todo", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedPlanReady(store);
+    assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
+    await engine.setControlMode("advisory");
+    assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
+    await engine.setControlMode("guarded");
+    assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
+  });
+});
+
 test("CONCERNS is lastReadiness on plan_ready and execute is allowed", async () => {
   await withFakeAdapter(async () => {
   await withEngine(async ({ engine, store }) => {

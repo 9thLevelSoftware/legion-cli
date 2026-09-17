@@ -60,7 +60,8 @@ async function maybeRemoveStaleLock(lockPath: string): Promise<void> {
     if (parsed.kind === "wait") return;
     if (parsed.pid === process.pid) return;
     if (!isPidAlive(parsed.pid)) {
-      await unlinkIfExists(lockPath);
+      const still = await readFile(lockPath, "utf8");
+      if (still === raw) await unlinkIfExists(lockPath);
     }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -92,9 +93,15 @@ export async function acquireEngineLock(
           })}\n`,
           "utf8",
         );
+        const onDisk = await readFile(lockPath, "utf8");
+        if (!onDisk.includes(`"token":"${token}"`)) {
+          await handle.close().catch(() => undefined);
+          created = false;
+          continue;
+        }
       } catch (err) {
         await handle.close().catch(() => undefined);
-        await unlinkIfExists(lockPath);
+        if (created) await unlinkIfExists(lockPath);
         throw err;
       }
       let released = false;

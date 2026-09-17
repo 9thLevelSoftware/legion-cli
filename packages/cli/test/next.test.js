@@ -78,6 +78,39 @@ test("executing + lastReview PASS + open work hints execute", () => {
   assert.equal(next.run, "legion-cli execute");
 });
 
+test("advisory plan_ready and executing open work hint control-mode guarded", () => {
+  const planReady = nextCommand(
+    {
+      schemaVersion: "legion-cli-state/v1",
+      phase: "plan_ready",
+      activeSpecId: "spec-checkin",
+      currentTaskId: null,
+      lastReadiness: "PASS",
+      lastReview: null,
+      lastQaId: null,
+    },
+    [task("ready")],
+    undefined,
+    "advisory",
+  );
+  assert.equal(planReady.run, "legion-cli control-mode guarded");
+  const executingOpen = nextCommand(
+    {
+      schemaVersion: "legion-cli-state/v1",
+      phase: "executing",
+      activeSpecId: "spec-checkin",
+      currentTaskId: "TSK-0001",
+      lastReadiness: "PASS",
+      lastReview: null,
+      lastQaId: null,
+    },
+    [task("ready")],
+    undefined,
+    "advisory",
+  );
+  assert.equal(executingOpen.run, "legion-cli control-mode guarded");
+});
+
 test("formatReadyTaskLine suffixes raw Task.adapter when set", () => {
   assert.equal(
     formatReadyTaskLine({ id: "TSK-0100", title: "settings screen", priority: "P1", adapter: "grok" }),

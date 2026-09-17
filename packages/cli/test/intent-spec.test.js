@@ -164,6 +164,30 @@ test("discuss --yes cannot skip product decisions", async () => {
   });
 });
 
+test("discuss empty stdin cannot skip product decisions", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const intent = runCli(["intent", "--project", dir, "--done"], {
+      input: [
+        "Teammates who keep missing who's in the office.",
+        "They ping five chat apps every morning.",
+        "People can tap in or out on their phone in under five seconds.",
+        "Do not change auth. We will not build payroll, badges, or calendar sync.",
+        "Y",
+      ].join("\n") + "\n",
+    });
+    assert.equal(intent.status, 0, intent.stderr);
+
+    const discuss = runCli(["discuss", "--project", dir], { input: "" });
+    assert.equal(discuss.status, 1, `${discuss.stdout}\n${discuss.stderr}`);
+    assert.match(normalize(discuss.stderr), /needs an explicit Y or n/);
+    assert.match(normalize(discuss.stderr), /Next: legion-cli discuss/);
+    const discussMd = await readFile(join(dir, ".legion-cli", "discuss", "DISCUSS.md"), "utf8");
+    assert.match(discussMd, /status: proposed/);
+    assert.doesNotMatch(discussMd, /status: accepted/);
+  });
+});
+
 test("discuss --yes refuses before startDiscuss with no remaining decisions", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);

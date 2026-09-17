@@ -3,7 +3,13 @@ import {
   type Phase,
   type Task,
 } from "@9thlevelsoftware/legion-cli-core";
-import { ADAPTER_ID_HELP, type Readiness, type ReviewVerdict, type StateFile } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  ADAPTER_ID_HELP,
+  type ControlMode,
+  type Readiness,
+  type ReviewVerdict,
+  type StateFile,
+} from "@9thlevelsoftware/legion-cli-schema";
 
 export type NextCommand = {
   run: string;
@@ -80,6 +86,7 @@ export function nextCommand(
   state: StateFile,
   slice: readonly Task[],
   mode?: "greenfield" | "brownfield",
+  controlMode?: ControlMode,
 ): NextCommand {
   if (state.phase === "initialized" && mode === "brownfield") {
     return { run: "legion-cli brownfield", hint: "audit this running app (code is evidence)." };
@@ -89,6 +96,14 @@ export function nextCommand(
       return { run: "legion-cli qa", hint: "score the product (the slice is done)." };
     }
     return { run: "legion-cli review", hint: "spec-level review; fix tasks or in-place rewrites mean FAIL and re-review." };
+  }
+  const wouldExecute =
+    state.phase === "plan_ready" || (state.phase === "executing" && !isSliceTerminal(slice));
+  if (controlMode === "advisory" && wouldExecute) {
+    return {
+      run: "legion-cli control-mode guarded",
+      hint: "advisory blocks execute; set guarded to run tasks.",
+    };
   }
   return NEXT_BY_PHASE[state.phase];
 }

@@ -123,6 +123,7 @@ import {
   findSkillsDir,
   finishStartedSpawn,
   optionalSkillSpawn,
+  refuseIfLiveSkillSpawn,
   resumeRunIsLive,
   spawnableAdapterRefuseMessage,
   startSkillSpawn,
@@ -759,6 +760,9 @@ export class LegionEngine {
           await this.store.writeProject({ ...project.data, controlMode: parsed }, project.body);
         }
       }
+      if (state.activeSpecId) {
+        await this.#promoteReadyTasks(state.activeSpecId, state.phase, parsed);
+      }
       await this.#audit("control_mode", state.phase, "user", { control_mode: parsed });
       return parsed;
     });
@@ -945,6 +949,7 @@ export class LegionEngine {
   async amendTask(id: string, contract: FileContract, opts?: AmendTaskOptions): Promise<void> {
     return this.#mutate(async () => {
       await this.#assertNoLiveInProgress("task amend");
+      await refuseIfLiveSkillSpawn(this.projectRoot, "task amend");
       const doc = await this.store.readTask(id);
       const nextBlockedBy = opts?.blockedBy ?? doc.data.blockedBy;
       const nextBlocks = opts?.blocks ?? doc.data.blocks;
@@ -2883,18 +2888,9 @@ export class LegionEngine {
     }
   }
 
-  async #assertTicketAgainstLiveSpawn(input: NewTicket): Promise<void> {
-    const live = await this.#liveInProgressTask();
-    if (!live) return;
-    const resume = await findLatestTaskResume(this.projectRoot, live.id);
-    const isLive = resume ? resumeRunIsLive(resume) : true;
-    if (!isLive) return;
-    const specId = live.specId;
-    const probe = ticketFromInput("TSK-probe", specId, input);
-    const overlaps = overlappingFilesAllowed([probe, live]);
-    if (overlaps.length > 0) {
-      refuse(`ticket create is refused while ${live.id} is in_progress`, HINT.status);
-    }
+  async #assertTicketAgainstLiveSpawn(_input: NewTicket): Promise<void> {
+    await this.#assertNoLiveInProgress("ticket create");
+    await refuseIfLiveSkillSpawn(this.projectRoot, "ticket create");
   }
 
   async #recoverDeadInProgressLocked(): Promise<void> {

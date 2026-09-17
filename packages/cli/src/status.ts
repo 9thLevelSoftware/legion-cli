@@ -113,7 +113,7 @@ export async function runStatus(opts: CliOpts): Promise<number> {
   const project = state.phase === "uninitialized" ? null : await readOptionalProject(engine);
   const config = await readOptionalConfig(engine);
   const slice = state.phase === "uninitialized" ? [] : await engine.listSliceTasks();
-  const next = nextCommand(state, slice, project?.mode);
+  const next = nextCommand(state, slice, project?.mode, config?.control_mode);
   const blockers = collectBlockers(state.lastReadiness, state.lastReview, slice);
   const viewer = viewerUrl(config);
   const code = statusExitCode(state.lastReadiness, slice);

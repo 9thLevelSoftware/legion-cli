@@ -697,7 +697,7 @@ adapter:
   claude:
     extraArgs: ["--model", "opus"]    # argv only; doctor trust-warns
   grok:
-    args: ["-p", "--model", "grok-4", "{{pointer}}"]
+    args: ["-p", "{{pointer}}", "--model", "grok-4"]
   generic:
     binary: claude         # required when default or any routes/named target is generic
     args: ["-p", "--output-format", "json", "{{pointer}}"]

@@ -111,7 +111,10 @@ export function extraArgvPrefixCompatible(
   binary?: string,
 ): boolean {
   if (!usesAssumedExtraBinary(id, binary)) return true;
-  return args[0] === extraVendorPrefix(id);
+  if (args[0] !== extraVendorPrefix(id)) return false;
+  // grok `-p` consumes the next argv token as the prompt.
+  if (id === "grok") return args[1] === POINTER_PLACEHOLDER;
+  return true;
 }
 
 /** Empty extra-adapter args use that id's frozen vendor argv. Explicit args are not auto-repaired. */
@@ -138,6 +141,9 @@ export function extraArgvRefuseReason(
 ): string | null {
   if (!argsIncludePointer(args)) return `adapter.${id}.args must include {{pointer}}`;
   if (!extraArgvPrefixCompatible(id, args, binary)) {
+    if (id === "grok" && usesAssumedExtraBinary(id, binary) && args[0] === extraVendorPrefix(id)) {
+      return "adapter.grok.args must put {{pointer}} immediately after -p";
+    }
     return `adapter.${id}.args must keep ${extraVendorPrefix(id)} (vendor argv)`;
   }
   return null;

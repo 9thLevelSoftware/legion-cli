@@ -123,11 +123,11 @@ test("frozen argv table deepEquals the KD-7 vendor rows", () => {
   assert.deepEqual(extraArgsOrDefault("openai", ["{{pointer}}"]), ["{{pointer}}"]);
   assert.deepEqual(extraArgsOrDefault("codex", ["exec", "{{pointer}}"]), ["exec", "{{pointer}}"]);
   assert.deepEqual(extraArgsOrDefault("openai", ["{{pointer}}"], process.execPath), ["{{pointer}}"]);
-  assert.deepEqual(extraArgsOrDefault("grok", ["-p", "--model", "grok-4", "{{pointer}}"]), [
+  assert.deepEqual(extraArgsOrDefault("grok", ["-p", "{{pointer}}", "--model", "grok-4"]), [
     "-p",
+    "{{pointer}}",
     "--model",
     "grok-4",
-    "{{pointer}}",
   ]);
   assert.equal(FROZEN_ARGV_TABLE.fake.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.claude.spawnable, true);
@@ -146,7 +146,8 @@ test("extra argv is prefix-compatible with the frozen vendor template", () => {
   assert.equal(usesAssumedExtraBinary("minimax", "mcode"), true);
   assert.equal(usesAssumedExtraBinary("grok", process.execPath), false);
   assert.equal(extraArgvPrefixCompatible("grok", ["-p", "{{pointer}}"]), true);
-  assert.equal(extraArgvPrefixCompatible("grok", ["-p", "--model", "x", "{{pointer}}"]), true);
+  assert.equal(extraArgvPrefixCompatible("grok", ["-p", "{{pointer}}", "--model", "x"]), true);
+  assert.equal(extraArgvPrefixCompatible("grok", ["-p", "--model", "x", "{{pointer}}"]), false);
   assert.equal(extraArgvPrefixCompatible("grok", ["{{pointer}}"]), false);
   assert.equal(extraArgvPrefixCompatible("openai", ["{{pointer}}"]), false);
   assert.equal(extraArgvPrefixCompatible("mimo", ["{{pointer}}"]), false);
@@ -154,6 +155,8 @@ test("extra argv is prefix-compatible with the frozen vendor template", () => {
   assert.equal(extraArgvPrefixCompatible("openai", ["exec", "{{pointer}}"]), true);
   assert.equal(extraArgvPrefixCompatible("grok", ["{{pointer}}"], process.execPath), true);
   assert.equal(extraArgvIsSpawnable("grok"), true);
+  assert.equal(extraArgvIsSpawnable("grok", ["-p", "{{pointer}}", "--model", "x"]), true);
+  assert.equal(extraArgvIsSpawnable("grok", ["-p", "--model", "x", "{{pointer}}"]), false);
   assert.equal(extraArgvIsSpawnable("grok", ["{{pointer}}"]), false);
   assert.equal(extraArgvIsSpawnable("grok", ["-p"]), false);
   assert.equal(extraArgvIsSpawnable("grok", ["{{pointer}}"], process.execPath), true);
@@ -166,7 +169,7 @@ test("templateArgv leaves {{pointer}} unexpanded and omits the pointer-prompt bo
     adapter: {
       default: "claude",
       claude: { extraArgs: ["--model", "opus"] },
-      grok: { args: ["-p", "--model", "grok-4", "{{pointer}}"] },
+      grok: { args: ["-p", "{{pointer}}", "--model", "grok-4"] },
       generic: { binary: "node", args: ["-p", "{{pointer}}"] },
       minimax: { binary: "custom-mcode" },
     },
@@ -179,7 +182,7 @@ test("templateArgv leaves {{pointer}} unexpanded and omits the pointer-prompt bo
 
   const grok = templateArgv("grok", config);
   assert.equal(grok.binary, ASSUMED_EXTRA_BINARIES.grok);
-  assert.deepEqual([...grok.argv], ["-p", "--model", "grok-4", POINTER_PLACEHOLDER]);
+  assert.deepEqual([...grok.argv], ["-p", POINTER_PLACEHOLDER, "--model", "grok-4"]);
   assert.ok(!grok.argv.includes(pointer));
 
   const generic = templateArgv("generic", config);
