@@ -35,6 +35,8 @@ export const HINT = {
   discuss: "legion-cli discuss",
   intentConfirm: "confirm the printed intent brief (Y)",
   skipWireframes: "--skip-wireframes is pre-approve only",
+  wireframe: "legion-cli wireframe",
+  wireframeRestyle: "legion-cli wireframe --restyle",
   concretePaths: "concrete paths",
   inRepo: "in-repo path",
   noCommit: "legion-cli ingest --no-commit",

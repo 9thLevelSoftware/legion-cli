@@ -128,6 +128,7 @@ import {
   spawnableAdapterRefuseMessage,
   startSkillSpawn,
   waitStartedSpawn,
+  type OptionalSpawnResult,
   type StartedSkillSpawn,
 } from "./spawn.js";
 import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
@@ -177,15 +178,13 @@ import type {
   ShipPreview,
   ShipReceipt,
   VerifyResult,
+  WireframeOptions,
+  WireframeResult,
 } from "./types.js";
 import { promoteBrownfieldRun, runBrownfield } from "./brownfield.js";
 import { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands } from "./verify.js";
-import {
-  palettePresent,
-  renderWireframeIndex,
-  renderWireframeScreen,
-  uniqueScreenPages,
-} from "./wireframes.js";
+import { palettePresent } from "./wireframes.js";
+import { runWireframe, screenPagesFor, writeWireframeFiles } from "./wireframe-run.js";
 
 /** Distill spawn is skipped when materialized source exceeds this many characters (64 KiB). */
 export const DISTILL_SOURCE_MAX_CHARS = 64 * 1024;
@@ -1614,6 +1613,33 @@ export class LegionEngine {
     });
   }
 
+  async wireframe(opts: WireframeOptions = {}): Promise<WireframeResult> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized" || !state.activeSpecId) {
+        refuse("no active spec", HINT.spec);
+      }
+      const specId = state.activeSpecId;
+      let specDoc: Awaited<ReturnType<LegionStore["readSpec"]>>;
+      try {
+        specDoc = await this.store.readSpec(specId);
+      } catch {
+        refuse("no active spec", HINT.spec);
+      }
+      const answers = await this.#loadIntentAnswers();
+      return runWireframe({
+        projectRoot: this.projectRoot,
+        dir: join(this.store.paths.specsDir, specId, "wireframes"),
+        spec: specDoc.data,
+        specBody: specDoc.body,
+        screens: answers.mapped.screens,
+        opts,
+        writeSpec: (spec, body) => this.store.writeSpec(spec, body),
+        spawnSkill: opts.spawn ? (prompt) => this.#spawnWireframe(specId, prompt, opts.adapter) : undefined,
+      });
+    });
+  }
+
   async abandon(message: string): Promise<void> {
     const reason = message.trim();
     if (!reason) {
@@ -2458,32 +2484,38 @@ export class LegionEngine {
   }
 
   async #writeWireframes(spec: Spec, screens: string[]): Promise<void> {
-    const names = screens.length > 0 ? screens : ["home"];
-    const pages = uniqueScreenPages(names);
     const dir = join(this.store.paths.specsDir, spec.id, "wireframes");
-    await mkdir(dir, { recursive: true });
-    await writeFile(
-      join(dir, "INDEX.html"),
-      renderWireframeIndex({ specTitle: spec.title, specId: spec.id, pages }),
-      "utf8",
-    );
-    for (const page of pages) {
-      await writeFile(
-        join(dir, `${page.slug}.html`),
-        renderWireframeScreen({
-          specTitle: spec.title,
-          screen: page.name,
-          slug: page.slug,
-          pages,
-        }),
-        "utf8",
-      );
+    await writeWireframeFiles(dir, spec, screenPagesFor(screens));
+  }
+
+  async #spawnWireframe(
+    specId: string,
+    promptBody: string,
+    cliAdapter?: AdapterId,
+  ): Promise<OptionalSpawnResult> {
+    let config: LegionConfig;
+    try {
+      config = await this.#readConfig();
+    } catch {
+      return { spawned: false, runId: `wireframe-${Date.now().toString(36)}`, revert: null };
     }
+    return optionalSkillSpawn({
+      projectRoot: this.projectRoot,
+      config,
+      skillId: "wireframe",
+      specId,
+      promptBody,
+      skillsDir: this.#skillsDir,
+      store: this.store,
+      fakeArtifacts: this.#fakeArtifacts,
+      throwAfterWrite: this.#fakeThrowAfterWrite,
+      timedOut: this.#fakeTimedOut,
+      cliAdapter,
+    });
   }
 
   async #ensureWireframePalette(specId: string, screens: string[]): Promise<void> {
-    const names = screens.length > 0 ? screens : ["home"];
-    const pages = uniqueScreenPages(names);
+    const pages = screenPagesFor(screens);
     const dir = join(this.store.paths.specsDir, specId, "wireframes");
     const files = ["INDEX.html", ...pages.map((page) => `${page.slug}.html`)];
     for (const file of files) {
@@ -2492,12 +2524,12 @@ export class LegionEngine {
         const html = await readFile(abs, "utf8");
         if (!palettePresent(html)) {
           const spec = (await this.store.readSpec(specId)).data;
-          await this.#writeWireframes(spec, names);
+          await this.#writeWireframes(spec, screens);
           return;
         }
       } catch {
         const spec = (await this.store.readSpec(specId)).data;
-        await this.#writeWireframes(spec, names);
+        await this.#writeWireframes(spec, screens);
         return;
       }
     }

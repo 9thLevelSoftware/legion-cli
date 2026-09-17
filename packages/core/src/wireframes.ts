@@ -148,6 +148,59 @@ export function palettePresent(html: string): boolean {
   );
 }
 
+const DENIED_TAGS = new Set(["script", "iframe", "object", "embed"]);
+const JS_URL_ATTRS = new Set(["href", "src", "xlink:href"]);
+const OPEN_TAG_RE = /<([a-zA-Z][\w:-]*)\b([^>]*)>/g;
+const ATTR_RE = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+
+function stripHtmlComments(html: string): string {
+  return html.replace(/<!--[\s\S]*?-->/g, "");
+}
+
+function parseHtmlAttrs(raw: string): Array<{ name: string; value: string }> {
+  const out: Array<{ name: string; value: string }> = [];
+  const re = new RegExp(ATTR_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(raw))) {
+    const name = match[1];
+    if (!name || name === "/") continue;
+    out.push({ name, value: match[2] ?? match[3] ?? match[4] ?? "" });
+  }
+  return out;
+}
+
+function relTokens(value: string): string[] {
+  return value.trim().split(/\s+/).filter(Boolean);
+}
+
+/** Fail-closed HTML policy. Attribute names matching /^on/i, not substring `on` in values. */
+export function assertWireframeHtml(html: string): void {
+  const stripped = stripHtmlComments(html);
+  const tagRe = new RegExp(OPEN_TAG_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = tagRe.exec(stripped))) {
+    const tag = match[1].toLowerCase();
+    const attrs = parseHtmlAttrs(match[2] ?? "");
+    if (DENIED_TAGS.has(tag)) {
+      throw new Error(`wireframe HTML denies <${tag}>`);
+    }
+    if (tag === "link") {
+      const rel = attrs.find((attr) => attr.name.toLowerCase() === "rel");
+      if (rel && relTokens(rel.value).some((token) => token.toLowerCase() === "import")) {
+        throw new Error("wireframe HTML denies <link rel=import>");
+      }
+    }
+    for (const attr of attrs) {
+      if (/^on/i.test(attr.name)) {
+        throw new Error(`wireframe HTML denies ${attr.name.toLowerCase()}`);
+      }
+      if (JS_URL_ATTRS.has(attr.name.toLowerCase()) && /^\s*javascript:/i.test(attr.value)) {
+        throw new Error(`wireframe HTML denies javascript: ${attr.name.toLowerCase()}`);
+      }
+    }
+  }
+}
+
 function escapeHtml(text: string): string {
   return text
     .replaceAll("&", "&amp;")
