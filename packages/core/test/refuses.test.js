@@ -11,6 +11,7 @@ import {
   evaluateReadiness,
   filesAllowedFailsPlan,
   PHASES,
+  refuseKind,
 } from "../dist/index.js";
 import {
   initGitRepo,
@@ -495,6 +496,11 @@ test("§2.5 filesAllowed globs are plan FAIL", async () => {
 test("plan_concerns is not a phase", () => {
   assert.equal(PHASES.includes("plan_concerns"), false);
   assert.equal(HINT.plan.includes("plan_concerns"), false);
+});
+
+test("refuseKind maps HINT.controlMode and HINT.advisory to control-mode", () => {
+  assert.equal(refuseKind(HINT.controlMode), "control-mode");
+  assert.equal(refuseKind(HINT.advisory), "control-mode");
 });
 
 test("refuses append a local audit event", async () => {

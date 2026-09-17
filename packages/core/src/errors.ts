@@ -61,7 +61,6 @@ export function refuseKind(nextHint: string): string {
   if (match?.[1]) return match[1];
   if (/concrete paths/i.test(nextHint)) return "plan";
   if (/in-repo path/i.test(nextHint)) return "ingest";
-  if (/guarded or surgical/i.test(nextHint)) return "control-mode";
   if (nextHint.trim() === "legion-cli") return "status";
   return "other";
 }
