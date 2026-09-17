@@ -334,9 +334,11 @@ test("POST /engine/* returns 409 while a live spawn is in_progress", async () =>
       "utf8",
     );
     await store.rebuild();
-    await withServer(dir, async ({ handle }) => {
+    await withServer(dir, async ({ handle, warns }) => {
       const html = await (await fetch(handle.url)).text();
-      const token = tokenFromHtml(html);
+      const token = handle.token;
+      assert.equal(tokenFromWarns(warns), token);
+      assertHtmlOmitsToken(html, token);
       const ticketRes = await enginePost(handle, "/engine/ticket", { title: "park extra" }, { token });
       assert.equal(ticketRes.status, 409, await ticketRes.clone().text());
       const body = await ticketRes.json();
