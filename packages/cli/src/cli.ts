@@ -554,20 +554,22 @@ export function createProgram(): Command {
     });
 
   addGlobalOptions(
-    program.command("brownfield").description("Audit an existing app (effort 1: architecture + code)"),
+    program.command("brownfield").description("Audit an existing app (effort 1–5: architecture through improvement SPEC)"),
   )
     .argument("[context...]", "scope notes")
-    .option("--effort <n>", "analysis rigor 1–5 (effort 1 implemented)", "1")
+    .option("--effort <n>", "analysis rigor 1–5")
     .option("--execute", "isolate product writes in a git worktree")
     .option("--resume <id>", "resume a brownfield run")
+    .option("--lsp", "effort 5: pass-through to map --lsp (ignored on 1–4)")
     .allowExcessArguments(false)
     .action(async (context: string[], opts, cmd: Command) => {
-      const flags = opts as { effort?: string; execute?: boolean; resume?: string };
+      const flags = opts as { effort?: string; execute?: boolean; resume?: string; lsp?: boolean };
       const code = await runBrownfield(resolveOpts(cmd), {
         effort: flags.effort,
         execute: Boolean(flags.execute),
         resume: flags.resume,
         context,
+        lsp: Boolean(flags.lsp),
       });
       process.exitCode = code;
     });

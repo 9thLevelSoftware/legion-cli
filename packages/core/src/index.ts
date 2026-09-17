@@ -101,6 +101,7 @@ export type {
   Actor,
   AmendTaskOptions,
   Assumption,
+  BrownfieldEffort,
   BrownfieldOptions,
   BrownfieldResult,
   CompactOptions,

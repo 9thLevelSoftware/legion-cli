@@ -1,4 +1,6 @@
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
@@ -7,6 +9,7 @@ import {
   PersistError,
   runPagePath,
   runResumePath,
+  toProjectRelativePosix,
   tryGitHead,
   WIKI_PAGE_SCHEMA_VERSION,
   wikiRunPagePath,
@@ -16,11 +19,15 @@ import {
 import {
   BrownfieldRunIdSchema,
   BrownfieldRunSchema,
+  FingerprintFileSchema,
   SCHEMA_VERSION,
   type BrownfieldRun,
+  type FingerprintFile,
 } from "@9thlevelsoftware/legion-cli-schema";
+import { gardenReport } from "@9thlevelsoftware/legion-cli-wiki";
 import { HINT, refuse } from "./errors.js";
-import type { BrownfieldOptions, BrownfieldResult, PromoteRunOptions, PromoteRunResult } from "./types.js";
+import type { MapResult } from "./map.js";
+import type { BrownfieldEffort, BrownfieldOptions, BrownfieldResult, PromoteRunOptions, PromoteRunResult } from "./types.js";
 
 export const BROWNFIELD_PAGES = [
   "intent.md",
@@ -30,6 +37,12 @@ export const BROWNFIELD_PAGES = [
   "analysis.md",
   "design.md",
 ] as const;
+
+/** Same 60s cap as map LSP — hung `pnpm audit` must not hold the engine forever. */
+const AUDIT_TIMEOUT_MS = 60_000;
+const WALK_CAP = 80;
+const SECRET_FILE_CAP = 200;
+const SECRET_FILE_MAX_BYTES = 1024 * 1024;
 
 const SKIP_DIR_NAMES = new Set([
   ".git",
@@ -42,7 +55,19 @@ const SKIP_DIR_NAMES = new Set([
   ".cache",
 ]);
 
-const SKIP_LEGION_CHILDREN = new Set(["index", "cache", "worktrees"]);
+const SKIP_LEGION_CHILDREN = new Set(["index", "cache", "worktrees", "runs", "map", "sandbox", "chat", "skills"]);
+
+/** Same regexes as `packages/cli/src/secrets.ts` / persist redact — findings must not re-emit the secret. */
+const SECRET_PATTERNS: { name: string; re: RegExp }[] = [
+  { name: "aws-access-key", re: /AKIA[0-9A-Z]{16}/g },
+  { name: "sk-proj", re: /\bsk-proj-[A-Za-z0-9_-]{8,}/g },
+  { name: "sk-ant", re: /\bsk-ant-[A-Za-z0-9_-]{8,}/g },
+  { name: "sk", re: /\bsk-[A-Za-z0-9]{20,}/g },
+  { name: "xai", re: /\bxai-[A-Za-z0-9]{20,}/g },
+  { name: "private-key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  { name: "ghp", re: /ghp_[A-Za-z0-9]+/g },
+  { name: "github_pat", re: /github_pat_[A-Za-z0-9_]+/g },
+];
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -52,15 +77,30 @@ function newRunId(): string {
   return randomBytes(4).toString("hex");
 }
 
-function parseEffort(raw: number | undefined): 1 {
+function isEffort(n: number): n is BrownfieldEffort {
+  return n === 1 || n === 2 || n === 3 || n === 4 || n === 5;
+}
+
+function parseEffort(raw: number | undefined): BrownfieldEffort {
   const effort = raw ?? 1;
-  if (!Number.isInteger(effort) || effort < 1 || effort > 5) {
+  if (!Number.isInteger(effort) || !isEffort(effort)) {
     refuse("brownfield --effort must be 1–5", HINT.brownfield);
   }
-  if (effort !== 1) {
-    refuse("brownfield effort 2–5 is not implemented yet", HINT.brownfield);
-  }
-  return 1;
+  return effort;
+}
+
+function asEffort(n: number): BrownfieldEffort {
+  if (!isEffort(n)) refuse("brownfield --effort must be 1–5", HINT.brownfield);
+  return n;
+}
+
+function ladderPages(effort: BrownfieldEffort, mapped: boolean): string[] {
+  const pages: string[] = [...BROWNFIELD_PAGES];
+  if (effort >= 2) pages.push("tests.md");
+  if (effort >= 3) pages.push("security.md");
+  if (effort >= 4) pages.push("docs.md");
+  if (effort >= 5 && mapped) pages.push("improvement-spec.md");
+  return pages;
 }
 
 function parseRunId(raw: string): string {
@@ -104,12 +144,30 @@ async function writeRunResume(projectRoot: string, run: BrownfieldRun): Promise<
   await writeFile(abs, `${JSON.stringify(run, null, 2)}\n`, "utf8");
 }
 
-async function collectEvidence(projectRoot: string): Promise<{ layout: string[]; sources: string[] }> {
+function isTestFile(rel: string, name: string): boolean {
+  if (rel === "tests" || rel.startsWith("tests/")) return true;
+  if (/\.test\.[^.]+$/i.test(name) || /\.spec\.[^.]+$/i.test(name)) return true;
+  return /_test\.go$/i.test(name);
+}
+
+type Evidence = {
+  layout: string[];
+  sources: string[];
+  tests: string[];
+  markdown: string[];
+};
+
+async function collectEvidence(projectRoot: string): Promise<Evidence> {
   const layout: string[] = [];
   const sources: string[] = [];
+  const tests: string[] = [];
+  const markdown: string[] = [];
 
   async function walk(dir: string, rel: string, depth: number): Promise<void> {
-    if (layout.length + sources.length >= 80 || depth > 4) return;
+    if (layout.length + sources.length >= WALK_CAP && tests.length >= WALK_CAP && markdown.length >= WALK_CAP) {
+      return;
+    }
+    if (depth > 4) return;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -118,26 +176,31 @@ async function collectEvidence(projectRoot: string): Promise<{ layout: string[];
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (layout.length + sources.length >= 80) return;
       if (entry.name === "." || entry.name === "..") continue;
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         if (SKIP_DIR_NAMES.has(entry.name)) continue;
         if (rel === ".legion-cli" && SKIP_LEGION_CHILDREN.has(entry.name)) continue;
-        if (depth === 0) layout.push(`${childRel}/`);
+        if (depth === 0 && layout.length < WALK_CAP) layout.push(`${childRel}/`);
         await walk(join(dir, entry.name), childRel, depth + 1);
         continue;
       }
       if (!entry.isFile()) continue;
-      if (depth === 0) layout.push(childRel);
-      if (/\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|cs|php)$/i.test(entry.name) || childRel.startsWith("src/")) {
-        sources.push(childRel);
+      if (depth === 0 && layout.length < WALK_CAP) layout.push(childRel);
+      if (isTestFile(childRel, entry.name)) {
+        if (tests.length < WALK_CAP) tests.push(childRel);
+      } else if (
+        /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|cs|php)$/i.test(entry.name) ||
+        childRel.startsWith("src/")
+      ) {
+        if (sources.length < WALK_CAP) sources.push(childRel);
       }
+      if (/\.md$/i.test(entry.name) && markdown.length < WALK_CAP) markdown.push(childRel);
     }
   }
 
   await walk(projectRoot, "", 0);
-  return { layout, sources };
+  return { layout, sources, tests, markdown };
 }
 
 async function readPackageHint(projectRoot: string): Promise<string> {
@@ -154,9 +217,275 @@ async function readPackageHint(projectRoot: string): Promise<string> {
   }
 }
 
+async function detectTestRunners(projectRoot: string, tests: readonly string[]): Promise<string[]> {
+  const runners: string[] = [];
+  try {
+    const raw = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8")) as {
+      scripts?: { test?: unknown };
+    };
+    if (typeof raw.scripts?.test === "string" && raw.scripts.test.trim()) {
+      runners.push(`package.json scripts.test: ${raw.scripts.test.trim()}`);
+    }
+  } catch {
+    // no package.json
+  }
+  if (existsSync(join(projectRoot, "pytest.ini"))) runners.push("pytest.ini");
+  try {
+    const pyproject = await readFile(join(projectRoot, "pyproject.toml"), "utf8");
+    if (pyproject.includes("[tool.pytest")) runners.push("pyproject.toml [tool.pytest]");
+  } catch {
+    // no pyproject
+  }
+  if (existsSync(join(projectRoot, "go.mod")) && tests.some((path) => path.endsWith("_test.go"))) {
+    runners.push("go.mod + *_test.go");
+  }
+  if (existsSync(join(projectRoot, "Cargo.toml"))) runners.push("Cargo.toml");
+  return runners;
+}
+
+function sourceHasNearbyTest(source: string, tests: readonly string[]): boolean {
+  const base = source.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
+  return tests.some((path) => {
+    const name = path.replace(/^.*\//, "");
+    if (name === `${base}.test.ts` || name === `${base}.test.js`) return true;
+    if (name === `${base}.spec.ts` || name === `${base}.spec.js`) return true;
+    if (name === `${base}_test.go`) return true;
+    return (
+      /\.(test|spec)\.[^.]+$/i.test(name) &&
+      name.replace(/\.(test|spec)\.[^.]+$/i, "") === base
+    );
+  });
+}
+
+function renderTestsMd(input: { runners: string[]; tests: string[]; gaps: string[] }): string {
+  const runners = input.runners.length > 0 ? input.runners.map((r) => `- ${r}`).join("\n") : "- (none detected)";
+  const listed = input.tests.length > 0 ? input.tests.map((p) => `- ${p}`).join("\n") : "- (no test files listed)";
+  const gaps =
+    input.gaps.length > 0
+      ? input.gaps.map((source, i) => {
+          const id = `A-T${String(i + 1).padStart(2, "0")}`;
+          return `### ${id}\n- **Statement**: \`${source}\` has no nearby test\n- **Status**: needs_confirmation\n`;
+        }).join("\n")
+      : "- (none)\n";
+  return [
+    "# Tests",
+    "",
+    "## Runners",
+    runners,
+    "",
+    "## Test files",
+    listed,
+    "",
+    "## Coverage gaps",
+    gaps,
+  ].join("\n");
+}
+
+type SecretFinding = { path: string; kind: string };
+
+async function scanSecretFindings(projectRoot: string): Promise<SecretFinding[]> {
+  const findings: SecretFinding[] = [];
+  let filesSeen = 0;
+
+  async function walk(dir: string, rel: string): Promise<void> {
+    if (findings.length >= WALK_CAP || filesSeen >= SECRET_FILE_CAP) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (findings.length >= WALK_CAP || filesSeen >= SECRET_FILE_CAP) return;
+      if (entry.name === "." || entry.name === "..") continue;
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      const abs = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (SKIP_DIR_NAMES.has(entry.name)) continue;
+        if (rel === ".legion-cli" && SKIP_LEGION_CHILDREN.has(entry.name)) continue;
+        await walk(abs, childRel);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      filesSeen += 1;
+      let text: string;
+      try {
+        const buf = await readFile(abs);
+        if (buf.byteLength > SECRET_FILE_MAX_BYTES) continue;
+        if (buf.includes(0)) continue;
+        text = buf.toString("utf8");
+      } catch {
+        continue;
+      }
+      let path: string;
+      try {
+        path = toProjectRelativePosix(projectRoot, abs);
+      } catch {
+        path = childRel;
+      }
+      for (const pattern of SECRET_PATTERNS) {
+        pattern.re.lastIndex = 0;
+        if (!pattern.re.test(text)) continue;
+        findings.push({ path, kind: pattern.name });
+      }
+    }
+  }
+
+  await walk(projectRoot, "");
+  return findings;
+}
+
+function parseAuditNames(stdout: string): string[] {
+  let json: unknown;
+  try {
+    json = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  if (!json || typeof json !== "object") return [];
+  const names = new Set<string>();
+  const rec = json as Record<string, unknown>;
+  if (rec.vulnerabilities && typeof rec.vulnerabilities === "object") {
+    for (const key of Object.keys(rec.vulnerabilities as object)) names.add(key);
+  }
+  if (rec.advisories && typeof rec.advisories === "object") {
+    for (const value of Object.values(rec.advisories as object)) {
+      if (value && typeof value === "object" && typeof (value as { module_name?: unknown }).module_name === "string") {
+        names.add((value as { module_name: string }).module_name);
+      }
+    }
+  }
+  return [...names].sort();
+}
+
+function runLockfileAudit(projectRoot: string): string[] {
+  const pnpmLock = existsSync(join(projectRoot, "pnpm-lock.yaml"));
+  const npmLock = existsSync(join(projectRoot, "package-lock.json"));
+  if (!pnpmLock && !npmLock) {
+    return ["no audit (no lockfile)"];
+  }
+  const bin = pnpmLock ? "pnpm" : "npm";
+  const argv = ["audit", "--json"];
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const spawnOnce = (command: string) =>
+    spawnSync(command, argv, {
+      cwd: projectRoot,
+      encoding: "utf8",
+      windowsHide: true,
+      shell: false,
+      timeout: AUDIT_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+      env,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  let result = spawnOnce(bin);
+  if (result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT" && process.platform === "win32") {
+    result = spawnOnce(`${bin}.cmd`);
+  }
+  const timedOut =
+    (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ||
+    (result.signal === "SIGKILL" && result.status === null);
+  if (timedOut) {
+    return [`lockfile: ${pnpmLock ? "pnpm-lock.yaml" : "package-lock.json"}`, "audit timed out (60s)"];
+  }
+  if (result.error) {
+    return [
+      `lockfile: ${pnpmLock ? "pnpm-lock.yaml" : "package-lock.json"}`,
+      `audit skipped: ${bin} (${(result.error as NodeJS.ErrnoException).code ?? result.error.message})`,
+    ];
+  }
+  const names = parseAuditNames(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+  const lines = [`lockfile: ${pnpmLock ? "pnpm-lock.yaml" : "package-lock.json"}`, `command: ${bin} audit --json`];
+  if (names.length === 0) {
+    lines.push("packages: (none named)");
+  } else {
+    lines.push(`packages: ${names.join(", ")}`);
+  }
+  return lines;
+}
+
+function renderSecurityMd(findings: SecretFinding[], auditLines: string[]): string {
+  const secretLines =
+    findings.length > 0
+      ? findings.map((hit) => `- \`${hit.path}\` (${hit.kind}): [REDACTED:${hit.kind}]`).join("\n")
+      : "- (none)";
+  return [
+    "# Security",
+    "",
+    "## Secrets",
+    secretLines,
+    "",
+    "## Dependency audit",
+    ...auditLines.map((line) => (line.startsWith("no audit") ? line : `- ${line}`)),
+    "",
+  ].join("\n");
+}
+
+async function readFingerprints(projectRoot: string): Promise<FingerprintFile | undefined> {
+  try {
+    const raw = JSON.parse(await readFile(join(projectRoot, ".legion-cli", "map", "fingerprints.json"), "utf8"));
+    const parsed = FingerprintFileSchema.safeParse(raw);
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function nearbyMarkdownExists(modulePath: string, markdown: ReadonlySet<string>): boolean {
+  const dir = dirname(modulePath).replaceAll("\\", "/");
+  const base = modulePath.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
+  const dirPrefix = dir === "." ? "" : `${dir}/`;
+  const candidates = [
+    `${dirPrefix}${base}.md`,
+    `${dirPrefix}README.md`,
+    `docs/${base}.md`,
+    `docs/${dirPrefix}${base}.md`,
+  ];
+  return candidates.some((path) => markdown.has(path));
+}
+
+function renderDocsMd(input: {
+  readme: string | null;
+  orphans: Array<{ path: string; title: string }>;
+  undocumented: string[];
+}): string {
+  const readme = input.readme ? `- present: \`${input.readme}\`` : "- missing";
+  const orphans =
+    input.orphans.length > 0
+      ? input.orphans.map((page) => `- \`${page.path}\` ${page.title}`).join("\n")
+      : "- (none)";
+  const undocumented =
+    input.undocumented.length > 0
+      ? input.undocumented.map((line) => `- ${line}`).join("\n")
+      : "- (none, or no fingerprints yet)";
+  return [
+    "# Docs",
+    "",
+    "## README",
+    readme,
+    "",
+    "## Wiki orphans",
+    orphans,
+    "",
+    "## Exports without nearby markdown",
+    undocumented,
+    "",
+  ].join("\n");
+}
+
+function findReadme(projectRoot: string): string | null {
+  for (const name of ["README.md", "README", "readme.md"]) {
+    if (existsSync(join(projectRoot, name))) return name;
+  }
+  return null;
+}
+
 function renderPages(input: {
   runId: string;
   name: string;
+  effort: BrownfieldEffort;
   context: string;
   execute: boolean;
   packageHint: string;
@@ -169,6 +498,17 @@ function renderPages(input: {
   const sources =
     input.sources.length > 0 ? input.sources.map((p) => `- ${p}`).join("\n") : "- (no source files listed)";
   const pkg = input.packageHint || "(no package.json)";
+  const outOfScope =
+    input.effort === 1
+      ? [
+          "## Out of scope (effort 1)",
+          "- LSP / architecture fingerprints",
+          "- Tests, security, and documentation specialists (effort 2+)",
+        ]
+      : [
+          `## Out of scope (effort ${input.effort})`,
+          input.effort < 5 ? "- Durable architecture map lives in `.legion-cli/map/` after effort 5" : "- This file is evidence, not a frozen SPEC",
+        ];
   return {
     "intent.md": [
       "# Intent brief",
@@ -176,7 +516,7 @@ function renderPages(input: {
       `- **Run ID**: ${input.runId}`,
       `- **Project**: ${input.name}`,
       `- **Captured**: ${nowIso()}`,
-      "- **Effort level**: 1",
+      `- **Effort level**: ${input.effort}`,
       `- **Execute requested**: ${input.execute}`,
       "",
       "## User Goal",
@@ -189,9 +529,7 @@ function renderPages(input: {
       "- [ ] Architecture and code evidence captured in this run",
       "- [ ] Improvement SPEC can be written from this run (promote first if the wiki should own it)",
       "",
-      "## Out of scope (effort 1)",
-      "- LSP / architecture fingerprints",
-      "- Tests, security, and documentation specialists (effort 2+)",
+      ...outOfScope,
       "",
     ].join("\n"),
     "assumptions.md": [
@@ -244,7 +582,9 @@ function renderPages(input: {
       "# Brownfield analysis findings",
       "",
       ...(rawContext ? [rawContext, ""] : []),
-      "Effort 1: Architecture + Code only. No LSP.",
+      input.effort === 1
+        ? "Effort 1: Architecture + Code only. No LSP."
+        : `Effort ${input.effort}: in-process rigor ladder (no brownfield skill spawn).`,
       "",
       "### Architecture Summary",
       `Top-level evidence (${input.layout.length} entries). Existing layering may be accidental.`,
@@ -275,20 +615,20 @@ function renderPages(input: {
   };
 }
 
-async function writeAnalysisPages(
+async function writeNamedPages(
   projectRoot: string,
   runId: string,
-  pages: Record<(typeof BROWNFIELD_PAGES)[number], string>,
+  pages: Record<string, string>,
 ): Promise<void> {
-  for (const name of BROWNFIELD_PAGES) {
-    await writeRunFile(projectRoot, runPagePath(runId, name), pages[name]);
+  for (const [name, body] of Object.entries(pages)) {
+    await writeRunFile(projectRoot, runPagePath(runId, name), body);
   }
 }
 
 function toResult(run: BrownfieldRun): BrownfieldResult {
   return {
     runId: run.runId,
-    effort: 1,
+    effort: asEffort(run.effort),
     execute: run.execute,
     phase: run.phase,
     pages: run.pages,
@@ -319,8 +659,120 @@ async function ensureWorktree(store: LegionStore, run: BrownfieldRun): Promise<B
     phase: "complete",
     preSpawnRef: head,
     worktreePath: rel,
-    pages: [...BROWNFIELD_PAGES],
+    pages: [...run.pages],
   };
+}
+
+async function writeLadderExtras(
+  store: LegionStore,
+  runId: string,
+  effort: BrownfieldEffort,
+  evidence: Evidence,
+): Promise<void> {
+  if (effort < 2) return;
+  const runners = await detectTestRunners(store.projectRoot, evidence.tests);
+  const gaps = evidence.sources.filter((source) => !sourceHasNearbyTest(source, evidence.tests)).slice(0, 20);
+  await writeRunFile(store.projectRoot, runPagePath(runId, "tests.md"), renderTestsMd({
+    runners,
+    tests: evidence.tests,
+    gaps,
+  }));
+  if (effort < 3) return;
+  const findings = await scanSecretFindings(store.projectRoot);
+  const auditLines = runLockfileAudit(store.projectRoot);
+  await writeRunFile(
+    store.projectRoot,
+    runPagePath(runId, "security.md"),
+    renderSecurityMd(findings, auditLines),
+  );
+  if (effort < 4) return;
+  const fingerprints = await readFingerprints(store.projectRoot);
+  const mdSet = new Set(evidence.markdown);
+  const undocumented: string[] = [];
+  if (fingerprints) {
+    for (const module of fingerprints.modules) {
+      if (nearbyMarkdownExists(module.path, mdSet)) continue;
+      for (const name of module.exports) {
+        undocumented.push(`\`${module.path}\` export \`${name}\``);
+        if (undocumented.length >= WALK_CAP) break;
+      }
+      if (undocumented.length >= WALK_CAP) break;
+    }
+  }
+  let orphans: Array<{ path: string; title: string }> = [];
+  try {
+    orphans = gardenReport(store.projectRoot).orphans.map((page) => ({ path: page.path, title: page.title }));
+  } catch {
+    orphans = [];
+  }
+  await writeRunFile(
+    store.projectRoot,
+    runPagePath(runId, "docs.md"),
+    renderDocsMd({
+      readme: findReadme(store.projectRoot),
+      orphans,
+      undocumented,
+    }),
+  );
+}
+
+function extractUserGoal(intentBody: string): string {
+  const match = intentBody.match(/^## User Goal\s*\n([\s\S]*?)(?=\n## |$)/m);
+  const goal = (match?.[1] ?? "").trim();
+  return goal || "(none)";
+}
+
+function extractAnalysisHeadings(analysisBody: string): string[] {
+  const found = [...analysisBody.matchAll(/^#{2,3} (.+)$/gm)].map((match) => match[1].trim()).filter(Boolean);
+  return found.length > 0 ? found : ["Architecture and code evidence captured"];
+}
+
+function renderImprovementSpec(input: { runId: string; name: string; userGoal: string; mustBeTrue: string[] }): string {
+  const bullets = input.mustBeTrue.map((item) => `- ${item}`).join("\n");
+  const first = input.mustBeTrue[0] ?? "Architecture and code evidence captured";
+  return [
+    "# Improvement SPEC draft (not frozen)",
+    `- **Run ID**: ${input.runId}`,
+    `- **Status**: draft-in-run`,
+    `- **Title**: ${input.name} improvements`,
+    "## Problem",
+    input.userGoal,
+    "## Must be true",
+    bullets,
+    "## Must not change",
+    "- Existing public CLI/API unless a finding names it",
+    "## Out of scope",
+    "- Unrelated debt not in this run",
+    "## Acceptance",
+    `- AC-P0-01 (P0): ${first}`,
+    "## Next",
+    `1. \`legion-cli run promote ${input.runId}\``,
+    "2. `legion-cli wiki trust` the promoted pages",
+    "3. `legion-cli spec` (templates) — this file is not SPEC.md",
+    "",
+  ].join("\n");
+}
+
+function renderEffort5Architecture(map: MapResult, fingerprints: FingerprintFile | undefined): string {
+  const modules =
+    fingerprints && fingerprints.modules.length > 0
+      ? fingerprints.modules
+          .map((module) => `- \`${module.path}\` — exports: ${module.exports.join(", ")}`)
+          .join("\n")
+      : "- (none)";
+  return [
+    "# Architecture (effort 5)",
+    "",
+    `backend: ${map.backend}`,
+    `rootHash: ${fingerprints?.rootHash ?? "(unknown)"}`,
+    `modules: ${map.modules}`,
+    "",
+    "Durable map: `.legion-cli/map/ARCHITECTURE.md`. This run page is a summary, not the durable map.",
+    "",
+    "## Modules",
+    modules,
+    "",
+  ].join("\n");
 }
 
 export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions): Promise<BrownfieldResult> {
@@ -340,8 +792,11 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
   if (opts.resume) {
     const runId = parseRunId(opts.resume);
     run = await readRunResume(store, runId);
-    if (run.effort !== 1) {
-      refuse("brownfield effort 2–5 is not implemented yet", HINT.brownfield);
+    if (opts.effort !== undefined) {
+      const requested = parseEffort(opts.effort);
+      if (requested !== asEffort(run.effort)) {
+        refuse("resuming a brownfield run cannot change effort; start a new run", HINT.brownfield);
+      }
     }
     const wantExecute = run.execute || executeRequested;
     if (run.phase === "complete" && !wantExecute) {
@@ -373,11 +828,12 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
       startedAt: nowIso(),
       worktreePath: null,
       promoted: false,
-      pages: [...BROWNFIELD_PAGES],
+      pages: ladderPages(effort, false),
       context,
     };
   }
 
+  const effort = asEffort(run.effort);
   await mkdir(join(store.projectRoot, ".legion-cli", "runs", run.runId), { recursive: true });
   await writeRunResume(store.projectRoot, run);
 
@@ -385,14 +841,24 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
   const pages = renderPages({
     runId: run.runId,
     name: project.name,
+    effort,
     context: run.context,
     execute: run.execute,
     packageHint: await readPackageHint(store.projectRoot),
     layout: evidence.layout,
     sources: evidence.sources,
   });
-  await writeAnalysisPages(store.projectRoot, run.runId, pages);
-  run = { ...run, pages: [...BROWNFIELD_PAGES], phase: run.execute ? "execute" : "complete" };
+  await writeNamedPages(store.projectRoot, run.runId, pages);
+  await writeLadderExtras(store, run.runId, effort, evidence);
+
+  if (effort >= 5) {
+    // Map runs outside #mutate (engine.brownfield); leave phase analysis until finishBrownfieldMap.
+    run = { ...run, pages: ladderPages(effort, false), phase: "analysis" };
+    await writeRunResume(store.projectRoot, run);
+    return toResult(run);
+  }
+
+  run = { ...run, pages: ladderPages(effort, false), phase: run.execute ? "execute" : "complete" };
   await writeRunResume(store.projectRoot, run);
 
   if (run.execute) {
@@ -401,6 +867,59 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
   }
 
   return toResult(run);
+}
+
+export async function finishBrownfieldMap(
+  store: LegionStore,
+  runId: string,
+  map: MapResult,
+): Promise<BrownfieldResult> {
+  const run = await readRunResume(store, runId);
+  const effort = asEffort(run.effort);
+  if (effort < 5) return toResult(run);
+
+  const fingerprints = await readFingerprints(store.projectRoot);
+  await writeRunFile(
+    store.projectRoot,
+    runPagePath(run.runId, "architecture.md"),
+    renderEffort5Architecture(map, fingerprints),
+  );
+
+  let intentBody = "";
+  let analysisBody = "";
+  try {
+    intentBody = await readFile(join(store.projectRoot, ...runPagePath(run.runId, "intent.md").split("/")), "utf8");
+  } catch {
+    intentBody = "";
+  }
+  try {
+    analysisBody = await readFile(join(store.projectRoot, ...runPagePath(run.runId, "analysis.md").split("/")), "utf8");
+  } catch {
+    analysisBody = "";
+  }
+  const project = (await store.readProject()).data;
+  await writeRunFile(
+    store.projectRoot,
+    runPagePath(run.runId, "improvement-spec.md"),
+    renderImprovementSpec({
+      runId: run.runId,
+      name: project.name,
+      userGoal: extractUserGoal(intentBody),
+      mustBeTrue: extractAnalysisHeadings(analysisBody),
+    }),
+  );
+
+  let next: BrownfieldRun = {
+    ...run,
+    pages: ladderPages(5, true),
+    phase: run.execute ? "execute" : "complete",
+  };
+  await writeRunResume(store.projectRoot, next);
+  if (next.execute) {
+    next = await ensureWorktree(store, next);
+    await writeRunResume(store.projectRoot, next);
+  }
+  return toResult(next);
 }
 
 export async function promoteBrownfieldRun(

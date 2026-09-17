@@ -191,7 +191,7 @@ import type {
   WireframeOptions,
   WireframeResult,
 } from "./types.js";
-import { promoteBrownfieldRun, runBrownfield } from "./brownfield.js";
+import { finishBrownfieldMap, promoteBrownfieldRun, runBrownfield } from "./brownfield.js";
 import {
   MAP_ARCHITECTURE_PATH,
   MAP_FINGERPRINTS_PATH,
@@ -1925,7 +1925,17 @@ export class LegionEngine {
   }
 
   async brownfield(opts: BrownfieldOptions = {}): Promise<BrownfieldResult> {
-    return this.#mutate(() => runBrownfield(this.store, opts));
+    const first = await this.#mutate(() => runBrownfield(this.store, opts));
+    // Effort 5 map (optional LSP) must not nest under this lock — map uses wait-outside-mutate.
+    if (first.effort < 5 || first.phase === "complete") return first;
+    const mapResult = await this.map({
+      refresh: true,
+      lsp: opts.lsp ? "require" : "auto",
+      resolveBinary: opts.resolveBinary,
+      spawnLsp: opts.spawnLsp,
+      lspDeadlineMs: opts.lspDeadlineMs,
+    });
+    return this.#mutate(() => finishBrownfieldMap(this.store, first.runId, mapResult));
   }
 
   async promoteRun(runId: string, opts: PromoteRunOptions = {}): Promise<PromoteRunResult> {

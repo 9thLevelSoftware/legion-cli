@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { LegionRefuseError } from "../dist/index.js";
+import { HINT, LegionRefuseError } from "../dist/index.js";
 import { git, initGitRepo, initProject, withEngine } from "./helpers.js";
 
 async function exists(path) {
@@ -218,5 +218,156 @@ test("brownfield --execute without git refuses", async () => {
       assert.match(err.nextHint, /git/);
       return true;
     });
+  });
+});
+
+test("HINT.brownfield lists efforts 1-5", () => {
+  assert.equal(HINT.brownfield, "legion-cli brownfield --effort 1|2|3|4|5");
+});
+
+test("effort-2 brownfield writes tests.md and resume effort 2", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine, { mode: "brownfield" });
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export {}\n", "utf8");
+    await mkdir(join(dir, "tests"), { recursive: true });
+    await writeFile(join(dir, "tests", "main.test.ts"), "export {}\n", "utf8");
+    initGitRepo(dir);
+
+    const result = await engine.brownfield({ effort: 2, runId: "22222222" });
+    assert.equal(result.effort, 2);
+    assert.equal(result.phase, "complete");
+    assert.ok(result.pages.includes("intent.md"));
+    assert.ok(result.pages.includes("tests.md"));
+    assert.equal(result.pages.includes("security.md"), false);
+    const resume = JSON.parse(
+      await readFile(join(dir, ".legion-cli", "runs", "22222222", "resume.json"), "utf8"),
+    );
+    assert.equal(resume.effort, 2);
+    const tests = await readFile(join(dir, ".legion-cli", "runs", "22222222", "tests.md"), "utf8");
+    assert.match(tests, /tests\/main\.test\.ts/);
+    assert.match(tests, /A-T01|Coverage gaps/);
+  });
+});
+
+test("effort 6 still refuses range", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine, { mode: "brownfield" });
+    initGitRepo(dir);
+    await assert.rejects(() => engine.brownfield({ effort: 6 }), (err) => {
+      assert.equal(err instanceof LegionRefuseError, true);
+      assert.match(err.message, /brownfield --effort must be 1–5/);
+      assert.equal(err.nextHint, HINT.brownfield);
+      return true;
+    });
+  });
+});
+
+test("resume effort-1 run with --effort 5 refuses", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine, { mode: "brownfield" });
+    initGitRepo(dir);
+    await engine.brownfield({ effort: 1, runId: "11111111" });
+    await assert.rejects(() => engine.brownfield({ resume: "11111111", effort: 5 }), (err) => {
+      assert.equal(err instanceof LegionRefuseError, true);
+      assert.match(err.message, /cannot change effort/);
+      assert.equal(err.nextHint, HINT.brownfield);
+      return true;
+    });
+  });
+});
+
+test("effort 3 fixture with AKIA in a wiki page appears redacted in security.md", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine, { mode: "brownfield" });
+    await mkdir(join(dir, ".legion-cli", "wiki"), { recursive: true });
+    await writeFile(
+      join(dir, ".legion-cli", "wiki", "leaked.md"),
+      "token AKIAIOSFODNN7EXAMPLE leaked\n",
+      "utf8",
+    );
+    initGitRepo(dir);
+    const result = await engine.brownfield({ effort: 3, runId: "33333333" });
+    assert.equal(result.effort, 3);
+    assert.ok(result.pages.includes("security.md"));
+    const security = await readFile(join(dir, ".legion-cli", "runs", "33333333", "security.md"), "utf8");
+    assert.match(security, /leaked\.md/);
+    assert.match(security, /aws-access-key/);
+    assert.match(security, /\[REDACTED:aws-access-key\]/);
+    assert.doesNotMatch(security, /AKIAIOSFODNN7EXAMPLE/);
+  });
+});
+
+test("effort 3 with no lockfile writes no audit and still completes", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine, { mode: "brownfield" });
+    initGitRepo(dir);
+    const result = await engine.brownfield({ effort: 3, runId: "34343434" });
+    assert.equal(result.phase, "complete");
+    const security = await readFile(join(dir, ".legion-cli", "runs", "34343434", "security.md"), "utf8");
+    assert.match(security, /no audit \(no lockfile\)/);
+  });
+});
+
+test("effort 5 calls map, writes fingerprints, leaves .legion-cli/specs untouched", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine, { mode: "brownfield" });
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "app.ts"), "export const n = 1;\n", "utf8");
+    initGitRepo(dir);
+    let lspStarted = false;
+    const result = await engine.brownfield({
+      effort: 5,
+      runId: "55555555",
+      context: "demo the check-in board",
+      spawnLsp: () => {
+        lspStarted = true;
+        throw new Error("default effort 5 must not start an LSP server");
+      },
+    });
+    assert.equal(result.effort, 5);
+    assert.equal(result.phase, "complete");
+    assert.equal(lspStarted, false);
+    assert.ok(result.pages.includes("tests.md"));
+    assert.ok(result.pages.includes("security.md"));
+    assert.ok(result.pages.includes("docs.md"));
+    assert.ok(result.pages.includes("improvement-spec.md"));
+    assert.equal(await exists(join(dir, ".legion-cli", "map", "fingerprints.json")), true);
+    const fingerprints = JSON.parse(
+      await readFile(join(dir, ".legion-cli", "map", "fingerprints.json"), "utf8"),
+    );
+    assert.equal(fingerprints.backend, "fallback");
+    const spec = await readFile(join(dir, ".legion-cli", "runs", "55555555", "improvement-spec.md"), "utf8");
+    assert.match(spec, /# Improvement SPEC draft \(not frozen\)/);
+    assert.match(spec, /demo the check-in board/);
+    assert.match(spec, /this file is not SPEC\.md/);
+    assert.equal(await exists(join(dir, ".legion-cli", "specs", "improvement-spec.md")), false);
+    const specDir = join(dir, ".legion-cli", "specs");
+    const listed = await readdir(specDir).catch(() => []);
+    assert.deepEqual(listed, []);
+    const architecture = await readFile(
+      join(dir, ".legion-cli", "runs", "55555555", "architecture.md"),
+      "utf8",
+    );
+    assert.match(architecture, /backend: fallback/);
+    assert.match(architecture, /Durable map/);
+  });
+});
+
+test("effort 5 --lsp with no server refuses Next: legion-cli map --no-lsp", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine, { mode: "brownfield" });
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "app.ts"), "export const n = 1;\n", "utf8");
+    initGitRepo(dir);
+    await assert.rejects(
+      () => engine.brownfield({ effort: 5, lsp: true, resolveBinary: () => null, runId: "56565656" }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /no language server on PATH/);
+        assert.equal(err.nextHint, "legion-cli map --no-lsp");
+        return true;
+      },
+    );
   });
 });
