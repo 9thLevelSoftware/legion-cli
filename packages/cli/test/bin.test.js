@@ -393,6 +393,8 @@ test("runBounded timeout kills cmd grandchild / node target", async () => {
 
 test("runBounded caps stdout at 1 MiB and kills the process tree", async () => {
   await withTempDir(async (dir) => {
+    assert.equal(RUN_BOUNDED_MAX_BUFFER, 1024 * 1024);
+    const floodChunk = 64 * 1024;
     const flood = join(dir, "flood.cjs");
     const pidFile = join(dir, "pid.txt");
     await writeFile(
@@ -400,7 +402,7 @@ test("runBounded caps stdout at 1 MiB and kills the process tree", async () => {
       [
         'const { writeFileSync } = require("node:fs");',
         `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
-        "const chunk = Buffer.alloc(64 * 1024, 97);",
+        `const chunk = Buffer.alloc(${floodChunk}, 97);`,
         "function flood() {",
         "  while (process.stdout.write(chunk)) {}",
         '  process.stdout.once("drain", flood);',
@@ -413,7 +415,12 @@ test("runBounded caps stdout at 1 MiB and kills the process tree", async () => {
     const result = await runBounded(process.execPath, [flood], 10_000);
     assert.equal(result.truncated, true, result.stderr);
     assert.equal(result.timedOut, false);
-    assert.ok(Buffer.byteLength(result.stdout) <= RUN_BOUNDED_MAX_BUFFER);
+    const stdoutBytes = Buffer.byteLength(result.stdout);
+    assert.ok(stdoutBytes <= RUN_BOUNDED_MAX_BUFFER, `stdout ${stdoutBytes} over cap`);
+    assert.ok(
+      stdoutBytes > RUN_BOUNDED_MAX_BUFFER - floodChunk,
+      `stdout ${stdoutBytes} not within one ${floodChunk}-byte flood chunk of the cap`,
+    );
     assert.ok(Buffer.byteLength(result.stderr) <= RUN_BOUNDED_MAX_BUFFER);
     assert.ok(Date.now() - started < 4000);
     const deadline = Date.now() + 2000;
