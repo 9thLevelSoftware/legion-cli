@@ -84,18 +84,29 @@ function asText(result: ReturnType<typeof spawnSync>): SpawnText {
   };
 }
 
-function spawnDirect(command: string, args: string[], cwd: string | undefined): SpawnText {
+function spawnDirect(
+  command: string,
+  args: string[],
+  cwd: string | undefined,
+  timeout?: number,
+): SpawnText {
   return asText(
     spawnSync(command, args, {
       cwd,
       encoding: "utf8",
       windowsHide: true,
       shell: false,
+      timeout,
     }),
   );
 }
 
-function spawnCmdFile(command: string, args: string[], cwd: string | undefined): SpawnText {
+function spawnCmdFile(
+  command: string,
+  args: string[],
+  cwd: string | undefined,
+  timeout?: number,
+): SpawnText {
   const line = [command, ...args].map(quoteCmdArg).join(" ");
   return asText(
     spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", line], {
@@ -104,6 +115,7 @@ function spawnCmdFile(command: string, args: string[], cwd: string | undefined):
       windowsHide: true,
       shell: false,
       windowsVerbatimArguments: true,
+      timeout,
     }),
   );
 }
@@ -112,9 +124,10 @@ export function runTool(
   name: string,
   args: string[],
   cwd?: string,
+  timeoutMs?: number,
 ): { status: number; stdout: string; stderr: string } {
   if (process.platform !== "win32") {
-    const result = spawnDirect(name, args, cwd);
+    const result = spawnDirect(name, args, cwd, timeoutMs);
     if (result.error) return { status: 1, stdout: "", stderr: "not found" };
     return {
       status: result.status ?? 1,
@@ -131,7 +144,9 @@ export function runTool(
     if (seen.has(key)) continue;
     seen.add(key);
     const viaCmd = /\.(cmd|bat)$/i.test(cmd);
-    const result = viaCmd ? spawnCmdFile(cmd, args, cwd) : spawnDirect(cmd, args, cwd);
+    const result = viaCmd
+      ? spawnCmdFile(cmd, args, cwd, timeoutMs)
+      : spawnDirect(cmd, args, cwd, timeoutMs);
     if (result.error) continue;
     return {
       status: result.status ?? 1,

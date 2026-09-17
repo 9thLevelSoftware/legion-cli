@@ -88,7 +88,7 @@ export function createProgram(): Command {
   program
     .name("legion-cli")
     .description(
-      "Product Engineering lifecycle engine.\nSupported invocation: pnpm exec legion-cli\nDoes not register bin legion.",
+      "Product Engineering lifecycle engine.\nSupported commands: pnpm exec legion-cli   |   legion (alias)\nPlugin installer: npx @9thlevelsoftware/legion --claude   (bin legion-plugins)",
     )
     .version(pkg.version)
     .showSuggestionAfterError(false)

@@ -1,16 +1,32 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { delimiter, dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
-import { normalize, runCli } from "./helpers.js";
+import { bin, normalize, runCli, withTempDir } from "./helpers.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8"));
 
-test("registers bin legion-cli only", () => {
-  assert.deepEqual(Object.keys(pkg.bin), ["legion-cli"]);
+const INSTALLER_FLAGS = [
+  "--claude",
+  "--cursor",
+  "--windsurf",
+  "--codex",
+  "--gemini",
+  "--antigravity",
+  "install",
+  "plugin",
+];
+
+test("registers bin legion-cli and legion to the same script", () => {
+  assert.deepEqual(pkg.bin, {
+    "legion-cli": "./dist/bin.js",
+    legion: "./dist/bin.js",
+  });
 });
 
 function helpSection(out, header, nextHeader) {
@@ -23,7 +39,10 @@ function helpSection(out, header, nextHeader) {
 
 function assertLayer1(out) {
   assert.match(out, /pnpm exec legion-cli/);
-  assert.match(out, /Does not register bin legion/);
+  assert.match(out, /legion \(alias\)/);
+  assert.match(out, /npx @9thlevelsoftware\/legion --claude/);
+  assert.match(out, /bin legion-plugins/);
+  assert.doesNotMatch(out, /Does not register bin legion/);
   assert.match(out, /^status \(default\) {2}/m);
   assert.match(out, /^doctor {2}/m);
   assert.match(out, /^help --all {2}/m);
@@ -40,7 +59,7 @@ function assertLayer1(out) {
   assert.doesNotMatch(out, /index rebuild/);
 }
 
-test("help mentions pnpm exec legion-cli and does not take bin legion", () => {
+test("help mentions pnpm exec legion-cli and legion alias", () => {
   const result = runCli(["help"]);
   assert.equal(result.status, 0, result.stderr);
   assertLayer1(normalize(result.stdout));
@@ -78,6 +97,10 @@ test("help --all lists the grouped command surface", () => {
   assert.match(out, /^ {2}ship$/m);
   assert.match(out, /abandon/);
   assert.match(out, /pnpm exec legion-cli/);
+  assert.match(out, /legion \(alias\)/);
+  assert.match(out, /npx @9thlevelsoftware\/legion --claude/);
+  assert.doesNotMatch(out, /Does not register bin legion/);
+  assert.doesNotMatch(out, /does not register the legion bin/);
   assert.match(out, /--yes \(ignored by intent confirm and ship; discuss refuses\)/);
   assert.match(out, /--metrics/);
   assert.match(out, /spec show/);
@@ -160,7 +183,120 @@ test("help --all does not call control-mode later", () => {
   assert.match(alwaysOn, /control-mode \[mode\]/);
   const notIn = helpSection(out, "Not in this product:", "");
   assert.doesNotMatch(notIn, /\bchat\b/);
-  assert.match(notIn, /HTTP model router, bin legion/);
+  assert.match(notIn, /HTTP model router/);
+  assert.doesNotMatch(notIn, /bin legion/);
+});
+
+test("installer flags refuse with exit 2", () => {
+  for (const flag of INSTALLER_FLAGS) {
+    const result = runCli([flag]);
+    assert.equal(result.status, 2, flag);
+    const err = normalize(result.stderr);
+    assert.match(err, /legion is Legion CLI/, flag);
+    assert.match(err, /npx @9thlevelsoftware\/legion --claude/, flag);
+    assert.match(err, /bin legion-plugins/, flag);
+  }
+});
+
+test("bare invocation and status are not installer refuses", () => {
+  const bare = runCli([]);
+  assert.notEqual(bare.status, 2);
+  const status = runCli(["status"]);
+  assert.notEqual(status.status, 2);
+  const after = runCli(["status", "--claude"]);
+  assert.notEqual(after.status, 2);
+});
+
+test("legion alias is status and refuses --claude with exit 2", async () => {
+  await withTempDir(async (dir) => {
+    const script = join(dir, "legion");
+    await writeFile(script, `import ${JSON.stringify(pathToFileURL(bin).href)};\n`);
+    const runLegion = (args) =>
+      spawnSync(process.execPath, [script, ...args], {
+        encoding: "utf8",
+        cwd: dir,
+        windowsHide: true,
+      });
+
+    const refused = runLegion(["--claude"]);
+    assert.equal(refused.status, 2, refused.stderr);
+    assert.match(normalize(refused.stderr), /legion is Legion CLI/);
+    assert.match(normalize(refused.stderr), /npx @9thlevelsoftware\/legion --claude/);
+
+    const asCli = runCli([], { cwd: dir });
+    const asLegion = runLegion([]);
+    assert.equal(asLegion.status, asCli.status);
+    assert.equal(normalize(asLegion.stdout), normalize(asCli.stdout));
+
+    const statusCli = runCli(["status"], { cwd: dir });
+    const statusLegion = runLegion(["status"]);
+    assert.equal(statusLegion.status, statusCli.status);
+    assert.equal(normalize(statusLegion.stdout), normalize(statusCli.stdout));
+  });
+});
+
+test("doctor warns when PATH legion --help matches the plugin installer", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const stubDir = join(dir, "installer-bin");
+    await mkdir(stubDir);
+    const name = process.platform === "win32" ? "legion.cmd" : "legion";
+    const body =
+      process.platform === "win32"
+        ? "@echo off\r\necho @9thlevelsoftware/legion plugin installer\r\n"
+        : "#!/bin/sh\necho '@9thlevelsoftware/legion plugin installer'\n";
+    const abs = join(stubDir, name);
+    await writeFile(abs, body, "utf8");
+    if (process.platform !== "win32") await chmod(abs, 0o755);
+    const pathValue = [stubDir, process.env.PATH ?? process.env.Path ?? ""].join(delimiter);
+    const result = runCli(["doctor", "--project", dir, "--json"], {
+      env: {
+        LEGION_CLI_ADAPTER: "fake",
+        PATH: pathValue,
+        ...(process.platform === "win32" ? { Path: pathValue } : {}),
+      },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const report = JSON.parse(result.stdout);
+    assert.ok(
+      report.warnings.some((warning) =>
+        /PATH legion is the plugin installer; upgrade it to bin legion-plugins or put Legion CLI first/.test(
+          warning,
+        ),
+      ),
+      `expected installer fingerprint warning, got ${JSON.stringify(report.warnings)}`,
+    );
+  });
+});
+
+test("doctor does not warn when PATH legion --help is Legion CLI", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const stubDir = join(dir, "pe-bin");
+    await mkdir(stubDir);
+    const name = process.platform === "win32" ? "legion.cmd" : "legion";
+    const body =
+      process.platform === "win32"
+        ? "@echo off\r\necho Product Engineering lifecycle engine\r\necho @9thlevelsoftware/legion plugin installer\r\n"
+        : "#!/bin/sh\necho 'Product Engineering lifecycle engine'\necho '@9thlevelsoftware/legion plugin installer'\n";
+    const abs = join(stubDir, name);
+    await writeFile(abs, body, "utf8");
+    if (process.platform !== "win32") await chmod(abs, 0o755);
+    const pathValue = [stubDir, process.env.PATH ?? process.env.Path ?? ""].join(delimiter);
+    const result = runCli(["doctor", "--project", dir, "--json"], {
+      env: {
+        LEGION_CLI_ADAPTER: "fake",
+        PATH: pathValue,
+        ...(process.platform === "win32" ? { Path: pathValue } : {}),
+      },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const report = JSON.parse(result.stdout);
+    assert.ok(
+      !report.warnings.some((warning) => /PATH legion is the plugin installer/.test(warning)),
+      `did not expect installer fingerprint warning, got ${JSON.stringify(report.warnings)}`,
+    );
+  });
 });
 
 test("help --all init lists --mode; intent drops --resume; dashboard is view-only", () => {

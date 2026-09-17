@@ -61,6 +61,10 @@ function toolVersion(name: string, args: string[]): { ok: boolean; detail: strin
   return { ok: true, detail: line || "ok" };
 }
 
+const PE_HELP_FINGERPRINT = "Product Engineering lifecycle engine";
+const INSTALLER_PATH_WARNING =
+  "PATH legion is the plugin installer; upgrade it to bin legion-plugins or put Legion CLI first";
+
 function formatPathGroup(name: string, paths: string[]): string[] {
   const lines = [`  ${name}`];
   if (paths.length === 0) {
@@ -69,6 +73,22 @@ function formatPathGroup(name: string, paths: string[]): string[] {
   }
   for (const abs of paths) lines.push(`    - ${abs}`);
   return lines;
+}
+
+function looksLikeInstallerHelp(text: string): boolean {
+  return (
+    text.includes("@9thlevelsoftware/legion") &&
+    /plugin installer/i.test(text) &&
+    !text.includes(PE_HELP_FINGERPRINT)
+  );
+}
+
+function installerFingerprintWarning(legionPaths: string[]): string | undefined {
+  const probe = legionPaths[0];
+  if (!probe) return undefined;
+  const result = runTool(probe, ["--help"], undefined, 5_000);
+  const text = `${result.stdout}\n${result.stderr}`;
+  return looksLikeInstallerHelp(text) ? INSTALLER_PATH_WARNING : undefined;
 }
 
 function fakeSpawnable(): boolean {
@@ -335,6 +355,8 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   if (legionCliPaths.length > 1) {
     warnings.push("multiple legion-cli binaries on PATH (collision check)");
   }
+  const installerWarn = installerFingerprintWarning(legionPaths);
+  if (installerWarn) warnings.push(installerWarn);
 
   const playwright = runTool("pnpm", ["exec", "playwright", "--version"], opts.project);
   const playwrightDetail =
