@@ -78,12 +78,17 @@ export function matchesGlob(pattern: string, posixPath: string): boolean {
   return globToRegExp(pattern).test(posixPath);
 }
 
+/** `.env` / `.env.*` in any path segment, any case (NTFS would otherwise alias `.ENV` onto `.env`). */
+export function isEnvBasename(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === ".env" || lower.startsWith(".env.");
+}
+
 export function isImplicitForbidden(posixPath: string): boolean {
   if (posixPath === ".git" || posixPath.startsWith(".git/")) return true;
   if (posixPath === ".legion-cli/config.yaml") return true;
   if (posixPath.startsWith(".legion-cli/index/") || posixPath === ".legion-cli/index") return true;
-  const base = posixPath.split("/").pop() ?? posixPath;
-  if (base === ".env" || base.startsWith(".env.")) return true;
+  if (posixPath.split("/").some((part) => isEnvBasename(part))) return true;
   return IMPLICIT_FORBIDDEN.some((pattern) => matchesGlob(pattern, posixPath));
 }
 

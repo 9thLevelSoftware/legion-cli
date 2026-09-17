@@ -19,7 +19,7 @@ function looksLikeGitPath(posix: string): boolean {
 }
 
 function looksLikeEnv(posix: string): boolean {
-  const base = posix.split("/").pop() ?? posix;
+  const base = (posix.split("/").pop() ?? posix).toLowerCase();
   return base === ".env" || base.startsWith(".env.");
 }
 

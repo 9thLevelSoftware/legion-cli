@@ -2,6 +2,8 @@ import type { HttpToolHost } from "./types.js";
 
 export const MAX_TOOL_ROUNDS = 32;
 export const RUN_COMMAND_TIMEOUT_MS = 60_000;
+export const MAX_RUN_COMMAND_BYTES = 64 * 1024;
+export const MAX_TOOL_RESULT_CHARS = 64 * 1024;
 
 const RUN_COMMAND_ALLOWLIST = new Set(["node", "pnpm", "npm", "npx", "pytest", "python", "go", "cargo"]);
 const RUN_COMMAND_DENYLIST = new Set([
@@ -125,6 +127,11 @@ function parseArgs(raw: string): Record<string, unknown> {
   }
 }
 
+export function capToolResult(text: string): string {
+  if (text.length <= MAX_TOOL_RESULT_CHARS) return text;
+  return `${text.slice(0, MAX_TOOL_RESULT_CHARS)}\n...truncated`;
+}
+
 export async function dispatchToolCall(
   call: OpenAiToolCall,
   host: HttpToolHost | undefined,
@@ -144,15 +151,14 @@ export async function dispatchToolCall(
   }
   try {
     if (name === "read_file") {
-      return await host.readFile(String(args.path ?? ""));
+      return capToolResult(await host.readFile(String(args.path ?? "")));
     }
     if (name === "write_file") {
       await host.writeFile(String(args.path ?? ""), String(args.contents ?? ""));
       return "ok";
     }
     if (name === "list_dir") {
-      const names = await host.listDir(String(args.path ?? ""));
-      return names.join("\n");
+      return capToolResult((await host.listDir(String(args.path ?? ""))).join("\n"));
     }
     if (name === "run_command") {
       const argv = Array.isArray(args.argv) ? args.argv.map((item) => String(item)) : [];
@@ -160,11 +166,10 @@ export async function dispatchToolCall(
         return "error: run_command argv is not allowlisted";
       }
       if (!host.runCommand) return "error: run_command requires a hardened sandbox";
-      const result = await host.runCommand(argv);
-      return JSON.stringify(result);
+      return capToolResult(JSON.stringify(await host.runCommand(argv)));
     }
   } catch (err) {
-    return `error: ${err instanceof Error ? err.message : String(err)}`;
+    return capToolResult(`error: ${err instanceof Error ? err.message : String(err)}`);
   }
   return `error: unknown tool ${name}`;
 }

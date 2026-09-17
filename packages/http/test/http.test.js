@@ -6,12 +6,14 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  capToolResult,
   completionsUrl,
   HttpAdapter,
   HttpAdapterError,
   httpAdapterNotReadyReason,
   isHttpAdapterReady,
   isRunCommandAllowed,
+  MAX_TOOL_RESULT_CHARS,
   toolsForJob,
 } from "../dist/index.js";
 
@@ -162,9 +164,16 @@ test("run_command is absent from the tool list unless the host is hardened", () 
 });
 
 test("mock loopback refuses without allowLoopback and succeeds with it", async () => {
+  const seen = [];
   const { server, baseUrl } = await startMock(async (req, res) => {
     if (req.method === "POST" && req.url === "/v1/chat/completions") {
-      await jsonBody(req);
+      const body = await jsonBody(req);
+      seen.push({
+        authorization: req.headers.authorization,
+        apiKey: req.headers["x-api-key"],
+        model: body.model,
+        tools: (body.tools ?? []).map((tool) => tool.function?.name),
+      });
       sendJson(res, 200, assistant("ok"));
       return;
     }
@@ -212,6 +221,11 @@ test("mock loopback refuses without allowLoopback and succeeds with it", async (
       assert.match(await readFile(result.stdoutPath, "utf8"), /HTTP 200 POST \/chat\/completions/);
       assert.doesNotMatch(await readFile(result.stdoutPath, "utf8"), /sk-test|Authorization/i);
       assert.doesNotMatch(await readFile(result.stderrPath, "utf8"), /sk-test|Authorization/i);
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].authorization, "Bearer sk-test");
+      assert.equal(seen[0].apiKey, undefined);
+      assert.equal(seen[0].model, "local");
+      assert.deepEqual(seen[0].tools, []);
     });
   } finally {
     if (previous === undefined) delete process.env.LEGION_HTTP_TEST_KEY;
@@ -221,16 +235,16 @@ test("mock loopback refuses without allowLoopback and succeeds with it", async (
   }
 });
 
-test("mock 302 to 169.254.169.254 is refused (no redirects)", async () => {
+test("mock 302 to same-origin /latest is not followed", async () => {
   let secondHop = 0;
-  const { server, baseUrl } = await startMock((req, res) => {
+  const { server, port, baseUrl } = await startMock((req, res) => {
     if (req.url === "/latest") {
       secondHop += 1;
       res.writeHead(200);
       res.end("metadata");
       return;
     }
-    res.writeHead(302, { Location: "http://169.254.169.254/latest" });
+    res.writeHead(302, { Location: `http://127.0.0.1:${port}/latest` });
     res.end();
   });
   process.env.LEGION_HTTP_TEST_KEY = "sk-test";
@@ -264,6 +278,13 @@ test("mock 302 to 169.254.169.254 is refused (no redirects)", async () => {
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("tool results longer than the cap are truncated before the next POST", () => {
+  const huge = "x".repeat(MAX_TOOL_RESULT_CHARS + 50);
+  const capped = capToolResult(huge);
+  assert.equal(capped.length <= MAX_TOOL_RESULT_CHARS + 20, true);
+  assert.match(capped, /truncated/);
 });
 
 test("write_file to .env is an error; allowed path writes through the host", async () => {

@@ -547,7 +547,6 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     const env: Record<string, string> = spawnOpts
       ? Object.fromEntries(Object.entries(spawnOpts.env).filter((entry): entry is [string, string] => entry[1] !== undefined))
       : filterSpawnEnv(process.env, adapter.id, adapter.binary);
-    const allowedWrites = sandboxAllowedWrites(runId, opts.skillId, opts.specId, opts.fileContract);
     handle = await adapter.spawn({
       runId,
       skillId: opts.skillId,
@@ -558,11 +557,11 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       env,
       expectedArtifacts: opts.fakeArtifacts,
       ...(spawnOpts?.wrapper ? { wrapper: spawnOpts.wrapper } : {}),
-      ...(sandbox
+      ...(sandbox && resolution.id === "http"
         ? {
             httpHost: createHttpToolHost({
               jailRoot: sandbox.jailRoot,
-              allowedWrites,
+              allowedWrites: sandboxAllowedWrites(runId, opts.skillId, opts.specId, opts.fileContract),
               filesForbidden,
               hardened: sandbox.hardened,
               spawnOpts: spawnOpts ?? { cwd: sandbox.jailRoot, env },

@@ -144,6 +144,26 @@ test("copy-out drops writes outside allowedWrites", async () => {
   });
 });
 
+test("copy-out drops .ENV and policy refuses it in allowedWrites", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await assert.rejects(
+      () => materializeJail(policy(dir, { allowedWrites: ["src/main.ts", ".ENV"] })),
+      PathEscapeError,
+    );
+    const handle = await materializeJail(policy(dir));
+    try {
+      await writeFile(join(handle.jailRoot, ".ENV"), "SECRET=1\n", "utf8");
+      const result = await handle.copyOut();
+      assert.ok(result.dropped.includes(".ENV"));
+      assert.equal(existsSync(join(dir, ".ENV")), false);
+      assert.equal(existsSync(join(dir, ".env")), false);
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
 test("copy-out includes an allowed write that did not exist yet", async () => {
   await withTempDir(async (dir) => {
     await seedProject(dir);

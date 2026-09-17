@@ -54,6 +54,8 @@ test("filesAllowedFailsPlan rejects empty, globs, .git, and implicit forbidden",
   assert.equal(filesAllowedFailsPlan([".git/config"]), true);
   assert.equal(filesAllowedFailsPlan([".env"]), true);
   assert.equal(filesAllowedFailsPlan([".env.local"]), true);
+  assert.equal(filesAllowedFailsPlan([".ENV"]), true);
+  assert.equal(filesAllowedFailsPlan([".ENV.local"]), true);
   assert.equal(filesAllowedFailsPlan([".legion-cli/config.yaml"]), true);
   assert.equal(filesAllowedFailsPlan([".legion-cli/index/engine.lock"]), true);
   assert.equal(filesAllowedFailsPlan([".legion-cli/STATE.md"]), true);

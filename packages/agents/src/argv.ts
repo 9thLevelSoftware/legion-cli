@@ -72,7 +72,11 @@ export const FROZEN_ARGV_TABLE = {
   http: {
     binary: "(http)",
     argv: null,
+<<<<<<< HEAD
     spawnable: false,
+=======
+    spawnable: true,
+>>>>>>> 0f2ff18 (fix: address review feedback for http adapter tool-loop)
   },
 } as const satisfies Record<
   AgentAdapterId,
@@ -189,6 +193,6 @@ export function templateArgv(
       };
     }
     case "http":
-      return { binary: FROZEN_ARGV_TABLE.http.binary, argv: [...FROZEN_ARGV_TABLE.http.argv] };
+      return { binary: FROZEN_ARGV_TABLE.http.binary, argv: [] };
   }
 }

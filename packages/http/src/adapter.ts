@@ -6,9 +6,13 @@ import { HttpAdapterError } from "./errors.js";
 import { httpAdapterNotReadyReason } from "./ssrf.js";
 import { dispatchToolCall, MAX_TOOL_ROUNDS, toolsForJob, type OpenAiToolCall } from "./tools.js";
 import type { HttpAgentHandle, HttpAgentJob, HttpAgentResult, SsrfLookup } from "./types.js";
-import { completionsUrl } from "./url.js";
 
 export const MAX_PROMPT_CHARS = 256 * 1024;
+
+/** Golden join: strip one trailing slash, then `/chat/completions`. */
+export function completionsUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/$/, "")}/chat/completions`;
+}
 
 type ChatMessage = {
   role: "system" | "user" | "assistant" | "tool";

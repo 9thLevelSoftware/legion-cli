@@ -96,6 +96,8 @@ test("FileContract refuses SSH keys and git hooks", () => {
   assert.equal(isForbiddenSpawnPath("~/.ssh/id_rsa"), true);
   assert.equal(isForbiddenSpawnPath(".git/hooks/pre-commit"), true);
   assert.equal(isForbiddenSpawnPath(".env"), true);
+  assert.equal(isForbiddenSpawnPath(".ENV"), true);
+  assert.equal(isForbiddenSpawnPath(".ENV.local"), true);
   assert.equal(isForbiddenSpawnPath("src/main.ts", {
     filesAllowed: ["src/main.ts"],
     filesForbidden: [".git/**"],

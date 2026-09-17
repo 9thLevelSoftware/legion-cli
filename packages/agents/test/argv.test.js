@@ -134,8 +134,12 @@ test("frozen argv table deepEquals the KD-7 vendor rows", () => {
   assert.equal(FROZEN_ARGV_TABLE.generic.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.http.binary, "(http)");
   assert.equal(FROZEN_ARGV_TABLE.http.argv, null);
+<<<<<<< HEAD
   assert.equal(FROZEN_ARGV_TABLE.http.spawnable, false);
   assert.equal(SPAWNABLE_ADAPTER_IDS.includes("http"), false);
+=======
+  assert.equal(FROZEN_ARGV_TABLE.http.spawnable, true);
+>>>>>>> 0f2ff18 (fix: address review feedback for http adapter tool-loop)
 });
 
 test("extra argv is prefix-compatible with the frozen vendor template", () => {
@@ -199,7 +203,7 @@ test("templateArgv leaves {{pointer}} unexpanded and omits the pointer-prompt bo
 
   const http = templateArgv("http", config);
   assert.equal(http.binary, "(http)");
-  assert.deepEqual([...http.argv], ["POST", "{{pointer}}"]);
+  assert.deepEqual([...http.argv], []);
 
   const minimax = templateArgv("minimax", config);
   assert.equal(minimax.binary, "custom-mcode");

@@ -238,6 +238,7 @@ test("http write_file to .env does not land on the operator tree", async () => {
         await seedFrozenSpec(store);
         await engine.plan("spec-checkin");
         assert.equal(existsSync(join(dir, ".env")), false);
+        assert.equal(existsSync(join(dir, ".ENV")), false);
       },
       { skillsDir },
     );
