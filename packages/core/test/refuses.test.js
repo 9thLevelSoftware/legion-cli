@@ -118,7 +118,7 @@ const cases = [
   },
   {
     name: "execute in advisory",
-    hint: /^legion-cli$/,
+    hint: /legion-cli control-mode guarded/,
     setup: async ({ engine, store }) => {
       await initProject(engine, { controlMode: "advisory" });
       await seedPlanReady(store);
@@ -365,9 +365,31 @@ const cases = [
   },
   {
     name: "control_mode autonomous",
-    hint: /guarded or surgical/,
+    hint: /legion-cli control-mode/,
     setup: async () => {},
     act: ({ engine }) => engine.init({ name: "Checkin", adapter: "fake", controlMode: "autonomous" }),
+  },
+  {
+    name: "setControlMode autonomous",
+    hint: /legion-cli control-mode/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.setControlMode("autonomous"),
+  },
+  {
+    name: "setControlMode unknown",
+    hint: /legion-cli control-mode/,
+    setup: async ({ engine }) => {
+      await initProject(engine);
+    },
+    act: ({ engine }) => engine.setControlMode("yolo"),
+  },
+  {
+    name: "control-mode before init",
+    hint: /legion-cli init/,
+    setup: async () => {},
+    act: ({ engine }) => engine.getControlMode(),
   },
   {
     name: "init --mode unknown",

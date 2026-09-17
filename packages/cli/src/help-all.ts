@@ -38,6 +38,7 @@ const LIFECYCLE_CORE = [
 const ALWAYS_ON = [
   ["status (default)", "Where am I? What next?", "--blockers, --plain"],
   ["doctor", "Is my laptop ready?", "--metrics"],
+  ["control-mode [mode]", "Show or set guarded|surgical|advisory", ""],
   ["ingest <src…>", "Teach Legion CLI from these files/links", "--transcript, --diff, --no-commit, --distill"],
   ["wiki trust <page>", "I have read this ingested page; treat it as real", ""],
   ["search <q>", "Search the wiki", "--mentions, --include-untrusted"],
@@ -122,7 +123,7 @@ export function printHelpAll(): void {
       "  map, wireframe, skills list|install, serve",
       "",
       "v0 gap; follow-up PRs in this series:",
-      "  control-mode, verified vendor extra-adapter argv",
+      "  verified vendor extra-adapter argv",
       "",
       "Not in this product:",
       "  chat, HTTP model router, bin legion",

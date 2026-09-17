@@ -5,7 +5,7 @@
 | **Title** | Legion CLI: a CLI-owned product development lifecycle engine |
 | **Author** | Systems Architecture (founding draft) |
 | **Date** | 2026-09-03 |
-| **Status** | Draft (rev 11 — claim-source: 10-verb + extras; assume/index shipped; two brownfield surfaces; control-mode + vendor argv are this series) |
+| **Status** | Draft (rev 12 — `control-mode` shipped; vendor argv remains this series) |
 | **Product** | **Legion CLI** (binary: `legion-cli`, npm: `@9thlevelsoftware/legion-cli`) |
 | **Audience** | Senior engineers implementing v0/v1; product leads reviewing scope |
 | **Workspace** | `D:\legion-cli` |
@@ -20,7 +20,7 @@ The CLI is the engine of record and the default product surface. The **small set
 
 The engine consumes reference material once, interviews the user two questions at a time, freezes a short human-approved SPEC, captures product and implementation decisions *before* any plan, then executes only unblocked, file-contract-bounded tasks **until every task of the active spec is `done` or `blocked`**. It refuses to ship until in-process `verificationCommands` have passed on those tasks, a spec-level review PASSes, a numeric QA gate passes, and a human reviews the result. There is no v0 command to choose a subset of the DAG.
 
-v0 is a laptop (git, Node 22, pnpm, and one spawnable adapter the user sets in `config.yaml`). There is **no product-default adapter**. Extra adapters (`grok`, `openai`, `codex`, `mimo`, `minimax`) are already **spawnable** with generic-style argv (KD5); they are not detect-only. `init` requires `--adapter` (or a TTY prompt) and is **not** greenfield-only (`--mode brownfield` ships). **Shipped extras** (off the 10-verb core and off the default window): review packets (`packet new` / `packet respond` — spawn tickets, not execute), closed-work compaction (`context compact`), brownfield worktrees, MCP stdio (read-only), wiki garden, design-system packages, dashboard tiny POSTs. **Later, not this series:** `map` / `wireframe` / `skills list|install` / `serve`, WebMCP. **v0 gap; follow-up PRs in this series:** `control-mode` verb, verified vendor extra-adapter argv (conformance suite). v0 still injects shipped brand-agnostic `craft/` rules and will use a hand-dropped `.legion-cli/design/DESIGN.md` when present. v0 bar is **workspace correctness** (`0.0.0` until the first `v*` tag). Publish workflow is tag-triggered + provenance; do **not** claim already on npm. The workspace root stays private (historical name `product-engineer-helper`; do not rename); published packages are public.
+v0 is a laptop (git, Node 22, pnpm, and one spawnable adapter the user sets in `config.yaml`). There is **no product-default adapter**. Extra adapters (`grok`, `openai`, `codex`, `mimo`, `minimax`) are already **spawnable** with generic-style argv (KD5); they are not detect-only. `init` requires `--adapter` (or a TTY prompt) and is **not** greenfield-only (`--mode brownfield` ships). **Shipped extras** (off the 10-verb core and off the default window): review packets (`packet new` / `packet respond` — spawn tickets, not execute), closed-work compaction (`context compact`), brownfield worktrees, MCP stdio (read-only), wiki garden, design-system packages, dashboard tiny POSTs, `legion-cli control-mode`. **Later, not this series:** `map` / `wireframe` / `skills list|install` / `serve`, WebMCP. **v0 gap; follow-up PRs in this series:** verified vendor extra-adapter argv (conformance suite). v0 still injects shipped brand-agnostic `craft/` rules and will use a hand-dropped `.legion-cli/design/DESIGN.md` when present. v0 bar is **workspace correctness** (`0.0.0` until the first `v*` tag). Publish workflow is tag-triggered + provenance; do **not** claim already on npm. The workspace root stays private (historical name `product-engineer-helper`; do not rename); published packages are public.
 
 This is a mashup of proven *mechanisms* from open-source tools (BMAD, GSD Core, ajaywadhara/shipyard, 9thLevelSoftware/legion, OpenAI Symphony, beads, CodeAlmanac, and others). No inspected source combines them into one product. That combination is invented here and is an unproven product bet; mitigations are progressive disclosure, inspectable artifacts, a two-question interview, and a visual **viewer**.
 
@@ -45,11 +45,11 @@ These are the defaults this document commits to. Former open questions are recor
 | KD11 | **Scope creep** | Extra work becomes a linked ticket, never an in-place expansion. `filesAllowed` is concrete paths only in v0 (reject `*` / `**`). | beads DAG + Legion contracts. |
 | KD12 | **Design systems / wireframes** | Shipped `craft/` + optional hand-dropped `.legion-cli/design/DESIGN.md`. Wireframes stay **4-colour through v0 ship**. **Shipped extra:** design-system packages (local copy, generate-from-brief, OpenDesign importer). **Later:** `github:` install and optional restyle after a remote package is installed. | User decision. No baked-in product look. |
 | KD13 | **v0 runtime** | Windows or Unix laptop with git, Node 22, pnpm, and one spawnable adapter set in config. No cloud. `init` requires `--adapter`. **Two brownfield surfaces** (do not merge): (1) `init --mode brownfield` sets `project.mode` (10-verb `execute` stays in-place); (2) `legion-cli brownfield` is the effort-1 audit extra (`--execute` is the only worktree path). Publish bar is workspace correctness; `0.0.0` until first `v*` (tag-triggered, provenance; not already on npm). | User sets `adapter.default`. The two brownfield surfaces are not one implementation. |
-| KD14 | **Control mode** | Legion CLI-owned boolean matrix (below). Default `guarded`. Every spawn is surgical against that skill’s `SkillContract`; execute also intersects `FileContract`. `advisory` blocks execute. `autonomous` rejected in v0. | Not “see Legion.” Modes are flags the core evaluates. |
+| KD14 | **Control mode** | Legion CLI-owned boolean matrix (below). Default `guarded`. Every spawn is surgical against that skill’s `SkillContract`; execute also intersects `FileContract`. `advisory` blocks execute. `autonomous` rejected in v0. CLI verb `legion-cli control-mode` shows/sets `guarded\|surgical\|advisory` under the lock. | Not “see Legion.” Modes are flags the core evaluates. |
 | KD15 | **Wiki vs run artifacts** | Durable knowledge: `.legion-cli/wiki/` + `.legion-cli/decisions/`. Brownfield runs (shipped extra) write `.legion-cli/runs/<id>/` and are not the wiki. | grok-brownfield run-scoped docs vs CodeAlmanac durable wiki (run artifacts taken from the research report, not re-read in this revision). |
 | KD16 | **QA bar** | Legion CLI scores Playwright/unit JSON itself. P0/P1/P2 from `@p0`/`@p1`/`@p2` tags (from `AC.priority`). Pass = `mode==full` AND `total≥85` AND `p0.failed==0` AND `visual.regressions==0`. Visual-bucket zero on a UI spec is a ship blocker. | Shipyard buckets, with the 85-with-visual-fail hole closed. No 8-agent loop in v0. |
 | KD17 | **Monorepo layout** | pnpm workspaces under `packages/*`. Lifecycle packages: `legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard}` plus `cli` (`@9thlevelsoftware/legion-cli`). `mcp` and `design-system` are **shipped extras**, off the 10-verb core. Root private; packages public. | User decision. Not a single package. Prefix avoids colliding with `@9thlevelsoftware/legion`. |
-| KD18 | **v0 cut / small set** | **Small set** = the 10-verb lifecycle core (`init`, `intent`, `discuss`, `spec`, `plan`, `execute`, `verify`, `review`, `qa`, `ship`) + wiki + DAG + QA + ship + dashboard viewer + one configured adapter. Workspace correctness (`0.0.0` until first `v*`); do not claim already on npm. Extras already spawn generic-style (KD5); that is not a v1 unlock. **Shipped extras** (off the default window): packets, compaction, brownfield worktrees, MCP, garden, design-system, dashboard tiny POSTs. **Shipped CLI** (founding table): `assume list` / `assume answer` / `index rebuild`. **Later, not this series:** `map` / `wireframe` / `skills list\|install` / `serve`, WebMCP, github design-system install. **v0 gap; follow-up PRs in this series:** `control-mode` verb, verified vendor extra-adapter argv. | Twenty PRs that secretly ship a second product is not a v0. Docs follow shipped code when the code matches the product bet. |
+| KD18 | **v0 cut / small set** | **Small set** = the 10-verb lifecycle core (`init`, `intent`, `discuss`, `spec`, `plan`, `execute`, `verify`, `review`, `qa`, `ship`) + wiki + DAG + QA + ship + dashboard viewer + one configured adapter. Workspace correctness (`0.0.0` until first `v*`); do not claim already on npm. Extras already spawn generic-style (KD5); that is not a v1 unlock. **Shipped extras** (off the default window): packets, compaction, brownfield worktrees, MCP, garden, design-system, dashboard tiny POSTs. **Shipped CLI** (founding table): `assume list` / `assume answer` / `index rebuild` / `control-mode`. **Later, not this series:** `map` / `wireframe` / `skills list\|install` / `serve`, WebMCP, github design-system install. **v0 gap; follow-up PRs in this series:** verified vendor extra-adapter argv. | Twenty PRs that secretly ship a second product is not a v0. Docs follow shipped code when the code matches the product bet. |
 | KD19 | **Brownfield execute (shipped extra)** | Two surfaces (KD13): `init --mode brownfield` sets `project.mode`; 10-verb `execute` after that is **in-place**. Engineer-operated `legion-cli brownfield --execute` is the only **git worktree** path. Do not merge. | User decision. Isolation for the audit extra; 10-verb execute after init-brownfield is not that path. |
 
 **Control-mode matrix (KD14)** — evaluated by `@9thlevelsoftware/legion-cli-core`, not by the model:
@@ -374,7 +374,7 @@ Prompt-only items are written into `CONTEXT.md` and the execute skill. They are 
 | `legion-cli plan` before `spec_frozen` | Yes | `legion-cli spec` or `legion-cli spec approve` |
 | `legion-cli execute` with no FileContract / empty `verificationCommands` | Yes | `legion-cli plan` |
 | `legion-cli execute TSK-x` if not `ready` | Yes | `legion-cli status --blockers` |
-| `legion-cli execute` in `advisory` | Yes | `legion-cli` (`control-mode` is a v0 gap; follow-up PR in this series; until then edit `config.yaml` then doctor) |
+| `legion-cli execute` in `advisory` | Yes | `legion-cli control-mode guarded` |
 | Extra paths after **any** spawn | Revert extras (algorithm in §5.2), mark blocked / refuse the phase | `legion-cli task amend` / `legion-cli ticket` |
 | `legion-cli execute` from `plan_failed` | Yes | fix the FAIL list, then `legion-cli plan` |
 | `legion-cli qa` if any slice task is `todo`/`ready`/`in_progress`/`verifying` | Yes | `legion-cli next` / `legion-cli execute` |
@@ -387,7 +387,7 @@ Prompt-only items are written into `CONTEXT.md` and the execute skill. They are 
 | Expanding the current task with “also do X” | Yes | `legion-cli ticket create --parent TSK-x` |
 | `filesAllowed` containing `*`, `**`, `?`, or `.git/**` | Plan FAIL | concrete paths |
 | Ingest of private-network URL or `file:` outside the workspace | Yes | in-repo path |
-| `control_mode: autonomous` | Config rejected | `guarded` or `surgical` |
+| `control_mode: autonomous` | Config rejected; CLI `control-mode autonomous` refuses | `legion-cli control-mode` |
 | `legion-cli init --mode brownfield` | No (shipped extra; `--adapter` still required) | greenfield remains the default |
 | `legion-cli mcp` / `legion-cli packet` / `legion-cli brownfield` / `legion-cli design-system` / `legion-cli context compact` / `legion-cli garden` | No — shipped extras, off the 10-verb core | `legion-cli help --all` |
 
@@ -1120,13 +1120,14 @@ Global flags: `--project <dir>`, `--json`, `--yes` (ignored by intent confirm an
 
 ### v0 commands (lifecycle core + operations)
 
-`assume list` / `assume answer` / `index rebuild` are **shipped CLI** (Always-on / Board extras). Docs follow shipped code.
+`assume list` / `assume answer` / `index rebuild` / `control-mode` are **shipped CLI** (Always-on / Board extras). Docs follow shipped code.
 
 | Command | What a non-coder thinks it does | Flags |
 | --- | --- | --- |
 | `legion-cli` / `legion-cli status` | Where am I? What next? | `--blockers`, `--plain` |
 | `legion-cli init` | Start a product in this folder | `--name`, `--adapter claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax` (adapter required; `--mode greenfield\|brownfield` sets `project.mode`; see two brownfield surfaces) |
 | `legion-cli doctor` | Is my laptop ready? | `--metrics` |
+| `legion-cli control-mode [mode]` | Show or set guarded \| surgical \| advisory | refuses `autonomous` |
 | `legion-cli ingest <src…>` | Teach Legion CLI from these files/links | `--transcript`, `--diff`, `--no-commit` |
 | `legion-cli wiki trust <page>` | I have read this ingested page; treat it as real | — |
 | `legion-cli intent` | Interview me about the product | `--done` |
@@ -1186,7 +1187,7 @@ Not registered. Do not list them as available. Do **not** list them under “not
 | `legion-cli skills list \| install` | Pinned local bundles; remote later |
 | `legion-cli serve` | Dashboard + mcp HTTP |
 
-`autonomous` remains a hidden refused value. `assume` / `index rebuild` are shipped CLI (founding table), not later.
+`autonomous` remains a hidden refused value. `assume` / `index rebuild` / `control-mode` are shipped CLI (founding table), not later.
 
 ### v0 gap; follow-up PRs in this series
 
@@ -1194,7 +1195,6 @@ Not registered yet. Do **not** call these “later.” Unknown-command is honest
 
 | Command | Notes |
 | --- | --- |
-| `legion-cli control-mode` | Show/set guarded \| surgical \| advisory |
 | Verified vendor extra-adapter argv | Per-id frozen vendor argv; doctor/spawn fail-closed |
 
 ### Example session (non-coder)
@@ -1763,7 +1763,7 @@ See `LegionConfig`. `mcpApps`, `webmcp`, `parallelExecute` stay false. `adapter.
 1. Internal dogfood after PR-04 (lifecycle) exists — engineers still use CLI.
 2. Design-partner product people — greenfield, configured adapter, HTTP **viewer**.
 3. v0 tag — doctor path, fixtures, degraded QA, lockfile.
-4. Shipped extras already in tree — brownfield, MCP, packets, compaction, garden, design-system, dashboard tiny POSTs. Later: WebMCP, `map` / `wireframe` / `skills list|install` / `serve`. **v0 gap; follow-up PRs in this series:** `control-mode`, verified vendor extra-adapter argv.
+4. Shipped extras already in tree — brownfield, MCP, packets, compaction, garden, design-system, dashboard tiny POSTs, `control-mode`. Later: WebMCP, `map` / `wireframe` / `skills list|install` / `serve`. **v0 gap; follow-up PRs in this series:** verified vendor extra-adapter argv.
 
 ### Rollback
 
@@ -1832,7 +1832,7 @@ No remaining open questions.
 
 ## PR Plan
 
-Historical founding series from an empty repo. **PR-01–PR-16 were v0.** Packets (PR-21), compaction + garden (PR-22), brownfield (PR-19), MCP (PR-17), design-system (PR-18), and dashboard POSTs (PR-24) have **landed as shipped extras** (rev 10). `map` / `wireframe` / `skills list|install` / `serve` stay **later, not this series**. `control-mode` and verified vendor extra-adapter argv are **v0 gaps; follow-up PRs in this series** (not later).
+Historical founding series from an empty repo. **PR-01–PR-16 were v0.** Packets (PR-21), compaction + garden (PR-22), brownfield (PR-19), MCP (PR-17), design-system (PR-18), and dashboard POSTs (PR-24) have **landed as shipped extras** (rev 10). `legion-cli control-mode` is **shipped**. `map` / `wireframe` / `skills list|install` / `serve` stay **later, not this series**. Verified vendor extra-adapter argv is a **v0 gap; follow-up PR in this series** (not later).
 
 ### v0 series
 
@@ -1982,4 +1982,4 @@ Historical founding series from an empty repo. **PR-01–PR-16 were v0.** Packet
 - **Depends on:** PR-10, PR-14
 - **Description:** Still not a second source of truth. MCP remains read-only.
 
-**Later, not this series:** `map` / `wireframe` / `skills list|install` / `serve`; architecture fingerprints / LSP; embeddings; signed remote skill install; 8-agent QA behind `qa.loop: full`; `control_mode: autonomous` (off). **v0 gap; follow-up PRs in this series:** `control-mode` verb, verified vendor extra-adapter argv. Brownfield `--execute` worktrees, packets, compaction, MCP, garden, design-system, and dashboard tiny POSTs have landed as shipped extras (rev 10). The later isolation door (§5.4) is specified, not built.
+**Later, not this series:** `map` / `wireframe` / `skills list|install` / `serve`; architecture fingerprints / LSP; embeddings; signed remote skill install; 8-agent QA behind `qa.loop: full`; `control_mode: autonomous` (off). **v0 gap; follow-up PRs in this series:** verified vendor extra-adapter argv. Brownfield `--execute` worktrees, packets, compaction, MCP, garden, design-system, dashboard tiny POSTs, and `control-mode` have landed as shipped extras (rev 10 / rev 12). The later isolation door (§5.4) is specified, not built.

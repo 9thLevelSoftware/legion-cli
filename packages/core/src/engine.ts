@@ -713,6 +713,36 @@ export class LegionEngine {
     });
   }
 
+  async getControlMode(): Promise<ControlMode> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("control-mode needs a Legion CLI project first", HINT.init);
+      }
+      return (await this.#readConfig()).control_mode;
+    });
+  }
+
+  async setControlMode(mode: string): Promise<ControlMode> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("control-mode needs a Legion CLI project first", HINT.init);
+      }
+      const parsed = this.#parseControlMode(mode);
+      const config = await this.#readConfig();
+      await this.store.writeConfig({ ...config, control_mode: parsed });
+      if (await this.store.pathExists(".legion-cli/PROJECT.md")) {
+        const project = await this.store.readProject();
+        if (project.data.controlMode !== parsed) {
+          await this.store.writeProject({ ...project.data, controlMode: parsed }, project.body);
+        }
+      }
+      await this.#audit("control_mode", state.phase, "user", { control_mode: parsed });
+      return parsed;
+    });
+  }
+
   /** Execute-spawn helper: wrap untrusted bodies if they are injected at all. */
   wrapUntrustedForSpawn(source: string, body: string): string {
     return wrapUntrustedContent(source, body);
@@ -2405,12 +2435,13 @@ export class LegionEngine {
   }
 
   #parseControlMode(mode: string): ControlMode {
-    if (mode === "autonomous") {
+    const trimmed = mode.trim();
+    if (trimmed === "autonomous") {
       refuse("Autonomous mode is not allowed", HINT.controlMode);
     }
-    const parsed = ControlModeSchema.safeParse(mode);
+    const parsed = ControlModeSchema.safeParse(trimmed);
     if (!parsed.success) {
-      refuse(`control_mode ${mode} is rejected`, HINT.controlMode);
+      refuse(`control_mode ${trimmed || mode} is rejected`, HINT.controlMode);
     }
     return parsed.data;
   }

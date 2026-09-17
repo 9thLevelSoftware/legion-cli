@@ -38,6 +38,20 @@ test("init writes initialized greenfield project", async () => {
   });
 });
 
+test("setControlMode persists config.yaml and PROJECT.md", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    assert.equal(await engine.getControlMode(), "guarded");
+    await engine.setControlMode("surgical");
+    assert.equal(await engine.getControlMode(), "surgical");
+    assert.equal((await store.readConfig()).control_mode, "surgical");
+    assert.equal((await store.readProject()).data.controlMode, "surgical");
+    await engine.setControlMode("advisory");
+    assert.equal((await store.readConfig()).control_mode, "advisory");
+    assert.equal((await store.readProject()).data.controlMode, "advisory");
+  });
+});
+
 test("CONCERNS is lastReadiness on plan_ready and execute is allowed", async () => {
   await withFakeAdapter(async () => {
   await withEngine(async ({ engine, store }) => {
