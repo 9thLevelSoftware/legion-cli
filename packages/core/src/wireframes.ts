@@ -202,6 +202,7 @@ function decodeHtmlEntities(value: string): string {
   for (let i = 0; i < 4; i++) {
     const next = prev
       .replace(new RegExp(`&colon${NAMED_ENTITY_TAIL}`, "gi"), ":")
+      .replace(new RegExp(`&sol${NAMED_ENTITY_TAIL}`, "gi"), "/")
       .replace(new RegExp(`&tab${NAMED_ENTITY_TAIL}`, "gi"), "\t")
       .replace(new RegExp(`&newline${NAMED_ENTITY_TAIL}`, "gi"), "\n")
       .replace(/&#x([0-9a-fA-F]+);?/g, (_, hex) => codePoint(parseInt(hex, 16)))
@@ -221,10 +222,12 @@ function compactUrl(value: string): string {
   return decodeHtmlEntities(value).replace(/[\s\u00a0\u200b\u200c\u200d\ufeff]+/g, "");
 }
 
-function deniedUrlScheme(value: string): "javascript:" | "data:text/html" | null {
+const DATA_IMAGE_ALLOW = /^data:image\/(?:png|jpeg|jpg|gif|webp)(?:[;,]|$)/i;
+
+function deniedUrlScheme(value: string): "javascript:" | "data:" | null {
   const compact = compactUrl(value);
   if (/^javascript:/i.test(compact)) return "javascript:";
-  if (/^data:text\/html/i.test(compact)) return "data:text/html";
+  if (/^data:/i.test(compact) && !DATA_IMAGE_ALLOW.test(compact)) return "data:";
   return null;
 }
 

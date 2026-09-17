@@ -83,12 +83,18 @@ test("assertWireframeHtml allows meta content=continue and denies on*/javascript
   assert.throws(() => assertWireframeHtml('<a href="javascript&colon alert(1)">x</a>'), /javascript:/);
   assert.throws(
     () => assertWireframeHtml('<a href="data:text/html,<script>alert(1)</script>">x</a>'),
-    /data:text\/html/,
+    /data:/,
   );
   assert.throws(
     () => assertWireframeHtml('<a href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">x</a>'),
-    /data:text\/html/,
+    /data:/,
   );
+  assert.throws(
+    () => assertWireframeHtml('<a href="data:image/svg+xml,<svg onload=alert(1)>">x</a>'),
+    /data:/,
+  );
+  assert.throws(() => assertWireframeHtml('<a href="data:text&sol;html,alert(1)">x</a>'), /data:/);
+  assert.doesNotThrow(() => assertWireframeHtml('<img src="data:image/png;base64,AAAA">'));
   assert.throws(() => assertWireframeHtml("<script>alert(1)</script>"), /<script>/);
   assert.throws(() => assertWireframeHtml('<iframe src="x"></iframe>'), /<iframe>/);
   assert.throws(() => assertWireframeHtml('<link rel="import" href="x.html">'), /rel=import/);
