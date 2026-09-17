@@ -23,7 +23,8 @@ export function webmcpHeaders(): Record<string, string> {
 /**
  * Feature-detects document.modelContext.registerTool and registers UI-only
  * tools. registerTool may throw without an origin-keyed cluster — catch and
- * leave the HTTP page unchanged.
+ * leave the HTTP page unchanged. DOM-only: must not contain fetch(,
+ * XMLHttpRequest, or /engine/ (write token is never in GET HTML).
  */
 export const WEBMCP_SCRIPT = `"use strict";
 (function () {

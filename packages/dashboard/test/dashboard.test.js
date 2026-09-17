@@ -6,7 +6,13 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { ServeFileSchema } from "@9thlevelsoftware/legion-cli-schema";
-import { ENGINE_WRITE_METHODS, startDashboard } from "../dist/index.js";
+import {
+  ENGINE_WRITE_METHODS,
+  startDashboard,
+  WEBMCP_SCRIPT,
+  WEBMCP_SCRIPT_PATH,
+  WEBMCP_TOOLS,
+} from "../dist/index.js";
 import { otherSpecTask, todoTask, withStore, withTempDir } from "./helpers.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -22,6 +28,7 @@ async function withServer(dir, fn, extra = {}) {
     openBrowser: (url) => opened.push(url),
     warn: (message) => warns.push(message),
     pollMs: extra.pollMs ?? 200,
+    webmcp: extra.webmcp,
   });
   try {
     return await fn({ handle, opened, warns });
@@ -44,6 +51,27 @@ function assertHtmlOmitsToken(html, token) {
   assert.doesNotMatch(html, /legion-cli-token/);
   assert.doesNotMatch(html, /<meta name="legion-cli-token"/);
   assert.equal(html.includes(token), false);
+}
+
+function assertWebmcpHeaders(headers) {
+  const csp = headers.get("content-security-policy") ?? "";
+  assert.match(csp, /script-src 'self'/);
+  assert.equal(headers.get("cross-origin-opener-policy"), "same-origin");
+  assert.equal(headers.get("cross-origin-embedder-policy"), "require-corp");
+  assert.equal(headers.get("origin-agent-cluster"), "?1");
+}
+
+function assertWebmcpOffHeaders(headers) {
+  const csp = headers.get("content-security-policy") ?? "";
+  assert.doesNotMatch(csp, /script-src 'self'/);
+  assert.equal(headers.get("cross-origin-opener-policy"), null);
+  assert.equal(headers.get("cross-origin-embedder-policy"), null);
+}
+
+async function enableConfigWebmcp(dir) {
+  const path = join(dir, ".legion-cli", "config.yaml");
+  const current = await readFile(path, "utf8");
+  await writeFile(path, `${current.trimEnd()}\nflags:\n  webmcp: true\n`, "utf8");
 }
 
 function assertSandboxedIframe(html) {
@@ -128,6 +156,8 @@ test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, origin allowlist, 
       assert.match(html, /Read-only viewer/);
       assert.match(html, /ticket\|wikiTrust\|qaChecklist/);
       assertHtmlOmitsToken(html, handle.token);
+      assert.doesNotMatch(html, /webmcp\.js/);
+      assert.equal(handle.webmcp, false);
       assert.equal(board.headers.get("access-control-allow-origin"), null);
       assert.equal(board.headers.get("set-cookie"), null);
       assert.equal(board.headers.get("content-security-policy")?.includes("connect-src 'self'"), true);
@@ -820,5 +850,103 @@ test("POST /engine/ticket over 64 KiB is 413", async () => {
       });
       assert.equal(huge, 413);
     });
+  });
+});
+
+test("WEBMCP_SCRIPT is DOM-only UI tools, not a polyfill", () => {
+  assert.equal(WEBMCP_SCRIPT_PATH, "/webmcp.js");
+  assert.deepEqual(WEBMCP_TOOLS, ["filter_board", "open_task", "show_timeline", "highlight_blockers"]);
+  assert.doesNotMatch(WEBMCP_SCRIPT, /fetch\(/);
+  assert.doesNotMatch(WEBMCP_SCRIPT, /XMLHttpRequest/);
+  assert.doesNotMatch(WEBMCP_SCRIPT, /\/engine\//);
+  assert.match(WEBMCP_SCRIPT, /document\.modelContext/);
+  assert.match(WEBMCP_SCRIPT, /if \(typeof registerTool !== "function"\) return/);
+  for (const name of WEBMCP_TOOLS) {
+    assert.match(WEBMCP_SCRIPT, new RegExp(`name: "${name}"`));
+  }
+  assert.match(WEBMCP_SCRIPT, /readOnlyHint: true/);
+});
+
+test("flags.webmcp default false: /webmcp.js is 404 and HTML has no script", async () => {
+  await withStore(async ({ dir }) => {
+    const configPath = join(dir, ".legion-cli", "config.yaml");
+    const config = await readFile(configPath, "utf8");
+    assert.doesNotMatch(config, /webmcp:\s*true/);
+    await withServer(dir, async ({ handle }) => {
+      assert.equal(handle.webmcp, false);
+      const board = await fetch(handle.url);
+      assert.equal(board.status, 200);
+      const html = await board.text();
+      assert.doesNotMatch(html, /webmcp\.js/);
+      assert.doesNotMatch(html, /<script/);
+      assertHtmlOmitsToken(html, handle.token);
+      assertWebmcpOffHeaders(board.headers);
+
+      const script = await fetch(`${handle.url}${WEBMCP_SCRIPT_PATH}`);
+      assert.equal(script.status, 404);
+      assertWebmcpOffHeaders(script.headers);
+    });
+  });
+});
+
+test("webmcp on via opts or config: script, CSP script-src, COOP, no fetch, no token", async () => {
+  await withStore(async ({ dir }) => {
+    const configPath = join(dir, ".legion-cli", "config.yaml");
+    const before = await readFile(configPath, "utf8");
+
+    const assertOn = async ({ handle }) => {
+      assert.equal(handle.webmcp, true);
+      const board = await fetch(handle.url);
+      assert.equal(board.status, 200);
+      const html = await board.text();
+      assert.match(html, /<script src="\/webmcp\.js" defer><\/script>/);
+      assert.match(html, /id="timeline"/);
+      assert.match(html, /id="blockers"/);
+      assertHtmlOmitsToken(html, handle.token);
+      assertWebmcpHeaders(board.headers);
+
+      const scriptRes = await fetch(`${handle.url}${WEBMCP_SCRIPT_PATH}`);
+      assert.equal(scriptRes.status, 200);
+      assert.match(scriptRes.headers.get("content-type") ?? "", /text\/javascript/);
+      assertWebmcpHeaders(scriptRes.headers);
+      const body = await scriptRes.text();
+      assert.equal(body, WEBMCP_SCRIPT);
+      assert.doesNotMatch(body, /fetch\(/);
+      assert.doesNotMatch(body, /XMLHttpRequest/);
+      assert.doesNotMatch(body, /\/engine\//);
+      for (const name of WEBMCP_TOOLS) {
+        assert.match(body, new RegExp(`name: "${name}"`));
+      }
+      assert.match(body, /readOnlyHint: true/);
+
+      const noToken = await enginePost(handle, "/engine/ticket", { title: "park extra" });
+      assert.equal(noToken.status, 403);
+    };
+
+    await withServer(dir, assertOn, { webmcp: true });
+    assert.equal(await readFile(configPath, "utf8"), before);
+
+    await enableConfigWebmcp(dir);
+    await withServer(dir, assertOn);
+  });
+});
+
+test("--expose + webmcp still omits write token from GET HTML", async () => {
+  await withTempDir(async (dir) => {
+    await withServer(
+      dir,
+      async ({ handle, warns }) => {
+        assert.equal(handle.webmcp, true);
+        assert.equal(handle.host, "0.0.0.0");
+        const token = tokenFromWarns(warns);
+        const res = await fetch(`http://127.0.0.1:${handle.port}/`);
+        assert.equal(res.status, 200);
+        const html = await res.text();
+        assert.match(html, /webmcp\.js/);
+        assertHtmlOmitsToken(html, token);
+        assertWebmcpHeaders(res.headers);
+      },
+      { host: "0.0.0.0", webmcp: true },
+    );
   });
 });

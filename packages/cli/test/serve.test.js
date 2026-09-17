@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -367,5 +367,53 @@ test("status Viewer is a live serve URL only while pid is alive", async () => {
     const dead = runCli(["status", "--project", dir]);
     assert.match(normalize(dead.stdout), /Viewer: legion-cli serve/);
     assert.doesNotMatch(normalize(dead.stdout), /http:\/\/127\.0\.0\.1:7420/);
+  });
+});
+
+test("serve --webmcp serves /webmcp.js with CSP script-src and COOP; no fetch(); no token in HTML", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const configPath = join(dir, ".legion-cli", "config.yaml");
+    const before = await readFile(configPath, "utf8");
+    const { child, url, getStderr, getStdout } = startServeCli([
+      "serve",
+      "--project",
+      dir,
+      "--no-open",
+      "--port",
+      "0",
+      "--no-mcp-http",
+      "--webmcp",
+    ]);
+    try {
+      const viewer = await url;
+      const token = tokenFromStderr(getStderr());
+      assert.match(normalize(getStdout()), /WebMCP: UI-only tools at \/webmcp\.js\./);
+      assert.doesNotMatch(getStdout(), new RegExp(token));
+      assert.equal(await readFile(configPath, "utf8"), before);
+
+      const board = await fetch(viewer);
+      assert.equal(board.status, 200);
+      const html = await board.text();
+      assert.match(html, /<script src="\/webmcp\.js" defer><\/script>/);
+      assert.doesNotMatch(html, /legion-cli-token/);
+      assert.equal(html.includes(token), false);
+      const csp = board.headers.get("content-security-policy") ?? "";
+      assert.match(csp, /script-src 'self'/);
+      assert.equal(board.headers.get("cross-origin-opener-policy"), "same-origin");
+
+      const script = await fetch(`${viewer}/webmcp.js`);
+      assert.equal(script.status, 200);
+      assert.match(script.headers.get("content-type") ?? "", /text\/javascript/);
+      assert.match(script.headers.get("content-security-policy") ?? "", /script-src 'self'/);
+      assert.equal(script.headers.get("cross-origin-opener-policy"), "same-origin");
+      const body = await script.text();
+      assert.doesNotMatch(body, /fetch\(/);
+      assert.match(body, /filter_board/);
+      assert.match(body, /readOnlyHint: true/);
+    } finally {
+      await stop(child);
+    }
   });
 });

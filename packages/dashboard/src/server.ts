@@ -89,6 +89,7 @@ export type DashboardHandle = {
   host: string;
   port: number;
   token: string;
+  webmcp: boolean;
   close(): Promise<void>;
 };
 
@@ -133,8 +134,9 @@ function send(
   contentType: string,
   headOnly: boolean,
   origin: string | undefined,
+  webmcp = false,
 ): void {
-  setSecurityHeaders(res, origin);
+  setSecurityHeaders(res, origin, webmcp);
   res.statusCode = status;
   res.setHeader("Content-Type", contentType);
   const payload = Buffer.from(body, "utf8");
@@ -146,16 +148,21 @@ function send(
   res.end(payload);
 }
 
-function methodNotAllowed(res: ServerResponse, origin: string | undefined): void {
-  setSecurityHeaders(res, origin);
+function methodNotAllowed(res: ServerResponse, origin: string | undefined, webmcp = false): void {
+  setSecurityHeaders(res, origin, webmcp);
   res.statusCode = 405;
   res.setHeader("Allow", VIEW_METHODS);
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.end("Method Not Allowed\n");
 }
 
-function forbidden(res: ServerResponse, origin: string | undefined, message: string): void {
-  setSecurityHeaders(res, origin);
+function forbidden(
+  res: ServerResponse,
+  origin: string | undefined,
+  message: string,
+  webmcp = false,
+): void {
+  setSecurityHeaders(res, origin, webmcp);
   res.statusCode = 403;
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.end(`${message}\n`);
@@ -166,8 +173,17 @@ function sendJson(
   status: number,
   payload: unknown,
   origin: string | undefined,
+  webmcp = false,
 ): void {
-  send(res, status, `${JSON.stringify(payload)}\n`, "application/json; charset=utf-8", false, origin);
+  send(
+    res,
+    status,
+    `${JSON.stringify(payload)}\n`,
+    "application/json; charset=utf-8",
+    false,
+    origin,
+    webmcp,
+  );
 }
 
 async function serveWireframe(
@@ -177,20 +193,37 @@ async function serveWireframe(
   res: ServerResponse,
   headOnly: boolean,
   origin: string | undefined,
+  webmcp = false,
 ): Promise<void> {
   const base = basename(fileName);
   if (base !== fileName || fileName.includes("\\") || fileName.includes("\0")) {
-    send(res, 404, renderNotFound("unknown wireframe"), "text/html; charset=utf-8", headOnly, origin);
+    send(
+      res,
+      404,
+      renderNotFound("unknown wireframe", webmcp),
+      "text/html; charset=utf-8",
+      headOnly,
+      origin,
+      webmcp,
+    );
     return;
   }
   const storePath = `.legion-cli/specs/${specId}/wireframes/${base}`;
   try {
     const abs = toFsPath(projectRoot, storePath);
     const body = await readFile(abs, "utf8");
-    send(res, 200, body, contentTypeFor(base), headOnly, origin);
+    send(res, 200, body, contentTypeFor(base), headOnly, origin, webmcp);
   } catch (err) {
     if (err instanceof PathEscapeError || (err as NodeJS.ErrnoException).code === "ENOENT") {
-      send(res, 404, renderNotFound("unknown wireframe"), "text/html; charset=utf-8", headOnly, origin);
+      send(
+        res,
+        404,
+        renderNotFound("unknown wireframe", webmcp),
+        "text/html; charset=utf-8",
+        headOnly,
+        origin,
+        webmcp,
+      );
       return;
     }
     throw err;
@@ -356,7 +389,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     });
     const cors = echoAllowedOrigin(originHeader, allowed);
     if (!allowed) {
-      forbidden(res, undefined, "Forbidden origin");
+      forbidden(res, undefined, "Forbidden origin", webmcp);
       return;
     }
 
@@ -366,7 +399,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     const mcpRoute = mcpHttp && pathname === MCP_PATH;
 
     if (method === "OPTIONS") {
-      setSecurityHeaders(res, cors);
+      setSecurityHeaders(res, cors, webmcp);
       res.statusCode = 204;
       res.setHeader("Allow", mcpRoute ? MCP_ALLOW_METHODS : ALLOW_METHODS);
       if (mcpRoute) {
@@ -385,7 +418,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
         res.setHeader("Access-Control-Allow-Headers", MCP_ALLOW_HEADERS);
       }
       if (!opts.handleMcpHttp) {
-        send(res, 501, "MCP HTTP is not attached\n", "text/plain; charset=utf-8", false, cors);
+        send(res, 501, "MCP HTTP is not attached\n", "text/plain; charset=utf-8", false, cors, webmcp);
         return;
       }
       await opts.handleMcpHttp({ req, res, projectRoot: opts.projectRoot });
@@ -394,7 +427,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
 
     if (method === "POST") {
       if (!pathname.startsWith("/engine/")) {
-        methodNotAllowed(res, cors);
+        methodNotAllowed(res, cors, webmcp);
         return;
       }
       if (
@@ -405,25 +438,25 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
           port: boundPort,
         })
       ) {
-        forbidden(res, undefined, "Forbidden origin");
+        forbidden(res, undefined, "Forbidden origin", webmcp);
         return;
       }
       const engineMethod = pathname.slice("/engine/".length);
       if (engineMethod.includes("/") || engineMethod.includes("\\") || !/^[A-Za-z]+$/.test(engineMethod)) {
-        sendJson(res, 404, { error: "unknown engine method" }, cors);
+        sendJson(res, 404, { error: "unknown engine method" }, cors, webmcp);
         return;
       }
       if (!writeTokenMatches(token, headerValue(req.headers[WRITE_TOKEN_HEADER]))) {
-        forbidden(res, cors, "Forbidden token");
+        forbidden(res, cors, "Forbidden token", webmcp);
         return;
       }
       try {
         const body = await readJsonBody(req);
         const payload = await dispatchEngineWrite(engine, engineMethod, body);
-        sendJson(res, 200, payload, cors);
+        sendJson(res, 200, payload, cors, webmcp);
       } catch (err) {
         if (err instanceof EngineWriteError) {
-          sendJson(res, err.status, err.payload, cors);
+          sendJson(res, err.status, err.payload, cors, webmcp);
           if (err.status === 413) req.destroy();
           return;
         }
@@ -433,23 +466,23 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     }
 
     if (method !== "GET" && method !== "HEAD") {
-      methodNotAllowed(res, cors);
+      methodNotAllowed(res, cors, webmcp);
       return;
     }
     const headOnly = method === "HEAD";
 
     if (pathname === WEBMCP_SCRIPT_PATH) {
       if (!webmcp) {
-        send(res, 404, "Not found\n", "text/plain; charset=utf-8", headOnly, cors);
+        send(res, 404, "Not found\n", "text/plain; charset=utf-8", headOnly, cors, webmcp);
         return;
       }
-      send(res, 200, WEBMCP_SCRIPT, "text/javascript; charset=utf-8", headOnly, cors);
+      send(res, 200, WEBMCP_SCRIPT, "text/javascript; charset=utf-8", headOnly, cors, webmcp);
       return;
     }
 
     if (pathname === "/events") {
       if (headOnly) {
-        setSecurityHeaders(res, cors);
+        setSecurityHeaders(res, cors, webmcp);
         res.statusCode = 200;
         res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
         res.end();
@@ -464,7 +497,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
         const message = err instanceof Error ? err.message : String(err);
         initial += `event: error\ndata: ${JSON.stringify({ error: message })}\n\n`;
       }
-      setSecurityHeaders(res, cors);
+      setSecurityHeaders(res, cors, webmcp);
       res.statusCode = 200;
       res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
       res.setHeader("Connection", "keep-alive");
@@ -486,33 +519,49 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     const snapshot = await loadSnapshot(opts.projectRoot);
 
     if (pathname === "/") {
-      send(res, 200, renderKanban(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors);
+      send(res, 200, renderKanban(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors, webmcp);
       return;
     }
     if (pathname === "/spec") {
-      send(res, 200, renderSpec(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors);
+      send(res, 200, renderSpec(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors, webmcp);
       return;
     }
     if (pathname === "/graph") {
-      send(res, 200, renderGraph(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors);
+      send(res, 200, renderGraph(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors, webmcp);
       return;
     }
     if (pathname === "/audit") {
-      send(res, 200, renderAudit(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors);
+      send(res, 200, renderAudit(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors, webmcp);
       return;
     }
     if (pathname === "/api/state") {
-      send(res, 200, `${JSON.stringify(snapshot)}\n`, "application/json; charset=utf-8", headOnly, cors);
+      send(
+        res,
+        200,
+        `${JSON.stringify(snapshot)}\n`,
+        "application/json; charset=utf-8",
+        headOnly,
+        cors,
+        webmcp,
+      );
       return;
     }
     if (pathname.startsWith("/spec/wireframes/")) {
       const fileName = pathname.slice("/spec/wireframes/".length);
       const specId = snapshot.activeSpecId;
       if (!specId || !fileName) {
-        send(res, 404, renderNotFound("unknown wireframe"), "text/html; charset=utf-8", headOnly, cors);
+        send(
+          res,
+          404,
+          renderNotFound("unknown wireframe", webmcp),
+          "text/html; charset=utf-8",
+          headOnly,
+          cors,
+          webmcp,
+        );
         return;
       }
-      await serveWireframe(opts.projectRoot, specId, fileName, res, headOnly, cors);
+      await serveWireframe(opts.projectRoot, specId, fileName, res, headOnly, cors, webmcp);
       return;
     }
     if (pathname === "/wiki" || pathname === "/wiki/") {
@@ -527,13 +576,21 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       } catch {
         pages = [];
       }
-      send(res, 200, renderWikiIndex(pages, webmcp), "text/html; charset=utf-8", headOnly, cors);
+      send(res, 200, renderWikiIndex(pages, webmcp), "text/html; charset=utf-8", headOnly, cors, webmcp);
       return;
     }
     if (pathname.startsWith("/wiki/")) {
       const pageRef = pathname.slice("/wiki/".length);
       if (!pageRef || pageRef.includes("\0")) {
-        send(res, 404, renderNotFound("unknown page"), "text/html; charset=utf-8", headOnly, cors);
+        send(
+          res,
+          404,
+          renderNotFound("unknown page", webmcp),
+          "text/html; charset=utf-8",
+          headOnly,
+          cors,
+          webmcp,
+        );
         return;
       }
       const store = createLegionStore(opts.projectRoot);
@@ -549,19 +606,51 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
         } catch {
           links = [];
         }
-        send(res, 200, renderWikiPage(shown, links, webmcp), "text/html; charset=utf-8", headOnly, cors);
+        send(
+          res,
+          200,
+          renderWikiPage(shown, links, webmcp),
+          "text/html; charset=utf-8",
+          headOnly,
+          cors,
+          webmcp,
+        );
       } catch (err) {
         if (err instanceof PathEscapeError) {
-          send(res, 404, renderNotFound("unknown page"), "text/html; charset=utf-8", headOnly, cors);
+          send(
+            res,
+            404,
+            renderNotFound("unknown page", webmcp),
+            "text/html; charset=utf-8",
+            headOnly,
+            cors,
+            webmcp,
+          );
           return;
         }
         const message = err instanceof Error ? err.message : String(err);
-        send(res, 404, renderNotFound(message), "text/html; charset=utf-8", headOnly, cors);
+        send(
+          res,
+          404,
+          renderNotFound(message, webmcp),
+          "text/html; charset=utf-8",
+          headOnly,
+          cors,
+          webmcp,
+        );
       }
       return;
     }
 
-    send(res, 404, renderNotFound("unknown route"), "text/html; charset=utf-8", headOnly, cors);
+    send(
+      res,
+      404,
+      renderNotFound("unknown route", webmcp),
+      "text/html; charset=utf-8",
+      headOnly,
+      cors,
+      webmcp,
+    );
   };
 
   const server: Server = createServer((req, res) => {
@@ -653,6 +742,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     host: boundHost === "::" ? host : boundHost,
     port: boundPort,
     token,
+    webmcp,
     close: async () => {
       if (closed) return;
       closed = true;

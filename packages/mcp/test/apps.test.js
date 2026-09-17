@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { INDEX_DB_BASENAME, LOCK_BASENAME } from "@9thlevelsoftware/legion-cli-persist";
+import { WEBMCP_SCRIPT } from "@9thlevelsoftware/legion-cli-dashboard";
 import { MCP_APP_MIME, MCP_APP_RESOURCES } from "../dist/index.js";
 import { copyFixtureProject, parseTool, withClient, withStore, withTempDir } from "./helpers.js";
 
@@ -17,10 +18,11 @@ async function missing(path) {
   }
 }
 
-async function enableMcpApps(dir) {
+async function enableMcpApps(dir, extra = {}) {
   const path = join(dir, ".legion-cli", "config.yaml");
   const current = await readFile(path, "utf8");
-  await writeFile(path, `${current.trimEnd()}\nflags:\n  mcpApps: true\n`, "utf8");
+  const webmcp = extra.webmcp === true ? "\n  webmcp: true" : "";
+  await writeFile(path, `${current.trimEnd()}\nflags:\n  mcpApps: true${webmcp}\n`, "utf8");
 }
 
 function htmlOf(contents) {
@@ -98,5 +100,20 @@ test("mcpApps HTML does not rebuild the wiki index or take engine.lock", async (
     assert.equal(await missing(dbPath), true);
     assert.equal(await missing(lockPath), true);
     assert.equal(await readFile(statePath, "utf8"), beforeState);
+  });
+});
+
+test("flags.webmcp does not inject webmcp.js into MCP Apps HTML", async () => {
+  assert.doesNotMatch(WEBMCP_SCRIPT, /fetch\(/);
+  await withStore(async ({ dir }) => {
+    await enableMcpApps(dir, { webmcp: true });
+    await withClient(dir, async (client) => {
+      const dashboard = await client.readResource({ uri: "ui://legion-cli/dashboard" });
+      const html = htmlOf(dashboard.contents);
+      assert.match(html.text, /Kanban/);
+      assert.doesNotMatch(html.text, /webmcp\.js/);
+      assert.doesNotMatch(html.text, /<script/);
+      assert.doesNotMatch(html.text, /legion-cli-token/);
+    });
   });
 });
