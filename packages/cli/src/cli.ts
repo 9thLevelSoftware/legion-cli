@@ -116,7 +116,7 @@ export function createProgram(): Command {
   addGlobalOptions(program.command("init").description("Start a product in this folder"))
     .option("--name <name>", "product name")
     .option("--adapter <id>", `${ADAPTER_ID_HELP} (required)`)
-    .option("--mode <mode>", "greenfield (v0) or brownfield (v1)", "greenfield")
+    .option("--mode <mode>", "greenfield or brownfield", "greenfield")
     .option("--generic-binary <bin>", "binary when --adapter generic")
     .option("--generic-args <args...>", "args when --adapter generic")
     .action(async (opts, cmd: Command) => {
@@ -152,6 +152,10 @@ export function createProgram(): Command {
     });
 
   const wiki = addGlobalOptions(program.command("wiki").description("Wiki operations"));
+  wiki.allowExcessArguments(false).action(() => {
+    writeErr("wiki requires trust\nNext: legion-cli wiki trust <page>");
+    process.exitCode = 1;
+  });
   addGlobalOptions(wiki.command("trust").description("I have read this ingested page; treat it as real"))
     .argument("<page>", "wiki page id or path")
     .action(async (page: string, _opts, cmd: Command) => {
@@ -203,11 +207,10 @@ export function createProgram(): Command {
     });
 
   addGlobalOptions(program.command("intent").description("Interview me about the product"))
-    .option("--resume", "continue an in-progress interview")
     .option("--done", "finish after round 2 (still requires confirm)")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { resume?: boolean; done?: boolean };
+      const flags = opts as { done?: boolean };
       const code = await runIntent(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
@@ -378,7 +381,7 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("dashboard").description("Open the visual board (viewer with optional writes; not the source of truth)"))
+  addGlobalOptions(program.command("dashboard").description("Open the visual board (view-only; writes are CLI or token POST; not the source of truth)"))
     .option("--no-open", "do not open a browser")
     .option("--port <port>", "port (default 7420)")
     .option("--expose", "bind 0.0.0.0 (warning)")
@@ -418,6 +421,10 @@ export function createProgram(): Command {
     });
 
   const ticket = addGlobalOptions(program.command("ticket").description("Park extra work"));
+  ticket.allowExcessArguments(false).action(() => {
+    writeErr("ticket requires create\nNext: legion-cli ticket create --title <title>");
+    process.exitCode = 1;
+  });
   addGlobalOptions(ticket.command("create").description("Park extra work as a linked ticket"))
     .requiredOption("--title <title>", "ticket title")
     .option("--parent <id>", "parent task id")
@@ -442,6 +449,10 @@ export function createProgram(): Command {
     });
 
   const task = addGlobalOptions(program.command("task").description("Task file contracts"));
+  task.allowExcessArguments(false).action(() => {
+    writeErr("task requires amend\nNext: legion-cli task amend <id>");
+    process.exitCode = 1;
+  });
   addGlobalOptions(task.command("amend").description("Human changes a file contract"))
     .argument("<id>", "task id")
     .option("--files-allowed <paths...>", "concrete POSIX paths")
@@ -490,7 +501,11 @@ export function createProgram(): Command {
     });
 
   const run = addGlobalOptions(program.command("run").description("Brownfield run artifacts"));
-  addGlobalOptions(run.command("promote").description("Copy brownfield run pages into the wiki"))
+  run.allowExcessArguments(false).action(() => {
+    writeErr("run requires promote\nNext: legion-cli run promote <id>");
+    process.exitCode = 1;
+  });
+  addGlobalOptions(run.command("promote").description("Copy brownfield run pages into the wiki (untrusted until wiki trust)"))
     .argument("<id>", "brownfield run id")
     .allowExcessArguments(false)
     .action(async (id: string, _opts, cmd: Command) => {
@@ -557,6 +572,10 @@ export function createProgram(): Command {
     });
 
   const context = addGlobalOptions(program.command("context").description("Session context"));
+  context.allowExcessArguments(false).action(() => {
+    writeErr("context requires compact\nNext: legion-cli context compact");
+    process.exitCode = 1;
+  });
   addGlobalOptions(context.command("compact").description("Compact done tasks"))
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {

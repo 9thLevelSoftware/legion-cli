@@ -10,7 +10,6 @@ import { writeJson, writeOut } from "./io.js";
 import { closePrompt, isYes, readLine, slurpStdin } from "./prompt.js";
 
 export type IntentFlags = {
-  resume?: boolean;
   done?: boolean;
 };
 
@@ -33,7 +32,6 @@ export async function runIntent(opts: CliOpts, flags: IntentFlags): Promise<numb
   try {
     await slurpStdin();
     let state = await engine.beginIntent();
-    void flags.resume;
 
     let intro = state.answers.rounds.length === 0;
     let skipRest = Boolean(flags.done);

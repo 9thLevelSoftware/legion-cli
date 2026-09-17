@@ -19,8 +19,8 @@ const LAYER_1 = [
 ] as const;
 
 const LIFECYCLE_CORE = [
-  ["init", "Start a product in this folder", `--name, --adapter ${ADAPTER_ID_HELP}`],
-  ["intent", "Interview me about the product", "--resume, --done"],
+  ["init", "Start a product in this folder", `--name, --adapter ${ADAPTER_ID_HELP}, --mode greenfield|brownfield`],
+  ["intent", "Interview me about the product", "--done"],
   ["discuss", "Capture decisions before planning", ""],
   ["spec", "Write the short contract + wireframes", "--skip-wireframes"],
   ["spec show", "Show the spec path", ""],
@@ -58,13 +58,13 @@ const BOARD_EXTRAS = [
 ] as const;
 
 const SHIPPED_ADJACENT = [
-  ["dashboard", "Open the visual board (viewer with optional writes; not the source of truth)", "--no-open, --port, --expose"],
+  ["dashboard", "Open the visual board (view-only; writes are CLI or token POST; not the source of truth)", "--no-open, --port, --expose"],
   ["packet new", "PM/designer request without the DAG", "--title, --request, --requester"],
   ["packet respond", "Spawn tickets from a packet (does not execute)", "--message, --title"],
   ["context compact", "Manual compaction of done tasks", ""],
   ["garden", "Stale wiki, orphans, duplicates", ""],
   ["brownfield", "Audit an existing app (effort 1)", "--effort, --execute, --resume"],
-  ["run promote", "Copy brownfield run pages into the wiki", ""],
+  ["run promote", "Copy brownfield run pages into the wiki (untrusted until wiki trust)", ""],
   ["mcp", "Read-only stdio MCP server", ""],
   ["design-system show", "Show the active design-system package", ""],
   ["design-system install <dir>", "Copy a local design-system directory", "github: rejected"],
@@ -115,7 +115,10 @@ export function printHelpAll(): void {
       ...SHIPPED_ADJACENT.map(row),
       "",
       "Later, not this series:",
-      "  map, wireframe, skills list|install, serve, control-mode",
+      "  map, wireframe, skills list|install, serve",
+      "",
+      "v0 gap; follow-up PRs in this series:",
+      "  control-mode, verified vendor extra-adapter argv",
       "",
       "Not in this product:",
       "  chat, HTTP model router, bin legion",
