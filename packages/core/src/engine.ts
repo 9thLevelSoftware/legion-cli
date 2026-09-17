@@ -2525,17 +2525,12 @@ export class LegionEngine {
       return { spawned: false, runId: `${skillId}-${Date.now().toString(36)}`, revert: null };
     }
     return optionalSkillSpawn({
-      projectRoot: this.projectRoot,
       config,
       skillId,
       specId,
       promptBody,
-      skillsDir: this.#skillsDir,
-      store: this.store,
-      fakeArtifacts: this.#fakeArtifacts,
-      throwAfterWrite: this.#fakeThrowAfterWrite,
-      timedOut: this.#fakeTimedOut,
       cliAdapter,
+      ...this.#skillSpawnFields(),
     });
   }
 

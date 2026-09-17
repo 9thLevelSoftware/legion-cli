@@ -261,6 +261,15 @@ async function validateDir(dir: string, skipPalette: boolean): Promise<void> {
   }
 }
 
+async function requireExpectedPages(dir: string, pages: ScreenPage[]): Promise<void> {
+  const existing = new Set(await listRelFiles(dir));
+  const required = [INDEX_NAME, ...pages.map((page) => `${page.slug}.html`)];
+  const missing = required.filter((name) => !existing.has(name));
+  if (missing.length > 0) {
+    refuse(`wireframe HTML missing ${missing.join(", ")}`, HINT.wireframe);
+  }
+}
+
 async function dropNonHtmlExtras(dir: string, snap: ReadonlyMap<string, string>): Promise<void> {
   for (const rel of await listRelFiles(dir)) {
     if (rel.toLowerCase().endsWith(".html")) continue;
@@ -349,6 +358,7 @@ export async function runWireframe(input: WireframeRunInput): Promise<WireframeR
     let htmlFailed: unknown;
     try {
       await validateDir(dir, skipPalette);
+      await requireExpectedPages(dir, pages);
     } catch (err) {
       htmlFailed = err;
       await restoreTree(dir, snapshot);

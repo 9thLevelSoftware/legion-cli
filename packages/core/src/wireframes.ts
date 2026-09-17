@@ -152,8 +152,37 @@ const DENIED_TAGS = new Set(["script", "iframe", "object", "embed"]);
 const JS_URL_ATTRS = new Set(["href", "src", "xlink:href", "action", "formaction"]);
 const ATTR_RE = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
 
+/** HTML5: comments also end at `<!-->`, `<!--->`, and `--!>`, not only `-->`. */
 function stripHtmlComments(html: string): string {
-  return html.replace(/<!--[\s\S]*?-->/g, "");
+  let out = "";
+  let i = 0;
+  while (i < html.length) {
+    const start = html.indexOf("<!--", i);
+    if (start === -1) {
+      out += html.slice(i);
+      break;
+    }
+    out += html.slice(i, start);
+    const body = start + 4;
+    if (html[body] === ">") {
+      i = body + 1;
+      continue;
+    }
+    if (html[body] === "-" && html[body + 1] === ">") {
+      i = body + 2;
+      continue;
+    }
+    const rest = html.slice(body);
+    const endDash = rest.indexOf("-->");
+    const endBang = rest.indexOf("--!>");
+    if (endDash === -1 && endBang === -1) break;
+    if (endBang !== -1 && (endDash === -1 || endBang < endDash)) {
+      i = body + endBang + 4;
+    } else {
+      i = body + endDash + 3;
+    }
+  }
+  return out;
 }
 
 function codePoint(n: number): string {
@@ -165,30 +194,38 @@ function codePoint(n: number): string {
   }
 }
 
+const NAMED_ENTITY_TAIL = "(?:;|(?=[^a-zA-Z0-9=]|$))";
+
 /** Named + numeric entities, then &amp; last. Repeat so `&#106;avascript&colon;` still decodes. */
 function decodeHtmlEntities(value: string): string {
   let prev = value;
   for (let i = 0; i < 4; i++) {
     const next = prev
-      .replace(/&colon;/gi, ":")
-      .replace(/&tab;/gi, "\t")
-      .replace(/&newline;/gi, "\n")
+      .replace(new RegExp(`&colon${NAMED_ENTITY_TAIL}`, "gi"), ":")
+      .replace(new RegExp(`&tab${NAMED_ENTITY_TAIL}`, "gi"), "\t")
+      .replace(new RegExp(`&newline${NAMED_ENTITY_TAIL}`, "gi"), "\n")
       .replace(/&#x([0-9a-fA-F]+);?/g, (_, hex) => codePoint(parseInt(hex, 16)))
       .replace(/&#([0-9]+);?/g, (_, dec) => codePoint(Number(dec)))
-      .replace(/&lt;/gi, "<")
-      .replace(/&gt;/gi, ">")
-      .replace(/&quot;/gi, '"')
-      .replace(/&apos;/gi, "'")
-      .replace(/&amp;/gi, "&");
+      .replace(new RegExp(`&lt${NAMED_ENTITY_TAIL}`, "gi"), "<")
+      .replace(new RegExp(`&gt${NAMED_ENTITY_TAIL}`, "gi"), ">")
+      .replace(new RegExp(`&quot${NAMED_ENTITY_TAIL}`, "gi"), '"')
+      .replace(new RegExp(`&apos${NAMED_ENTITY_TAIL}`, "gi"), "'")
+      .replace(new RegExp(`&amp${NAMED_ENTITY_TAIL}`, "gi"), "&");
     if (next === prev) break;
     prev = next;
   }
   return prev;
 }
 
-function isJavascriptUrl(value: string): boolean {
-  const compact = decodeHtmlEntities(value).replace(/[\s\u00a0\u200b\u200c\u200d\ufeff]+/g, "");
-  return /^javascript:/i.test(compact);
+function compactUrl(value: string): string {
+  return decodeHtmlEntities(value).replace(/[\s\u00a0\u200b\u200c\u200d\ufeff]+/g, "");
+}
+
+function deniedUrlScheme(value: string): "javascript:" | "data:text/html" | null {
+  const compact = compactUrl(value);
+  if (/^javascript:/i.test(compact)) return "javascript:";
+  if (/^data:text\/html/i.test(compact)) return "data:text/html";
+  return null;
 }
 
 /** Slash outside quotes is a tag-name separator (`<img/onclick=`). */
@@ -290,8 +327,11 @@ export function assertWireframeHtml(html: string): void {
       if (/^on/i.test(attr.name)) {
         throw new Error(`wireframe HTML denies ${attr.name.toLowerCase()}`);
       }
-      if (JS_URL_ATTRS.has(attr.name.toLowerCase()) && isJavascriptUrl(attr.value)) {
-        throw new Error(`wireframe HTML denies javascript: ${attr.name.toLowerCase()}`);
+      if (JS_URL_ATTRS.has(attr.name.toLowerCase())) {
+        const scheme = deniedUrlScheme(attr.value);
+        if (scheme) {
+          throw new Error(`wireframe HTML denies ${scheme} ${attr.name.toLowerCase()}`);
+        }
       }
     }
   });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -72,6 +72,23 @@ test("assertWireframeHtml allows meta content=continue and denies on*/javascript
   assert.throws(() => assertWireframeHtml('<a href="javascript&colon;alert(1)">x</a>'), /javascript:/);
   assert.throws(() => assertWireframeHtml('<a href="&#106;avascript:alert(1)">x</a>'), /javascript:/);
   assert.throws(() => assertWireframeHtml('<form action="javascript:alert(1)"></form>'), /javascript:/);
+  assert.throws(
+    () => assertWireframeHtml("<!--><img src=x onerror=alert(1)><!-- -->"),
+    /onerror/,
+  );
+  assert.throws(
+    () => assertWireframeHtml("<!-- foo --!><img src=x onerror=alert(1)>"),
+    /onerror/,
+  );
+  assert.throws(() => assertWireframeHtml('<a href="javascript&colon alert(1)">x</a>'), /javascript:/);
+  assert.throws(
+    () => assertWireframeHtml('<a href="data:text/html,<script>alert(1)</script>">x</a>'),
+    /data:text\/html/,
+  );
+  assert.throws(
+    () => assertWireframeHtml('<a href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">x</a>'),
+    /data:text\/html/,
+  );
   assert.throws(() => assertWireframeHtml("<script>alert(1)</script>"), /<script>/);
   assert.throws(() => assertWireframeHtml('<iframe src="x"></iframe>'), /<iframe>/);
   assert.throws(() => assertWireframeHtml('<link rel="import" href="x.html">'), /rel=import/);
@@ -346,6 +363,37 @@ test("nested spawn html and non-html extras are removed; SPEC.md restored when d
       assert.equal(existsSync(join(store.paths.specsDir, "spec-checkin", "wireframes", "evil", "pwn.html")), false);
       assert.equal(existsSync(join(store.paths.specsDir, "spec-checkin", "wireframes", "payload.svg")), false);
       assert.equal(await readFile(specPath, "utf8"), beforeSpec);
+    });
+  } finally {
+    if (previous === undefined) delete process.env.LEGION_CLI_ADAPTER;
+    else process.env.LEGION_CLI_ADAPTER = previous;
+  }
+});
+
+test("spawn that deletes all HTML fails and restores files", async () => {
+  const previous = process.env.LEGION_CLI_ADAPTER;
+  process.env.LEGION_CLI_ADAPTER = "fake";
+  try {
+    await withEngine(async ({ engine, dir, store }) => {
+      const spec = await draftWithScreens(engine);
+      const wf = join(store.paths.specsDir, spec.id, "wireframes");
+      const beforeIndex = await readFile(join(wf, "INDEX.html"), "utf8");
+      const beforeBoard = await readFile(join(wf, "board.html"), "utf8");
+      const spawning = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeOnWait: async () => {
+          for (const name of await readdir(wf)) {
+            if (name.toLowerCase().endsWith(".html")) await unlink(join(wf, name));
+          }
+        },
+      });
+      await assert.rejects(
+        () => spawning.wireframe({ spawn: true }),
+        (err) => isRefuse(err, /missing/, /wireframe/),
+      );
+      assert.equal(await readFile(join(wf, "INDEX.html"), "utf8"), beforeIndex);
+      assert.equal(await readFile(join(wf, "board.html"), "utf8"), beforeBoard);
+      assert.equal(existsSync(join(wf, "settings.html")), true);
     });
   } finally {
     if (previous === undefined) delete process.env.LEGION_CLI_ADAPTER;
