@@ -1,4 +1,4 @@
-import { createLegionEngine, findSkillsDir, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
 import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
@@ -61,8 +61,4 @@ export async function runWireframe(opts: CliOpts, flags: WireframeFlags): Promis
   writeOut(`${result.pages.length} screens.`);
   writeOut(`Next: ${nextRun}`);
   return 0;
-}
-
-export function refuseSkipPaletteCheck(): never {
-  refuse("palettePresent stays hard until --restyle with an active package", HINT.wireframe);
 }

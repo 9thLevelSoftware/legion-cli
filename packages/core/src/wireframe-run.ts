@@ -9,7 +9,7 @@ import {
 import type { Spec } from "@9thlevelsoftware/legion-cli-schema";
 import { HINT, refuse } from "./errors.js";
 import { clearSkipWireframesNote } from "./spec-build.js";
-import type { OptionalSpawnResult } from "./spawn.js";
+import type { RevertResult } from "./revert.js";
 import type { WireframeOptions, WireframeResult } from "./types.js";
 import {
   assertWireframeHtml,
@@ -261,9 +261,16 @@ async function validateDir(dir: string, skipPalette: boolean): Promise<void> {
   }
 }
 
-async function requireExpectedPages(dir: string, pages: ScreenPage[]): Promise<void> {
+async function requireExpectedPages(
+  dir: string,
+  pages: ScreenPage[],
+  frozen: boolean,
+  snapshot: ReadonlyMap<string, string>,
+): Promise<void> {
   const existing = new Set(await listRelFiles(dir));
-  const required = [INDEX_NAME, ...pages.map((page) => `${page.slug}.html`)];
+  const required = frozen
+    ? [...snapshot.keys()].filter((rel) => rel.toLowerCase().endsWith(".html"))
+    : [INDEX_NAME, ...pages.map((page) => `${page.slug}.html`)];
   const missing = required.filter((name) => !existing.has(name));
   if (missing.length > 0) {
     refuse(`wireframe HTML missing ${missing.join(", ")}`, HINT.wireframe);
@@ -299,7 +306,7 @@ async function applyFrozenCssOnly(dir: string, snap: ReadonlyMap<string, string>
   }
 }
 
-type WireframeRunInput = {
+export type WireframePrepareInput = {
   projectRoot: string;
   dir: string;
   specDir: string;
@@ -308,10 +315,30 @@ type WireframeRunInput = {
   screens: string[];
   opts: WireframeOptions;
   writeSpec: (spec: Spec, body: string) => Promise<void>;
-  spawnSkill?: (prompt: string) => Promise<OptionalSpawnResult>;
 };
 
-export async function runWireframe(input: WireframeRunInput): Promise<WireframeResult> {
+export type WireframeSession = {
+  spec: Spec;
+  frozen: boolean;
+  restyled: boolean;
+  skipPalette: boolean;
+  pages: ScreenPage[];
+  dir: string;
+  snapshot: Map<string, string>;
+  specMdPath: string;
+  prdPath: string;
+  specSnap: string | null;
+  prdSnap: string | null;
+  spawnPrompt: string;
+};
+
+export type WireframeSpawnFinish = {
+  spawned: boolean;
+  revert: RevertResult | null;
+  error?: unknown;
+};
+
+export async function prepareWireframe(input: WireframePrepareInput): Promise<WireframeSession> {
   const spec = input.spec;
   const frozen = spec.status !== "draft";
   if (frozen && !input.opts.restyle) {
@@ -342,23 +369,58 @@ export async function runWireframe(input: WireframeRunInput): Promise<WireframeR
     restyled = true;
   }
 
-  const skipPalette = Boolean(input.opts.restyle && restyled);
   const snapshot = await snapshotTree(dir);
   const specMdPath = join(input.specDir, "SPEC.md");
   const prdPath = join(input.specDir, "prd.md");
-  const specSnap = await readOptional(specMdPath);
-  const prdSnap = await readOptional(prdPath);
+  return {
+    spec,
+    frozen,
+    restyled,
+    skipPalette: Boolean(input.opts.restyle && restyled),
+    pages,
+    dir,
+    snapshot,
+    specMdPath,
+    prdPath,
+    specSnap: await readOptional(specMdPath),
+    prdSnap: await readOptional(prdPath),
+    spawnPrompt: spawnWireframePrompt(spec.id, restyled, frozen),
+  };
+}
 
-  if (input.opts.spawn && input.spawnSkill) {
-    const spawned = await input.spawnSkill(spawnWireframePrompt(spec.id, restyled, frozen));
-    await restoreOptional(specMdPath, specSnap);
-    await restoreOptional(prdPath, prdSnap);
+async function wireframeResult(session: WireframeSession): Promise<WireframeResult> {
+  const existing = new Set(await listRelFiles(session.dir));
+  const resultPages = session.frozen
+    ? [...existing]
+        .filter((rel) => rel.toLowerCase().endsWith(".html") && rel !== INDEX_NAME)
+        .sort()
+        .map((rel) => wireframeStorePath(session.spec.id, rel))
+    : session.pages
+        .filter((page) => existing.has(`${page.slug}.html`))
+        .map((page) => wireframeStorePath(session.spec.id, `${page.slug}.html`));
+  return {
+    specId: session.spec.id,
+    status: session.spec.status === "draft" ? "draft" : "frozen",
+    index: wireframeStorePath(session.spec.id, INDEX_NAME),
+    pages: resultPages,
+    restyled: session.restyled,
+  };
+}
+
+export async function finishWireframe(
+  session: WireframeSession,
+  spawned: WireframeSpawnFinish | null,
+): Promise<WireframeResult> {
+  const { dir, frozen, pages, snapshot, skipPalette } = session;
+  if (spawned?.spawned) {
+    await restoreOptional(session.specMdPath, session.specSnap);
+    await restoreOptional(session.prdPath, session.prdSnap);
     if (frozen) await applyFrozenCssOnly(dir, snapshot);
     else await dropNonHtmlExtras(dir, snapshot);
     let htmlFailed: unknown;
     try {
       await validateDir(dir, skipPalette);
-      await requireExpectedPages(dir, pages);
+      await requireExpectedPages(dir, pages, frozen, snapshot);
     } catch (err) {
       htmlFailed = err;
       await restoreTree(dir, snapshot);
@@ -378,17 +440,5 @@ export async function runWireframe(input: WireframeRunInput): Promise<WireframeR
   } else {
     await validateDir(dir, skipPalette);
   }
-
-  const existing = new Set(await listRelFiles(dir));
-  const resultPages = pages
-    .filter((page) => existing.has(`${page.slug}.html`))
-    .map((page) => wireframeStorePath(spec.id, `${page.slug}.html`));
-
-  return {
-    specId: spec.id,
-    status: spec.status === "draft" ? "draft" : "frozen",
-    index: wireframeStorePath(spec.id, INDEX_NAME),
-    pages: resultPages,
-    restyled,
-  };
+  return wireframeResult(session);
 }

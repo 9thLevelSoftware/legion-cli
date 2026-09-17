@@ -38,7 +38,7 @@ main { padding: 1.5rem; max-width: 52rem; }
 }
 `;
 
-export function slugifyScreen(name: string): string {
+function slugifyScreen(name: string): string {
   const slug = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -152,37 +152,37 @@ const DENIED_TAGS = new Set(["script", "iframe", "object", "embed"]);
 const JS_URL_ATTRS = new Set(["href", "src", "xlink:href", "action", "formaction"]);
 const ATTR_RE = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
 
+const RAWTEXT_TAGS = new Set(["script", "style", "textarea", "title"]);
+
 /** HTML5: comments also end at `<!-->`, `<!--->`, and `--!>`, not only `-->`. */
-function stripHtmlComments(html: string): string {
-  let out = "";
-  let i = 0;
+function skipHtmlComment(html: string, start: number): number {
+  const body = start + 4;
+  if (html[body] === ">") return body + 1;
+  if (html[body] === "-" && html[body + 1] === ">") return body + 2;
+  const rest = html.slice(body);
+  const endDash = rest.indexOf("-->");
+  const endBang = rest.indexOf("--!>");
+  if (endDash === -1 && endBang === -1) return html.length;
+  if (endBang !== -1 && (endDash === -1 || endBang < endDash)) return body + endBang + 4;
+  return body + endDash + 3;
+}
+
+function skipRawtext(html: string, from: number, tag: string): number {
+  const close = `</${tag}`;
+  const lower = html.toLowerCase();
+  let i = from;
   while (i < html.length) {
-    const start = html.indexOf("<!--", i);
-    if (start === -1) {
-      out += html.slice(i);
-      break;
+    const at = lower.indexOf(close, i);
+    if (at === -1) return html.length;
+    const after = at + close.length;
+    const ch = html[after] ?? "";
+    if (ch === ">" || ch === "/" || /\s/.test(ch)) {
+      const gt = html.indexOf(">", after);
+      return gt === -1 ? html.length : gt + 1;
     }
-    out += html.slice(i, start);
-    const body = start + 4;
-    if (html[body] === ">") {
-      i = body + 1;
-      continue;
-    }
-    if (html[body] === "-" && html[body + 1] === ">") {
-      i = body + 2;
-      continue;
-    }
-    const rest = html.slice(body);
-    const endDash = rest.indexOf("-->");
-    const endBang = rest.indexOf("--!>");
-    if (endDash === -1 && endBang === -1) break;
-    if (endBang !== -1 && (endDash === -1 || endBang < endDash)) {
-      i = body + endBang + 4;
-    } else {
-      i = body + endDash + 3;
-    }
+    i = after;
   }
-  return out;
+  return html.length;
 }
 
 function codePoint(n: number): string {
@@ -267,14 +267,29 @@ function relTokens(value: string): string[] {
   return value.trim().split(/\s+/).filter(Boolean);
 }
 
-/** Quote-aware: do not stop the tag at `>` inside attribute values. */
+function refreshUrl(content: string): string | null {
+  const decoded = decodeHtmlEntities(content);
+  const match = /url\s*=\s*(?:'([^']*)'|"([^"]*)"|([^\s;]+))/i.exec(decoded);
+  return match ? (match[1] ?? match[2] ?? match[3] ?? null) : null;
+}
+
+function denyUrl(label: string, value: string): void {
+  const scheme = deniedUrlScheme(value);
+  if (scheme) throw new Error(`wireframe HTML denies ${scheme} ${label}`);
+}
+
+/** Quote-aware tags; comments skipped only at markup position, never inside attrs or RAWTEXT. */
 function forEachOpenTag(html: string, visit: (tag: string, attrSource: string) => void): void {
   let i = 0;
   while (i < html.length) {
     const lt = html.indexOf("<", i);
     if (lt === -1) break;
+    if (html.startsWith("<!--", lt)) {
+      i = skipHtmlComment(html, lt);
+      continue;
+    }
     const next = html[lt + 1];
-    if (next === "!" || next === "/" || next === "?" || next === undefined) {
+    if (next === "/" || next === "!" || next === "?" || next === undefined) {
       i = lt + 2;
       continue;
     }
@@ -308,13 +323,13 @@ function forEachOpenTag(html: string, visit: (tag: string, attrSource: string) =
     }
     const attrEnd = html[j - 1] === ">" ? j - 1 : j;
     visit(tag, html.slice(attrStart, attrEnd));
-    i = j;
+    i = RAWTEXT_TAGS.has(tag.toLowerCase()) ? skipRawtext(html, j, tag.toLowerCase()) : j;
   }
 }
 
 /** Fail-closed HTML policy. Attribute names matching /^on/i, not substring `on` in values. */
 export function assertWireframeHtml(html: string): void {
-  forEachOpenTag(stripHtmlComments(html), (rawTag, attrSource) => {
+  forEachOpenTag(html, (rawTag, attrSource) => {
     const tag = rawTag.toLowerCase();
     const attrs = parseHtmlAttrs(attrSource);
     if (DENIED_TAGS.has(tag)) {
@@ -326,15 +341,32 @@ export function assertWireframeHtml(html: string): void {
         throw new Error("wireframe HTML denies <link rel=import>");
       }
     }
+    if (tag === "meta") {
+      const httpEquiv = attrs.find((attr) => attr.name.toLowerCase() === "http-equiv");
+      const content = attrs.find((attr) => attr.name.toLowerCase() === "content");
+      if (
+        httpEquiv &&
+        content &&
+        relTokens(httpEquiv.value).some((token) => token.toLowerCase() === "refresh")
+      ) {
+        const url = refreshUrl(content.value);
+        if (url) denyUrl("content", url);
+      }
+    }
+    const animated = attrs.find((attr) => attr.name.toLowerCase() === "attributename");
+    if (animated && /^(?:href|xlink:href)$/i.test(animated.value.trim())) {
+      for (const name of ["to", "from", "values"]) {
+        const attr = attrs.find((item) => item.name.toLowerCase() === name);
+        if (!attr) continue;
+        for (const part of attr.value.split(";")) denyUrl(name, part.trim());
+      }
+    }
     for (const attr of attrs) {
       if (/^on/i.test(attr.name)) {
         throw new Error(`wireframe HTML denies ${attr.name.toLowerCase()}`);
       }
       if (JS_URL_ATTRS.has(attr.name.toLowerCase())) {
-        const scheme = deniedUrlScheme(attr.value);
-        if (scheme) {
-          throw new Error(`wireframe HTML denies ${scheme} ${attr.name.toLowerCase()}`);
-        }
+        denyUrl(attr.name.toLowerCase(), attr.value);
       }
     }
   });

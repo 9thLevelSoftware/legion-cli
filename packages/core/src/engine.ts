@@ -184,7 +184,7 @@ import type {
 import { promoteBrownfieldRun, runBrownfield } from "./brownfield.js";
 import { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands } from "./verify.js";
 import { palettePresent } from "./wireframes.js";
-import { runWireframe, screenPagesFor, writeWireframeFiles } from "./wireframe-run.js";
+import { finishWireframe, prepareWireframe, screenPagesFor, writeWireframeFiles } from "./wireframe-run.js";
 
 /** Distill spawn is skipped when materialized source exceeds this many characters (64 KiB). */
 export const DISTILL_SOURCE_MAX_CHARS = 64 * 1024;
@@ -1614,7 +1614,9 @@ export class LegionEngine {
   }
 
   async wireframe(opts: WireframeOptions = {}): Promise<WireframeResult> {
-    return this.#mutate(async () => {
+    let started: StartedSkillSpawn | undefined;
+    let session: Awaited<ReturnType<typeof prepareWireframe>> | undefined;
+    const prepared = await this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized" || !state.activeSpecId) {
         refuse("no active spec", HINT.spec);
@@ -1627,7 +1629,7 @@ export class LegionEngine {
         refuse("no active spec", HINT.spec);
       }
       const answers = await this.#loadIntentAnswers();
-      return runWireframe({
+      session = await prepareWireframe({
         projectRoot: this.projectRoot,
         dir: join(this.store.paths.specsDir, specId, "wireframes"),
         specDir: join(this.store.paths.specsDir, specId),
@@ -1636,9 +1638,20 @@ export class LegionEngine {
         screens: answers.mapped.screens,
         opts,
         writeSpec: (spec, body) => this.store.writeSpec(spec, body),
-        spawnSkill: opts.spawn
-          ? (prompt) => this.#runOptionalSpawn("wireframe", specId, prompt, opts.adapter)
-          : undefined,
+      });
+      if (!opts.spawn) return finishWireframe(session, null);
+      started = await this.#startOptionalSpawn("wireframe", specId, session.spawnPrompt, opts.adapter);
+      return null;
+    });
+    if (prepared) return prepared;
+    const waited = started?.spawned ? await waitStartedSpawn(started) : { error: undefined };
+    return this.#mutate(async () => {
+      if (!session) refuse("no active spec", HINT.spec);
+      const revert = started?.spawned ? await finishStartedSpawn(started) : null;
+      return finishWireframe(session, {
+        spawned: Boolean(started?.spawned),
+        revert,
+        error: waited.error,
       });
     });
   }
@@ -2512,8 +2525,30 @@ export class LegionEngine {
     }
   }
 
-  async #runOptionalSpawn(
+  async #startOptionalSpawn(
     skillId: "interview" | "discuss" | "spec" | "wireframe",
+    specId: string,
+    promptBody: string,
+    cliAdapter?: AdapterId,
+  ): Promise<StartedSkillSpawn> {
+    let config: LegionConfig;
+    try {
+      config = await this.#readConfig();
+    } catch {
+      return { spawned: false, runId: `${skillId}-${Date.now().toString(36)}` };
+    }
+    return startSkillSpawn({
+      config,
+      skillId,
+      specId,
+      promptBody,
+      cliAdapter,
+      ...this.#skillSpawnFields(),
+    });
+  }
+
+  async #runOptionalSpawn(
+    skillId: "interview" | "discuss" | "spec",
     specId: string,
     promptBody: string,
     cliAdapter?: AdapterId,

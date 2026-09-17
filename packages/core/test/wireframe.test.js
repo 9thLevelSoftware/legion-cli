@@ -95,6 +95,26 @@ test("assertWireframeHtml allows meta content=continue and denies on*/javascript
   );
   assert.throws(() => assertWireframeHtml('<a href="data:text&sol;html,alert(1)">x</a>'), /data:/);
   assert.doesNotThrow(() => assertWireframeHtml('<img src="data:image/png;base64,AAAA">'));
+  assert.throws(() => assertWireframeHtml('<img alt="<!--" src=x onerror=alert(1)>'), /onerror/);
+  assert.throws(() => assertWireframeHtml('<p title="<!--"></p><script>alert(1)</script>'), /<script>/);
+  assert.throws(
+    () => assertWireframeHtml("<style><!--</style><img src=x onerror=alert(1)>"),
+    /onerror/,
+  );
+  assert.throws(
+    () =>
+      assertWireframeHtml(
+        '<meta http-equiv="refresh" content="0;url=data:text/html,<script>alert(1)</script>">',
+      ),
+    /data:/,
+  );
+  assert.throws(
+    () =>
+      assertWireframeHtml(
+        '<meta http-equiv="refresh" content="0;url=data:image/svg+xml,<svg onload=alert(1)>">',
+      ),
+    /data:/,
+  );
   assert.throws(() => assertWireframeHtml("<script>alert(1)</script>"), /<script>/);
   assert.throws(() => assertWireframeHtml('<iframe src="x"></iframe>'), /<iframe>/);
   assert.throws(() => assertWireframeHtml('<link rel="import" href="x.html">'), /rel=import/);
@@ -418,6 +438,11 @@ test("frozen --restyle --spawn keeps markup and only applies style", async () =>
       await writeFile(page, before.replace("<h1>board</h1>", "<h1>Keep Me</h1>"), "utf8");
       await engine.approveSpec(spec.id, { id: "human" });
       await installLocalDir({ projectRoot: dir, source: fixtureNeutral, cwd: dir });
+      const answers = await store.readIntentAnswers();
+      await store.writeIntentAnswers({
+        ...answers,
+        mapped: { ...answers.mapped, screens: ["dashboard"] },
+      });
       const restyled = await readFile(page, "utf8");
       const spawnedHtml = restyled
         .replace("<h1>Keep Me</h1>", "<h1>Spawned</h1>")
@@ -434,8 +459,10 @@ test("frozen --restyle --spawn keeps markup and only applies style", async () =>
       assert.match(after, /<h1>Keep Me<\/h1>/);
       assert.doesNotMatch(after, /<h1>Spawned<\/h1>/);
       assert.match(after, /outline: 2px solid #0b6e4f/);
-      assert.equal(existsSync(join(store.paths.specsDir, spec.id, "wireframes", "board.html")), true);
-      assert.equal(existsSync(join(store.paths.specsDir, spec.id, "wireframes", "settings.html")), true);
+      const wf = join(store.paths.specsDir, spec.id, "wireframes");
+      assert.equal(existsSync(join(wf, "board.html")), true);
+      assert.equal(existsSync(join(wf, "settings.html")), true);
+      assert.equal(existsSync(join(wf, "dashboard.html")), false);
     });
   } finally {
     if (previous === undefined) delete process.env.LEGION_CLI_ADAPTER;
