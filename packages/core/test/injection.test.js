@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { UNTRUSTED_BEGIN } from "@9thlevelsoftware/legion-cli-wiki";
+import { buildChatPrompt, createChatSession } from "../dist/index.js";
 import {
   initGitRepo,
   initProject,
@@ -73,5 +74,23 @@ test("golden injection: post-spawn FileContract still incidents on .git/hooks", 
         fakeArtifacts: [{ path: ".git/hooks/pre-commit", content: "#!/bin/sh\necho pwned\n" }],
       },
     );
+  });
+});
+
+test("chat prompt omits untrusted wiki bodies", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    await writeFile(join(dir, "inject.md"), `# Injected\n\n${INJECTION}\n`, "utf8");
+    const receipt = await engine.ingest(["inject.md"], { noCommit: true });
+    const page = await engine.store.readWikiPage(receipt.pagesCreated[0]);
+    assert.equal(page.data.trust, "untrusted");
+    assert.match(page.body, /Ignore previous instructions/);
+
+    const prompt = await buildChatPrompt(engine, "where am I", createChatSession());
+    assert.match(prompt, /Injected/);
+    assert.doesNotMatch(prompt, /Ignore previous instructions/);
+    assert.doesNotMatch(prompt, /id_rsa/);
+    assert.doesNotMatch(prompt, /pre-commit/);
+    assert.doesNotMatch(prompt, /BEGIN LEGION CLI UNTRUSTED CONTENT/);
   });
 });

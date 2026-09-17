@@ -8,6 +8,25 @@ export {
   skillContract,
 } from "./contracts.js";
 export { COMPACT_AUDIT_POINTER, compactTaskBody, outcomeFromTask } from "./compact.js";
+export {
+  applyChatAction,
+  buildChatPrompt,
+  CHAT_IDLE_LIMIT,
+  createChatSession,
+  formatChatProposal,
+  idleTurnsFromSession,
+  isChatProposalAction,
+  isChatReadAction,
+  loadChatSession,
+  nextHintForAction,
+  nextVerbForPhase,
+  resumeOrCreateChatSession,
+  routeChatTurn,
+  ruleRouteChat,
+  sanitizeChatAction,
+  saveChatSession,
+} from "./chat.js";
+export type { ChatApplyResult, ChatRouteOpts, ChatTurnKind, ChatTurnResult } from "./chat.js";
 export { createLegionEngine, DISTILL_SOURCE_MAX_CHARS, LegionEngine } from "./engine.js";
 export {
   assertIngestSourceAllowed,

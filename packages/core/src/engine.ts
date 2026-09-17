@@ -276,6 +276,7 @@ export class LegionEngine {
   readonly #fakeOnWait?: () => Promise<void>;
   readonly #fakeHandlePid?: number;
   readonly #verificationTimeoutMs: number;
+  readonly #chatActionFixture?: unknown;
   #lastPlanReport: ReadinessReport | null = null;
 
   constructor(projectRoot: string, store?: LegionStore, options?: LegionEngineOptions) {
@@ -288,6 +289,7 @@ export class LegionEngine {
     this.#fakeOnWait = options?.fakeOnWait;
     this.#fakeHandlePid = options?.fakeHandlePid;
     this.#verificationTimeoutMs = options?.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
+    this.#chatActionFixture = options?.chatActionFixture;
   }
 
   get projectRoot(): string {
@@ -1729,6 +1731,42 @@ export class LegionEngine {
 
   async getState(): Promise<StateFile> {
     return this.#readState();
+  }
+
+  async spawnChatSkill(
+    promptBody: string,
+    cliAdapter?: AdapterId,
+  ): Promise<{ spawned: boolean; runId: string }> {
+    let config: LegionConfig;
+    try {
+      config = await this.#readConfig();
+    } catch {
+      return { spawned: false, runId: "" };
+    }
+    const result = await optionalSkillSpawn({
+      ...this.#skillSpawnFields(),
+      config,
+      skillId: "chat",
+      promptBody,
+      cliAdapter,
+    });
+    if (result.revert?.incident) {
+      refuse("inspect .git — spawn touched .git/", HINT.status);
+    }
+    if (result.revert && result.revert.extrasReverted.length > 0) {
+      refuse(
+        `spawn wrote files outside SkillContract; reverted: ${result.revert.extrasReverted.join(", ")}`,
+        HINT.status,
+      );
+    }
+    if (result.error) {
+      return { spawned: false, runId: result.runId };
+    }
+    return { spawned: result.spawned, runId: result.runId };
+  }
+
+  chatActionFixture(): unknown {
+    return this.#chatActionFixture;
   }
 
   async recoverStaleInProgress(): Promise<void> {

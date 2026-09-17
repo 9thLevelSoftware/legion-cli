@@ -1,0 +1,150 @@
+import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import test from "node:test";
+
+import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+import { normalize, runCli, withTempDir } from "./helpers.js";
+
+async function patchPhase(dir, phase) {
+  const engine = createLegionEngine(dir);
+  const state = await engine.store.readState();
+  await engine.store.writeState({ ...state.data, phase }, state.body);
+  return engine;
+}
+
+test("chat --once where am I prints status and does not spawn", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const result = runCli(["chat", "--once", "where am I", "--project", dir]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout);
+    assert.match(out, /phase: initialized/);
+    assert.match(out, /legion-cli intent/);
+    const runs = join(dir, ".legion-cli", "cache", "runs");
+    assert.equal(existsSync(runs), false);
+  });
+});
+
+test("chat --once two intent answers prints a proposal and does not write intent-answers.yaml", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await patchPhase(dir, "intent_draft");
+    const result = runCli([
+      "chat",
+      "--once",
+      "Teammates who keep missing who's in the office.\nThey ping five chat apps every morning.",
+      "--project",
+      dir,
+    ]);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(`${result.stdout}\n${result.stderr}`);
+    assert.match(out, /Proposed:/);
+    assert.match(out, /Next: legion-cli intent/);
+    assert.equal(existsSync(join(dir, ".legion-cli", "wiki", "product", "intent-answers.yaml")), false);
+  });
+});
+
+test("discuss via chat with --yes still refuses", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const engine = await patchPhase(dir, "discussing");
+    await engine.store.writeDiscuss(
+      {
+        schemaVersion: "legion-cli-discuss/v1",
+        decisions: [{ id: "D-001", statement: "Ship as mobile web.", status: "proposed" }],
+      },
+      "Proposed decisions.\n",
+    );
+    const result = runCli(["chat", "--yes", "--once", "Y", "--project", dir]);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const err = normalize(result.stderr);
+    assert.match(err, /cannot skip product decisions/);
+    assert.match(err, /Next: legion-cli discuss/);
+    const discussMd = await readFile(join(dir, ".legion-cli", "discuss", "DISCUSS.md"), "utf8");
+    assert.doesNotMatch(discussMd, /status: accepted/);
+  });
+});
+
+test("chat --adapter http is refused", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const result = runCli(["chat", "--once", "where am I", "--adapter", "http", "--project", dir]);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const err = normalize(result.stderr);
+    assert.match(err, /adapter http is not selectable yet/);
+    assert.doesNotMatch(err, /\|http/);
+  });
+});
+
+test("chat without --once on non-TTY refuses", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const result = runCli(["chat", "--project", dir]);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const err = normalize(result.stderr);
+    assert.match(err, /TTY|--once/);
+    assert.match(err, /Next: legion-cli chat --once or legion-cli status/);
+  });
+});
+
+test("model fixture discuss_decide does not write DISCUSS.md without Y", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const engine = await patchPhase(dir, "discussing");
+    await engine.store.writeDiscuss(
+      {
+        schemaVersion: "legion-cli-discuss/v1",
+        decisions: [{ id: "D-001", statement: "Ship as mobile web.", status: "proposed" }],
+      },
+      "Proposed decisions.\n",
+    );
+    const before = await readFile(join(dir, ".legion-cli", "discuss", "DISCUSS.md"), "utf8");
+    const result = runCli(["chat", "--once", "ok", "--project", dir], {
+      env: {
+        LEGION_CLI_CHAT_ACTION: JSON.stringify({ type: "discuss_decide", id: "D-001", status: "accepted" }),
+      },
+    });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(`${result.stdout}\n${result.stderr}`);
+    assert.match(out, /Proposed:/);
+    assert.match(out, /Next: legion-cli discuss/);
+    const after = await readFile(join(dir, ".legion-cli", "discuss", "DISCUSS.md"), "utf8");
+    assert.equal(after, before);
+    assert.doesNotMatch(after, /status: accepted/);
+  });
+});
+
+test("model fixture ship is dropped and stdout contains Next:", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const result = runCli(["chat", "--once", "ship it", "--project", dir], {
+      env: { LEGION_CLI_CHAT_ACTION: JSON.stringify({ type: "ship" }) },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(result.stdout), /Next:/);
+  });
+});
+
+test("four idle --once turns print pause", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    let last;
+    for (let i = 0; i < 4; i++) {
+      last = runCli(["chat", "--once", `hello ${i}`, "--project", dir]);
+      if (i < 3) {
+        assert.equal(last.status, 0, `${last.stdout}\n${last.stderr}`);
+        assert.doesNotMatch(normalize(last.stdout), /Chat paused/);
+      }
+    }
+    assert.equal(last.status, 0, `${last.stdout}\n${last.stderr}`);
+    const out = normalize(last.stdout);
+    assert.match(out, /Chat paused/);
+    assert.match(out, /Next: legion-cli intent/);
+    const chatDir = join(dir, ".legion-cli", "chat");
+    const files = await readdir(chatDir);
+    assert.ok(files.some((name) => name.endsWith(".json")));
+  });
+});
