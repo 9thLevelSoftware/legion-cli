@@ -4,13 +4,13 @@ import { writeJson, writeOut } from "./io.js";
 import { closePrompt, isNo, readLine, slurpStdin } from "./prompt.js";
 
 export async function runDiscuss(opts: CliOpts): Promise<number> {
+  if (opts.yes) {
+    refuse("discuss --yes cannot skip product decisions", HINT.discuss);
+  }
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
   try {
     await slurpStdin();
     let proposed = await engine.startDiscuss();
-    if (opts.yes) {
-      refuse("discuss --yes cannot skip product decisions", HINT.discuss);
-    }
     if (opts.json && proposed.length === 0) {
       writeJson({ ok: true, remaining: [], next: "legion-cli spec" });
       return 0;

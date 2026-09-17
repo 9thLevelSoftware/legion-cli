@@ -134,11 +134,28 @@ test("discuss --yes cannot skip product decisions", async () => {
     assert.equal(discuss.status, 1, `${discuss.stdout}\n${discuss.stderr}`);
     assert.match(normalize(discuss.stderr), /cannot skip product decisions/);
     assert.match(normalize(discuss.stderr), /Next: legion-cli discuss/);
-
+    assert.doesNotMatch(normalize(discuss.stderr), /intent_ready/);
+    const state = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
+    assert.match(state, /phase: intent_ready/);
     const discussMd = await readFile(join(dir, ".legion-cli", "discuss", "DISCUSS.md"), "utf8");
-    assert.match(discussMd, /status: proposed/);
-    assert.doesNotMatch(discussMd, /status: accepted/);
-    assert.doesNotMatch(discussMd, /status: rejected/);
+    assert.doesNotMatch(discussMd, /D-001/);
+    assert.doesNotMatch(discussMd, /status: proposed/);
+  });
+});
+
+test("discuss --yes refuses before startDiscuss with no remaining decisions", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const discuss = runCli(["discuss", "--project", dir, "--yes"]);
+    assert.equal(discuss.status, 1, `${discuss.stdout}\n${discuss.stderr}`);
+    assert.match(normalize(discuss.stderr), /cannot skip product decisions/);
+    assert.match(normalize(discuss.stderr), /Next: legion-cli discuss/);
+    assert.doesNotMatch(normalize(discuss.stderr), /intent_ready/);
+    const state = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
+    assert.match(state, /phase: initialized/);
+    const discussMd = await readFile(join(dir, ".legion-cli", "discuss", "DISCUSS.md"), "utf8");
+    assert.doesNotMatch(discussMd, /D-001/);
+    assert.doesNotMatch(discussMd, /status: proposed/);
   });
 });
 

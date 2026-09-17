@@ -100,7 +100,7 @@ export function printHelpAll(): void {
       "Supported command: pnpm exec legion-cli",
       "This engine does not register the legion bin (that is @9thlevelsoftware/legion).",
       "",
-      "Global flags: --project <dir>, --json, --yes (ignored by intent confirm, ship, and discuss), --verbose",
+      "Global flags: --project <dir>, --json, --yes (ignored by intent confirm and ship; discuss refuses), --verbose",
       "",
       "Lifecycle core:",
       ...LIFECYCLE_CORE.map(row),
