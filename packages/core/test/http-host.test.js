@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { MAX_RUN_COMMAND_BYTES, toolsForJob } from "@9thlevelsoftware/legion-cli-http";
-import { createHttpToolHost } from "../dist/index.js";
+import { createHttpToolHost } from "../dist/http-host.js";
 
 async function withTemp(fn) {
   const dir = await mkdtemp(join(tmpdir(), "legion-http-host-"));

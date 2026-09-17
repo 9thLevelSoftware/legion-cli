@@ -9,8 +9,6 @@ import {
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 
-export type { HttpToolHost };
-
 export type { AdapterResolutionSource, ExtraAdapterId, SkillId };
 
 export type AgentAdapterId = AdapterId;

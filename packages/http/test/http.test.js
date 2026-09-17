@@ -6,16 +6,15 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
-  capToolResult,
   completionsUrl,
   HttpAdapter,
   HttpAdapterError,
   httpAdapterNotReadyReason,
   isHttpAdapterReady,
   isRunCommandAllowed,
-  MAX_TOOL_RESULT_CHARS,
   toolsForJob,
 } from "../dist/index.js";
+import { capToolResult, MAX_TOOL_RESULT_CHARS } from "../dist/tools.js";
 
 function startMock(handler) {
   return new Promise((resolve) => {

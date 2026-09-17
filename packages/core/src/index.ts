@@ -4,12 +4,10 @@ export {
   executeAllowedRoots,
   isAllowedPath,
   isEngineOwned,
-  isEnvBasename,
   isImplicitForbidden,
   matchesGlob,
   skillContract,
 } from "./contracts.js";
-export { createHttpToolHost } from "./http-host.js";
 export { COMPACT_AUDIT_POINTER, compactTaskBody, outcomeFromTask } from "./compact.js";
 export {
   applyChatAction,

@@ -89,7 +89,6 @@ export type {
   FakeArtifact,
   FakeHoldWait,
   GenericAdapterConfig,
-  HttpToolHost,
   SkillId,
   SpawnableAdapterId,
 } from "./types.js";
