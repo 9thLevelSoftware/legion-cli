@@ -58,11 +58,17 @@ async function stop(child) {
   });
 }
 
+function tokenFromStderr(stderr) {
+  const match = /Write token: ([0-9a-f]{64})/.exec(stderr);
+  assert.ok(match, `expected write token on stderr\n${stderr}`);
+  return match[1];
+}
+
 test("dashboard --no-open --port 0 serves GET / and optional engine POSTs", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(init.status, 0, init.stderr);
-    const { child, url } = startDashboardCli([
+    const { child, url, getStderr, getStdout } = startDashboardCli([
       "dashboard",
       "--project",
       dir,
@@ -72,15 +78,17 @@ test("dashboard --no-open --port 0 serves GET / and optional engine POSTs", asyn
     ]);
     try {
       const viewer = await url;
+      const token = tokenFromStderr(getStderr());
+      assert.doesNotMatch(getStdout(), new RegExp(token));
       const res = await fetch(viewer);
       assert.equal(res.status, 200);
       const html = await res.text();
       assert.match(html, /source of truth/);
+      assert.match(html, /Read-only viewer/);
       assert.match(html, /Checkin/);
       assert.match(html, /Kanban/);
-      const tokenMatch = /<meta name="legion-cli-token" content="([^"]+)">/.exec(html);
-      assert.ok(tokenMatch);
-      const token = tokenMatch[1];
+      assert.doesNotMatch(html, /legion-cli-token/);
+      assert.equal(html.includes(token), false);
       assert.equal(res.headers.get("access-control-allow-origin"), null);
       assert.equal(res.headers.get("set-cookie"), null);
 
@@ -121,7 +129,63 @@ test("dashboard --no-open --port 0 serves GET / and optional engine POSTs", asyn
   });
 });
 
-test("dashboard --expose warns and still serves loopback GET", async () => {
+test("dashboard --json prints the write token; GET HTML omits it", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const child = spawn(process.execPath, [bin, "dashboard", "--project", dir, "--no-open", "--port", "0", "--json"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    const payload = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`dashboard --json did not print startup JSON\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+      }, 15_000);
+      const tryParse = () => {
+        try {
+          const parsed = JSON.parse(stdout);
+          if (parsed.url && parsed.token) {
+            clearTimeout(timer);
+            resolve(parsed);
+          }
+        } catch {
+          // incomplete JSON
+        }
+      };
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        tryParse();
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.on("exit", (code) => {
+        if (code) {
+          clearTimeout(timer);
+          reject(new Error(`dashboard exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+        }
+      });
+    });
+    try {
+      assert.match(payload.token, /^[0-9a-f]{64}$/);
+      assert.equal(tokenFromStderr(stderr), payload.token);
+      const res = await fetch(payload.url);
+      assert.equal(res.status, 200);
+      const html = await res.text();
+      assert.doesNotMatch(html, /legion-cli-token/);
+      assert.equal(html.includes(payload.token), false);
+    } finally {
+      await stop(child);
+    }
+  });
+});
+
+test("dashboard --expose warns and still serves loopback GET without the token", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     const { child, url, getStderr } = startDashboardCli([
@@ -135,9 +199,15 @@ test("dashboard --expose warns and still serves loopback GET", async () => {
     ]);
     try {
       const viewer = await url;
-      assert.match(normalize(getStderr()), /0\.0\.0\.0/);
+      const stderr = normalize(getStderr());
+      assert.match(stderr, /0\.0\.0\.0/);
+      assert.match(stderr, /not in GET HTML/);
+      const token = tokenFromStderr(stderr);
       const res = await fetch(viewer);
       assert.equal(res.status, 200);
+      const html = await res.text();
+      assert.doesNotMatch(html, /legion-cli-token/);
+      assert.equal(html.includes(token), false);
     } finally {
       await stop(child);
     }

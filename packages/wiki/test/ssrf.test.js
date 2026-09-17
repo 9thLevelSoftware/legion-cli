@@ -30,6 +30,10 @@ const PRIVATE_HOSTS = [
   "172.31.255.255",
   "169.254.1.1",
   "169.254.169.254",
+  "100.64.0.0",
+  "100.64.1.1",
+  "100.100.100.200",
+  "100.127.255.255",
   "metadata.google.internal",
   "printer.local",
   "foo.local",
@@ -45,7 +49,16 @@ const PRIVATE_HOSTS = [
   "fd12:3456:789a:1::1",
 ];
 
-const PUBLIC_HOSTS = ["example.com", "8.8.8.8", "1.1.1.1", "172.15.0.1", "172.32.0.1", "2001:4860:4860::8888"];
+const PUBLIC_HOSTS = [
+  "example.com",
+  "8.8.8.8",
+  "1.1.1.1",
+  "172.15.0.1",
+  "172.32.0.1",
+  "100.63.255.255",
+  "100.128.0.1",
+  "2001:4860:4860::8888",
+];
 
 test("SSRF deny list: loopback, RFC1918, ULA, link-local, metadata, .local", () => {
   for (const host of PRIVATE_HOSTS) {
@@ -64,6 +77,8 @@ test("SSRF deny list: IPv4-mapped and IPv4-compatible IPv6", () => {
   assert.equal(isPrivateOrLocalHost(urlHost("https://[::ffff:192.168.1.8]/")), true);
   assert.equal(isPrivateOrLocalHost(urlHost("https://[::ffff:172.16.0.1]/")), true);
   assert.equal(isPrivateOrLocalHost(urlHost("https://[::ffff:169.254.169.254]/")), true);
+  assert.equal(isPrivateOrLocalHost(urlHost("https://[::ffff:100.64.1.1]/")), true);
+  assert.equal(isPrivateOrLocalHost("::ffff:6440:101"), true);
   assert.equal(isPrivateOrLocalHost(urlHost("https://[::ffff:a9fe:a9fe]/")), true);
   assert.equal(isPrivateOrLocalHost(urlHost("https://[::127.0.0.1]/")), true);
   assert.equal(isPrivateOrLocalHost("::ffff:7f00:1"), true);
@@ -75,6 +90,8 @@ test("resolvePublicAddress refuses private hosts before DNS", async () => {
   await assert.rejects(() => resolvePublicAddress("127.0.0.1"), SsrfError);
   await assert.rejects(() => resolvePublicAddress("localhost"), SsrfError);
   await assert.rejects(() => resolvePublicAddress("169.254.169.254"), SsrfError);
+  await assert.rejects(() => resolvePublicAddress("100.64.1.1"), SsrfError);
+  await assert.rejects(() => resolvePublicAddress("100.100.100.200"), SsrfError);
   await assert.rejects(() => resolvePublicAddress("metadata.google.internal"), SsrfError);
   await assert.rejects(() => resolvePublicAddress("printer.local"), SsrfError);
   await assert.rejects(() => resolvePublicAddress("10.1.2.3"), SsrfError);
@@ -93,6 +110,10 @@ test("DNS rebinding: public hostname that resolves to a private IP is refused", 
   );
   await assert.rejects(
     () => resolvePublicAddress("evil.example", async () => ({ address: "169.254.169.254", family: 4 })),
+    SsrfError,
+  );
+  await assert.rejects(
+    () => resolvePublicAddress("evil.example", async () => ({ address: "100.64.1.1", family: 4 })),
     SsrfError,
   );
   await assert.rejects(
@@ -124,6 +145,8 @@ test("fetchPublicHttps refuses http, file, github, and private URLs without conn
   await assert.rejects(() => fetchPublicHttps("https://127.0.0.1/secret"), SsrfError);
   await assert.rejects(() => fetchPublicHttps("https://[::ffff:127.0.0.1]/"), SsrfError);
   await assert.rejects(() => fetchPublicHttps("https://169.254.169.254/latest/meta-data"), SsrfError);
+  await assert.rejects(() => fetchPublicHttps("https://100.64.1.1/"), SsrfError);
+  await assert.rejects(() => fetchPublicHttps("https://100.100.100.200/latest/meta-data"), SsrfError);
   await assert.rejects(() => fetchPublicHttps("https://metadata.google.internal/"), SsrfError);
   await assert.rejects(() => fetchPublicHttps("https://printer.local/doc"), SsrfError);
   await assert.rejects(() => fetchPublicHttps("https://[::]/"), SsrfError);
@@ -203,6 +226,25 @@ test("fetchPublicHttps refuses redirect-to-https that still fails the deny list"
     (err) => {
       assert.equal(err instanceof SsrfError, true);
       assert.match(err.message, /private-network|http:/);
+      return true;
+    },
+  );
+});
+
+test("fetchPublicHttps refuses redirect to CGNAT 100.64/10", async (t) => {
+  mockHttpsRequest(t, () => ({
+    status: 302,
+    headers: { location: "https://100.100.100.200/latest/meta-data" },
+    body: "",
+  }));
+  await assert.rejects(
+    () =>
+      fetchPublicHttps("https://evil.example/bounce", {
+        lookup: async () => ({ address: "8.8.8.8", family: 4 }),
+      }),
+    (err) => {
+      assert.equal(err instanceof SsrfError, true);
+      assert.match(err.message, /private-network/);
       return true;
     },
   );

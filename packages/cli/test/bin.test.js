@@ -142,7 +142,8 @@ test("help --all init lists --mode; intent drops --resume; dashboard is view-onl
   assert.doesNotMatch(lifecycle, /--resume/);
   assert.match(lifecycle, /--done/);
   assert.doesNotMatch(out, /optional writes/);
-  assert.match(out, /view-only/);
+  assert.match(out, /read-only viewer/);
+  assert.match(out, /ticket\|wikiTrust\|qaChecklist/);
   assert.match(out, /untrusted until wiki trust/);
 });
 

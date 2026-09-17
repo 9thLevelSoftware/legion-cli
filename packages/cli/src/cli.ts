@@ -383,7 +383,7 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("dashboard").description("Open the visual board (view-only; writes are CLI or token POST; not the source of truth)"))
+  addGlobalOptions(program.command("dashboard").description("Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist); not the source of truth)"))
     .option("--no-open", "do not open a browser")
     .option("--port <port>", "port (default 7420)")
     .option("--expose", "bind 0.0.0.0 (warning)")

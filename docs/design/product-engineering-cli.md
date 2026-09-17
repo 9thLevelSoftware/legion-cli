@@ -924,7 +924,7 @@ Checklist items = spec ACs. Human ticks via **`legion-cli qa checklist`** (TTY) 
 
 ### 8. Visual dashboard
 
-Default surface is the CLI. Local HTTP is a **view-only** board: writes are CLI or token POST. MCP Apps and WebMCP are later. **Invented combination** for later; the page is CodeAlmanac-style serve + Legion CLI state. Page copy: “View-only. Writes are CLI or token POST. CLI remains the source of truth.”
+Default surface is the CLI. Local HTTP is a **read-only viewer**: writes are CLI or token-gated HTTP POST (`ticket|wikiTrust|qaChecklist`). MCP Apps and WebMCP are later. **Invented combination** for later; the page is CodeAlmanac-style serve + Legion CLI state. Page copy: “Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist). CLI remains the source of truth.”
 
 ```mermaid
 flowchart TB
@@ -953,7 +953,7 @@ flowchart TB
 | `POST /engine/wikiTrust` | Trust a wiki page |
 | `POST /engine/qaChecklist` | Tick QA checklist items |
 
-Allowlist `ENGINE_WRITE_METHODS = ticket | wikiTrust | qaChecklist`. Mint a random token at server start, embed `<meta name="legion-cli-token" content="…">` in the first HTML, require header `X-Legion-Cli-Token` on POSTs, **never a cookie**, Origin allowlist, no CORS `*`. POSTs call the same `LegionEngine` methods as the CLI. **No** interview modal, **no** approve button, **no** execute/ship/plan/review/packet/intent routes.
+Allowlist `ENGINE_WRITE_METHODS = ticket | wikiTrust | qaChecklist`. Mint a random token at server start and print it once on stderr / `--json`. **Never** emit the token in GET HTML (loopback or `--expose`; no `<meta name="legion-cli-token">`). Require header `X-Legion-Cli-Token` on POSTs, **never a cookie**, Origin allowlist, no CORS `*`. Wireframe iframe is always `sandbox` without `allow-same-origin`+`allow-scripts`. POSTs call the same `LegionEngine` methods as the CLI. **No** interview modal, **no** approve button, **no** execute/ship/plan/review/packet/intent routes.
 
 Approvals, execute, and ship stay CLI verbs. Depends on persist + wiki + graph. Kanban works as soon as tasks exist (even `todo`).
 
@@ -1146,7 +1146,7 @@ Global flags: `--project <dir>`, `--json`, `--yes` (ignored by intent confirm an
 | `legion-cli qa checklist` | Tick AC items when no browser | — |
 | `legion-cli fix <bug>` | Test first (must stay RED), then fix | `--adapter <id>` (forwards into execute; routing RFC) |
 | `legion-cli ship` | Final human review; stage diff | `--allow-degraded-qa`, `--pr`, `--commit` |
-| `legion-cli dashboard` | Open the visual board (view-only; writes are CLI or token POST; not the source of truth) | `--no-open`, `--port`, `--expose` |
+| `legion-cli dashboard` | Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket\|wikiTrust\|qaChecklist); not the source of truth) | `--no-open`, `--port`, `--expose` |
 | `legion-cli search <q>` | Search the wiki | `--mentions`, `--include-untrusted` |
 | `legion-cli show <page>` | Open one wiki/spec/task page | — |
 | `legion-cli brief` | Print what the next agent will see | — |
