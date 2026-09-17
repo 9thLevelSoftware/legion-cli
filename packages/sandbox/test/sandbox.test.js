@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { PathEscapeError } from "@9thlevelsoftware/legion-cli-persist";
@@ -421,6 +421,47 @@ test("copy-in is sparse: no node_modules, nested node_modules, or operator .git"
   });
 });
 
+test("dangling junction in readSet does not hang materializeJail", { timeout: 5000 }, async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const target = await mkdtemp(join(tmpdir(), "legion-dangle-"));
+    const juncType = process.platform === "win32" ? "junction" : "dir";
+    const linked = await trySymlink(target, join(dir, "src", "dangling"), juncType);
+    assert.equal(linked, true, "could not create dangling junction");
+    await rm(target, { recursive: true, force: true });
+    const handle = await materializeJail(policy(dir, { readSet: ["src", "src/dangling"] }));
+    try {
+      assert.equal(existsSync(join(handle.jailRoot, "src", "read.ts")), true);
+      assert.equal(existsSync(join(handle.jailRoot, "src", "dangling")), false);
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("copy-out copies allowed writes when projectRoot is a symlink", async () => {
+  await withTempDir(async (real) => {
+    await seedProject(real);
+    const holder = await mkdtemp(join(tmpdir(), "legion-rootlink-"));
+    const link = join(holder, "proj");
+    const linked = await trySymlink(real, link, process.platform === "win32" ? "junction" : "dir");
+    assert.equal(linked, true, "could not create projectRoot symlink");
+    try {
+      const handle = await materializeJail(policy(link));
+      try {
+        await writeFile(join(handle.jailRoot, "src", "main.ts"), "via-link\n", "utf8");
+        const result = await handle.copyOut();
+        assert.ok(result.copied.includes("src/main.ts"), `copied=${result.copied.join(",")} dropped=${result.dropped.join(",")}`);
+        assert.equal(await readFile(join(real, "src", "main.ts"), "utf8"), "via-link\n");
+      } finally {
+        await handle.destroy();
+      }
+    } finally {
+      await rm(holder, { recursive: true, force: true });
+    }
+  });
+});
+
 test("destroy removes the jail directory", async () => {
   await withTempDir(async (dir) => {
     await seedProject(dir);
@@ -512,8 +553,9 @@ test("bwrap binds adapter file but not dirname $HOME or /", async (t) => {
           `expected adapter file bind, got ${dests.join(",")}`,
         );
         assert.equal(
-          dests.some((entry) => entry === "/" || entry === dirname(entry) && entry === "/"),
+          dests.some((entry) => entry === "/" || dirname(entry) === entry),
           false,
+          `must not bind filesystem root, got ${dests.join(",")}`,
         );
       } finally {
         await outside.destroy();

@@ -6,7 +6,6 @@ import { homedir } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import {
   PathEscapeError,
-  canonicalizePath,
   legionPaths,
   toFsPath,
   toPosixPath,
@@ -61,6 +60,7 @@ const SYSTEM_RO_BINDS = [
 ] as const;
 
 const WIN_STUB_EXT = /\.(cmd|bat|ps1)$/i;
+const MAX_COPY_DEPTH = 32;
 
 function tryRealpath(target: string): string | undefined {
   try {
@@ -313,7 +313,18 @@ function seatbeltProfile(jailRoot: string): string {
   ].join("\n");
 }
 
-async function copyTree(src: string, dest: string, projectRoot: string): Promise<void> {
+async function copyTree(
+  src: string,
+  dest: string,
+  projectRoot: string,
+  depth = 0,
+  seen?: Set<string>,
+): Promise<void> {
+  if (depth > MAX_COPY_DEPTH) return;
+  const visited = seen ?? new Set<string>();
+  const key = resolve(src);
+  if (visited.has(key)) return;
+  visited.add(key);
   let st;
   try {
     st = await lstat(src);
@@ -322,9 +333,10 @@ async function copyTree(src: string, dest: string, projectRoot: string): Promise
     throw err;
   }
   if (st.isSymbolicLink()) {
-    const canonical = canonicalizePath(src);
-    if (canonicalBlocked(projectRoot, canonical)) return;
-    await copyTree(canonical, dest, projectRoot);
+    const real = tryRealpath(src);
+    if (!real) return;
+    if (canonicalBlocked(projectRoot, real)) return;
+    await copyTree(real, dest, projectRoot, depth + 1, visited);
     return;
   }
   if (canonicalBlocked(projectRoot, src)) return;
@@ -333,7 +345,7 @@ async function copyTree(src: string, dest: string, projectRoot: string): Promise
     const entries = await readdir(src, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name === "node_modules" || entry.name === ".git") continue;
-      await copyTree(join(src, entry.name), join(dest, entry.name), projectRoot);
+      await copyTree(join(src, entry.name), join(dest, entry.name), projectRoot, depth + 1, visited);
     }
     return;
   }
@@ -352,7 +364,7 @@ async function copySparsePath(
   if (isBlockedRel(posix)) return;
   const src = toFsPath(projectRoot, posix);
   const dest = toFsPath(jailRoot, posix);
-  toProjectRelativePosix(jailRoot, dest);
+  if (lexicalRel(jailRoot, dest) === undefined) throw new PathEscapeError(dest);
   try {
     await lstat(src);
   } catch (err) {
@@ -399,13 +411,13 @@ async function pathHasSymlinkAncestor(abs: string, root: string): Promise<boolea
   let current = resolve(abs);
   const stop = resolve(root);
   for (;;) {
+    if (samePath(current, stop)) break;
     try {
       const st = await lstat(current);
       if (st.isSymbolicLink()) return true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
-    if (samePath(current, stop)) break;
     const parent = dirname(current);
     if (samePath(parent, current)) return true;
     current = parent;
@@ -420,14 +432,7 @@ async function destIsUnsafe(projectRoot: string, dest: string): Promise<boolean>
 }
 
 async function parentIsUnsafe(projectRoot: string, parent: string): Promise<boolean> {
-  if (samePath(parent, projectRoot)) {
-    try {
-      const st = await lstat(parent);
-      return st.isSymbolicLink();
-    } catch {
-      return true;
-    }
-  }
+  if (samePath(parent, projectRoot)) return false;
   const lexical = lexicalRel(projectRoot, parent);
   if (!lexical || isBlockedRel(lexical)) return true;
   return pathHasSymlinkAncestor(parent, projectRoot);
