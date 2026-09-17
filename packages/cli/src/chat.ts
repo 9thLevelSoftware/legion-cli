@@ -4,7 +4,6 @@ import {
   findSkillsDir,
   HINT,
   isChatProposalAction,
-  nextVerbForPhase,
   refuse,
   resumeOrCreateChatSession,
   routeChatTurn,
@@ -84,7 +83,7 @@ async function printRead(
     return;
   }
   if (turn.kind === "dropped") {
-    writeOut(turn.output);
+    writeOut(turn.output.split("\n").find((line) => line.startsWith("Next:")) ?? turn.output);
     return;
   }
   if (action.type === "next_verb") {
@@ -103,20 +102,8 @@ async function handleTurn(
 ): Promise<{ code: number; session: ChatSessionFile; stop: boolean }> {
   const turn = await routeChatTurn(engine, session, utterance, {
     cliAdapter: flags.adapter,
-    fixtureAction: engine.chatActionFixture(),
+    fixtureAction: fixtureFromEnv(),
   });
-
-  if (turn.paused) {
-    const state = await engine.getState();
-    writeOut(`Next: legion-cli ${nextVerbForPhase(state.phase)}`);
-    writeOut(turn.output);
-    return { code: 0, session: turn.session, stop: true };
-  }
-
-  if (turn.kind === "dropped") {
-    writeOut(turn.output);
-    return { code: 0, session: turn.session, stop: flags.once };
-  }
 
   if (turn.kind === "proposal" && isChatProposalAction(turn.action)) {
     if (opts.yes && turn.action.type === "discuss_decide") {
@@ -132,12 +119,16 @@ async function handleTurn(
       writeOut("Not applied.");
       return { code: 0, session: turn.session, stop: false };
     }
-    const applied = await applyChatAction(engine, turn.action, { confirmed: true });
+    const applied = await applyChatAction(engine, turn.action, { confirmed: true, utterance });
     if (applied.output) writeOut(applied.output);
     return { code: 0, session: turn.session, stop: false };
   }
 
   await printRead(opts, engine, turn.action, turn);
+  if (turn.paused) {
+    writeOut("Chat paused.");
+    return { code: 0, session: turn.session, stop: flags.once };
+  }
   return { code: 0, session: turn.session, stop: flags.once };
 }
 
@@ -149,7 +140,6 @@ export async function runChat(opts: CliOpts, flags: ChatFlags): Promise<number> 
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, {
     skillsDir: findSkillsDir(),
-    chatActionFixture: fixtureFromEnv(),
   });
   const state = await engine.getState();
   if (state.phase === "uninitialized") {
@@ -162,7 +152,7 @@ export async function runChat(opts: CliOpts, flags: ChatFlags): Promise<number> 
       if (opts.json) {
         const turn = await routeChatTurn(engine, session, once, {
           cliAdapter: adapter,
-          fixtureAction: engine.chatActionFixture(),
+          fixtureAction: fixtureFromEnv(),
         });
         if (turn.kind === "proposal" && isChatProposalAction(turn.action)) {
           if (opts.yes && turn.action.type === "discuss_decide") {

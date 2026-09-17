@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -128,7 +128,7 @@ test("model fixture ship is dropped and stdout contains Next:", async () => {
   });
 });
 
-test("four idle --once turns print pause", async () => {
+test("four idle --once turns print the read then one pause Next", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     let last;
@@ -137,14 +137,30 @@ test("four idle --once turns print pause", async () => {
       if (i < 3) {
         assert.equal(last.status, 0, `${last.stdout}\n${last.stderr}`);
         assert.doesNotMatch(normalize(last.stdout), /Chat paused/);
+        assert.match(normalize(last.stdout), /Next: legion-cli intent/);
       }
     }
     assert.equal(last.status, 0, `${last.stdout}\n${last.stderr}`);
     const out = normalize(last.stdout);
-    assert.match(out, /Chat paused/);
     assert.match(out, /Next: legion-cli intent/);
+    assert.match(out, /Chat paused/);
+    assert.ok(out.indexOf("Next:") < out.indexOf("Chat paused"));
+    assert.equal([...out.matchAll(/Next:/g)].length, 1);
     const chatDir = join(dir, ".legion-cli", "chat");
     const files = await readdir(chatDir);
     assert.ok(files.some((name) => name.endsWith(".json")));
+  });
+});
+
+test("chat start ensures .legion-cli/chat/ is gitignored", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const gi = join(dir, ".gitignore");
+    const before = await readFile(gi, "utf8");
+    await writeFile(gi, before.replace(/^\.legion-cli\/chat\/\r?\n?/m, ""), "utf8");
+    assert.doesNotMatch(await readFile(gi, "utf8"), /\.legion-cli\/chat\//);
+    const result = runCli(["chat", "--once", "where am I", "--project", dir]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(await readFile(gi, "utf8"), /\.legion-cli\/chat\//);
   });
 });

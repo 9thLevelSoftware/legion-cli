@@ -34,8 +34,6 @@ export type LegionEngineOptions = {
   fakeOnWait?: () => Promise<void>;
   fakeHandlePid?: number;
   verificationTimeoutMs?: number;
-  /** Test seam: ChatAction JSON used when the rule router is unclear. */
-  chatActionFixture?: unknown;
 };
 
 export type IntentState = {

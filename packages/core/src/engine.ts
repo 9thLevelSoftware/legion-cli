@@ -276,7 +276,6 @@ export class LegionEngine {
   readonly #fakeOnWait?: () => Promise<void>;
   readonly #fakeHandlePid?: number;
   readonly #verificationTimeoutMs: number;
-  readonly #chatActionFixture?: unknown;
   #lastPlanReport: ReadinessReport | null = null;
 
   constructor(projectRoot: string, store?: LegionStore, options?: LegionEngineOptions) {
@@ -289,7 +288,6 @@ export class LegionEngine {
     this.#fakeOnWait = options?.fakeOnWait;
     this.#fakeHandlePid = options?.fakeHandlePid;
     this.#verificationTimeoutMs = options?.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
-    this.#chatActionFixture = options?.chatActionFixture;
   }
 
   get projectRoot(): string {
@@ -1737,36 +1735,43 @@ export class LegionEngine {
     promptBody: string,
     cliAdapter?: AdapterId,
   ): Promise<{ spawned: boolean; runId: string }> {
-    let config: LegionConfig;
-    try {
-      config = await this.#readConfig();
-    } catch {
-      return { spawned: false, runId: "" };
-    }
-    const result = await optionalSkillSpawn({
-      ...this.#skillSpawnFields(),
-      config,
-      skillId: "chat",
-      promptBody,
-      cliAdapter,
+    let started: StartedSkillSpawn | undefined;
+    await this.#withLockOrRefuse(async () => {
+      let config: LegionConfig;
+      try {
+        config = await this.#readConfig();
+      } catch {
+        return;
+      }
+      started = await startSkillSpawn({
+        ...this.#skillSpawnFields(),
+        config,
+        skillId: "chat",
+        promptBody,
+        cliAdapter,
+      });
     });
-    if (result.revert?.incident) {
-      refuse("inspect .git — spawn touched .git/", HINT.status);
+    if (!started?.spawned) {
+      return { spawned: false, runId: started?.runId ?? "" };
     }
-    if (result.revert && result.revert.extrasReverted.length > 0) {
-      refuse(
-        `spawn wrote files outside SkillContract; reverted: ${result.revert.extrasReverted.join(", ")}`,
-        HINT.status,
-      );
-    }
-    if (result.error) {
-      return { spawned: false, runId: result.runId };
-    }
-    return { spawned: result.spawned, runId: result.runId };
-  }
-
-  chatActionFixture(): unknown {
-    return this.#chatActionFixture;
+    const live = started;
+    const waited = await waitStartedSpawn(live);
+    return this.#withLockOrRefuse(async () => {
+      const revert = await finishStartedSpawn(live);
+      if (revert.incident) {
+        refuse("inspect .git — spawn touched .git/", HINT.status);
+      }
+      if (revert.extrasReverted.length > 0) {
+        refuse(
+          `spawn wrote files outside SkillContract; reverted: ${revert.extrasReverted.join(", ")}`,
+          HINT.status,
+        );
+      }
+      if (waited.error) {
+        return { spawned: false, runId: live.runId };
+      }
+      return { spawned: true, runId: live.runId };
+    });
   }
 
   async recoverStaleInProgress(): Promise<void> {

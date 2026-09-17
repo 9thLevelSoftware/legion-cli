@@ -2,13 +2,18 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCachePaths } from "@9thlevelsoftware/legion-cli-agents";
-import { redactSecrets, toFsPath, writeTextFile } from "@9thlevelsoftware/legion-cli-persist";
+import {
+  ensureGitignore,
+  redactSecrets,
+  toFsPath,
+  writeTextFile,
+} from "@9thlevelsoftware/legion-cli-persist";
 import {
   ChatActionSchema,
   ChatProposalActionSchema,
-  ChatReadActionSchema,
   ChatSessionFileSchema,
   SCHEMA_VERSION,
+  type AdapterId,
   type ChatAction,
   type ChatProposalAction,
   type ChatReadAction,
@@ -51,7 +56,7 @@ export type ChatApplyResult = {
 };
 
 export type ChatRouteOpts = {
-  cliAdapter?: import("@9thlevelsoftware/legion-cli-schema").AdapterId;
+  cliAdapter?: AdapterId;
   /** Test seam: model JSON used only when the rule router is unclear. */
   fixtureAction?: unknown;
 };
@@ -73,10 +78,6 @@ export function createChatSession(): ChatSessionFile {
   };
 }
 
-export function isChatReadAction(action: ChatAction): action is ChatReadAction {
-  return ChatReadActionSchema.safeParse(action).success;
-}
-
 export function isChatProposalAction(action: ChatAction): action is ChatProposalAction {
   return ChatProposalActionSchema.safeParse(action).success;
 }
@@ -91,7 +92,6 @@ export function nextVerbForPhase(phase: Phase): string {
     case "intent_ready":
       return "discuss";
     case "discussing":
-      return "spec";
     case "spec_draft":
       return "spec";
     case "spec_frozen":
@@ -157,8 +157,7 @@ function isNoLine(text: string): boolean {
 
 function parseSlash(utterance: string): ChatAction | "brief" | "help" | null {
   const trimmed = utterance.trim();
-  const status = /^\/status(?:\s|$)/i.exec(trimmed);
-  if (status) return { type: "status" };
+  if (/^\/status(?:\s|$)/i.test(trimmed)) return { type: "status" };
   if (/^\/next(?:\s|$)/i.test(trimmed)) return { type: "next_verb" };
   if (/^\/brief(?:\s|$)/i.test(trimmed)) return "brief";
   if (/^\/help(?:\s|$)/i.test(trimmed)) return "help";
@@ -181,6 +180,10 @@ function parseNaturalRead(utterance: string): ChatReadAction | null {
     if (q) return { type: "search", q };
   }
   return null;
+}
+
+function isRequestedRead(utterance: string): boolean {
+  return parseSlash(utterance) !== null || parseNaturalRead(utterance) !== null;
 }
 
 function splitAnswerLines(utterance: string): string[] {
@@ -229,17 +232,26 @@ function parseRawAction(raw: unknown): ChatAction | null {
   return parsed.success ? parsed.data : null;
 }
 
+/** Single gate for drop vs keep of intent_answer (router, sanitize, apply). */
+export function gateChatAction(
+  action: ChatAction,
+  ctx: { phase: Phase; utterance?: string },
+): ChatAction {
+  if (action.type !== "intent_answer") return action;
+  if (ctx.phase !== "intent_draft" && ctx.phase !== "intent_ready") return { type: "next_verb" };
+  if (ctx.utterance !== undefined && !answersAreParseOf(action.answers, ctx.utterance)) {
+    return { type: "next_verb" };
+  }
+  return action;
+}
+
 export function sanitizeChatAction(
   raw: unknown,
   ctx: { phase: Phase; utterance: string },
 ): ChatAction {
   const parsed = parseRawAction(raw);
   if (!parsed) return { type: "next_verb" };
-  if (parsed.type === "intent_answer") {
-    if (ctx.phase !== "intent_draft" && ctx.phase !== "intent_ready") return { type: "next_verb" };
-    if (!answersAreParseOf(parsed.answers, ctx.utterance)) return { type: "next_verb" };
-  }
-  return parsed;
+  return gateChatAction(parsed, ctx);
 }
 
 export function ruleRouteChat(input: {
@@ -252,9 +264,15 @@ export function ruleRouteChat(input: {
   if (slash) return slash;
   const natural = parseNaturalRead(input.utterance);
   if (natural) return natural;
-  if (input.phase === "intent_draft" && input.nextQuestions.length > 0) {
+  if (input.nextQuestions.length > 0) {
     const answers = splitAnswerLines(input.utterance);
-    if (answers.length > 0) return { type: "intent_answer", answers };
+    if (answers.length > 0) {
+      const gated = gateChatAction(
+        { type: "intent_answer", answers },
+        { phase: input.phase, utterance: input.utterance },
+      );
+      if (gated.type === "intent_answer") return gated;
+    }
   }
   if (input.phase === "discussing" && input.proposedDecisionId) {
     if (isYesLine(input.utterance)) {
@@ -267,17 +285,21 @@ export function ruleRouteChat(input: {
   return null;
 }
 
-function isSlashUtterance(utterance: string): boolean {
-  return utterance.trim().startsWith("/");
-}
-
-export function idleTurnsFromSession(session: ChatSessionFile): number {
+function idleTurnsFromSession(session: ChatSessionFile): number {
   let count = 0;
   for (let i = session.turns.length - 1; i >= 0; i--) {
     const turn = session.turns[i];
     if (turn.role !== "assistant") continue;
-    if (turn.action?.type === "next_verb" || turn.action?.type === "search") count += 1;
-    else break;
+    let userText: string | undefined;
+    for (let j = i - 1; j >= 0; j--) {
+      if (session.turns[j].role === "user") {
+        userText = session.turns[j].text;
+        break;
+      }
+    }
+    if (userText !== undefined && isRequestedRead(userText)) break;
+    if (turn.action?.type !== "next_verb") break;
+    count += 1;
   }
   return count;
 }
@@ -290,62 +312,51 @@ function chatSessionPath(id: string): string {
   return `.legion-cli/chat/${safe}.json`;
 }
 
-export async function saveChatSession(engine: LegionEngine, session: ChatSessionFile): Promise<void> {
+async function writeSessionFile(engine: LegionEngine, session: ChatSessionFile): Promise<void> {
   const parsed = ChatSessionFileSchema.parse(session);
   const abs = toFsPath(engine.projectRoot, chatSessionPath(parsed.id));
   const body = redactSecrets(`${JSON.stringify(parsed, null, 2)}\n`);
   await writeTextFile(abs, body);
 }
 
-export async function loadChatSession(engine: LegionEngine, id: string): Promise<ChatSessionFile | null> {
-  try {
-    const raw = await readFile(toFsPath(engine.projectRoot, chatSessionPath(id)), "utf8");
-    return ChatSessionFileSchema.parse(JSON.parse(raw));
-  } catch {
-    return null;
-  }
+export async function saveChatSession(engine: LegionEngine, session: ChatSessionFile): Promise<void> {
+  await engine.store.withLock(() => writeSessionFile(engine, session));
 }
 
 export async function resumeOrCreateChatSession(engine: LegionEngine): Promise<ChatSessionFile> {
-  const dir = engine.store.paths.chatDir;
-  await mkdir(dir, { recursive: true });
-  let names: string[] = [];
-  try {
-    names = (await readdir(dir)).filter((name) => name.toLowerCase().endsWith(".json"));
-  } catch {
-    names = [];
-  }
-  let latest: ChatSessionFile | null = null;
-  for (const name of names) {
+  await ensureGitignore(engine.projectRoot);
+  return engine.store.withLock(async () => {
+    const dir = engine.store.paths.chatDir;
+    await mkdir(dir, { recursive: true });
+    let names: string[] = [];
     try {
-      const raw = await readFile(join(dir, name), "utf8");
-      const parsed = ChatSessionFileSchema.safeParse(JSON.parse(raw));
-      if (!parsed.success) continue;
-      if (!latest || parsed.data.startedAt > latest.startedAt) latest = parsed.data;
+      names = (await readdir(dir)).filter((name) => name.toLowerCase().endsWith(".json"));
     } catch {
-      // skip unreadable session files
+      names = [];
     }
-  }
-  if (latest) return latest;
-  const created = createChatSession();
-  await saveChatSession(engine, created);
-  return created;
+    let latest: ChatSessionFile | null = null;
+    for (const name of names) {
+      try {
+        const raw = await readFile(join(dir, name), "utf8");
+        const parsed = ChatSessionFileSchema.safeParse(JSON.parse(raw));
+        if (!parsed.success) continue;
+        if (!latest || parsed.data.startedAt > latest.startedAt) latest = parsed.data;
+      } catch {
+        // skip unreadable session files
+      }
+    }
+    if (latest) return latest;
+    const created = createChatSession();
+    await writeSessionFile(engine, created);
+    return created;
+  });
 }
 
-function wikiPromptLines(brief: { wiki: Array<{ path: string; title: string; trust: string; summary?: string | null }> }): string[] {
-  const lines = ["Wiki (titles/paths only; untrusted bodies omitted):"];
-  if (brief.wiki.length === 0) {
-    lines.push("- (none)");
-    return lines;
-  }
-  for (const page of brief.wiki) {
-    const trust = page.trust === "untrusted" ? " untrusted" : "";
-    lines.push(`- ${page.title} (${page.path})${trust}`);
-  }
-  return lines;
-}
-
-export async function buildChatPrompt(engine: LegionEngine, utterance: string, session: ChatSessionFile): Promise<string> {
+export async function buildChatPrompt(
+  engine: LegionEngine,
+  utterance: string,
+  session: ChatSessionFile,
+): Promise<string> {
   const state = await engine.getState();
   if (state.phase === "uninitialized") {
     refuse("chat is refused until init", HINT.init);
@@ -370,13 +381,13 @@ export async function buildChatPrompt(engine: LegionEngine, utterance: string, s
     "Reply with a single JSON object (ChatAction). No markdown. Extra keys are ignored.",
     "Allowed types: status, search, next_verb, intent_answer, discuss_decide, ticket, assume_answer.",
     "Do not emit execute, ship, plan, spec_approve, control_mode, or wiki_trust.",
-    "Do not include wiki page bodies. Titles and paths only.",
+    "Do not include wiki page bodies. Titles and paths only (see SessionBrief wiki list).",
     `Phase: ${state.phase}`,
     `Next verb: legion-cli ${nextVerbForPhase(state.phase)}`,
     "",
-    ...wikiPromptLines(brief),
-    "",
-    intent.nextQuestions.length > 0 ? `Intent questions:\n${intent.nextQuestions.map((q, i) => `${i + 1}. ${q}`).join("\n")}` : "Intent questions: (none)",
+    intent.nextQuestions.length > 0
+      ? `Intent questions:\n${intent.nextQuestions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`
+      : "Intent questions: (none)",
     proposedId ? `Proposed decision: ${proposedId}` : "Proposed decision: (none)",
     "",
     "Recent turns:",
@@ -439,17 +450,21 @@ export async function routeChatTurn(
   let dropped = false;
   let local: "brief" | "help" | null = null;
   let action: ChatAction;
+  let requestedRead = false;
 
   if (routed === "brief" || routed === "help") {
     local = routed;
     action = { type: "next_verb" };
+    requestedRead = true;
   } else if (routed) {
-    action = routed;
+    requestedRead = true;
+    const gated = gateChatAction(routed, { phase: state.phase, utterance: text });
+    dropped = gated.type !== routed.type;
+    action = gated;
   } else {
     let raw: unknown;
-    const fixture = opts?.fixtureAction !== undefined ? opts.fixtureAction : engine.chatActionFixture();
-    if (fixture !== undefined) {
-      raw = fixture;
+    if (opts?.fixtureAction !== undefined) {
+      raw = opts.fixtureAction;
     } else {
       const prompt = await buildChatPrompt(engine, text, session);
       const spawn = await engine.spawnChatSkill(prompt, opts?.cliAdapter);
@@ -457,8 +472,11 @@ export async function routeChatTurn(
       raw = spawn.spawned ? await readSpawnedAction(engine.projectRoot, spawn.runId) : undefined;
     }
     if (raw !== undefined) {
-      dropped = parseRawAction(raw) === null;
-      action = sanitizeChatAction(raw, { phase: state.phase, utterance: text });
+      const parsed = parseRawAction(raw);
+      dropped = parsed === null;
+      const sanitized = sanitizeChatAction(raw, { phase: state.phase, utterance: text });
+      if (parsed && sanitized.type !== parsed.type) dropped = true;
+      action = sanitized;
     } else {
       action = { type: "next_verb" };
     }
@@ -495,19 +513,17 @@ export async function routeChatTurn(
     ],
   };
 
-  const idleEligible = !isSlashUtterance(text) && (action.type === "next_verb" || action.type === "search");
+  const idleEligible = !requestedRead && action.type === "next_verb" && kind !== "proposal";
   const paused = idleEligible && idleTurnsFromSession(nextSession) >= CHAT_IDLE_LIMIT;
 
   await saveChatSession(engine, nextSession);
   return {
     session: nextSession,
     action,
-    kind: kind === "dropped" ? "dropped" : kind,
-    output: paused
-      ? `Chat paused. Next: legion-cli ${nextVerbForPhase(state.phase)}`
-      : output,
+    kind,
+    output: paused ? [output, `Chat paused. Next: ${nextHint}`].filter((line) => line.length > 0).join("\n") : output,
     proposal,
-    nextHint: paused ? `legion-cli ${nextVerbForPhase(state.phase)}` : nextHint,
+    nextHint,
     paused,
     spawned,
     ...(local ? { local } : {}),
@@ -517,11 +533,15 @@ export async function routeChatTurn(
 export async function applyChatAction(
   engine: LegionEngine,
   action: ChatAction,
-  opts?: { confirmed?: boolean },
+  opts?: { confirmed?: boolean; utterance?: string },
 ): Promise<ChatApplyResult> {
   const state = await engine.getState();
   if (state.phase === "uninitialized") {
     refuse("chat is refused until init", HINT.init);
+  }
+  const gated = gateChatAction(action, { phase: state.phase, utterance: opts?.utterance });
+  if (gated.type !== action.type) {
+    return { applied: false, output: `Next: ${nextHintForAction(gated, state.phase)}` };
   }
   if (isChatProposalAction(action) && !opts?.confirmed) {
     return { applied: false, output: formatChatProposal(action) };

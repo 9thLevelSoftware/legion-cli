@@ -1,16 +1,31 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
   applyChatAction,
   createChatSession,
+  gateChatAction,
+  LegionEngine,
   routeChatTurn,
   sanitizeChatAction,
 } from "../dist/index.js";
-import { initProject, patchState, withEngine } from "./helpers.js";
+import { initProject, patchState, withEngine, withFakeAdapter } from "./helpers.js";
+
+const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
+const engineSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "engine.ts"), "utf8");
+
+async function waitUntil(predicate, timeoutMs, message) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(message);
+}
 
 test("where am I routes to status without spawning", async () => {
   await withEngine(async ({ engine }) => {
@@ -81,7 +96,31 @@ test("ship fixture is dropped and Next is printed", async () => {
   });
 });
 
-test("four idle turns pause", async () => {
+test("fabricated intent_answer in discuss phase is dropped", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await patchState(store, { phase: "discussing" });
+    const gated = gateChatAction(
+      { type: "intent_answer", answers: ["ok"] },
+      { phase: "discussing", utterance: "ok" },
+    );
+    assert.equal(gated.type, "next_verb");
+    const turn = await routeChatTurn(engine, createChatSession(), "ok", {
+      fixtureAction: { type: "intent_answer", answers: ["ok"] },
+    });
+    assert.equal(turn.action.type, "next_verb");
+    assert.equal(turn.kind, "dropped");
+    const applied = await applyChatAction(
+      engine,
+      { type: "intent_answer", answers: ["ok"] },
+      { confirmed: true, utterance: "ok" },
+    );
+    assert.equal(applied.applied, false);
+    assert.equal(existsSync(join(dir, ".legion-cli", "wiki", "product", "intent-answers.yaml")), false);
+  });
+});
+
+test("four idle turns pause after the read", async () => {
   await withEngine(async ({ engine }) => {
     await initProject(engine);
     let session = createChatSession();
@@ -95,7 +134,20 @@ test("four idle turns pause", async () => {
         assert.equal(turn.paused, true);
         assert.match(turn.output, /Chat paused/);
         assert.match(turn.output, /Next: legion-cli intent/);
+        assert.equal([...turn.output.matchAll(/Next:/g)].length, 1);
       }
+    }
+  });
+});
+
+test("auto-apply reads do not increment idle", async () => {
+  await withEngine(async ({ engine }) => {
+    await initProject(engine);
+    let session = createChatSession();
+    for (const line of ["hello 0", "hello 1", "hello 2", "/search office", "hello 3"]) {
+      const turn = await routeChatTurn(engine, session, line);
+      session = turn.session;
+      assert.equal(turn.paused, false, line);
     }
   });
 });
@@ -119,4 +171,44 @@ test("extra keys are stripped and fabricated intent_answer is dropped", () => {
     { phase: "initialized", utterance: "hello there" },
   );
   assert.equal(wrongPhase.type, "next_verb");
+});
+
+test("chat spawn wait is outside mutate", async () => {
+  const start = engineSrc.indexOf("async spawnChatSkill");
+  const end = engineSrc.indexOf("async recoverStaleInProgress", start);
+  const body = engineSrc.slice(start, end);
+  assert.match(body, /startSkillSpawn/);
+  assert.match(body, /waitStartedSpawn/);
+  assert.match(body, /finishStartedSpawn/);
+  assert.doesNotMatch(body, /optionalSkillSpawn/);
+  const waitAt = body.indexOf("waitStartedSpawn");
+  const firstLock = body.indexOf("#withLockOrRefuse");
+  const secondLock = body.indexOf("#withLockOrRefuse", firstLock + 1);
+  assert.ok(waitAt > firstLock && waitAt < secondLock, "waitStartedSpawn must sit between the two locks");
+
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ dir, engine }) => {
+      await initProject(engine);
+      const readyPath = join(dir, ".legion-cli", "cache", "chat-wait-ready");
+      const releasePath = join(dir, ".legion-cli", "cache", "chat-wait-release");
+      const held = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeHoldWait: { readyPath, releasePath },
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/action.json",
+            content: `${JSON.stringify({ type: "status" })}\n`,
+          },
+        ],
+      });
+      const spawnP = held.spawnChatSkill("Reply with a ChatAction JSON object.");
+      await waitUntil(() => existsSync(readyPath), 8_000, "chat spawn did not reach wait()");
+      const t0 = Date.now();
+      await engine.brief();
+      assert.ok(Date.now() - t0 < 5_000, "brief blocked while chat spawn wait() held the lock");
+      await writeFile(releasePath, "ok\n");
+      const result = await spawnP;
+      assert.equal(result.spawned, true);
+    });
+  });
 });
