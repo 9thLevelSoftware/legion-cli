@@ -179,6 +179,8 @@ test("task amend updates filesAllowed", async () => {
       dir,
       "--files-allowed",
       "src/in-out.ts",
+      "--expected-artifacts",
+      "src/in-out.ts",
     ]);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const engine = createLegionEngine(dir);
