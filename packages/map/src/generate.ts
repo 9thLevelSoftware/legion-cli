@@ -134,8 +134,8 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
         spawnLsp: options.spawnLsp,
         deadlineMs: options.lspDeadlineMs,
       });
-      if (lspExports?.complete) {
-        for (const [path, names] of lspExports.exports) exportsByPath.set(path, names);
+      if (lspExports) {
+        for (const [path, names] of lspExports) exportsByPath.set(path, names);
       } else {
         backend = "fallback";
       }
@@ -168,7 +168,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   }
 
   if (unchanged && existing) {
-    if (options.refresh) {
+    if (options.refresh || existingArch === undefined) {
       await writeTextFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(existing)));
     }
     return {

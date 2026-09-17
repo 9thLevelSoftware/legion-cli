@@ -18,11 +18,6 @@ export type DetectedLsp = {
   languages: ReadonlySet<string>;
 };
 
-export type LspCollectResult = {
-  exports: Map<string, string[]>;
-  complete: boolean;
-};
-
 const EXPORT_SYMBOL_KINDS = new Set([
   2, // Module
   3, // Namespace
@@ -418,10 +413,6 @@ function remaining(deadline: number): number {
   return deadline - Date.now();
 }
 
-function partialOrNull(exportsByPath: Map<string, string[]>): LspCollectResult | null {
-  return exportsByPath.size > 0 ? { exports: exportsByPath, complete: false } : null;
-}
-
 export async function collectLspExports(opts: {
   projectRoot: string;
   files: readonly WalkedFile[];
@@ -429,7 +420,7 @@ export async function collectLspExports(opts: {
   args: readonly string[];
   deadlineMs?: number;
   spawnLsp?: LspSpawnFn;
-}): Promise<LspCollectResult | null> {
+}): Promise<Map<string, string[]> | null> {
   const deadline = Date.now() + (opts.deadlineMs ?? LSP_BUDGET_MS);
   const files = opts.files.slice(0, MAX_LSP_FILES);
   let child: ChildProcess;
@@ -471,8 +462,8 @@ export async function collectLspExports(opts: {
     client.notify("initialized", {});
 
     for (const file of files) {
-      if (remaining(deadline) <= 0) return { exports: exportsByPath, complete: false };
-      if (client.dead) return partialOrNull(exportsByPath);
+      if (remaining(deadline) <= 0) return null;
+      if (client.dead) return null;
       const uri = pathToFileURL(file.absPath).href;
       client.notify("textDocument/didOpen", {
         textDocument: {
@@ -490,7 +481,7 @@ export async function collectLspExports(opts: {
         );
         exportsByPath.set(file.path, exportsFromDocumentSymbols(result));
       } catch {
-        return { exports: exportsByPath, complete: false };
+        return null;
       }
     }
 
@@ -502,9 +493,9 @@ export async function collectLspExports(opts: {
         // shutdown is best-effort once symbols are in
       }
     }
-    return { exports: exportsByPath, complete: true };
+    return exportsByPath;
   } catch {
-    return partialOrNull(exportsByPath);
+    return null;
   } finally {
     client.kill();
     await client.waitExit(1000);

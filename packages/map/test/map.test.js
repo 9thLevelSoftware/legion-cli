@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, symlink, writeFile } from "node:fs/promises";
+import { readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -110,6 +110,20 @@ test("--refresh preserves prose outside generated markers", async () => {
     const generated = after.slice(after.indexOf(GENERATED_START), after.indexOf(GENERATED_END));
     assert.equal(generated.includes("HUMAN_PROSE_TOKEN"), false);
     assert.equal(generated.includes("BEFORE_MARKER"), false);
+  });
+});
+
+test("unchanged hashes still recreate a missing ARCHITECTURE.md", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const first = await generateMap(dir);
+    await unlink(first.architecturePath);
+    const second = await generateMap(dir);
+    assert.equal(second.fingerprints.generatedAt, first.fingerprints.generatedAt);
+    assert.deepEqual(second.changed, []);
+    const body = await readFile(second.architecturePath, "utf8");
+    assert.match(body, /backend: fallback/);
+    assert.match(body, /src\/auth\.ts/);
   });
 });
 
