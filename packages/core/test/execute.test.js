@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -234,10 +234,7 @@ test("committed git mv of a tracked extra restores the source and removes the de
         const restored = (await readFile(join(dir, "src", "secret.ts"), "utf8")).replaceAll("\r\n", "\n");
         assert.equal(restored, "export const original = true;\n");
         assert.equal(existsSync(join(dir, "src", "leaked.ts")), false);
-        assert.ok(result.tasks[0].extrasReverted.includes("src/secret.ts"));
-        assert.ok(result.tasks[0].extrasReverted.includes("src/leaked.ts"));
-        assert.notEqual(gitHead(dir), pre);
-        assert.equal(git(dir, ["log", "-1", "--format=%s"]), "fake adapter commit");
+        assert.equal(gitHead(dir), pre);
         assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
       },
       {
@@ -261,7 +258,6 @@ test("committed git mv of a tracked extra onto filesAllowed is still a deletion 
         assert.notEqual(result.status, "done");
         const restored = (await readFile(join(dir, "src", "secret.ts"), "utf8")).replaceAll("\r\n", "\n");
         assert.equal(restored, "export const original = true;\n");
-        assert.ok(result.tasks[0].extrasReverted.includes("src/secret.ts"));
         assert.equal(
           result.tasks[0].extrasReverted.includes("src/main.ts"),
           false,
@@ -289,13 +285,11 @@ test("committed extra vs preSpawnRef is removed without reset --hard", async () 
         assert.equal(existsSync(join(dir, "src", "secret.ts")), false);
         assert.ok(result.tasks[0].extrasReverted.includes("src/secret.ts"));
         const head = gitHead(dir);
-        assert.notEqual(head, pre);
+        assert.equal(head, pre, "jail git commit cannot move operator HEAD");
         const resume = await readResume(dir, result.tasks[0].runId);
         assert.equal(resume.preSpawnRef, pre);
         assert.equal(head, git(dir, ["rev-parse", "HEAD"]));
         assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
-        const log = git(dir, ["log", "-1", "--format=%s"]);
-        assert.equal(log, "fake adapter commit");
       },
       {
         fakeArtifacts: [{ path: "src/secret.ts", content: "export const secret = true;\n", gitAdd: true }],
@@ -318,9 +312,11 @@ test(".git hooks incident blocks and does not rm .git", async () => {
         assert.equal(existsSync(join(dir, ".git")), true);
         assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
         assert.equal(existsSync(join(dir, ".git", "config")), true);
-        assert.equal(existsSync(join(dir, ".git", "hooks", "pre-commit")), true);
-        const hook = (await readFile(join(dir, ".git", "hooks", "pre-commit"), "utf8")).replaceAll("\r\n", "\n");
-        assert.match(hook, /pwned/);
+        const hookPath = join(dir, ".git", "hooks", "pre-commit");
+        if (existsSync(hookPath)) {
+          const hook = (await readFile(hookPath, "utf8")).replaceAll("\r\n", "\n");
+          assert.doesNotMatch(hook, /pwned/);
+        }
         assert.equal(gitHead(dir), headBefore);
         assert.equal(git(dir, ["rev-parse", "--is-inside-work-tree"]), "true");
         assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
@@ -370,10 +366,10 @@ test("in-contract commit still runs verificationCommands and can mark done", asy
         assert.equal(result.phase, "executing");
         assert.equal((await store.readTask("TSK-0001")).data.status, "done");
         assert.equal(existsSync(join(dir, "src", "main.ts")), true);
-        assert.notEqual(gitHead(dir), pre);
-        assert.ok(result.warnings.includes(HEAD_MOVED_WARNING));
+        assert.equal(gitHead(dir), pre, "jail GIT_DIR cannot move operator HEAD");
+        assert.equal(result.warnings.includes(HEAD_MOVED_WARNING), false);
         assert.equal(result.tasks[0].verificationPass, true);
-        assert.equal(result.tasks[0].headMoved, true);
+        assert.equal(result.tasks[0].headMoved, false);
         assert.equal(result.tasks[0].incident, false, "HEAD movement alone is not a .git incident");
         const resume = await readResume(dir, result.tasks[0].runId);
         assert.equal(resume.skillId, "execute");
@@ -961,6 +957,123 @@ test("gitignore extras under dist/ revert new files, not pre-existing dist/keep"
       },
       {
         fakeArtifacts: [{ path: "dist/x", content: "leaked\n" }],
+      },
+    );
+  });
+});
+
+test("requireHardened copy jail without allowNoSandbox refuses before in_progress", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedExecute(store);
+      const config = await store.readConfig();
+      await store.writeConfig({
+        ...config,
+        sandbox: { requireHardened: true, allowCopyJail: false, backend: "copy", skills: ["execute"] },
+      });
+      await assert.rejects(
+        () => engine.execute("auto"),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /hardened sandbox required/);
+          assert.match(err.nextHint, /--allow-no-sandbox/);
+          return true;
+        },
+      );
+      assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
+    });
+  });
+});
+
+test("allowNoSandbox and allowCopyJail and requireHardened false all admit copy jail", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store);
+      initGitRepo(dir);
+      const config = await store.readConfig();
+      await store.writeConfig({
+        ...config,
+        sandbox: { requireHardened: true, allowCopyJail: false, backend: "copy", skills: ["execute"] },
+      });
+      const viaFlag = await engine.execute("auto", { allowNoSandbox: true });
+      assert.equal(viaFlag.status, "done");
+
+      await store.writeTask(
+        makeTask({
+          id: "TSK-0002",
+          status: "ready",
+          contract: {
+            filesAllowed: ["src/board.ts"],
+            expectedArtifacts: ["src/board.ts"],
+            verificationCommands: [passingVerificationCommand()],
+          },
+        }),
+        "board\n",
+      );
+      await store.writeConfig({
+        ...(await store.readConfig()),
+        sandbox: { requireHardened: true, allowCopyJail: true, backend: "copy", skills: ["execute"] },
+      });
+      const viaCopy = await engine.execute("TSK-0002");
+      assert.equal(viaCopy.status, "done");
+
+      await store.writeTask(
+        makeTask({
+          id: "TSK-0003",
+          status: "ready",
+          contract: {
+            filesAllowed: ["src/third.ts"],
+            expectedArtifacts: ["src/third.ts"],
+            verificationCommands: [passingVerificationCommand()],
+          },
+        }),
+        "third\n",
+      );
+      await store.writeConfig({
+        ...(await store.readConfig()),
+        sandbox: { requireHardened: false, allowCopyJail: false, backend: "copy", skills: ["execute"] },
+      });
+      const viaOff = await engine.execute("TSK-0003");
+      assert.equal(viaOff.status, "done");
+    });
+  });
+});
+
+test("execute jail cwd exists during spawn and extra writes are dropped", async () => {
+  await withFakeAdapter(async () => {
+    let jailSeen = false;
+    let projectDir;
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        projectDir = dir;
+        await initProject(engine);
+        await seedExecute(store);
+        initGitRepo(dir);
+        const specBefore = await readFile(join(dir, ".legion-cli", "specs", "spec-checkin", "SPEC.md"), "utf8");
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.equal(jailSeen, true);
+        assert.equal(existsSync(join(dir, "src", "secret.ts")), false);
+        assert.ok(result.tasks[0].extrasReverted.includes("src/secret.ts"));
+        assert.equal(
+          await readFile(join(dir, ".legion-cli", "specs", "spec-checkin", "SPEC.md"), "utf8"),
+          specBefore,
+        );
+        const events = await readAuditEvents(dir);
+        assert.ok(events.some((event) => event.type === "sandbox_start" || event.type === "sandbox_degraded"));
+        assert.ok(events.some((event) => event.type === "sandbox_copyout"));
+      },
+      {
+        fakeArtifacts: [
+          { path: "src/secret.ts", content: "steal\n" },
+          { path: ".legion-cli/specs/spec-checkin/SPEC.md", content: "pwned\n" },
+        ],
+        fakeOnWait: async () => {
+          const names = await readdir(join(projectDir, ".legion-cli", "sandbox"));
+          jailSeen = names.some((name) => name.startsWith("execute-"));
+        },
       },
     );
   });

@@ -121,6 +121,7 @@ export type ExecuteOptions = {
   untilBlocked?: boolean;
   fix?: boolean;
   adapter?: AdapterId;
+  allowNoSandbox?: boolean;
 };
 
 export type ExecuteTaskResult = {

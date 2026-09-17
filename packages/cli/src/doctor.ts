@@ -15,6 +15,7 @@ import {
   listResolvedSkillCatalog,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
   readAuditEvents,
   summarizeAuditMetrics,
@@ -436,6 +437,16 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     pushArgsTrustWarnings(config, warnings);
   }
 
+  const detectedSandbox = detectSandbox();
+  checks.push({
+    ok: true,
+    label: "sandbox",
+    detail: `${detectedSandbox.backend}, hardened=${detectedSandbox.hardened}`,
+  });
+  if (config?.sandbox.requireHardened && !detectedSandbox.hardened && !config.sandbox.allowCopyJail) {
+    warnings.push("sandbox is not hardened; guarded execute needs --allow-no-sandbox or sandbox.allowCopyJail");
+  }
+
   const skillsDir = findSkillsDir();
   const catalogResult = await listResolvedSkillCatalog({
     projectRoot: opts.project,
@@ -564,6 +575,10 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       routed,
       matrix: adapterMatrix,
     },
+    sandbox: {
+      backend: detectedSandbox.backend,
+      hardened: detectedSandbox.hardened,
+    },
     secrets: secrets.map((hit) => ({ name: hit.name, file: hit.file })),
     overlays: overlayLines.map((line) => line.trim()),
     ...(metrics
@@ -593,6 +608,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     "PATH",
     ...pathListing.flatMap((group) => formatPathGroup(group.name, group.paths)),
     "",
+    `Sandbox     ${detectedSandbox.backend} hardened=${detectedSandbox.hardened}`,
     `Playwright  ${playwrightDetail}`,
     `Lock        ${lockPresent ? "present" : "absent"}`,
     "schemaVersions",

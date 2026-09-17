@@ -4,11 +4,12 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createLegionEngine, regressionTestPath } from "@9thlevelsoftware/legion-cli-core";
-import { normalize, runCli, withTempDir, withUnspawnableGrok } from "./helpers.js";
+import { allowCopyJail, normalize, runCli, withTempDir, withUnspawnableGrok } from "./helpers.js";
 
 async function seedExecutingDone(dir) {
   const engine = createLegionEngine(dir);
   await engine.init({ name: "Checkin", adapter: "fake" });
+  await allowCopyJail(engine.store);
   await engine.store.writeSpec(
     {
       schemaVersion: "legion-cli-spec/v1",

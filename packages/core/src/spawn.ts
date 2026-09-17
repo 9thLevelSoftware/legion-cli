@@ -28,6 +28,10 @@ import {
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
 import { isPidAlive, type LegionReader } from "@9thlevelsoftware/legion-cli-persist";
 import {
+  materializeJail,
+  type SandboxHandle,
+} from "@9thlevelsoftware/legion-cli-sandbox";
+import {
   ResumeFileSchema,
   SCHEMA_VERSION,
   type AdapterId,
@@ -37,7 +41,7 @@ import {
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
-import { skillContract } from "./contracts.js";
+import { isAllowedPath, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
 import {
   recordPreSpawnRef,
@@ -197,6 +201,8 @@ export type StartedSkillSpawn =
       resolution: AdapterResolution;
       binary: string;
       argvSummary: string;
+      sandbox?: SandboxHandle;
+      readSet?: readonly string[];
     };
 
 export type WaitedSkillSpawn = {
@@ -204,6 +210,68 @@ export type WaitedSkillSpawn = {
   timedOut: boolean;
   durationMs: number;
 };
+
+const CONFIG_READ_SET = [
+  "package.json",
+  "pnpm-lock.yaml",
+  "package-lock.json",
+  "tsconfig.json",
+  "jsconfig.json",
+] as const;
+
+function skillUsesSandbox(config: LegionConfig, skillId: SkillId): boolean {
+  return config.sandbox.skills.includes(skillId);
+}
+
+function sandboxReadSet(opts: {
+  projectRoot: string;
+  runId: string;
+  specId?: string;
+  taskId?: string;
+}): string[] {
+  const out = [`.legion-cli/cache/skills/${opts.runId}`, `.legion-cli/cache/runs/${opts.runId}`];
+  if (opts.specId) out.push(`.legion-cli/specs/${opts.specId}`);
+  if (opts.taskId) out.push(`.legion-cli/tasks/${opts.taskId}.md`);
+  for (const name of CONFIG_READ_SET) {
+    if (existsSync(join(opts.projectRoot, name))) out.push(name);
+  }
+  return out;
+}
+
+function sandboxAllowedWrites(runId: string, contract?: FileContract): string[] {
+  const out = [`.legion-cli/cache/runs/${runId}`];
+  if (contract) out.push(...contract.filesAllowed, ...contract.expectedArtifacts);
+  return out;
+}
+
+function envRecord(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
+
+function spawnableAdapterBinary(binary: string): string | undefined {
+  if (!binary || binary.startsWith("(")) return undefined;
+  return binary;
+}
+
+function matchesPrefix(posix: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((entry) => posix === entry || posix.startsWith(`${entry}/`));
+}
+
+function jailContractExtras(
+  dropped: readonly string[],
+  allowedRoots: readonly string[],
+  readSet: readonly string[],
+): string[] {
+  return dropped.filter((rel) => !isAllowedPath(rel, allowedRoots) && !matchesPrefix(rel, readSet));
+}
+
+function jailGitIncident(dropped: readonly string[]): boolean {
+  return dropped.some((rel) => rel === ".git" || rel.startsWith(".git/"));
+}
 
 function formatLevel3(level3: { scripts: string[]; references: string[]; assets: string[] }): string[] {
   const files = [...level3.scripts, ...level3.references, ...level3.assets];
@@ -428,16 +496,41 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   };
   await writeResume(null);
 
-  const handle = await adapter.spawn({
+  const readSet = sandboxReadSet({
+    projectRoot: opts.projectRoot,
     runId,
-    skillId: opts.skillId,
-    promptPath,
-    pointerPrompt: buildPointerPrompt(runId, opts.skillId),
-    cwd: opts.projectRoot,
-    timeoutMs: DEFAULT_TIMEOUT_MS,
-    env: filterSpawnEnv(process.env, adapter.id, adapter.binary),
-    expectedArtifacts: opts.fakeArtifacts,
+    specId: opts.specId,
+    taskId: opts.taskId,
   });
+  let sandbox: SandboxHandle | undefined;
+  if (skillUsesSandbox(opts.config, opts.skillId)) {
+    sandbox = await materializeJail({
+      projectRoot: opts.projectRoot,
+      runId,
+      allowedWrites: sandboxAllowedWrites(runId, opts.fileContract),
+      readSet,
+      adapterBinary: spawnableAdapterBinary(tmpl.binary),
+    });
+  }
+
+  let handle: AgentHandle;
+  try {
+    const spawnOpts = sandbox?.spawnOpts();
+    handle = await adapter.spawn({
+      runId,
+      skillId: opts.skillId,
+      promptPath,
+      pointerPrompt: buildPointerPrompt(runId, opts.skillId),
+      cwd: spawnOpts?.cwd ?? opts.projectRoot,
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      env: spawnOpts ? envRecord(spawnOpts.env) : filterSpawnEnv(process.env, adapter.id, adapter.binary),
+      expectedArtifacts: opts.fakeArtifacts,
+      ...(spawnOpts?.wrapper ? { wrapper: spawnOpts.wrapper } : {}),
+    });
+  } catch (err) {
+    await sandbox?.destroy().catch(() => undefined);
+    throw err;
+  }
   await writeResume(handle.pid);
   await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, runId);
   return {
@@ -458,6 +551,8 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     resolution,
     binary: tmpl.binary,
     argvSummary,
+    sandbox,
+    readSet,
   };
 }
 
@@ -477,9 +572,45 @@ export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spa
 export async function finishStartedSpawn(
   started: Extract<StartedSkillSpawn, { spawned: true }>,
 ): Promise<RevertResult> {
+  let copied: string[] = [];
+  let dropped: string[] = [];
   try {
-    return await revertExtras(started.revertCtx);
+    if (started.sandbox) {
+      const resumePath = join(
+        started.revertCtx.projectRoot,
+        ".legion-cli",
+        "cache",
+        "runs",
+        started.runId,
+        "resume.json",
+      );
+      let resumeRaw: string | undefined;
+      try {
+        resumeRaw = await readFile(resumePath, "utf8");
+      } catch {
+        resumeRaw = undefined;
+      }
+      const out = await started.sandbox.copyOut();
+      copied = out.copied;
+      dropped = out.dropped;
+      if (resumeRaw !== undefined) {
+        await writeFile(resumePath, resumeRaw, "utf8");
+      }
+    }
+    const revert = await revertExtras(started.revertCtx);
+    const jailExtras = started.readSet
+      ? jailContractExtras(dropped, started.revertCtx.allowedRoots, started.readSet)
+      : [];
+    const extrasReverted = [...new Set([...jailExtras, ...revert.extrasReverted])];
+    return {
+      ...revert,
+      extrasReverted,
+      incident: revert.incident || jailGitIncident(dropped),
+      sandboxCopied: copied,
+      sandboxDropped: dropped,
+    };
   } finally {
+    await started.sandbox?.destroy().catch(() => undefined);
     await clearLiveSpawnMarker(started.revertCtx.projectRoot, started.runId);
   }
 }

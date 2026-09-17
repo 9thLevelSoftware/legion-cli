@@ -33,6 +33,8 @@ export function sanitizeDoctor(text) {
     .replace(/^(ok  |FAIL)  git \(.+\)$/m, "$1  git (<version>)")
     .replace(/^  legion-cli\n(?:    .+\n)+/m, "  legion-cli\n    <paths>\n")
     .replace(/^  legion\n(?:    .+\n)+/m, "  legion\n    <paths>\n")
+    .replace(/^(ok  |FAIL)  sandbox \(.+\)$/m, "$1  sandbox (<backend>)")
+    .replace(/^Sandbox     .+$/m, "Sandbox     <backend>")
     .replace(/^Playwright  .+$/m, "Playwright  <playwright>")
     .replace(/^  claude       .+$/m, "  claude       <detect>")
     .replace(/^  grok         .+$/m, "  grok         <detect>")
@@ -61,6 +63,14 @@ export function withUnspawnableGrok(config) {
       grok: { args: ["--model", "grok-4"] },
     },
   };
+}
+
+export async function allowCopyJail(store) {
+  const config = await store.readConfig();
+  await store.writeConfig({
+    ...config,
+    sandbox: { ...config.sandbox, allowCopyJail: true },
+  });
 }
 
 export function withNamedAdapter(config, name, id) {

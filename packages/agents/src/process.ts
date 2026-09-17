@@ -44,6 +44,14 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
     shell: false,
   } as const;
 
+  if (job.wrapper) {
+    return spawn(job.wrapper.bin, [...job.wrapper.argvPrefix, resolved, ...args], {
+      ...common,
+      stdio: ["ignore", stdout, stderr],
+      detached: process.platform !== "win32",
+    });
+  }
+
   if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
     const unwrapped = unwrapCmdShim(resolved);
     if (unwrapped) {

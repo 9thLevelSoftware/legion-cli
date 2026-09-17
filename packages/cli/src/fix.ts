@@ -1,16 +1,27 @@
 import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
-import { startingTaskLine } from "./execute.js";
+import { confirmAllowNoSandbox, startingTaskLine } from "./execute.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
+import { closePrompt, slurpStdin } from "./prompt.js";
 
-export async function runFix(opts: CliOpts, bug: string, flags: { adapter?: string } = {}): Promise<number> {
+export async function runFix(
+  opts: CliOpts,
+  bug: string,
+  flags: { adapter?: string; allowNoSandbox?: boolean } = {},
+): Promise<number> {
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
+  try {
+    await slurpStdin();
+    if (flags.allowNoSandbox) {
+      await confirmAllowNoSandbox("fix");
+    }
   const task = await engine.fix(bug);
   const executed = await engine.execute(task.id, {
     fix: true,
+    allowNoSandbox: Boolean(flags.allowNoSandbox),
     ...(adapter ? { adapter } : {}),
   });
   const state = await engine.getState();
@@ -45,4 +56,7 @@ export async function runFix(opts: CliOpts, bug: string, flags: { adapter?: stri
   writeOut(`Next: ${next.run}`);
   writeOut(`Dashboard: ${viewer}`);
   return green ? 0 : 1;
+  } finally {
+    closePrompt();
+  }
 }

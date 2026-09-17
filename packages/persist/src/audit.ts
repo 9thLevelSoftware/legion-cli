@@ -53,7 +53,8 @@ async function appendAuditDay(projectRoot: string, event: AuditEvent): Promise<v
 export function formatAuditDayLine(event: AuditEvent): string {
   const task = event.taskId ? ` task=${event.taskId}` : "";
   const adapter = typeof event.data.adapterId === "string" ? ` adapter=${event.data.adapterId}` : "";
-  return `- ${event.ts} ${event.type} phase=${event.phase}${task} actor=${event.actor}${adapter}\n`;
+  const sandbox = typeof event.data.backend === "string" ? ` sandbox=${event.data.backend}` : "";
+  return `- ${event.ts} ${event.type} phase=${event.phase}${task} actor=${event.actor}${adapter}${sandbox}\n`;
 }
 
 export async function readAuditEvents(projectRoot: string): Promise<AuditEvent[]> {

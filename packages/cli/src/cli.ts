@@ -321,14 +321,16 @@ export function createProgram(): Command {
     .option("--until-blocked", "loop until no ready task remains or one blocks")
     .option("--fix", "fix-run prompt (keep reproducing tests)")
     .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--allow-no-sandbox", "TTY gate to run execute on a copy jail")
     .allowExcessArguments(false)
     .action(async (id: string | undefined, opts, cmd: Command) => {
-      const flags = opts as { untilBlocked?: boolean; fix?: boolean; adapter?: string };
+      const flags = opts as { untilBlocked?: boolean; fix?: boolean; adapter?: string; allowNoSandbox?: boolean };
       const code = await runExecute(resolveOpts(cmd), {
         id,
         untilBlocked: Boolean(flags.untilBlocked),
         fix: Boolean(flags.fix),
         adapter: flags.adapter,
+        allowNoSandbox: Boolean(flags.allowNoSandbox),
       });
       process.exitCode = code;
     });
@@ -376,9 +378,10 @@ export function createProgram(): Command {
   addGlobalOptions(program.command("fix").description("Test first (must stay RED), then fix"))
     .argument("<bug...>", "bug to reproduce then fix")
     .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--allow-no-sandbox", "TTY gate to run execute on a copy jail")
     .allowExcessArguments(false)
     .action(async (bug: string[], opts, cmd: Command) => {
-      const flags = opts as { adapter?: string };
+      const flags = opts as { adapter?: string; allowNoSandbox?: boolean };
       const code = await runFix(resolveOpts(cmd), bug.join(" "), flags);
       process.exitCode = code;
     });

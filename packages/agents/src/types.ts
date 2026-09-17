@@ -57,6 +57,8 @@ export interface AgentJob {
   cwd: string;
   timeoutMs: number;
   env: Record<string, string>;
+  /** Hardened sandbox wrapper (bwrap/seatbelt). Copy jail omits this. */
+  wrapper?: { bin: string; argvPrefix: string[] };
   /** Fixture paths the fake adapter writes. Real adapters ignore this. */
   expectedArtifacts?: Array<string | FakeArtifact>;
 }

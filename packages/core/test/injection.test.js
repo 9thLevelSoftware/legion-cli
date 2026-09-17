@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -68,7 +68,10 @@ test("golden injection: post-spawn FileContract still incidents on .git/hooks", 
         assert.equal(result.tasks[0].incident, true);
         assert.equal(existsSync(join(dir, ".git")), true);
         assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
-        assert.equal(existsSync(join(dir, ".git", "hooks", "pre-commit")), true);
+        const hookPath = join(dir, ".git", "hooks", "pre-commit");
+        if (existsSync(hookPath)) {
+          assert.doesNotMatch(await readFile(hookPath, "utf8"), /pwned/);
+        }
       },
       {
         fakeArtifacts: [{ path: ".git/hooks/pre-commit", content: "#!/bin/sh\necho pwned\n" }],

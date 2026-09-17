@@ -18,7 +18,7 @@ Write product code for one ready task. Execute is required: Legion CLI refuses i
 
 Level 3 files only as named; do not load other skills.
 
-This is after-the-fact policy, not OS isolation. The engine reverts extras vs FileContract after wait(). Do not claim a sandbox.
+Execute runs in an OS jail (cwd is `.legion-cli/sandbox/<runId>`). Copy-out returns only FileContract writes; the engine still reverts extras vs FileContract after wait(). Defense in depth: jail during spawn, revert after. `--allow-no-sandbox` is a TTY gate when only the copy jail is available.
 
 ## Contract
 
