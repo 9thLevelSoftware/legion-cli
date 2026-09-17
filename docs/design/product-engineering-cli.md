@@ -835,7 +835,7 @@ At most two questions per turn. Answers are stored in `.legion-cli/wiki/product/
 
 #### 6.2 Discuss
 
-`legion-cli discuss` lists proposed decisions (from spawn or from a template: platform, out-of-scope restatement, data stored locally vs not). Human Y/n each, max two on screen. Writes `decisions/NNNN-*.md` with `status: accepted|rejected`.
+`legion-cli discuss` lists proposed decisions (from spawn or from a template: platform, out-of-scope restatement, data stored locally vs not). Human Y/n each, max two on screen. `--yes` cannot skip product decisions (Next: `legion-cli discuss`). Writes `decisions/NNNN-*.md` with `status: accepted|rejected`.
 
 #### 6.3 Spec and wireframes
 
@@ -1114,7 +1114,7 @@ sequenceDiagram
 
 Progressive disclosure: bare `legion-cli` is status + the one next command. Full help: `legion-cli help --all`. `--json` for scripts.
 
-Global flags: `--project <dir>`, `--json`, `--yes` (non-gate confirms only), `--verbose`.
+Global flags: `--project <dir>`, `--json`, `--yes` (ignored by intent confirm, ship, and discuss), `--verbose`.
 
 ### v0 commands (lifecycle core + operations)
 

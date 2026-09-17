@@ -13,6 +13,10 @@ function yaml(text) {
   return IntentAnswersFileSchema.parse(parseYamlDocument(text));
 }
 
+function acceptDiscuss(dir) {
+  return runCli(["discuss", "--project", dir], { input: "Y\nY\nY\n" });
+}
+
 test("intent --done writes IntentAnswersFile and requires confirm", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
@@ -54,7 +58,7 @@ test("discuss + spec templates freeze without a model", async () => {
     });
     assert.equal(intent.status, 0, intent.stderr);
 
-    const discuss = runCli(["discuss", "--project", dir, "--yes"]);
+    const discuss = acceptDiscuss(dir);
     assert.equal(discuss.status, 0, `${discuss.stdout}\n${discuss.stderr}`);
 
     const spec = runCli(["spec", "--project", dir]);
@@ -101,13 +105,40 @@ test("spec --skip-wireframes does not write INDEX.html", async () => {
         "Y",
       ].join("\n") + "\n",
     });
-    runCli(["discuss", "--project", dir, "--yes"]);
+    const discuss = acceptDiscuss(dir);
+    assert.equal(discuss.status, 0, `${discuss.stdout}\n${discuss.stderr}`);
     const spec = runCli(["spec", "--project", dir, "--skip-wireframes"]);
     assert.equal(spec.status, 0, spec.stderr);
     assert.equal(
       existsSync(join(dir, ".legion-cli", "specs", "spec-checkin", "wireframes", "INDEX.html")),
       false,
     );
+  });
+});
+
+test("discuss --yes cannot skip product decisions", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const intent = runCli(["intent", "--project", dir, "--done"], {
+      input: [
+        "Teammates who keep missing who's in the office.",
+        "They ping five chat apps every morning.",
+        "People can tap in or out on their phone in under five seconds.",
+        "Do not change auth. We will not build payroll, badges, or calendar sync.",
+        "Y",
+      ].join("\n") + "\n",
+    });
+    assert.equal(intent.status, 0, intent.stderr);
+
+    const discuss = runCli(["discuss", "--project", dir, "--yes"]);
+    assert.equal(discuss.status, 1, `${discuss.stdout}\n${discuss.stderr}`);
+    assert.match(normalize(discuss.stderr), /cannot skip product decisions/);
+    assert.match(normalize(discuss.stderr), /Next: legion-cli discuss/);
+
+    const discussMd = await readFile(join(dir, ".legion-cli", "discuss", "DISCUSS.md"), "utf8");
+    assert.match(discussMd, /status: proposed/);
+    assert.doesNotMatch(discussMd, /status: accepted/);
+    assert.doesNotMatch(discussMd, /status: rejected/);
   });
 });
 

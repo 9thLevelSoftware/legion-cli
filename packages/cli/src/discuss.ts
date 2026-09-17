@@ -8,6 +8,9 @@ export async function runDiscuss(opts: CliOpts): Promise<number> {
   try {
     await slurpStdin();
     let proposed = await engine.startDiscuss();
+    if (opts.yes) {
+      refuse("discuss --yes cannot skip product decisions", HINT.discuss);
+    }
     if (opts.json && proposed.length === 0) {
       writeJson({ ok: true, remaining: [], next: "legion-cli spec" });
       return 0;
@@ -15,10 +18,6 @@ export async function runDiscuss(opts: CliOpts): Promise<number> {
 
     while (proposed.length > 0) {
       const batch = proposed.slice(0, 2);
-      if (opts.yes) {
-        proposed = await engine.discuss(batch.map((item) => ({ id: item.id, status: "accepted" })));
-        continue;
-      }
       const decisions: Array<{ id: string; status: "accepted" | "rejected" }> = [];
       for (const item of batch) {
         writeOut(`Decision ${item.id}: ${item.statement} Accept?  [Y/n]`);

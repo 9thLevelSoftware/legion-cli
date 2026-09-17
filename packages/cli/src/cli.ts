@@ -53,7 +53,7 @@ function addGlobalOptions(cmd: Command): Command {
   return cmd
     .option("--project <dir>", "project directory")
     .option("--json", "machine-readable output")
-    .option("--yes", "non-gate confirms only")
+    .option("--yes", "ignored by intent confirm, ship, and discuss")
     .option("--verbose", "verbose logging");
 }
 
