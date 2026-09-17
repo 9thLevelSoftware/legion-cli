@@ -69,6 +69,11 @@ export const FROZEN_ARGV_TABLE = {
     argv: KD7_EXTRA_ARGV.minimax,
     spawnable: true,
   },
+  http: {
+    binary: "(http)",
+    argv: ["POST", "{{pointer}}"],
+    spawnable: true,
+  },
 } as const satisfies Record<
   AgentAdapterId,
   { binary: string; argv: readonly string[] | null; spawnable: boolean }
@@ -183,5 +188,10 @@ export function templateArgv(
         argv: extraArgsOrDefault(id, extra?.args ?? [], binary),
       };
     }
+    case "http":
+      return {
+        binary: FROZEN_ARGV_TABLE.http.binary,
+        argv: [...FROZEN_ARGV_TABLE.http.argv],
+      };
   }
 }

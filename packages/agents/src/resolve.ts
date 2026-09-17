@@ -11,6 +11,8 @@ import {
   type AdapterResolution,
   type AgentAdapter,
   type AgentAdapterId,
+  type AgentHandle,
+  type AgentJob,
   type DetectResult,
   type SkillId,
 } from "./types.js";
@@ -59,8 +61,22 @@ export function createAdapter(id: AgentAdapterId, options: AdapterCreateOptions 
       return new ExtraAdapter("mimo", options.mimo);
     case "minimax":
       return new ExtraAdapter("minimax", options.minimax);
+    case "http":
+      return HTTP_ADAPTER_PLACEHOLDER;
   }
 }
+
+/** Compile-surface placeholder until the http package wires AgentAdapter.spawn. */
+const HTTP_ADAPTER_PLACEHOLDER: AgentAdapter = {
+  id: "http",
+  binary: "(http)",
+  async detect(): Promise<DetectResult> {
+    return { ok: false, reason: "adapter.http is not configured" };
+  },
+  async spawn(_job: AgentJob): Promise<AgentHandle> {
+    throw new AdapterConfigError("adapter.http is not configured");
+  },
+};
 
 export function resolveAdapter(
   config: Pick<LegionConfig, "adapter">,

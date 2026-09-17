@@ -77,7 +77,8 @@
                 "openai",
                 "codex",
                 "mimo",
-                "minimax"
+                "minimax",
+                "http"
               ]
             }
           },
@@ -294,7 +295,10 @@
               "execute",
               "verify",
               "review",
-              "qa"
+              "qa",
+              "map",
+              "wireframe",
+              "chat"
             ]
           },
           "name": {
@@ -313,6 +317,10 @@
           "description"
         ]
       }
+    },
+    "mapRootHash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
     },
     "characterCount": {
       "type": "integer",

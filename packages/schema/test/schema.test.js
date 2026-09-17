@@ -7,10 +7,15 @@ import Ajv2020 from "ajv/dist/2020.js";
 import { parse as parseYaml } from "yaml";
 
 import {
+  ADAPTER_IDS,
+  ChatActionSchema,
+  ChatProposalActionSchema,
+  ChatReadActionSchema,
   computeQaPass,
   DesignSystemPackageSchema,
   BrownfieldRunSchema,
   FileContractSchema,
+  FingerprintFileSchema,
   JSON_SCHEMA_FILES,
   LegionConfigSchema,
   legionJsonSchemas,
@@ -20,9 +25,12 @@ import {
   QAScoreSchema,
   ResumeFileSchema,
   SCHEMA_VERSION,
+  ServeFileSchema,
   SessionBriefSchema,
   SkillCatalogSchema,
   SkillContractSchema,
+  SkillIdSchema,
+  SkillOverlayPinSchema,
   TopicsFileSchema,
   SpecSchema,
   StateFileSchema,
@@ -133,6 +141,12 @@ test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.designSystem, "legion-cli-design-system/v1");
   assert.equal(SCHEMA_VERSION.designActive, "legion-cli-design-active/v1");
   assert.equal(SCHEMA_VERSION.packet, "legion-cli-packet/v1");
+  assert.equal(SCHEMA_VERSION.map, "legion-cli-map/v1");
+  assert.equal(SCHEMA_VERSION.fingerprint, "legion-cli-fingerprint/v1");
+  assert.equal(SCHEMA_VERSION.skillOverlay, "legion-cli-skill-overlay/v1");
+  assert.equal(SCHEMA_VERSION.chatSession, "legion-cli-chat/v1");
+  assert.equal(SCHEMA_VERSION.serve, "legion-cli-serve/v1");
+  assert.equal("sandbox" in SCHEMA_VERSION, false);
 });
 
 test("DesignSystemPackage is legion-cli-design-system/v1", () => {
@@ -402,6 +416,13 @@ test("LegionConfig requires adapter.default and defaults ingest.autoCommit", () 
   assert.equal(parsed.qa.passScore, 85);
   assert.equal(parsed.dashboard.bind, "127.0.0.1");
   assert.equal(parsed.flags.mcpApps, false);
+  assert.equal(parsed.adapter.http, undefined);
+  assert.equal(parsed.sandbox.requireHardened, true);
+  assert.equal(parsed.sandbox.allowCopyJail, false);
+  assert.equal(parsed.sandbox.backend, "auto");
+  assert.deepEqual(parsed.sandbox.skills, ["execute"]);
+  assert.deepEqual(parsed.skills.trustKeys, []);
+  assert.deepEqual(parsed.map, {});
 
   assert.equal(
     LegionConfigSchema.safeParse({
@@ -539,7 +560,7 @@ test("adapter routing: generic-if-routed, strict HTTP keys, named keys, optional
     "grok",
   );
 
-  for (const key of ["claude", "generic", "fake", "grok", "openai", "codex", "mimo", "minimax"]) {
+  for (const key of ["claude", "generic", "fake", "grok", "openai", "codex", "mimo", "minimax", "http"]) {
     assert.equal(
       LegionConfigSchema.safeParse({
         ...configBase,
@@ -645,6 +666,7 @@ test("adapter routing: generic-if-routed, strict HTTP keys, named keys, optional
     "grok",
   );
   assert.equal(SessionBriefSchema.parse(brief).skills, undefined);
+  assert.equal(SessionBriefSchema.parse(brief).mapRootHash, undefined);
   assert.equal(
     SessionBriefSchema.parse({
       ...brief,
@@ -658,6 +680,17 @@ test("adapter routing: generic-if-routed, strict HTTP keys, named keys, optional
       ],
     }).skills[0].skillId,
     "execute",
+  );
+  assert.equal(
+    SessionBriefSchema.parse({
+      ...brief,
+      mapRootHash: "a".repeat(64),
+    }).mapRootHash,
+    "a".repeat(64),
+  );
+  assert.equal(
+    SessionBriefSchema.safeParse({ ...brief, mapRootHash: "not-a-hash" }).success,
+    false,
   );
 });
 
@@ -848,4 +881,200 @@ test("JSON Schema overlays reject .git paths, no-browser pass, and generic witho
     }),
     true,
   );
+});
+
+test("SkillId enum has twelve ids including map, wireframe, chat", () => {
+  assert.deepEqual([...SkillIdSchema.options], [
+    "interview",
+    "discuss",
+    "spec",
+    "ingest",
+    "plan",
+    "execute",
+    "verify",
+    "review",
+    "qa",
+    "map",
+    "wireframe",
+    "chat",
+  ]);
+  assert.equal(SkillIdSchema.options.length, 12);
+});
+
+test("ADAPTER_IDS includes http and spawn extras stay strict", () => {
+  assert.ok(ADAPTER_IDS.includes("http"));
+  const configBase = { schemaVersion: "legion-cli-config/v1" };
+  const http = LegionConfigSchema.parse({
+    ...configBase,
+    adapter: {
+      default: "http",
+      http: {
+        baseUrl: "https://api.x.ai/v1",
+        model: "grok-4",
+        apiKeyEnv: "XAI_API_KEY",
+      },
+    },
+  }).adapter.http;
+  assert.equal(http.baseUrl, "https://api.x.ai/v1");
+  assert.equal(http.model, "grok-4");
+  assert.equal(http.apiKeyEnv, "XAI_API_KEY");
+  assert.equal(http.allowLoopback, false);
+
+  assert.equal(
+    LegionConfigSchema.safeParse({
+      ...configBase,
+      adapter: { default: "http", http: { baseUrl: "https://api.x.ai/v1", model: "grok-4", apiKeyEnv: "XAI_API_KEY", apiKey: "sk-secret" } },
+    }).success,
+    false,
+  );
+  assert.equal(
+    LegionConfigSchema.safeParse({
+      ...configBase,
+      adapter: { default: "http", http: { baseUrl: "https://api.x.ai/v1", model: "grok-4", apiKeyEnv: "XAI_API_KEY", provider: "openai" } },
+    }).success,
+    false,
+  );
+  for (const header of ["Authorization", "authorization", "AUTHORIZATION", "X-Api-Key", "x-api-key"]) {
+    assert.equal(
+      LegionConfigSchema.safeParse({
+        ...configBase,
+        adapter: {
+          default: "http",
+          http: {
+            baseUrl: "https://api.x.ai/v1",
+            model: "grok-4",
+            apiKeyEnv: "XAI_API_KEY",
+            headers: { [header]: "secret" },
+          },
+        },
+      }).success,
+      false,
+      `headers.${header} must fail parse`,
+    );
+  }
+  assert.equal(
+    LegionConfigSchema.parse({
+      ...configBase,
+      adapter: {
+        default: "http",
+        http: {
+          baseUrl: "https://api.x.ai/v1",
+          model: "grok-4",
+          apiKeyEnv: "XAI_API_KEY",
+          allowLoopback: true,
+          headers: { "X-Request-Id": "abc" },
+        },
+      },
+    }).adapter.http.allowLoopback,
+    true,
+  );
+  assert.equal(
+    LegionConfigSchema.safeParse({
+      ...configBase,
+      adapter: { default: "claude", grok: { provider: "openai" } },
+    }).success,
+    false,
+  );
+});
+
+test("sandbox, skills.trustKeys, and map config are additive", () => {
+  const parsed = LegionConfigSchema.parse({
+    schemaVersion: "legion-cli-config/v1",
+    adapter: { default: "fake" },
+    sandbox: { requireHardened: false, allowCopyJail: true, backend: "copy", skills: ["execute", "plan"] },
+    skills: { trustKeys: ["minisign-pub"] },
+    map: { roots: ["src", "packages"], ignore: ["**/*.test.*"] },
+  });
+  assert.equal(parsed.sandbox.requireHardened, false);
+  assert.equal(parsed.sandbox.allowCopyJail, true);
+  assert.equal(parsed.sandbox.backend, "copy");
+  assert.deepEqual(parsed.sandbox.skills, ["execute", "plan"]);
+  assert.deepEqual(parsed.skills.trustKeys, ["minisign-pub"]);
+  assert.deepEqual(parsed.map.roots, ["src", "packages"]);
+  assert.deepEqual(parsed.map.ignore, ["**/*.test.*"]);
+  assert.equal(
+    LegionConfigSchema.safeParse({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "fake" },
+      sandbox: { requireHardened: true, unknown: true },
+    }).success,
+    false,
+  );
+});
+
+test("FingerprintFileSchema, SkillOverlayPinSchema, ChatAction, ServeFileSchema", () => {
+  const hash = "a".repeat(64);
+  const fingerprints = FingerprintFileSchema.parse({
+    schemaVersion: "legion-cli-fingerprint/v1",
+    generatedAt: "2026-09-17T00:00:00Z",
+    backend: "fallback",
+    rootHash: hash,
+    modules: [
+      {
+        path: "src/auth.ts",
+        language: "ts",
+        exports: ["login"],
+        imports: ["node:fs"],
+        hash,
+      },
+    ],
+  });
+  assert.equal(fingerprints.backend, "fallback");
+  assert.equal(FingerprintFileSchema.safeParse({ ...fingerprints, schemaVersion: "legion-cli-map/v1" }).success, false);
+
+  const localPin = SkillOverlayPinSchema.parse({
+    schemaVersion: "legion-cli-skill-overlay/v1",
+    skillId: "execute",
+    source: { type: "local", origin: "/tmp/skills/execute" },
+    integrity: { sha256: hash },
+    installedAt: "2026-09-17T00:00:00Z",
+  });
+  assert.equal(localPin.integrity.minisign, undefined);
+  assert.equal(
+    SkillOverlayPinSchema.safeParse({
+      ...localPin,
+      source: { type: "github", origin: "acme/skills", ref: "v1.0.0" },
+    }).success,
+    false,
+  );
+  assert.equal(
+    SkillOverlayPinSchema.parse({
+      ...localPin,
+      source: { type: "github", origin: "acme/skills", ref: "v1.0.0" },
+      integrity: { sha256: hash, minisign: "untrusted comment: ..." },
+    }).source.type,
+    "github",
+  );
+
+  assert.equal(ChatReadActionSchema.parse({ type: "status" }).type, "status");
+  assert.equal(ChatReadActionSchema.parse({ type: "search", q: "where" }).q, "where");
+  assert.equal(ChatProposalActionSchema.parse({ type: "ticket", title: "Dark mode" }).type, "ticket");
+  assert.equal(ChatActionSchema.safeParse({ type: "execute" }).success, false);
+  assert.equal(ChatActionSchema.safeParse({ type: "ship" }).success, false);
+
+  const serve = ServeFileSchema.parse({
+    schemaVersion: "legion-cli-serve/v1",
+    port: 7420,
+    bind: "127.0.0.1",
+    mcpPath: "/mcp",
+    mcpHttp: true,
+    tokenSha256: hash,
+    startedAt: "2026-09-17T00:00:00Z",
+    pid: 1234,
+  });
+  assert.equal(serve.mcpPath, "/mcp");
+  assert.equal(ServeFileSchema.safeParse({ ...serve, mcpPath: "/engine" }).success, false);
+});
+
+test("DesignSystemPackage integrity may include minisign", () => {
+  const pkg = DesignSystemPackageSchema.parse({
+    schemaVersion: "legion-cli-design-system/v1",
+    id: "acme",
+    name: "Acme",
+    description: "Brand",
+    source: { type: "github", origin: "acme/brand@v1" },
+    files: { design: "DESIGN.md", tokens: "tokens.css" },
+    integrity: { sha256: "deadbeef", minisign: "untrusted comment: ..." },
+  });
+  assert.equal(pkg.integrity.minisign, "untrusted comment: ...");
 });

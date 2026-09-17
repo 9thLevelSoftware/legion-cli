@@ -132,6 +132,9 @@ test("frozen argv table deepEquals the KD-7 vendor rows", () => {
   assert.equal(FROZEN_ARGV_TABLE.fake.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.claude.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.generic.spawnable, true);
+  assert.equal(FROZEN_ARGV_TABLE.http.binary, "(http)");
+  assert.deepEqual([...FROZEN_ARGV_TABLE.http.argv], ["POST", "{{pointer}}"]);
+  assert.equal(FROZEN_ARGV_TABLE.http.spawnable, true);
 });
 
 test("extra argv is prefix-compatible with the frozen vendor template", () => {

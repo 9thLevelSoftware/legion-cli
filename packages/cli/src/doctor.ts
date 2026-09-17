@@ -97,6 +97,7 @@ function isConfiguredSpawnable(config: LegionConfig, id: AdapterId): boolean {
     if (!spec?.binary) return false;
     return argsIncludePointer(genericArgsOrDefault(spec.args ?? [])) && isSpawnableBinary(spec.binary);
   }
+  if (id === "http") return false;
   return extraOnPath(id, config) && extraArgvOk(id, config);
 }
 

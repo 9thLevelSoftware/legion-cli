@@ -17,6 +17,7 @@ import {
   PersistValidationError,
   REBUILD_SQL,
   ensureGitignore,
+  legionPaths,
   appendAuditEvent,
   auditEventsPath,
   formatAuditDayLine,
@@ -81,17 +82,31 @@ test("Windows backslash ingest paths normalize to POSIX store paths", () => {
   assert.equal(toPosixPath("src/ui/button.ts"), "src/ui/button.ts");
 });
 
-test("gitignore template covers index, cache, engine.lock, and worktrees", () => {
+test("gitignore template covers index, cache, engine.lock, worktrees, sandbox, chat, serve", () => {
   assert.deepEqual([...GITIGNORE_ENTRIES], [
     ".legion-cli/index/",
     ".legion-cli/cache/",
     ".legion-cli/index/engine.lock",
     ".legion-cli/worktrees/",
+    ".legion-cli/sandbox/",
+    ".legion-cli/chat/",
+    ".legion-cli/serve.json",
   ]);
   assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/index\//);
   assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/cache\//);
   assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/index\/engine\.lock/);
   assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/worktrees\//);
+  assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/sandbox\//);
+  assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/chat\//);
+  assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/serve\.json/);
+});
+
+test("legionPaths includes map, skills overlay, chat, and sandbox dirs", () => {
+  const paths = legionPaths("proj");
+  assert.equal(paths.mapDir, join("proj", ".legion-cli", "map"));
+  assert.equal(paths.skillsOverlayDir, join("proj", ".legion-cli", "skills"));
+  assert.equal(paths.chatDir, join("proj", ".legion-cli", "chat"));
+  assert.equal(paths.sandboxDir, join("proj", ".legion-cli", "sandbox"));
 });
 
 test("rebuild SQL is idempotent DROP+CREATE including FTS5", () => {
@@ -301,6 +316,9 @@ test("index db and engine.lock are gitignored", async () => {
       assert.equal(gitCheckIgnore(dir, ".legion-cli/index/engine.lock"), true);
       assert.equal(gitCheckIgnore(dir, ".legion-cli/cache/tmp"), true);
       assert.equal(gitCheckIgnore(dir, ".legion-cli/worktrees/tmp"), true);
+      assert.equal(gitCheckIgnore(dir, ".legion-cli/sandbox/run-1"), true);
+      assert.equal(gitCheckIgnore(dir, ".legion-cli/chat/session.json"), true);
+      assert.equal(gitCheckIgnore(dir, ".legion-cli/serve.json"), true);
       const status = spawnSync("git", ["status", "--porcelain"], {
         cwd: dir,
         encoding: "utf8",

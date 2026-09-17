@@ -34,6 +34,10 @@ export type LegionPaths = {
   cacheDir: string;
   runsDir: string;
   worktreesDir: string;
+  mapDir: string;
+  skillsOverlayDir: string;
+  chatDir: string;
+  sandboxDir: string;
 };
 
 export function legionPaths(projectRoot: string): LegionPaths {
@@ -65,6 +69,10 @@ export function legionPaths(projectRoot: string): LegionPaths {
     cacheDir: join(root, "cache"),
     runsDir: join(root, "runs"),
     worktreesDir: join(root, "worktrees"),
+    mapDir: join(root, "map"),
+    skillsOverlayDir: join(root, "skills"),
+    chatDir: join(root, "chat"),
+    sandboxDir: join(root, "sandbox"),
   };
 }
 

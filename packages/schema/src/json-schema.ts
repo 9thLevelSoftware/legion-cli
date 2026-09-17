@@ -3,11 +3,13 @@ import {
   AssumptionSchema,
   AuditEventSchema,
   BrownfieldRunSchema,
+  ChatActionSchema,
   ContextFileSchema,
   DesignActiveSchema,
   DesignSystemPackageSchema,
   DiscussFileSchema,
   FileContractSchema,
+  FingerprintFileSchema,
   IngestReceiptSchema,
   IntentAnswersFileSchema,
   LegionConfigSchema,
@@ -15,9 +17,11 @@ import {
   ProjectFileSchema,
   QAScoreSchema,
   ResumeFileSchema,
+  ServeFileSchema,
   SessionBriefSchema,
   SkillCatalogSchema,
   SkillContractSchema,
+  SkillOverlayPinSchema,
   TopicsFileSchema,
   SpecSchema,
   StateFileSchema,
@@ -51,6 +55,10 @@ export const JSON_SCHEMA_FILES = [
   "design-system-package",
   "design-active",
   "packet",
+  "fingerprint-file",
+  "skill-overlay-pin",
+  "chat-action",
+  "serve-file",
 ] as const;
 
 export type JsonSchemaFileName = (typeof JSON_SCHEMA_FILES)[number];
@@ -81,6 +89,10 @@ const schemaByFile = {
   "design-system-package": DesignSystemPackageSchema,
   "design-active": DesignActiveSchema,
   packet: PacketSchema,
+  "fingerprint-file": FingerprintFileSchema,
+  "skill-overlay-pin": SkillOverlayPinSchema,
+  "chat-action": ChatActionSchema,
+  "serve-file": ServeFileSchema,
 } as const satisfies Record<JsonSchemaFileName, z.ZodType>;
 
 export function toLegionJsonSchema(schema: z.ZodType): Record<string, unknown> {
@@ -101,20 +113,39 @@ function withAllOf(
   return { ...json, allOf: [...existing, clause] };
 }
 
+function objectProperties(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const properties = (value as Record<string, unknown>).properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return undefined;
+  return properties as Record<string, unknown>;
+}
+
 function namedPropertyNames(
   json: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
-  const properties = json.properties;
-  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return undefined;
-  const adapter = (properties as Record<string, unknown>).adapter;
-  if (!adapter || typeof adapter !== "object" || Array.isArray(adapter)) return undefined;
-  const adapterProps = (adapter as Record<string, unknown>).properties;
-  if (!adapterProps || typeof adapterProps !== "object" || Array.isArray(adapterProps)) return undefined;
-  const named = (adapterProps as Record<string, unknown>).named;
+  const adapterProps = objectProperties(objectProperties(json)?.adapter);
+  if (!adapterProps) return undefined;
+  const named = adapterProps.named;
   if (!named || typeof named !== "object" || Array.isArray(named)) return undefined;
   const propertyNames = (named as Record<string, unknown>).propertyNames;
   if (!propertyNames || typeof propertyNames !== "object" || Array.isArray(propertyNames)) return undefined;
   return propertyNames as Record<string, unknown>;
+}
+
+function httpHeadersPropertyNames(
+  json: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const adapterProps = objectProperties(objectProperties(json)?.adapter);
+  const httpProps = objectProperties(adapterProps?.http);
+  const headers = httpProps?.headers;
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return undefined;
+  const headerObj = headers as Record<string, unknown>;
+  const existing = headerObj.propertyNames;
+  if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+    return existing as Record<string, unknown>;
+  }
+  headerObj.propertyNames = {};
+  return headerObj.propertyNames as Record<string, unknown>;
 }
 
 /** Overlay Zod refinements that `toJSONSchema` cannot represent. */
@@ -126,6 +157,15 @@ function overlayJsonSchema(
     const propertyNames = namedPropertyNames(json);
     if (propertyNames) {
       propertyNames.not = { enum: [...ADAPTER_IDS] };
+    }
+    const httpHeadersNames = httpHeadersPropertyNames(json);
+    if (httpHeadersNames) {
+      httpHeadersNames.not = {
+        anyOf: [
+          { pattern: "^[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]$" },
+          { pattern: "^[Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy]$" },
+        ],
+      };
     }
     const genericAdapterIf = (clause: Record<string, unknown>): Record<string, unknown> => ({
       type: "object",
