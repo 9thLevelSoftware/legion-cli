@@ -631,7 +631,7 @@ test("Checkin session key lines match the design-doc walkthrough (golden)", asyn
     });
     assert.equal(intent.status, 0, `${intent.stdout}\n${intent.stderr}`);
 
-    const discuss = runCli(["discuss", "--project", dir, "--yes"]);
+    const discuss = runCli(["discuss", "--project", dir], { input: "Y\nY\nY\n" });
     assert.equal(discuss.status, 0, `${discuss.stdout}\n${discuss.stderr}`);
 
     const spec = runCli(["spec", "--project", dir]);

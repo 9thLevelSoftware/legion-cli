@@ -40,7 +40,7 @@ These are the defaults this document commits to. Former open questions are recor
 | KD6 | **Dashboard** | Loopback HTTP **viewer** on `127.0.0.1` (GET + SSE). Optional token-gated POSTs: `ticket \| wikiTrust \| qaChecklist` (Goal 13 shipped). Never execute/ship/plan/review/packet/intent. No interview modal. No approve button. MCP stdio is a shipped extra (read-only). MCP Apps and WebMCP stay later, flags default off. | WebMCP is a W3C CG draft (26 Aug 2026), not a Standard. The viewer exists so non-coders can see path/timeline/task; they still run CLI verbs. Tiny POSTs are not a second engine of record. |
 | KD7 | **Write isolation** | Code writes: only spawned agent CLIs under a `FileContract` (after-the-fact revert, **not** OS isolation). State writes: **CLI is engine of record**. MCP (shipped extra): read-only tools. WebMCP (later): page UI only. Dashboard: optional token-gated POSTs for `ticket \| wikiTrust \| qaChecklist` only. | Legion CLI policy, plus CodeAlmanac `serve` as the read-only-viewer prior art. beads-mcp is **not** read-only (it has `init`/`create`); do not cite it for write isolation. |
 | KD8 | **Lifecycle** | Product phase ≠ task status. Slice = all tasks with `specId === activeSpecId` (no human subset in v0). CONCERNS is `lastReadiness` on `plan_ready`, not a phase. Stay in `executing` until every slice task is `done` or `blocked`. `lastReview: PASS` only when the review spawn created zero new tasks. | QA/ship are spec gates. `legion-cli review` then `legion-cli qa` from slice-terminal `executing`. |
-| KD9 | **Human gates** | Intent confirm, spec approve, skip-QA, ship, and **diff-detectable** scope/deps/schema/infra are engine-hard. Architecture/API-shape without a path heuristic are prompt-only in v0 and are **not** called hard. | Agents will not reliably self-escalate. Only checks the core can evaluate are “hard.” |
+| KD9 | **Human gates** | Intent confirm, discuss Y/n (`--yes` refuses), spec approve, skip-QA, ship, and **diff-detectable** scope/deps/schema/infra are engine-hard. Architecture/API-shape without a path heuristic are prompt-only in v0 and are **not** called hard. | Agents will not reliably self-escalate. Only checks the core can evaluate are “hard.” Discuss `--yes` is an illegal skip of the last product-decision step before spec. |
 | KD10 | **Interview UX** | Never more than two questions at a time; fixed question bank; answers map onto SPEC fields; LLM polish is optional. | Shipyard `/start`. Works with templates if the adapter is down. `legion-cli doctor` requires **one spawnable** adapter matching `adapter.default` in config. |
 | KD11 | **Scope creep** | Extra work becomes a linked ticket, never an in-place expansion. `filesAllowed` is concrete paths only in v0 (reject `*` / `**`). | beads DAG + Legion contracts. |
 | KD12 | **Design systems / wireframes** | Shipped `craft/` + optional hand-dropped `.legion-cli/design/DESIGN.md`. Wireframes stay **4-colour through v0 ship**. **Shipped extra:** design-system packages (local copy, generate-from-brief, OpenDesign importer). **Later:** `github:` install and optional restyle after a remote package is installed. | User decision. No baked-in product look. |
@@ -352,6 +352,7 @@ The engine **stops and asks on the TTY** (numbered prompt, max two questions). v
 | Gate | How the core knows | Hard? |
 | --- | --- | --- |
 | Intent confirmation | User answers `Y` to the printed brief | Yes — no `intent_ready` without it |
+| Product decisions | `legion-cli discuss` Y/n; `--yes` refuses (no spawn, no phase change) | Yes |
 | Spec approval | `legion-cli spec approve` | Yes |
 | Unplanned dependency | Diff of `package.json`, `pnpm-lock.yaml`, `package-lock.json`, `yarn.lock` | Yes |
 | Schema | Path match `**/migrations/**` or `**/*.sql` outside contract | Yes |
@@ -369,6 +370,7 @@ Prompt-only items are written into `CONTEXT.md` and the execute skill. They are 
 
 | Attempt | Refuse | Next hint |
 | --- | --- | --- |
+| `legion-cli discuss --yes` | Yes (before `startDiscuss`) | `legion-cli discuss` |
 | `legion-cli plan` before `spec_frozen` | Yes | `legion-cli spec` or `legion-cli spec approve` |
 | `legion-cli execute` with no FileContract / empty `verificationCommands` | Yes | `legion-cli plan` |
 | `legion-cli execute TSK-x` if not `ready` | Yes | `legion-cli status --blockers` |
@@ -835,7 +837,7 @@ At most two questions per turn. Answers are stored in `.legion-cli/wiki/product/
 
 #### 6.2 Discuss
 
-`legion-cli discuss` lists proposed decisions (from spawn or from a template: platform, out-of-scope restatement, data stored locally vs not). Human Y/n each, max two on screen. Writes `decisions/NNNN-*.md` with `status: accepted|rejected`.
+`legion-cli discuss` lists proposed decisions (from spawn or from a template: platform, out-of-scope restatement, data stored locally vs not). Human Y/n each, max two on screen. `--yes` cannot skip product decisions (Next: `legion-cli discuss`). Writes `decisions/NNNN-*.md` with `status: accepted|rejected`.
 
 #### 6.3 Spec and wireframes
 
@@ -1114,7 +1116,7 @@ sequenceDiagram
 
 Progressive disclosure: bare `legion-cli` is status + the one next command. Full help: `legion-cli help --all`. `--json` for scripts.
 
-Global flags: `--project <dir>`, `--json`, `--yes` (non-gate confirms only), `--verbose`.
+Global flags: `--project <dir>`, `--json`, `--yes` (ignored by intent confirm and ship; discuss refuses), `--verbose`.
 
 ### v0 commands (lifecycle core + operations)
 

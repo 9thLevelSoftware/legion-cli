@@ -76,6 +76,7 @@ test("help --all lists the grouped command surface", () => {
   assert.match(out, /^ {2}ship$/m);
   assert.match(out, /abandon/);
   assert.match(out, /pnpm exec legion-cli/);
+  assert.match(out, /--yes \(ignored by intent confirm and ship; discuss refuses\)/);
   assert.match(out, /--metrics/);
   assert.match(out, /spec show/);
   assert.match(out, /spec approve/);
@@ -152,6 +153,14 @@ test("init --mode help does not call brownfield v1", () => {
   assert.match(out, /--mode/);
   assert.doesNotMatch(out, /greenfield \(v0\)/);
   assert.doesNotMatch(out, /brownfield \(v1\)/);
+});
+
+test("--yes help says discuss refuses", () => {
+  const result = runCli(["discuss", "--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  const out = normalize(result.stdout);
+  assert.match(out, /ignored by intent confirm and ship; discuss refuses/);
+  assert.doesNotMatch(out, /ignored by intent confirm, ship, and discuss/);
 });
 
 test("intent --help does not list --resume", () => {

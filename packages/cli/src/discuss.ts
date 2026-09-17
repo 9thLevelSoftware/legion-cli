@@ -4,6 +4,9 @@ import { writeJson, writeOut } from "./io.js";
 import { closePrompt, isNo, readLine, slurpStdin } from "./prompt.js";
 
 export async function runDiscuss(opts: CliOpts): Promise<number> {
+  if (opts.yes) {
+    refuse("discuss --yes cannot skip product decisions", HINT.discuss);
+  }
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
   try {
     await slurpStdin();
@@ -15,10 +18,6 @@ export async function runDiscuss(opts: CliOpts): Promise<number> {
 
     while (proposed.length > 0) {
       const batch = proposed.slice(0, 2);
-      if (opts.yes) {
-        proposed = await engine.discuss(batch.map((item) => ({ id: item.id, status: "accepted" })));
-        continue;
-      }
       const decisions: Array<{ id: string; status: "accepted" | "rejected" }> = [];
       for (const item of batch) {
         writeOut(`Decision ${item.id}: ${item.statement} Accept?  [Y/n]`);
