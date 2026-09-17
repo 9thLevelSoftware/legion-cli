@@ -48,4 +48,6 @@ test("source uses persist path guards and does not import http or winjob", async
   assert.match(src, /toFsPath/);
   assert.match(src, /PathEscapeError/);
   assert.doesNotMatch(src, /filterSpawnEnv/);
+  assert.doesNotMatch(src, /network:\s*"allow"/);
+  assert.doesNotMatch(src, /--unshare-net/);
 });

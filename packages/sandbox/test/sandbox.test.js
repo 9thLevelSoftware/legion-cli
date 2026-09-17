@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -13,6 +13,30 @@ import { assertExecuteSandbox, detectSandbox, materializeJail, SandboxError } fr
 
 const HARDENED_REQUIRED =
   "hardened sandbox required (bwrap or seatbelt); copy jail refused without allowNoSandbox or sandbox.allowCopyJail";
+
+const BWRAP_SKIP = "bwrap not on PATH (CI installs bubblewrap on ubuntu-latest)";
+
+const ENV_ALLOW = new Set([
+  "PATH",
+  "TERM",
+  "ComSpec",
+  "SYSTEMROOT",
+  "WINDIR",
+  "SYSTEMDRIVE",
+  "PATHEXT",
+  "TEMP",
+  "TMP",
+  "HOME",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "GIT_DIR",
+  "CLAUDE_API_KEY",
+  "GROK_API_KEY",
+  "XAI_API_KEY",
+  "OPENAI_API_KEY",
+  "MINIMAX_API_KEY",
+]);
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(join(tmpdir(), "legion-sandbox-"));
@@ -54,7 +78,6 @@ function policy(dir, overrides = {}) {
     runId: "run-1",
     allowedWrites: ["src/main.ts"],
     readSet: ["src/read.ts"],
-    network: "deny",
     adapterBinary: process.execPath,
     ...overrides,
   };
@@ -79,6 +102,26 @@ function spawnInJail(handle, script) {
     return spawnSync(opts.wrapper.bin, [...opts.wrapper.argvPrefix, command, ...args], spawnOpts);
   }
   return spawnSync(command, args, spawnOpts);
+}
+
+async function trySymlink(target, path, type) {
+  try {
+    await symlink(target, path, type);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function roBindDests(prefix) {
+  const dests = [];
+  for (let i = 0; i < prefix.length; i += 1) {
+    if (prefix[i] === "--ro-bind" && prefix[i + 2] !== undefined) {
+      dests.push(prefix[i + 1], prefix[i + 2]);
+      i += 2;
+    }
+  }
+  return dests;
 }
 
 test("copy-out drops writes outside allowedWrites", async () => {
@@ -135,16 +178,111 @@ test(".git/hooks write in jail does not appear in operator .git/hooks", async ()
   });
 });
 
+test("copy-out drops dest junction to leak dir and .git instead of following it", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const leak = await mkdtemp(join(tmpdir(), "legion-junc-leak-"));
+    try {
+      await rm(join(dir, "src"), { recursive: true, force: true });
+      const linked = await trySymlink(leak, join(dir, "src"), process.platform === "win32" ? "junction" : "dir");
+      assert.equal(linked, true, "could not create dest junction");
+      const handle = await materializeJail(policy(dir));
+      try {
+        await mkdir(join(handle.jailRoot, "src"), { recursive: true });
+        await writeFile(join(handle.jailRoot, "src", "main.ts"), "pwned-home\n", "utf8");
+        const result = await handle.copyOut();
+        assert.ok(result.dropped.includes("src/main.ts"));
+        assert.ok(!result.copied.includes("src/main.ts"));
+        assert.equal(existsSync(join(leak, "main.ts")), false);
+      } finally {
+        await handle.destroy();
+      }
+    } finally {
+      await rm(join(dir, "src"), { recursive: true, force: true });
+      await rm(leak, { recursive: true, force: true });
+    }
+  });
+
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await rm(join(dir, "src"), { recursive: true, force: true });
+    const linked = await trySymlink(join(dir, ".git"), join(dir, "src"), process.platform === "win32" ? "junction" : "dir");
+    assert.equal(linked, true, "could not create dest junction to .git");
+    const handle = await materializeJail(policy(dir));
+    try {
+      await mkdir(join(handle.jailRoot, "src"), { recursive: true });
+      await writeFile(join(handle.jailRoot, "src", "main.ts"), "pwned-git\n", "utf8");
+      const result = await handle.copyOut();
+      assert.ok(result.dropped.includes("src/main.ts"));
+      assert.equal(existsSync(join(dir, ".git", "main.ts")), false);
+      assert.equal(await readFile(join(dir, ".git", "hooks", "keep"), "utf8"), "keep\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("copy-in refuses .git realpath and host symlink write-through", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const outside = join(tmpdir(), `legion-outside-${process.pid}-${Date.now()}.txt`);
+    const leakDir = await mkdtemp(join(tmpdir(), "legion-host-junc-"));
+    await writeFile(outside, "host-secret\n", "utf8");
+    await writeFile(join(leakDir, "secret.txt"), "host-secret\n", "utf8");
+    const juncType = process.platform === "win32" ? "junction" : "dir";
+    try {
+      const gitLink = await trySymlink(join(dir, ".git", "hooks", "keep"), join(dir, "src", "gitlink.ts"));
+      const hostLink = await trySymlink(outside, join(dir, "src", "hostlink.ts"));
+      const insideLink = await trySymlink(join(dir, "src", "read.ts"), join(dir, "src", "insidelink.ts"));
+      const gitJunc = await trySymlink(join(dir, ".git"), join(dir, "src", "gitjunc"), juncType);
+      const hostJunc = await trySymlink(leakDir, join(dir, "src", "hostjunc"), juncType);
+      assert.equal(gitJunc, true, "could not create .git junction");
+      assert.equal(hostJunc, true, "could not create host junction");
+      const handle = await materializeJail(
+        policy(dir, {
+          readSet: ["src", "src/read.ts", "src/gitlink.ts", "src/hostlink.ts", "src/insidelink.ts", "src/gitjunc", "src/hostjunc"],
+          allowedWrites: ["src/main.ts", "src/gitlink.ts", "src/hostlink.ts"],
+        }),
+      );
+      try {
+        assert.equal(existsSync(join(handle.jailRoot, "src", "gitlink.ts")), false);
+        assert.equal(existsSync(join(handle.jailRoot, "src", "hostlink.ts")), false);
+        assert.equal(existsSync(join(handle.jailRoot, "src", "gitjunc")), false);
+        assert.equal(existsSync(join(handle.jailRoot, "src", "hostjunc")), false);
+        if (insideLink) {
+          const st = lstatSync(join(handle.jailRoot, "src", "insidelink.ts"));
+          assert.equal(st.isSymbolicLink(), false);
+          assert.equal(await readFile(join(handle.jailRoot, "src", "insidelink.ts"), "utf8"), "export const read = 1;\n");
+        }
+        if (gitLink) {
+          await writeFile(join(handle.jailRoot, "src", "gitlink.ts"), "jail-git\n", "utf8");
+        }
+        if (hostLink) {
+          await writeFile(join(handle.jailRoot, "src", "hostlink.ts"), "jail-host\n", "utf8");
+        }
+        await handle.copyOut();
+        assert.equal(await readFile(join(dir, ".git", "hooks", "keep"), "utf8"), "keep\n");
+        assert.equal(await readFile(outside, "utf8"), "host-secret\n");
+        assert.equal(await readFile(join(leakDir, "secret.txt"), "utf8"), "host-secret\n");
+      } finally {
+        await handle.destroy();
+      }
+    } finally {
+      await rm(outside, { force: true });
+      await rm(leakDir, { recursive: true, force: true });
+    }
+  });
+});
+
 test("HOME in spawn env is under .legion-cli/sandbox/", async () => {
   await withTempDir(async (dir) => {
     await seedProject(dir);
     const handle = await materializeJail(policy(dir));
     try {
       const env = handle.spawnOpts().env;
-      const home = (env.HOME ?? "").replaceAll("\\", "/");
-      assert.match(home, /\.legion-cli\/sandbox\//);
+      assert.equal(env.HOME, join(handle.jailRoot, "home"));
       assert.equal(handle.spawnOpts().cwd, handle.jailRoot);
-      assert.match(handle.jailRoot.replaceAll("\\", "/"), /\.legion-cli\/sandbox\/run-1$/);
+      assert.equal(handle.jailRoot, join(dir, ".legion-cli", "sandbox", "run-1"));
     } finally {
       await handle.destroy();
     }
@@ -183,35 +321,53 @@ test("bwrap missing: detect returns copy, hardened false", () => {
   });
 });
 
-test("sandbox env has no SSH_AUTH_SOCK; profile dirs point under jail", async () => {
+test("Windows bwrap.cmd stub is not a hardened backend", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "bwrap.cmd"), "@echo off\r\necho stub\r\n", "utf8");
+    await writeFile(join(dir, "bwrap.bat"), "@echo off\r\necho stub\r\n", "utf8");
+    withPath(dir, () => {
+      const detected = detectSandbox();
+      assert.equal(detected.backend, "copy");
+      assert.equal(detected.hardened, false);
+    });
+  });
+});
+
+test("sandbox env allowlist is exact jail paths; extras and SSH_AUTH_SOCK absent", async () => {
   await withTempDir(async (dir) => {
     await seedProject(dir);
     const prevSock = process.env.SSH_AUTH_SOCK;
     const prevKey = process.env.OPENAI_API_KEY;
+    const prevLeak = process.env.LEGION_SANDBOX_LEAK;
     process.env.SSH_AUTH_SOCK = "/tmp/ssh-agent.sock";
     process.env.OPENAI_API_KEY = "sk-test";
+    process.env.LEGION_SANDBOX_LEAK = "nope";
     let handle;
     try {
       handle = await materializeJail(policy(dir));
       const env = handle.spawnOpts().env;
+      const home = join(handle.jailRoot, "home");
+      const tmp = join(handle.jailRoot, "tmp");
+      assert.equal(env.HOME, home);
+      assert.equal(env.USERPROFILE, home);
+      assert.equal(env.APPDATA, home);
+      assert.equal(env.LOCALAPPDATA, home);
+      assert.equal(env.TEMP, tmp);
+      assert.equal(env.TMP, tmp);
+      assert.equal(env.GIT_DIR, join(handle.jailRoot, ".git-null"));
       assert.equal(env.SSH_AUTH_SOCK, undefined);
-      assert.equal(
-        Object.keys(env).some((key) => key.toUpperCase() === "SSH_AUTH_SOCK"),
-        false,
-      );
-      const jailPosix = handle.jailRoot.replaceAll("\\", "/");
-      assert.equal((env.APPDATA ?? "").replaceAll("\\", "/").startsWith(jailPosix), true);
-      assert.equal((env.LOCALAPPDATA ?? "").replaceAll("\\", "/").startsWith(jailPosix), true);
-      assert.equal((env.USERPROFILE ?? "").replaceAll("\\", "/").startsWith(jailPosix), true);
-      assert.equal((env.HOME ?? "").replaceAll("\\", "/").startsWith(jailPosix), true);
-      assert.equal((env.TEMP ?? "").replaceAll("\\", "/"), `${jailPosix}/tmp`);
-      assert.equal((env.GIT_DIR ?? "").replaceAll("\\", "/"), `${jailPosix}/.git-null`);
+      assert.equal(env.LEGION_SANDBOX_LEAK, undefined);
       assert.equal(env.OPENAI_API_KEY, "sk-test");
+      for (const key of Object.keys(env)) {
+        assert.ok(ENV_ALLOW.has(key), `unexpected env key ${key}`);
+      }
     } finally {
       if (prevSock === undefined) delete process.env.SSH_AUTH_SOCK;
       else process.env.SSH_AUTH_SOCK = prevSock;
       if (prevKey === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = prevKey;
+      if (prevLeak === undefined) delete process.env.LEGION_SANDBOX_LEAK;
+      else process.env.LEGION_SANDBOX_LEAK = prevLeak;
       if (handle) await handle.destroy();
     }
   });
@@ -248,12 +404,15 @@ test("jailed process reads readSet; readSet-only write is dropped on copy-out", 
   });
 });
 
-test("copy-in is sparse: no node_modules and no operator .git", async () => {
+test("copy-in is sparse: no node_modules, nested node_modules, or operator .git", async () => {
   await withTempDir(async (dir) => {
     await seedProject(dir);
+    await mkdir(join(dir, "src", "vendor", "node_modules", "x"), { recursive: true });
+    await writeFile(join(dir, "src", "vendor", "node_modules", "x", "index.js"), "nope\n", "utf8");
     const handle = await materializeJail(policy(dir, { readSet: ["src/read.ts", "src"] }));
     try {
       assert.equal(existsSync(join(handle.jailRoot, "node_modules")), false);
+      assert.equal(existsSync(join(handle.jailRoot, "src", "vendor", "node_modules")), false);
       assert.equal(existsSync(join(handle.jailRoot, ".git", "hooks", "keep")), false);
       assert.equal(await readFile(join(handle.jailRoot, "src", "read.ts"), "utf8"), "export const read = 1;\n");
     } finally {
@@ -262,12 +421,22 @@ test("copy-in is sparse: no node_modules and no operator .git", async () => {
   });
 });
 
+test("destroy removes the jail directory", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const handle = await materializeJail(policy(dir));
+    const jail = handle.jailRoot;
+    assert.equal(existsSync(jail), true);
+    await handle.destroy();
+    assert.equal(existsSync(jail), false);
+  });
+});
+
 test("policy paths refuse traversal, absolute, and backslash", async () => {
   await withTempDir(async (dir) => {
     const base = {
       projectRoot: dir,
       runId: "run-1",
-      network: "deny",
       readSet: [],
       allowedWrites: [],
     };
@@ -281,10 +450,10 @@ test("policy paths refuse traversal, absolute, and backslash", async () => {
   });
 });
 
-test("bwrap wrapper omits unshare-net and binds hosts/nsswitch/passwd/group", async (t) => {
+test("bwrap wrapper omits unshare-net, binds hosts/nsswitch/passwd/group, sets HOME", async (t) => {
   const detected = detectSandbox();
   if (detected.backend !== "bwrap" || !detected.hardened) {
-    t.skip("bwrap not available");
+    t.skip(BWRAP_SKIP);
     return;
   }
   await withTempDir(async (dir) => {
@@ -307,17 +476,101 @@ test("bwrap wrapper omits unshare-net and binds hosts/nsswitch/passwd/group", as
       assert.ok(prefix.includes("/etc/nsswitch.conf"));
       assert.ok(prefix.includes("/etc/passwd"));
       assert.ok(prefix.includes("/etc/group"));
+      const homeIdx = prefix.indexOf("--setenv");
+      assert.ok(homeIdx >= 0);
+      assert.equal(prefix[homeIdx + 1], "HOME");
+      assert.equal(prefix[homeIdx + 2], join(handle.jailRoot, "home"));
       assert.equal(prefix.at(-1), "--");
+      assert.ok(opts.wrapper);
     } finally {
       await handle.destroy();
     }
   });
 });
 
+test("bwrap binds adapter file but not dirname $HOME or /", async (t) => {
+  const detected = detectSandbox();
+  if (detected.backend !== "bwrap" || !detected.hardened) {
+    t.skip(BWRAP_SKIP);
+    return;
+  }
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const adapterDir = await mkdtemp(join(tmpdir(), "legion-adapter-"));
+    const adapter = join(adapterDir, "adapter-bin");
+    await writeFile(adapter, "#!/bin/sh\n", "utf8");
+    const homeAdapter = join(homedir(), `legion-sandbox-adapter-${process.pid}`);
+    await writeFile(homeAdapter, "#!/bin/sh\n", "utf8");
+    try {
+      const outside = await materializeJail(policy(dir, { adapterBinary: adapter }));
+      try {
+        const prefix = outside.spawnOpts().wrapper.argvPrefix;
+        const dests = roBindDests(prefix);
+        const adapterReal = realpathSync(adapter);
+        assert.ok(
+          dests.some((entry) => entry === adapterReal || entry === adapter),
+          `expected adapter file bind, got ${dests.join(",")}`,
+        );
+        assert.equal(
+          dests.some((entry) => entry === "/" || entry === dirname(entry) && entry === "/"),
+          false,
+        );
+      } finally {
+        await outside.destroy();
+      }
+
+      const homeHandle = await materializeJail(policy(dir, { adapterBinary: homeAdapter }));
+      try {
+        const prefix = homeHandle.spawnOpts().wrapper.argvPrefix;
+        const dests = roBindDests(prefix);
+        const homeReal = realpathSync(homedir());
+        assert.equal(
+          dests.some((entry) => {
+            try {
+              return realpathSync(entry) === homeReal || entry === homeReal || entry === homedir();
+            } catch {
+              return entry === homeReal || entry === homedir();
+            }
+          }),
+          false,
+          `dirname $HOME must not be bound: ${dests.join(",")}`,
+        );
+        const adapterReal = realpathSync(homeAdapter);
+        assert.ok(dests.some((entry) => entry === adapterReal || entry === homeAdapter));
+      } finally {
+        await homeHandle.destroy();
+      }
+    } finally {
+      await rm(adapterDir, { recursive: true, force: true });
+      await rm(homeAdapter, { force: true });
+    }
+  });
+});
+
+test("materializeJail throws when hardened backend cannot wrap adapter", async (t) => {
+  const detected = detectSandbox();
+  if (!detected.hardened) {
+    t.skip(BWRAP_SKIP);
+    return;
+  }
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await assert.rejects(
+      () => materializeJail(policy(dir, { adapterBinary: join(dir, "no-such-adapter") })),
+      (err) => {
+        assert.equal(err.name, "SandboxError");
+        assert.equal(err.message, HARDENED_REQUIRED);
+        return true;
+      },
+    );
+    assert.equal(existsSync(join(dir, ".legion-cli", "sandbox", "run-1")), false);
+  });
+});
+
 test("assertExecuteSandbox allows a hardened backend", (t) => {
   const detected = detectSandbox();
   if (!detected.hardened) {
-    t.skip("no hardened sandbox on this host");
+    t.skip(BWRAP_SKIP);
     return;
   }
   assert.doesNotThrow(() => assertExecuteSandbox(makeConfig(), {}));

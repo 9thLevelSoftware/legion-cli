@@ -1,5 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { cp, lstat, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import {
   PathEscapeError,
@@ -20,7 +23,6 @@ export type SandboxPolicy = {
   allowedWrites: readonly string[];
   readSet: readonly string[];
   adapterBinary?: string;
-  network: "allow" | "deny";
 };
 
 export interface SandboxHandle {
@@ -58,6 +60,8 @@ const SYSTEM_RO_BINDS = [
   "/etc/group",
 ] as const;
 
+const WIN_STUB_EXT = /\.(cmd|bat|ps1)$/i;
+
 function tryRealpath(target: string): string | undefined {
   try {
     return realpathSync(target);
@@ -66,7 +70,13 @@ function tryRealpath(target: string): string | undefined {
   }
 }
 
-function findOnPath(name: string): string | undefined {
+function samePath(a: string, b: string): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function findOnPath(name: string, rejectStubs = false): string | undefined {
   const pathVal = process.env.PATH ?? process.env.Path ?? "";
   const pathExt = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM") : "";
   const exts = process.platform === "win32" ? pathExt.split(";").filter(Boolean) : [""];
@@ -76,19 +86,39 @@ function findOnPath(name: string): string | undefined {
   for (const dir of pathVal.split(delimiter)) {
     if (!dir) continue;
     for (const candidateName of names) {
+      if (rejectStubs && WIN_STUB_EXT.test(candidateName)) continue;
       const candidate = join(dir, candidateName);
-      if (existsSync(candidate)) return candidate;
+      if (existsSync(candidate)) {
+        if (rejectStubs && WIN_STUB_EXT.test(candidate)) continue;
+        return candidate;
+      }
     }
   }
   return undefined;
 }
 
+function findRunnableBwrap(): string | undefined {
+  const bin = findOnPath("bwrap", true);
+  if (!bin) return undefined;
+  const probe = spawnSync(bin, ["--version"], {
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+    timeout: 5000,
+  });
+  if (probe.error || probe.status !== 0) return undefined;
+  const text = `${probe.stdout}\n${probe.stderr}`;
+  if (!/bwrap|bubblewrap/i.test(text)) return undefined;
+  return bin;
+}
+
 export function detectSandbox(): { backend: SandboxBackend; hardened: boolean } {
-  if (findOnPath("bwrap")) {
+  if (findRunnableBwrap()) {
     return { backend: "bwrap", hardened: tryRealpath(process.execPath) !== undefined };
   }
-  if (process.platform === "darwin" && findOnPath("sandbox-exec")) {
-    return { backend: "seatbelt", hardened: true };
+  if (process.platform === "darwin") {
+    const seatbelt = findOnPath("sandbox-exec", true);
+    if (seatbelt) return { backend: "seatbelt", hardened: true };
   }
   return { backend: "copy", hardened: false };
 }
@@ -154,6 +184,23 @@ function matchesAllowed(posix: string, allowed: readonly string[]): boolean {
   return allowed.some((entry) => posix === entry || posix.startsWith(`${entry}/`));
 }
 
+function lexicalRel(root: string, abs: string): string | undefined {
+  const posix = toPosixPath(relative(resolve(root), resolve(abs)));
+  if (posix === "" || posix === ".") return ".";
+  if (posix === ".." || posix.startsWith("../") || /^[A-Za-z]:/.test(posix) || posix.startsWith("/")) {
+    return undefined;
+  }
+  return posix;
+}
+
+function canonicalBlocked(projectRoot: string, abs: string): boolean {
+  try {
+    return isBlockedRel(toProjectRelativePosix(projectRoot, abs));
+  } catch {
+    return true;
+  }
+}
+
 function buildSandboxEnv(jailRoot: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const home = join(jailRoot, "home");
   const tmp = join(jailRoot, "tmp");
@@ -181,6 +228,27 @@ function buildSandboxEnv(jailRoot: string, source: NodeJS.ProcessEnv = process.e
   return env;
 }
 
+function homeRealpaths(): string[] {
+  const out: string[] = [];
+  for (const raw of [process.env.HOME, process.env.USERPROFILE, homedir()]) {
+    if (!raw) continue;
+    const real = tryRealpath(raw) ?? resolve(raw);
+    if (!out.some((entry) => samePath(entry, real))) out.push(real);
+  }
+  return out;
+}
+
+function isUnsafeDirname(dir: string, projectRoot: string): boolean {
+  const real = tryRealpath(dir) ?? resolve(dir);
+  if (samePath(real, dirname(real))) return true;
+  if (toPosixPath(real) === "/") return true;
+  if (homeRealpaths().some((home) => samePath(real, home))) return true;
+  if (samePath(real, projectRoot)) return true;
+  const projectReal = tryRealpath(projectRoot);
+  if (projectReal && samePath(real, projectReal)) return true;
+  return false;
+}
+
 function realpathsToBind(adapterBinary?: string): { paths: string[]; ok: boolean } {
   const execReal = tryRealpath(process.execPath);
   if (!execReal) return { paths: [], ok: false };
@@ -192,7 +260,7 @@ function realpathsToBind(adapterBinary?: string): { paths: string[]; ok: boolean
       : findOnPath(adapterBinary);
   const real = resolved ? tryRealpath(resolved) : undefined;
   if (!real) return { paths, ok: false };
-  if (real !== execReal) paths.push(real);
+  if (!paths.some((entry) => samePath(entry, real))) paths.push(real);
   return { paths, ok: true };
 }
 
@@ -208,7 +276,6 @@ function bwrapArgvPrefix(opts: { jailRoot: string; projectRoot: string; bindPath
     "--proc",
     "/proc",
   ];
-  // Network stays shared: --unshare-net is intentionally omitted.
   const seenDest = new Set<string>();
   const roBind = (source: string, dest = source) => {
     if (!existsSync(source) || seenDest.has(dest)) return;
@@ -218,13 +285,15 @@ function bwrapArgvPrefix(opts: { jailRoot: string; projectRoot: string; bindPath
   for (const path of SYSTEM_RO_BINDS) roBind(path);
   for (const path of opts.bindPaths) {
     roBind(path);
-    roBind(dirname(path));
+    const dir = dirname(path);
+    if (!isUnsafeDirname(dir, opts.projectRoot)) roBind(dir);
   }
   args.push("--tmpfs", "/tmp", "--bind", opts.jailRoot, opts.jailRoot);
   const nodeModules = join(opts.projectRoot, "node_modules");
   if (existsSync(nodeModules)) {
     args.push("--ro-bind", nodeModules, join(opts.jailRoot, "node_modules"));
   }
+  args.push("--setenv", "HOME", join(opts.jailRoot, "home"));
   args.push("--chdir", opts.jailRoot, "--");
   return args;
 }
@@ -244,6 +313,35 @@ function seatbeltProfile(jailRoot: string): string {
   ].join("\n");
 }
 
+async function copyTree(src: string, dest: string, projectRoot: string): Promise<void> {
+  let st;
+  try {
+    st = await lstat(src);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
+  if (st.isSymbolicLink()) {
+    const canonical = canonicalizePath(src);
+    if (canonicalBlocked(projectRoot, canonical)) return;
+    await copyTree(canonical, dest, projectRoot);
+    return;
+  }
+  if (canonicalBlocked(projectRoot, src)) return;
+  if (st.isDirectory()) {
+    await mkdir(dest, { recursive: true });
+    const entries = await readdir(src, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === "node_modules" || entry.name === ".git") continue;
+      await copyTree(join(src, entry.name), join(dest, entry.name), projectRoot);
+    }
+    return;
+  }
+  if (!st.isFile()) return;
+  await mkdir(dirname(dest), { recursive: true });
+  await copyFile(src, dest);
+}
+
 async function copySparsePath(
   projectRoot: string,
   jailRoot: string,
@@ -255,9 +353,8 @@ async function copySparsePath(
   const src = toFsPath(projectRoot, posix);
   const dest = toFsPath(jailRoot, posix);
   toProjectRelativePosix(jailRoot, dest);
-  let st;
   try {
-    st = await lstat(src);
+    await lstat(src);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT" && mkdirIfMissing) {
@@ -267,20 +364,8 @@ async function copySparsePath(
     if (code === "ENOENT") return;
     throw err;
   }
-  toProjectRelativePosix(projectRoot, canonicalizePath(src));
-  await mkdir(dirname(dest), { recursive: true });
-  if (st.isDirectory()) {
-    await cp(src, dest, {
-      recursive: true,
-      filter: (from) => {
-        const rel = toPosixPath(relative(src, from));
-        if (rel === "" || rel === ".") return true;
-        return !isBlockedRel(rel);
-      },
-    });
-    return;
-  }
-  await cp(src, dest);
+  if (canonicalBlocked(projectRoot, src)) return;
+  await copyTree(src, dest, projectRoot);
 }
 
 async function listJailFiles(jailRoot: string): Promise<string[]> {
@@ -308,6 +393,70 @@ async function listJailFiles(jailRoot: string): Promise<string[]> {
     }
   }
   return out;
+}
+
+async function pathHasSymlinkAncestor(abs: string, root: string): Promise<boolean> {
+  let current = resolve(abs);
+  const stop = resolve(root);
+  for (;;) {
+    try {
+      const st = await lstat(current);
+      if (st.isSymbolicLink()) return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    if (samePath(current, stop)) break;
+    const parent = dirname(current);
+    if (samePath(parent, current)) return true;
+    current = parent;
+  }
+  return false;
+}
+
+async function destIsUnsafe(projectRoot: string, dest: string): Promise<boolean> {
+  const lexical = lexicalRel(projectRoot, dest);
+  if (!lexical || lexical === "." || isBlockedRel(lexical)) return true;
+  return pathHasSymlinkAncestor(dest, projectRoot);
+}
+
+async function parentIsUnsafe(projectRoot: string, parent: string): Promise<boolean> {
+  if (samePath(parent, projectRoot)) {
+    try {
+      const st = await lstat(parent);
+      return st.isSymbolicLink();
+    } catch {
+      return true;
+    }
+  }
+  const lexical = lexicalRel(projectRoot, parent);
+  if (!lexical || isBlockedRel(lexical)) return true;
+  return pathHasSymlinkAncestor(parent, projectRoot);
+}
+
+async function safeCopyOutFile(src: string, dest: string, projectRoot: string): Promise<boolean> {
+  if (await destIsUnsafe(projectRoot, dest)) return false;
+  const parent = dirname(dest);
+  if (await parentIsUnsafe(projectRoot, parent)) return false;
+  await mkdir(parent, { recursive: true });
+  if (await destIsUnsafe(projectRoot, dest)) return false;
+  const tmp = join(parent, `.legion-copyout-${process.pid}-${randomBytes(8).toString("hex")}`);
+  try {
+    await copyFile(src, tmp);
+    try {
+      const destSt = await lstat(dest);
+      if (destSt.isSymbolicLink()) {
+        await rm(tmp, { force: true });
+        return false;
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    await rename(tmp, dest);
+    return true;
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => undefined);
+    throw err;
+  }
 }
 
 async function copyOutWrites(
@@ -343,8 +492,10 @@ async function copyOutWrites(
       continue;
     }
     const dest = toFsPath(projectRoot, rel);
-    await mkdir(dirname(dest), { recursive: true });
-    await cp(src, dest);
+    if (!(await safeCopyOutFile(src, dest, projectRoot))) {
+      dropped.push(rel);
+      continue;
+    }
     copied.push(rel);
   }
   return { copied, dropped };
@@ -363,59 +514,72 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
   await mkdir(join(jailRoot, "tmp"), { recursive: true });
   await mkdir(join(jailRoot, ".git-null"), { recursive: true });
 
-  for (const posix of readSet) {
-    await copySparsePath(projectRoot, jailRoot, posix, false);
-  }
-  for (const posix of allowedWrites) {
-    await copySparsePath(projectRoot, jailRoot, posix, true);
-  }
-
-  const detected = detectSandbox();
-  const binds = realpathsToBind(policy.adapterBinary);
-  const backend = detected.backend;
-  let hardened = detected.hardened && binds.ok;
-  const env = buildSandboxEnv(jailRoot);
   const extraFiles: string[] = [];
-  let wrapper: { bin: string; argvPrefix: string[] } | undefined;
-
-  if (backend === "bwrap" && hardened) {
-    const bin = findOnPath("bwrap");
-    if (bin) {
-      wrapper = { bin, argvPrefix: bwrapArgvPrefix({ jailRoot, projectRoot, bindPaths: binds.paths }) };
-    } else {
-      hardened = false;
-    }
-  } else if (backend === "seatbelt" && hardened) {
-    const bin = findOnPath("sandbox-exec");
-    if (bin) {
-      const profilePath = join(legionPaths(projectRoot).sandboxDir, `${runId}.sb`);
-      await mkdir(dirname(profilePath), { recursive: true });
-      await writeFile(profilePath, seatbeltProfile(jailRoot), "utf8");
-      extraFiles.push(profilePath);
-      wrapper = { bin, argvPrefix: ["-f", profilePath] };
-    } else {
-      hardened = false;
-    }
-  }
-
-  return {
-    backend,
-    hardened,
-    jailRoot,
-    spawnOpts() {
-      const next: { cwd: string; env: NodeJS.ProcessEnv; wrapper?: { bin: string; argvPrefix: string[] } } = {
-        cwd: jailRoot,
-        env: { ...env },
-      };
-      if (wrapper) next.wrapper = { bin: wrapper.bin, argvPrefix: [...wrapper.argvPrefix] };
-      return next;
-    },
-    copyOut() {
-      return copyOutWrites(projectRoot, jailRoot, allowedWrites);
-    },
-    async destroy() {
-      await rm(jailRoot, { recursive: true, force: true });
-      for (const file of extraFiles) await rm(file, { force: true });
-    },
+  const destroyCreated = async () => {
+    await rm(jailRoot, { recursive: true, force: true });
+    for (const file of extraFiles) await rm(file, { force: true });
   };
+
+  try {
+    for (const posix of readSet) {
+      await copySparsePath(projectRoot, jailRoot, posix, false);
+    }
+    for (const posix of allowedWrites) {
+      await copySparsePath(projectRoot, jailRoot, posix, true);
+    }
+
+    const detected = detectSandbox();
+    const binds = realpathsToBind(policy.adapterBinary);
+    const env = buildSandboxEnv(jailRoot);
+    let wrapper: { bin: string; argvPrefix: string[] } | undefined;
+    let backend: SandboxBackend = "copy";
+    let hardened = false;
+
+    if (detected.backend === "copy") {
+      backend = "copy";
+      hardened = false;
+    } else {
+      if (!detected.hardened || !binds.ok) {
+        throw new SandboxError(HARDENED_REQUIRED);
+      }
+      if (detected.backend === "bwrap") {
+        const bin = findRunnableBwrap();
+        if (!bin) throw new SandboxError(HARDENED_REQUIRED);
+        wrapper = { bin, argvPrefix: bwrapArgvPrefix({ jailRoot, projectRoot, bindPaths: binds.paths }) };
+      } else {
+        const bin = findOnPath("sandbox-exec", true);
+        if (!bin) throw new SandboxError(HARDENED_REQUIRED);
+        const profilePath = join(legionPaths(projectRoot).sandboxDir, `${runId}.sb`);
+        await mkdir(dirname(profilePath), { recursive: true });
+        await writeFile(profilePath, seatbeltProfile(jailRoot), "utf8");
+        extraFiles.push(profilePath);
+        wrapper = { bin, argvPrefix: ["-f", profilePath, "--"] };
+      }
+      backend = detected.backend;
+      hardened = true;
+    }
+
+    return {
+      backend,
+      hardened,
+      jailRoot,
+      spawnOpts() {
+        const next: { cwd: string; env: NodeJS.ProcessEnv; wrapper?: { bin: string; argvPrefix: string[] } } = {
+          cwd: jailRoot,
+          env: { ...env },
+        };
+        if (wrapper) next.wrapper = { bin: wrapper.bin, argvPrefix: [...wrapper.argvPrefix] };
+        return next;
+      },
+      copyOut() {
+        return copyOutWrites(projectRoot, jailRoot, allowedWrites);
+      },
+      async destroy() {
+        await destroyCreated();
+      },
+    };
+  } catch (err) {
+    await destroyCreated();
+    throw err;
+  }
 }
