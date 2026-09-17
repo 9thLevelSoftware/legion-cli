@@ -306,7 +306,7 @@ async function applyFrozenCssOnly(dir: string, snap: ReadonlyMap<string, string>
   }
 }
 
-export type WireframePrepareInput = {
+type WireframePrepareInput = {
   projectRoot: string;
   dir: string;
   specDir: string;
@@ -317,7 +317,7 @@ export type WireframePrepareInput = {
   writeSpec: (spec: Spec, body: string) => Promise<void>;
 };
 
-export type WireframeSession = {
+type WireframeSession = {
   spec: Spec;
   frozen: boolean;
   restyled: boolean;
@@ -332,7 +332,7 @@ export type WireframeSession = {
   spawnPrompt: string;
 };
 
-export type WireframeSpawnFinish = {
+type WireframeSpawnFinish = {
   spawned: boolean;
   revert: RevertResult | null;
   error?: unknown;

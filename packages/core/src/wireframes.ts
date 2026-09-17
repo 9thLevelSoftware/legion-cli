@@ -267,10 +267,27 @@ function relTokens(value: string): string[] {
   return value.trim().split(/\s+/).filter(Boolean);
 }
 
+/** WHATWG pragma-set refresh: delay, optional `;`/`,`, optional `url=`, remainder is the URL. */
 function refreshUrl(content: string): string | null {
   const decoded = decodeHtmlEntities(content);
-  const match = /url\s*=\s*(?:'([^']*)'|"([^"]*)"|([^\s;]+))/i.exec(decoded);
-  return match ? (match[1] ?? match[2] ?? match[3] ?? null) : null;
+  let i = 0;
+  while (i < decoded.length && /[0-9.]/.test(decoded[i] ?? "")) i += 1;
+  while (i < decoded.length && /\s/.test(decoded[i] ?? "")) i += 1;
+  if (decoded[i] === ";" || decoded[i] === ",") {
+    i += 1;
+    while (i < decoded.length && /\s/.test(decoded[i] ?? "")) i += 1;
+  }
+  if (/^url\s*=/i.test(decoded.slice(i))) {
+    const eq = decoded.indexOf("=", i);
+    i = eq + 1;
+    while (i < decoded.length && /\s/.test(decoded[i] ?? "")) i += 1;
+  }
+  let rest = decoded.slice(i).trim();
+  const quote = rest[0];
+  if ((quote === "'" || quote === '"') && rest.endsWith(quote) && rest.length >= 2) {
+    rest = rest.slice(1, -1);
+  }
+  return rest.length > 0 ? rest : null;
 }
 
 function denyUrl(label: string, value: string): void {
@@ -344,11 +361,7 @@ export function assertWireframeHtml(html: string): void {
     if (tag === "meta") {
       const httpEquiv = attrs.find((attr) => attr.name.toLowerCase() === "http-equiv");
       const content = attrs.find((attr) => attr.name.toLowerCase() === "content");
-      if (
-        httpEquiv &&
-        content &&
-        relTokens(httpEquiv.value).some((token) => token.toLowerCase() === "refresh")
-      ) {
+      if (httpEquiv && content && compactUrl(httpEquiv.value).toLowerCase() === "refresh") {
         const url = refreshUrl(content.value);
         if (url) denyUrl("content", url);
       }
