@@ -77,7 +77,11 @@ function readEntryData(
   });
 }
 
-function readAllEntries(zip: import("yauzl").ZipFile, maxUncompressed: number): Promise<ZipEntryData[]> {
+function readAllEntries(
+  zip: import("yauzl").ZipFile,
+  maxUncompressed: number,
+  maxEntries: number,
+): Promise<ZipEntryData[]> {
   const out: ZipEntryData[] = [];
   let total = 0;
   return new Promise((resolve, reject) => {
@@ -112,7 +116,7 @@ function readAllEntries(zip: import("yauzl").ZipFile, maxUncompressed: number): 
           if (isUnixSymlink(entry)) {
             throw new PathEscapeError(entry.fileName);
           }
-          if (out.length >= MAX_ZIPBALL_ENTRIES) {
+          if (out.length >= maxEntries) {
             throw new PersistError("zip exceeded entry cap");
           }
           const isDir = entry.fileName.endsWith("/");
@@ -152,8 +156,17 @@ function singleTopLevelPrefix(names: string[]): string | undefined {
   return prefix;
 }
 
-export async function unzipZipball(zip: Buffer, destDir: string): Promise<string[]> {
-  if (zip.byteLength > MAX_ZIPBALL_BYTES) {
+export type UnzipZipballOpts = {
+  maxBytes?: number;
+  maxUncompressedBytes?: number;
+  maxEntries?: number;
+};
+
+export async function unzipZipball(zip: Buffer, destDir: string, opts?: UnzipZipballOpts): Promise<string[]> {
+  const maxBytes = Math.min(opts?.maxBytes ?? MAX_ZIPBALL_BYTES, MAX_ZIPBALL_BYTES);
+  const maxUncompressed = Math.min(opts?.maxUncompressedBytes ?? MAX_ZIPBALL_BYTES, MAX_ZIPBALL_BYTES);
+  const maxEntries = Math.min(opts?.maxEntries ?? MAX_ZIPBALL_ENTRIES, MAX_ZIPBALL_ENTRIES);
+  if (zip.byteLength > maxBytes) {
     throw new PersistError("zip exceeded size cap");
   }
   let zipfile: import("yauzl").ZipFile;
@@ -162,7 +175,7 @@ export async function unzipZipball(zip: Buffer, destDir: string): Promise<string
   } catch (err) {
     wrapYauzlError(err);
   }
-  const entries = await readAllEntries(zipfile, MAX_ZIPBALL_BYTES);
+  const entries = await readAllEntries(zipfile, maxUncompressed, maxEntries);
   try {
     zipfile.close();
   } catch {

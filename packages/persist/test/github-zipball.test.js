@@ -153,6 +153,40 @@ test("unzipZipball refuses absolute entries", async () => {
   });
 });
 
+test("unzipZipball refuses compressed size, uncompressed size, and entry caps", async () => {
+  await withTempDir(async (dir) => {
+    const dest = join(dir, "out");
+    const twoFiles = makeZip([
+      { name: "a.txt", data: "aaaa\n" },
+      { name: "b.txt", data: "bbbb\n" },
+    ]);
+    await assert.rejects(
+      () => unzipZipball(twoFiles, dest, { maxBytes: 40 }),
+      (err) => {
+        assert.equal(err instanceof PersistError, true);
+        assert.match(err.message, /size cap/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => unzipZipball(twoFiles, dest, { maxUncompressedBytes: 6 }),
+      (err) => {
+        assert.equal(err instanceof PersistError, true);
+        assert.match(err.message, /size cap/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => unzipZipball(twoFiles, dest, { maxEntries: 1 }),
+      (err) => {
+        assert.equal(err instanceof PersistError, true);
+        assert.match(err.message, /entry cap/);
+        return true;
+      },
+    );
+  });
+});
+
 test("unzipZipball refuses nested Windows drive-relative zip-slip", async () => {
   await withTempDir(async (dir) => {
     const dest = join(dir, "out");

@@ -277,6 +277,32 @@ test("fetchPublicHttpsPinned wiki path still upgrades http: redirects", async (t
   assert.equal(hops, 2);
 });
 
+test("fetchPublicHttpsBinary follows an allowlisted hop to codeload.github.com", async (t) => {
+  const requests = mockHttpsRequest(t, (options) => {
+    if (options.host === "github.com") {
+      return {
+        status: 302,
+        headers: { location: "https://codeload.github.com/acme/brand/zip/refs/tags/v1.0.0" },
+        body: "",
+      };
+    }
+    if (options.host === "codeload.github.com") {
+      return { status: 200, body: "PK\x03\x04zip", headers: { "content-type": "application/zip" } };
+    }
+    throw new Error(`SSRF test must not connect to ${options.host}`);
+  });
+  const fetched = await fetchPublicHttpsBinary("https://github.com/acme/brand/archive/refs/tags/v1.0.0.zip", {
+    ...ZIP_OPTS,
+    lookup: async () => ({ address: "8.8.8.8", family: 4 }),
+  });
+  assert.equal(fetched.body.toString(), "PK\x03\x04zip");
+  assert.deepEqual(
+    requests.map((req) => req.host),
+    ["github.com", "codeload.github.com"],
+  );
+  assert.equal(fetched.finalUrl, "https://codeload.github.com/acme/brand/zip/refs/tags/v1.0.0");
+});
+
 test("fetchGithubZipball fetches the tags zipball against a mock", async (t) => {
   const requests = mockHttpsRequest(t, () => ({
     status: 200,

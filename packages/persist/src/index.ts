@@ -113,6 +113,7 @@ export {
 } from "./github-fetch.js";
 export type { GithubRepoRef } from "./github-fetch.js";
 export { unzipZipball } from "./unzip.js";
+export type { UnzipZipballOpts } from "./unzip.js";
 export { hashTreeFiles, hashTreeRecords } from "./hash-tree.js";
 export {
   NINTHLEVEL_MINISIGN_PUB_PATH,
