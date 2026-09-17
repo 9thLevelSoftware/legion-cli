@@ -430,7 +430,7 @@ export function createProgram(): Command {
         webmcp?: boolean;
         tokenStdout?: boolean;
       };
-      const code = await runServe(resolveOpts(cmd), flags, { alias: "serve" });
+      const code = await runServe(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
 

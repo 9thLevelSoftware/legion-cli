@@ -590,9 +590,62 @@ test("startServe routes GET/POST/DELETE /mcp inside one handle", async () => {
       const del = await fetch(`${handle.url}/mcp`, { method: "DELETE" });
       assert.equal(del.status, 200);
       assert.deepEqual(methods.sort(), ["DELETE", "GET", "POST"]);
+
+      const origin = originFor(handle);
+      const opt = await fetch(`${handle.url}/mcp`, { method: "OPTIONS", headers: { Origin: origin } });
+      assert.equal(opt.status, 204);
+      assert.match(opt.headers.get("allow") ?? "", /DELETE/);
+      assert.match(opt.headers.get("access-control-allow-methods") ?? "", /DELETE/);
     } finally {
       await handle.close();
     }
+  });
+});
+
+test("startServe refuses MCP HTTP on --expose; close does not hang on open SSE", async () => {
+  await withTempDir(async (dir) => {
+    await assert.rejects(
+      () =>
+        startServe({
+          projectRoot: dir,
+          host: "0.0.0.0",
+          port: 0,
+          open: false,
+          warn: () => {},
+          mcpHttp: true,
+          handleMcpHttp: async ({ res }) => {
+            res.statusCode = 200;
+            res.end();
+          },
+        }),
+      (err) => {
+        assert.match(String(err.message), /loopback-only|unauthenticated \/mcp/);
+        assert.match(String(err.nextHint ?? ""), /--no-mcp-http --expose/);
+        return true;
+      },
+    );
+
+    const handle = await startServe({
+      projectRoot: dir,
+      port: 0,
+      open: false,
+      warn: () => {},
+      mcpHttp: true,
+      handleMcpHttp: async ({ res }) => {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.write(": hang\n\n");
+      },
+    });
+    const sse = fetch(`${handle.url}/mcp`, { headers: { Accept: "text/event-stream" } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Promise.race([
+      handle.close(),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("close hung with GET SSE open")), 2000);
+      }),
+    ]);
+    await sse.catch(() => undefined);
   });
 });
 

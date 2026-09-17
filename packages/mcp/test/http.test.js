@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import http, { createServer } from "node:http";
 import test from "node:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { MCP_TOOLS, closeMcpHttp, handleMcpHttp } from "../dist/index.js";
+import {
+  MCP_HTTP_MAX_BODY_BYTES,
+  MCP_HTTP_RATE_PER_SEC,
+  MCP_TOOLS,
+  closeMcpHttp,
+  handleMcpHttp,
+} from "../dist/index.js";
 import { copyFixtureProject, withStore, withTempDir } from "./helpers.js";
 
 async function withMcpHttp(dir, fn) {
@@ -30,6 +36,7 @@ async function withMcpHttp(dir, fn) {
     return await fn(base);
   } finally {
     await closeMcpHttp(dir);
+    server.closeAllConnections?.();
     await new Promise((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
@@ -125,5 +132,169 @@ test("/mcp without token succeeds on loopback GET and POST", async () => {
       assert.equal(listed.status, 200, await listed.clone().text());
       assert.notEqual(listed.status, 403);
     });
+  });
+});
+
+test("unknown Mcp-Session-Id is 404; missing DELETE session is 400", async () => {
+  await withTempDir(async (dir) => {
+    await withMcpHttp(dir, async (base) => {
+      const get = await fetch(`${base}/mcp`, {
+        headers: { Accept: "text/event-stream", "MCP-Session-Id": "missing-session" },
+      });
+      assert.equal(get.status, 404);
+      const post = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          "MCP-Session-Id": "missing-session",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+      assert.equal(post.status, 404);
+      const delUnknown = await fetch(`${base}/mcp`, {
+        method: "DELETE",
+        headers: { "MCP-Session-Id": "missing-session" },
+      });
+      assert.equal(delUnknown.status, 404);
+      const delMissing = await fetch(`${base}/mcp`, { method: "DELETE" });
+      assert.equal(delMissing.status, 400);
+    });
+  });
+});
+
+test("MCP POST over 1 MB is 413", async () => {
+  await withTempDir(async (dir) => {
+    const server = createServer((req, res) => {
+      void handleMcpHttp({
+        req,
+        res,
+        projectRoot: dir,
+        body: Buffer.alloc(MCP_HTTP_MAX_BODY_BYTES + 1),
+      });
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+    const addr = server.address();
+    const base = `http://127.0.0.1:${addr.port}`;
+    try {
+      const huge = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: "{}",
+      });
+      assert.equal(huge.status, 413);
+    } finally {
+      await closeMcpHttp(dir);
+      server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
+});
+
+test("30 MCP calls/sec per connection then 429", async () => {
+  await withTempDir(async (dir) => {
+    await withMcpHttp(dir, async (base) => {
+      const url = new URL(`${base}/mcp`);
+      const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+      const statuses = [];
+      for (let i = 0; i < MCP_HTTP_RATE_PER_SEC + 5; i++) {
+        statuses.push(
+          await new Promise((resolve, reject) => {
+            const req = http.request(
+              {
+                hostname: url.hostname,
+                port: url.port,
+                path: "/mcp",
+                method: "POST",
+                agent,
+                headers: {
+                  "Content-Type": "application/json",
+                  Accept: "application/json, text/event-stream",
+                  "Content-Length": 2,
+                },
+              },
+              (res) => {
+                res.resume();
+                res.on("end", () => resolve(res.statusCode));
+              },
+            );
+            req.on("error", reject);
+            req.end("{}");
+          }),
+        );
+      }
+      agent.destroy();
+      assert.ok(statuses.includes(429), `expected 429 in ${statuses.join(",")}`);
+    });
+  });
+});
+
+test("closeMcpHttp ends an open GET SSE so server.close does not hang", async () => {
+  await withTempDir(async (dir) => {
+    const server = createServer((req, res) => {
+      void handleMcpHttp({ req, res, projectRoot: dir });
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+    const addr = server.address();
+    const base = `http://127.0.0.1:${addr.port}`;
+    const init = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "hang", version: "0" },
+        },
+      }),
+    });
+    assert.equal(init.status, 200, await init.clone().text());
+    const session = init.headers.get("mcp-session-id");
+    assert.ok(session);
+    const sse = fetch(`${base}/mcp`, {
+      headers: {
+        Accept: "text/event-stream",
+        "MCP-Session-Id": session,
+        "MCP-Protocol-Version": "2025-03-26",
+      },
+    });
+    const streamed = await sse;
+    assert.equal(streamed.status, 200);
+    const closed = closeMcpHttp(dir).then(
+      () =>
+        new Promise((resolve, reject) => {
+          server.closeAllConnections?.();
+          server.close((err) => (err ? reject(err) : resolve()));
+        }),
+    );
+    await Promise.race([
+      closed,
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("close hung with GET SSE open")), 2000);
+      }),
+    ]);
   });
 });

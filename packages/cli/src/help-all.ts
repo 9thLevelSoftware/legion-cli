@@ -59,7 +59,7 @@ const BOARD_EXTRAS = [
 ] as const;
 
 const SHIPPED_ADJACENT = [
-  ["serve", "Dashboard plus read-only MCP HTTP", "--port, --expose, --no-open, --mcp-http/--no-mcp-http, --webmcp, --token-stdout"],
+  ["serve", "Dashboard plus read-only MCP HTTP (MCP HTTP is loopback-only)", "--port, --expose, --no-open, --mcp-http/--no-mcp-http, --webmcp, --token-stdout"],
   ["dashboard", "Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist); not the source of truth)", "--no-open, --port, --expose"],
   ["packet new", "PM/designer request without the DAG", "--title, --request, --requester"],
   ["packet respond", "Spawn tickets from a packet (does not execute)", "--message, --title"],

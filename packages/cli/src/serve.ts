@@ -14,7 +14,6 @@ export type ServeFlags = {
 
 export type ServeRunOpts = {
   mcpHttp?: boolean;
-  alias?: "dashboard" | "serve";
 };
 
 function parsePort(raw: string | undefined): number | undefined {
@@ -66,10 +65,10 @@ export async function runServe(
       sourceOfTruth: "cli",
       mcpHttp,
       mcpPath: mcpHttp ? "/mcp" : null,
-      alias: run.alias ?? "serve",
     });
   } else {
     writeOut(`Viewer: ${handle.url}`);
+    if (mcpHttp) writeOut(`MCP HTTP: ${handle.url}/mcp (read-only tools).`);
     writeOut(
       "Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist). CLI remains the source of truth.",
     );

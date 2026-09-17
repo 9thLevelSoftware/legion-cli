@@ -164,10 +164,11 @@ test("serve MCP HTTP: GET event-stream, POST tools/list, no-token 200; engine PO
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(init.status, 0, init.stderr);
-    const { child, url, getStderr } = startServeCli(["serve", "--project", dir, "--no-open", "--port", "0"]);
+    const { child, url, getStderr, getStdout } = startServeCli(["serve", "--project", dir, "--no-open", "--port", "0"]);
     try {
       const viewer = await url;
       const token = tokenFromStderr(getStderr());
+      assert.match(normalize(getStdout()), new RegExp(`MCP HTTP: ${viewer.replaceAll(".", "\\.")}/mcp \\(read-only tools\\)\\.`));
 
       const htmlRes = await fetch(viewer);
       assert.equal(htmlRes.status, 200);
@@ -227,9 +228,41 @@ test("serve MCP HTTP: GET event-stream, POST tools/list, no-token 200; engine PO
       assert.equal(status.res.status, 200, status.text);
       const payload = JSON.parse(status.json?.result?.content?.[0]?.text ?? "{}");
       assert.ok(payload.next);
+
+      const origin = viewer;
+      const opt = await fetch(`${viewer}/mcp`, { method: "OPTIONS", headers: { Origin: origin } });
+      assert.equal(opt.status, 204);
+      assert.match(opt.headers.get("allow") ?? "", /DELETE/);
+      assert.match(opt.headers.get("access-control-allow-methods") ?? "", /DELETE/);
+
+      const unknown = await mcpRpc(viewer, { jsonrpc: "2.0", id: 9, method: "tools/list" }, "missing-session");
+      assert.equal(unknown.res.status, 404);
+
+      const sse = fetch(`${viewer}/mcp`, {
+        headers: {
+          Accept: "text/event-stream",
+          "MCP-Session-Id": session,
+          "MCP-Protocol-Version": "2025-03-26",
+        },
+      });
+      await sse;
     } finally {
-      await stop(child);
+      const exited = await Promise.race([
+        stop(child).then(() => true),
+        new Promise((resolve) => setTimeout(() => resolve(false), 2500)),
+      ]);
+      assert.equal(exited, true, "serve did not exit after GET SSE");
     }
+  });
+});
+
+test("serve --expose with MCP HTTP refused", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const result = runCli(["serve", "--project", dir, "--no-open", "--port", "0", "--expose"]);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(normalize(result.stderr), /loopback-only|unauthenticated \/mcp/);
+    assert.match(normalize(result.stderr), /Next: legion-cli serve --no-mcp-http --expose/);
   });
 });
 

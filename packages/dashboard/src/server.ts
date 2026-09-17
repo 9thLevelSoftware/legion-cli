@@ -24,6 +24,7 @@ import {
   LOOPBACK_BIND,
   echoAllowedOrigin,
   headerValue,
+  isLoopbackHost,
   originIsAllowed,
   writeOriginIsAllowed,
 } from "./origin.js";
@@ -267,6 +268,12 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
   const token = mintWriteToken();
   const occupy = opts.occupy === true;
   const mcpHttp = opts.mcpHttp === true;
+  if (mcpHttp && host === EXPOSE_BIND) {
+    throw new LegionRefuseError(
+      "MCP HTTP is loopback-only; --expose would bind unauthenticated /mcp on 0.0.0.0",
+      "legion-cli serve --no-mcp-http --expose",
+    );
+  }
   if (occupy) await assertServeSlotFree(opts.projectRoot);
   const engine = createDashboardEngine(opts.projectRoot);
   const config = await readOptionalConfig(createLegionStore(opts.projectRoot));
@@ -305,12 +312,28 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     const url = new URL(req.url ?? "/", `http://${hostHeader ?? `${host}:${boundPort}`}`);
     const pathname = decodeURIComponent(url.pathname);
     const mcpRoute = mcpHttp && pathname === MCP_PATH;
+    if (mcpRoute && originHeader) {
+      let originUrl: URL;
+      try {
+        originUrl = new URL(originHeader);
+      } catch {
+        forbidden(res, undefined, "Forbidden origin");
+        return;
+      }
+      if (!isLoopbackHost(originUrl.hostname)) {
+        forbidden(res, undefined, "Forbidden origin");
+        return;
+      }
+    }
 
     if (method === "OPTIONS") {
       setSecurityHeaders(res, cors);
       res.statusCode = 204;
       res.setHeader("Allow", mcpRoute ? MCP_ALLOW_METHODS : ALLOW_METHODS);
-      if (mcpRoute) res.setHeader("Access-Control-Allow-Headers", MCP_ALLOW_HEADERS);
+      if (mcpRoute) {
+        res.setHeader("Access-Control-Allow-Methods", MCP_ALLOW_METHODS);
+        res.setHeader("Access-Control-Allow-Headers", MCP_ALLOW_HEADERS);
+      }
       res.end();
       return;
     }
@@ -583,21 +606,28 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     port: boundPort,
     token,
     close: async () => {
+      if (closed) return;
       closed = true;
       clearInterval(timer);
+      await opts.onClose?.();
       for (const client of sseClients) {
         try {
           client.res.end();
         } catch {
           // already closed
         }
+        try {
+          client.res.destroy();
+        } catch {
+          // already destroyed
+        }
       }
       sseClients.clear();
+      server.closeAllConnections?.();
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
       });
       if (occupy) await removeOwnServeFile(opts.projectRoot, process.pid);
-      await opts.onClose?.();
     },
   };
 }
