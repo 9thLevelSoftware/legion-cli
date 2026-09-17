@@ -707,7 +707,12 @@ export class LegionEngine {
         const architecturePath = join(this.store.paths.mapDir, "ARCHITECTURE.md");
         let existingArch: string | undefined;
         try {
-          existingArch = await readFile(architecturePath, "utf8");
+          const st = await lstat(architecturePath);
+          if (st.isSymbolicLink() || !st.isFile()) {
+            await rm(architecturePath, { recursive: false, force: true });
+          } else {
+            existingArch = await readFile(architecturePath, "utf8");
+          }
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
         }

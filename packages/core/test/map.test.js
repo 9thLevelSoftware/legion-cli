@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -140,6 +140,33 @@ test("map spawn writing src/main.ts is reverted", async () => {
   });
 });
 
+test("map replaces a symlink ARCHITECTURE.md without reading the target", async () => {
+  await withEngine(async ({ engine, dir }) => {
+    await initProject(engine);
+    await seedSources(dir);
+    const envPath = join(dir, "src", ".env");
+    await writeFile(envPath, "SECRET=do-not-leak\n", "utf8");
+    const mapDir = join(dir, ".legion-cli", "map");
+    await mkdir(mapDir, { recursive: true });
+    const archPath = join(mapDir, "ARCHITECTURE.md");
+    try {
+      await symlink(envPath, archPath);
+    } catch (err) {
+      if (err?.code === "EPERM" || err?.code === "EACCES") return;
+      throw err;
+    }
+    await engine.map({ lsp: "off" });
+    const st = await lstat(archPath);
+    assert.equal(st.isSymbolicLink(), false);
+    assert.equal(st.isFile(), true);
+    const body = await readFile(archPath, "utf8");
+    assert.match(body, /<!-- legion-cli:generated:start -->/);
+    assert.match(body, /src\/auth\.ts/);
+    assert.doesNotMatch(body, /SECRET=do-not-leak/);
+    assert.equal(await readFile(envPath, "utf8"), "SECRET=do-not-leak\n");
+  });
+});
+
 test("map spawn overwriting fingerprints.json is restored from the in-process result", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ engine, dir }) => {
@@ -159,6 +186,80 @@ test("map spawn overwriting fingerprints.json is restored from the in-process re
       assert.equal(fingerprints.schemaVersion, "legion-cli-fingerprint/v1");
       assert.equal(fingerprints.pwned, undefined);
       assert.match(fingerprints.rootHash, /^[a-f0-9]{64}$/);
+    });
+  });
+});
+
+test("map spawn that clobbers the generated ARCHITECTURE region is restored", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, dir }) => {
+      await initProject(engine);
+      await seedSources(dir);
+      initGitRepo(dir);
+      const spawning = new LegionEngine(dir, undefined, {
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/map/ARCHITECTURE.md",
+            content: [
+              "<!-- legion-cli:generated:start -->",
+              "CLOBBERED_GENERATED",
+              "<!-- legion-cli:generated:end -->",
+              "",
+              "Human note: keep me.",
+              "",
+            ].join("\n"),
+          },
+        ],
+      });
+      const result = await spawning.map({ lsp: "off" });
+      assert.equal(result.backend, "fallback");
+      const runNames = await readdir(join(dir, ".legion-cli", "cache", "runs"));
+      assert.ok(runNames.some((name) => name.startsWith("map-")), "map skill spawn must have run");
+      const arch = await readFile(join(dir, ".legion-cli", "map", "ARCHITECTURE.md"), "utf8");
+      assert.match(arch, /<!-- legion-cli:generated:start -->/);
+      assert.match(arch, /src\/auth\.ts/);
+      assert.match(arch, /login/);
+      assert.doesNotMatch(arch, /CLOBBERED_GENERATED/);
+      assert.match(arch, /Human note: keep me/);
+    });
+  });
+});
+
+test("map spawn restore replaces a symlink ARCHITECTURE.md without reading the target", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, dir }) => {
+      await initProject(engine);
+      await seedSources(dir);
+      initGitRepo(dir);
+      const envPath = join(dir, "src", ".env");
+      await writeFile(envPath, "SECRET=do-not-leak\n", "utf8");
+      const archPath = join(dir, ".legion-cli", "map", "ARCHITECTURE.md");
+      let linked = false;
+      const spawning = new LegionEngine(dir, undefined, {
+        fakeOnWait: async () => {
+          try {
+            await unlink(archPath);
+            await symlink(envPath, archPath);
+            linked = true;
+          } catch (err) {
+            if (err?.code === "EPERM" || err?.code === "EACCES") return;
+            throw err;
+          }
+        },
+      });
+      const result = await spawning.map({ lsp: "off" });
+      assert.equal(result.backend, "fallback");
+      const runNames = await readdir(join(dir, ".legion-cli", "cache", "runs"));
+      assert.ok(runNames.some((name) => name.startsWith("map-")), "map skill spawn must have run");
+      if (!linked) return;
+      const st = await lstat(archPath);
+      assert.equal(st.isSymbolicLink(), false);
+      assert.equal(st.isFile(), true);
+      const body = await readFile(archPath, "utf8");
+      assert.match(body, /<!-- legion-cli:generated:start -->/);
+      assert.match(body, /src\/auth\.ts/);
+      assert.doesNotMatch(body, /SECRET=do-not-leak/);
+      assert.equal(await readFile(envPath, "utf8"), "SECRET=do-not-leak\n");
     });
   });
 });

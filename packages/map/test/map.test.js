@@ -486,6 +486,31 @@ test("map refuses when walk exceeds 10000 modules", { timeout: 60_000 }, async (
   });
 });
 
+test("generateMap replaces a symlink ARCHITECTURE.md without reading the target", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const envPath = join(dir, "src", ".env");
+    await writeFile(envPath, "SECRET=do-not-leak\n", "utf8");
+    await mkdir(join(dir, ".legion-cli", "map"), { recursive: true });
+    const archPath = join(dir, ".legion-cli", "map", "ARCHITECTURE.md");
+    try {
+      await symlink(envPath, archPath);
+    } catch (err) {
+      if (err && (err.code === "EPERM" || err.code === "EACCES")) return;
+      throw err;
+    }
+    await generateMap(dir);
+    const st = await lstat(archPath);
+    assert.equal(st.isSymbolicLink(), false);
+    assert.equal(st.isFile(), true);
+    const body = await readFile(archPath, "utf8");
+    assert.match(body, GENERATED_START_RE);
+    assert.match(body, /src\/auth\.ts/);
+    assert.doesNotMatch(body, /SECRET=do-not-leak/);
+    assert.equal(await readFile(envPath, "utf8"), "SECRET=do-not-leak\n");
+  });
+});
+
 test("map dir junction is replaced; files are not written outside the project", async () => {
   await withTempDir(async (dir) => {
     await writeTree(dir, THREE_TS);

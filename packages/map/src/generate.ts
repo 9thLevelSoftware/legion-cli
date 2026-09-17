@@ -196,10 +196,11 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   );
 
   let existingArch: string | undefined;
-  try {
+  const archStat = await lstatOrNull(architecturePath);
+  if (archStat?.isSymbolicLink() || (archStat && !archStat.isFile())) {
+    await rm(architecturePath, { recursive: false, force: true });
+  } else if (archStat) {
     existingArch = await readFile(architecturePath, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
 
   if (unchanged && existing) {
