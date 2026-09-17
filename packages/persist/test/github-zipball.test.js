@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { crc32 } from "node:zlib";
@@ -9,6 +10,7 @@ import { crc32 } from "node:zlib";
 import {
   githubZipballUrl,
   hashTreeFiles,
+  hashTreeRecords,
   MinisignError,
   parseGithubRepoSource,
   PathEscapeError,
@@ -151,18 +153,40 @@ test("unzipZipball refuses absolute entries", async () => {
   });
 });
 
+test("unzipZipball refuses nested Windows drive-relative zip-slip", async () => {
+  await withTempDir(async (dir) => {
+    const dest = join(dir, "out");
+    const zip = makeZip([
+      { name: "brand-v1/README.md", data: "ok\n" },
+      { name: "brand-v1/nested/D:payload", data: "pwned\n" },
+    ]);
+    await assert.rejects(() => unzipZipball(zip, dest), PathEscapeError);
+    const escaped = resolve(dest, "nested", "D:payload");
+    assert.equal(existsSync(escaped), false, escaped);
+    assert.equal(existsSync(join(dest, "nested", "D:payload")), false);
+  });
+});
+
 test("hashTreeFiles is canonical sorted path+bytes", async () => {
   await withTempDir(async (dir) => {
     await mkdir(join(dir, "src"), { recursive: true });
     await writeFile(join(dir, "README.md"), "hello\n", "utf8");
     await writeFile(join(dir, "src", "a.ts"), "export {}\n", "utf8");
     const hex = await hashTreeFiles(dir);
-    assert.match(hex, /^[a-f0-9]{64}$/);
+    assert.equal(hex, "2a5c5cc8389700aef11e5fe8cfb3edb75757b2bac832eacc13960acf1709dd21");
     const again = await hashTreeFiles(dir, ["src/a.ts", "README.md"]);
     assert.equal(again, hex);
     const swapped = await hashTreeFiles(dir, ["README.md", "src/a.ts"]);
     assert.equal(swapped, hex);
   });
+});
+
+test("hashTreeRecords does not collide across path/byte NUL boundaries", () => {
+  const a = hashTreeRecords([{ path: "a", bytes: Buffer.from("b\0c") }]);
+  const b = hashTreeRecords([{ path: "a\0b", bytes: Buffer.from("c") }]);
+  assert.notEqual(a, b);
+  assert.match(a, /^[a-f0-9]{64}$/);
+  assert.match(b, /^[a-f0-9]{64}$/);
 });
 
 test("verifyMinisign accepts a real minisign fixture of the sha256 hex", async () => {
@@ -171,8 +195,17 @@ test("verifyMinisign accepts a real minisign fixture of the sha256 hex", async (
   const publicKey = readNinthlevelMinisignPub();
   assert.equal(payload, "32640f476ab6bf1f86800218e7aaf99b01e32f44d8194f8bef3c98c5b946e5e9");
   await verifyMinisign({ payload, signature, publicKey });
+  const bare = publicKey
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith("untrusted comment:"));
+  await verifyMinisign({ payload, signature, publicKey: bare });
   await assert.rejects(
     () => verifyMinisign({ payload: "0".repeat(64), signature, publicKey }),
+    MinisignError,
+  );
+  await assert.rejects(
+    () => verifyMinisign({ payload: "not-a-digest", signature, publicKey }),
     MinisignError,
   );
 });

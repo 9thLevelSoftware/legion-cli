@@ -7,10 +7,12 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
+  fetchGithubZipball,
   fetchPublicHttpsBinary,
   fetchPublicHttpsPinned,
   GITHUB_ZIPBALL_HOSTS,
   isPrivateOrLocalHost,
+  PersistError,
   resolvePublicAddress,
   SsrfError,
 } from "../dist/index.js";
@@ -273,6 +275,89 @@ test("fetchPublicHttpsPinned wiki path still upgrades http: redirects", async (t
   });
   assert.equal(fetched.body.toString("utf8"), "public doc");
   assert.equal(hops, 2);
+});
+
+test("fetchGithubZipball fetches the tags zipball against a mock", async (t) => {
+  const requests = mockHttpsRequest(t, () => ({
+    status: 200,
+    body: "PK\x03\x04zip",
+    headers: { "content-type": "application/zip" },
+  }));
+  const fetched = await fetchGithubZipball("github:acme/brand@v1.0.0", {
+    lookup: async () => ({ address: "8.8.8.8", family: 4 }),
+  });
+  assert.equal(Buffer.isBuffer(fetched.body), true);
+  assert.equal(fetched.body.toString(), "PK\x03\x04zip");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].host, "github.com");
+  assert.match(requests[0].path, /\/acme\/brand\/archive\/refs\/tags\/v1\.0\.0\.zip$/);
+  await assert.rejects(() => fetchGithubZipball("github:acme/brand"), PersistError);
+});
+
+test("fetchPublicHttpsBinary refuses a later hop that is not allowlisted", async (t) => {
+  mockHttpsRequest(t, (options) => {
+    if (options.host === "github.com") {
+      return { status: 302, headers: { location: "https://evil.example/pkg.zip" }, body: "" };
+    }
+    throw new Error(`SSRF test must not connect to ${options.host}`);
+  });
+  await assert.rejects(
+    () =>
+      fetchPublicHttpsBinary("https://github.com/acme/brand/archive/refs/tags/v1.zip", {
+        ...ZIP_OPTS,
+        lookup: async () => ({ address: "8.8.8.8", family: 4 }),
+      }),
+    (err) => {
+      assert.equal(err instanceof SsrfError, true);
+      assert.match(err.message, /allowlist/);
+      return true;
+    },
+  );
+});
+
+test("fetchPublicHttpsBinary refuses userinfo on a later hop", async (t) => {
+  mockHttpsRequest(t, () => ({
+    status: 302,
+    headers: { location: "https://user:token@codeload.github.com/acme/brand/zip/v1" },
+    body: "",
+  }));
+  await assert.rejects(
+    () =>
+      fetchPublicHttpsBinary("https://github.com/acme/brand/archive/refs/tags/v1.zip", {
+        ...ZIP_OPTS,
+        lookup: async () => ({ address: "8.8.8.8", family: 4 }),
+      }),
+    (err) => {
+      assert.equal(err instanceof SsrfError, true);
+      assert.match(err.message, /userinfo/);
+      return true;
+    },
+  );
+});
+
+test("fetchPublicHttpsBinary refuses a 6th redirect hop", async (t) => {
+  let hops = 0;
+  mockHttpsRequest(t, () => {
+    hops += 1;
+    return {
+      status: 302,
+      headers: { location: "https://github.com/acme/brand/archive/refs/tags/v1.zip" },
+      body: "",
+    };
+  });
+  await assert.rejects(
+    () =>
+      fetchPublicHttpsBinary("https://github.com/acme/brand/archive/refs/tags/v1.zip", {
+        ...ZIP_OPTS,
+        lookup: async () => ({ address: "8.8.8.8", family: 4 }),
+      }),
+    (err) => {
+      assert.equal(err instanceof SsrfError, true);
+      assert.match(err.message, /redirect limit/);
+      return true;
+    },
+  );
+  assert.equal(hops, 6);
 });
 
 test("fetchPublicHttpsBinary refuses a redirect whose host resolves to loopback", async (t) => {

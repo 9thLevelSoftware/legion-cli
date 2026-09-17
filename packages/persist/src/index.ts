@@ -59,6 +59,7 @@ export {
   MAX_INGEST_FILE_BYTES,
   MAX_INGEST_TREE_BYTES,
   MAX_ZIPBALL_BYTES,
+  MAX_ZIPBALL_ENTRIES,
   runPagePath,
   runResumePath,
   runStorePath,
@@ -88,6 +89,7 @@ export {
 export type { MarkdownDoc } from "./markdown.js";
 export {
   assertInsideProject,
+  assertResolvedInside,
   canonicalizePath,
   resolveProjectPath,
   toFsPath,
@@ -111,7 +113,7 @@ export {
 } from "./github-fetch.js";
 export type { GithubRepoRef } from "./github-fetch.js";
 export { unzipZipball } from "./unzip.js";
-export { hashTreeFiles } from "./hash-tree.js";
+export { hashTreeFiles, hashTreeRecords } from "./hash-tree.js";
 export {
   NINTHLEVEL_MINISIGN_PUB_PATH,
   readNinthlevelMinisignPub,

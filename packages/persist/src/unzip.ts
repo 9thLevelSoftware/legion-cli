@@ -2,8 +2,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { PathEscapeError, PersistError } from "./errors.js";
-import { MAX_ZIPBALL_BYTES } from "./layout.js";
-import { toFsPath } from "./paths.js";
+import { MAX_ZIPBALL_BYTES, MAX_ZIPBALL_ENTRIES } from "./layout.js";
+import { assertResolvedInside, toFsPath } from "./paths.js";
 
 const require = createRequire(import.meta.url);
 const yauzl = require("yauzl") as typeof import("yauzl");
@@ -106,11 +106,14 @@ function readAllEntries(zip: import("yauzl").ZipFile, maxUncompressed: number): 
     zip.on("entry", (entry: import("yauzl").Entry) => {
       void (async () => {
         try {
-          if (entry.fileName.includes("\\") || entry.fileName.includes("\0")) {
+          if (entry.fileName.includes("\\") || entry.fileName.includes("\0") || entry.fileName.includes(":")) {
             throw new PathEscapeError(entry.fileName);
           }
           if (isUnixSymlink(entry)) {
             throw new PathEscapeError(entry.fileName);
+          }
+          if (out.length >= MAX_ZIPBALL_ENTRIES) {
+            throw new PersistError("zip exceeded entry cap");
           }
           const isDir = entry.fileName.endsWith("/");
           if (!isDir) {
@@ -150,6 +153,9 @@ function singleTopLevelPrefix(names: string[]): string | undefined {
 }
 
 export async function unzipZipball(zip: Buffer, destDir: string): Promise<string[]> {
+  if (zip.byteLength > MAX_ZIPBALL_BYTES) {
+    throw new PersistError("zip exceeded size cap");
+  }
   let zipfile: import("yauzl").ZipFile;
   try {
     zipfile = await openZipBuffer(zip);
@@ -171,7 +177,10 @@ export async function unzipZipball(zip: Buffer, destDir: string): Promise<string
     let rel = entry.fileName;
     if (prefix && rel.startsWith(prefix)) rel = rel.slice(prefix.length);
     if (rel === "" || rel === "/") continue;
-    const abs = toFsPath(destDir, rel);
+    if (rel.includes("\\") || rel.includes("\0") || rel.includes(":")) {
+      throw new PathEscapeError(rel);
+    }
+    const abs = assertResolvedInside(destDir, toFsPath(destDir, rel), rel);
     if (entry.isDir) {
       await mkdir(abs, { recursive: true });
       continue;

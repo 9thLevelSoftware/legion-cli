@@ -1,5 +1,6 @@
 import dns from "node:dns/promises";
 import https from "node:https";
+import { MAX_ZIPBALL_BYTES } from "./layout.js";
 
 /** Single-address lookup so fetch never happy-eyeballs to a second IP. */
 export type SsrfLookup = (hostname: string) => Promise<{ address: string; family: number }>;
@@ -321,7 +322,7 @@ export async function fetchPublicHttpsBinary(
     throw new SsrfError("binary fetch requires a host allowlist");
   }
   return fetchPublicHttpsPinned(source, {
-    maxBytes: opts.maxBytes,
+    maxBytes: Math.min(opts.maxBytes, MAX_ZIPBALL_BYTES),
     timeoutMs: opts.timeoutMs,
     accept: opts.accept,
     hostAllowlist: opts.hostAllowlist,

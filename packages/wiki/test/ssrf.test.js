@@ -250,6 +250,23 @@ test("fetchPublicHttps refuses redirect to CGNAT 100.64/10", async (t) => {
   );
 });
 
+test("fetchPublicHttps upgrades http: redirects and UTF-8-decodes", async (t) => {
+  let hops = 0;
+  mockHttpsRequest(t, () => {
+    hops += 1;
+    if (hops === 1) {
+      return { status: 302, headers: { location: "http://example.com/doc" }, body: "" };
+    }
+    return { status: 200, body: "public doc", headers: { "content-type": "text/plain; charset=utf-8" } };
+  });
+  const fetched = await fetchPublicHttps("https://evil.example/bounce", {
+    lookup: async () => ({ address: "8.8.8.8", family: 4 }),
+  });
+  assert.equal(typeof fetched.body, "string");
+  assert.equal(fetched.body, "public doc");
+  assert.equal(hops, 2);
+});
+
 test("fetchPublicHttps refuses a redirect whose host resolves to loopback", async (t) => {
   let hops = 0;
   mockHttpsRequest(t, () => {

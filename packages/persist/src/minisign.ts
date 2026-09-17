@@ -34,12 +34,19 @@ function decodeB64(label: string, value: string): Buffer {
   return buf;
 }
 
-function parsePublicKey(publicKey: string): { keyId: Buffer; publicKey: Uint8Array } {
-  const lines = splitLines(publicKey);
-  if (lines.length < 2 || !lines[0]?.startsWith("untrusted comment:")) {
-    throw new MinisignError("minisign public key is invalid");
+function publicKeyB64(publicKey: string): string {
+  const lines = splitLines(publicKey).map((line) => line.trim()).filter((line) => line.length > 0);
+  if (lines.length >= 2 && lines[0]?.startsWith("untrusted comment:")) {
+    return lines[1] ?? "";
   }
-  const decoded = decodeB64("minisign public key", lines[1] ?? "");
+  if (lines.length >= 1 && lines[0] && !lines[0].startsWith("untrusted comment:")) {
+    return lines[0];
+  }
+  throw new MinisignError("minisign public key is invalid");
+}
+
+function parsePublicKey(publicKey: string): { keyId: Buffer; publicKey: Uint8Array } {
+  const decoded = decodeB64("minisign public key", publicKeyB64(publicKey));
   if (decoded.length !== PUB_DECODED_LEN) {
     throw new MinisignError("minisign public key is invalid");
   }
@@ -88,6 +95,16 @@ function parseSignature(signature: string): {
   };
 }
 
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+
+function payloadHex(payload: string | Buffer): Buffer {
+  const text = typeof payload === "string" ? payload : payload.toString("utf8");
+  if (!SHA256_HEX.test(text)) {
+    throw new MinisignError("minisign payload must be a sha256 hex digest");
+  }
+  return Buffer.from(text, "utf8");
+}
+
 export async function verifyMinisign(opts: {
   payload: string | Buffer;
   signature: string;
@@ -98,7 +115,7 @@ export async function verifyMinisign(opts: {
   if (!pub.keyId.equals(sig.keyId)) {
     throw new MinisignError("minisign key id mismatch");
   }
-  const payload = typeof opts.payload === "string" ? Buffer.from(opts.payload, "utf8") : opts.payload;
+  const payload = payloadHex(opts.payload);
   const prehash = blake2b(new Uint8Array(payload), { dkLen: 64 });
   const ok = await verifyAsync(sig.signature, prehash, pub.publicKey);
   if (!ok) {
