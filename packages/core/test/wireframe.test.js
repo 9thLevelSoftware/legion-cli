@@ -129,6 +129,20 @@ test("assertWireframeHtml allows meta content=continue and denies on*/javascript
       ),
     /data:/,
   );
+  assert.throws(
+    () =>
+      assertWireframeHtml(
+        '<meta http-equiv="refresh" content=" 0;data:text/html,<script>alert(1)</script>">',
+      ),
+    /data:/,
+  );
+  assert.throws(
+    () =>
+      assertWireframeHtml(
+        '<meta http-equiv="refresh" content=" 0;url=data:text/html,<script>alert(1)</script>">',
+      ),
+    /data:/,
+  );
   assert.throws(() => assertWireframeHtml("<script>alert(1)</script>"), /<script>/);
   assert.throws(() => assertWireframeHtml('<iframe src="x"></iframe>'), /<iframe>/);
   assert.throws(() => assertWireframeHtml('<link rel="import" href="x.html">'), /rel=import/);

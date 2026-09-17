@@ -269,7 +269,7 @@ function relTokens(value: string): string[] {
 
 /** WHATWG pragma-set refresh: delay, optional `;`/`,`, optional `url=`, remainder is the URL. */
 function refreshUrl(content: string): string | null {
-  const decoded = decodeHtmlEntities(content);
+  const decoded = decodeHtmlEntities(content).trimStart();
   let i = 0;
   while (i < decoded.length && /[0-9.]/.test(decoded[i] ?? "")) i += 1;
   while (i < decoded.length && /\s/.test(decoded[i] ?? "")) i += 1;
