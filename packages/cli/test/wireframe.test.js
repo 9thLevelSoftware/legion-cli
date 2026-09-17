@@ -108,7 +108,7 @@ test("frozen without --restyle refuses; --restyle with fixture keeps h1", async 
     const after = await readFile(page, "utf8");
     assert.match(after, /<h1>Keep Me<\/h1>/);
     assert.match(after, /#0b6e4f/);
-    assert.match(after, /\.screen/);
+    assert.match(after, /html, body \{/);
     assert.match(after, /--bg:/);
   });
 });

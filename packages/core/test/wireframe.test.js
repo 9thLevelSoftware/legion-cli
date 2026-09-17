@@ -150,7 +150,8 @@ test("frozen --restyle with fixture package changes CSS and keeps h1 text", asyn
     const after = await readFile(page, "utf8");
     assert.match(after, /<h1>Keep Me<\/h1>/);
     assert.match(after, /#0b6e4f/);
-    assert.match(after, /\.screen/);
+    assert.match(after, /html, body \{/);
+    assert.match(after, /\.btn \{/);
     assert.match(after, /--bg:/);
     assert.match(after, /--ink:/);
     assert.match(after, /--accent:/);
@@ -240,6 +241,10 @@ test("spawned meta content=continue does not trip the on* policy", async () => {
             path: ".legion-cli/specs/spec-checkin/wireframes/board.html",
             content: injected,
           },
+          {
+            path: ".legion-cli/specs/spec-checkin/wireframes/payload.svg",
+            content: "<svg></svg>\n",
+          },
         ],
       });
       const result = await spawning.wireframe({ spawn: true });
@@ -247,6 +252,7 @@ test("spawned meta content=continue does not trip the on* policy", async () => {
       const after = await readFile(page, "utf8");
       assert.match(after, /content="continue"/);
       assert.equal(palettePresent(after), true);
+      assert.equal(existsSync(join(store.paths.specsDir, spec.id, "wireframes", "payload.svg")), false);
     });
   } finally {
     if (previous === undefined) delete process.env.LEGION_CLI_ADAPTER;
@@ -270,7 +276,11 @@ test("wireframe after --skip-wireframes writes files, clears skip note, does not
     assert.equal(after.data.status, "draft");
     assert.equal(after.data.wireframesIndex, "wireframes/INDEX.html");
     assert.doesNotMatch(after.body, /skip-wireframes/);
-    assert.equal(existsSync(join(store.paths.specsDir, spec.id, "wireframes", "INDEX.html")), true);
+    const dir = join(store.paths.specsDir, spec.id, "wireframes");
+    assert.equal(existsSync(join(dir, "INDEX.html")), true);
+    assert.equal(existsSync(join(dir, "board.html")), true);
+    assert.equal(existsSync(join(dir, "settings.html")), true);
+    assert.equal(result.pages.length, 2);
     assert.equal((await engine.getState()).phase, "spec_draft");
   });
 });
