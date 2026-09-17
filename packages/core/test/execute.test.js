@@ -1057,6 +1057,7 @@ test("execute jail cwd exists during spawn and extra writes are dropped", async 
         assert.equal(jailSeen, true);
         assert.equal(existsSync(join(dir, "src", "secret.ts")), false);
         assert.ok(result.tasks[0].extrasReverted.includes("src/secret.ts"));
+        assert.ok(result.tasks[0].extrasReverted.includes(".legion-cli/specs/spec-checkin/SPEC.md"));
         assert.equal(
           await readFile(join(dir, ".legion-cli", "specs", "spec-checkin", "SPEC.md"), "utf8"),
           specBefore,
@@ -1076,5 +1077,60 @@ test("execute jail cwd exists during spawn and extra writes are dropped", async 
         },
       },
     );
+  });
+});
+
+test("execute stays jailed when sandbox.skills omits execute", async () => {
+  await withFakeAdapter(async () => {
+    let jailSeen = false;
+    let projectDir;
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        projectDir = dir;
+        await initProject(engine);
+        await seedExecute(store);
+        initGitRepo(dir);
+        const config = await store.readConfig();
+        await store.writeConfig({
+          ...config,
+          sandbox: { ...config.sandbox, skills: ["plan"], allowCopyJail: true },
+        });
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "done");
+        assert.equal(jailSeen, true);
+      },
+      {
+        fakeOnWait: async () => {
+          const names = await readdir(join(projectDir, ".legion-cli", "sandbox"));
+          jailSeen = names.some((name) => name.startsWith("execute-"));
+        },
+      },
+    );
+  });
+});
+
+test("sandboxed plan copy-out includes SkillContract plans", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      const config = await store.readConfig();
+      await store.writeConfig({
+        ...config,
+        sandbox: { ...config.sandbox, skills: ["plan"], allowCopyJail: true },
+      });
+      const spawned = await optionalSkillSpawn({
+        projectRoot: dir,
+        config: await store.readConfig(),
+        skillId: "plan",
+        specId: "spec-checkin",
+        promptBody: "Write the plan.",
+        skillsDir,
+        required: true,
+        fakeArtifacts: [{ path: ".legion-cli/plans/spec-checkin.md", content: "plan body\n" }],
+      });
+      assert.equal(spawned.spawned, true);
+      assert.equal(await readFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "utf8"), "plan body\n");
+      assert.equal(spawned.revert?.extrasReverted.includes(".legion-cli/plans/spec-checkin.md"), false);
+    });
   });
 });

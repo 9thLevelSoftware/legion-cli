@@ -23,7 +23,7 @@ export {
   usesAssumedExtraBinary,
 } from "./argv.js";
 export { AdapterConfigError, AdapterNotEnabled, AgentError } from "./errors.js";
-export { filterSpawnEnv } from "./env.js";
+export { ADAPTER_CREDENTIAL_KEYS, filterSpawnEnv } from "./env.js";
 export {
   REQUIRED_SKILL_IDS,
   SKILL_BODY_WARN_CHARS,

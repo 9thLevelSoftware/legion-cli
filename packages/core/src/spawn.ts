@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  ADAPTER_CREDENTIAL_KEYS,
   AgentError,
   buildPointerPrompt,
   DEFAULT_TIMEOUT_MS,
@@ -32,6 +34,7 @@ import {
   type SandboxHandle,
 } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
+  isConcretePosixRepoRelativePath,
   ResumeFileSchema,
   SCHEMA_VERSION,
   type AdapterId,
@@ -41,7 +44,7 @@ import {
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
-import { isAllowedPath, skillContract } from "./contracts.js";
+import { isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
 import {
   recordPreSpawnRef,
@@ -173,6 +176,7 @@ export type SkillSpawnOpts = {
   holdWait?: FakeHoldWait;
   onWait?: () => Promise<void>;
   handlePid?: number;
+  allowNoSandbox?: boolean;
 };
 
 type SpawnRevertCtx = {
@@ -202,7 +206,6 @@ export type StartedSkillSpawn =
       binary: string;
       argvSummary: string;
       sandbox?: SandboxHandle;
-      readSet?: readonly string[];
     };
 
 export type WaitedSkillSpawn = {
@@ -219,10 +222,6 @@ const CONFIG_READ_SET = [
   "jsconfig.json",
 ] as const;
 
-function skillUsesSandbox(config: LegionConfig, skillId: SkillId): boolean {
-  return config.sandbox.skills.includes(skillId);
-}
-
 function sandboxReadSet(opts: {
   projectRoot: string;
   runId: string;
@@ -238,39 +237,23 @@ function sandboxReadSet(opts: {
   return out;
 }
 
-function sandboxAllowedWrites(runId: string, contract?: FileContract): string[] {
-  const out = [`.legion-cli/cache/runs/${runId}`];
+function sandboxAllowedWrites(
+  runId: string,
+  skillId: SkillId,
+  specId?: string,
+  contract?: FileContract,
+): string[] {
+  const out: string[] = [];
+  for (const root of SKILL_CONTRACTS[skillId]) {
+    const concrete = root
+      .replaceAll("<id>", runId)
+      .replaceAll("<activeSpecId>", specId ?? "active")
+      .replace(/\/\*\*$/, "")
+      .replace(/\/\*$/, "");
+    if (isConcretePosixRepoRelativePath(concrete)) out.push(concrete);
+  }
   if (contract) out.push(...contract.filesAllowed, ...contract.expectedArtifacts);
   return out;
-}
-
-function envRecord(env: NodeJS.ProcessEnv): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) out[key] = value;
-  }
-  return out;
-}
-
-function spawnableAdapterBinary(binary: string): string | undefined {
-  if (!binary || binary.startsWith("(")) return undefined;
-  return binary;
-}
-
-function matchesPrefix(posix: string, prefixes: readonly string[]): boolean {
-  return prefixes.some((entry) => posix === entry || posix.startsWith(`${entry}/`));
-}
-
-function jailContractExtras(
-  dropped: readonly string[],
-  allowedRoots: readonly string[],
-  readSet: readonly string[],
-): string[] {
-  return dropped.filter((rel) => !isAllowedPath(rel, allowedRoots) && !matchesPrefix(rel, readSet));
-}
-
-function jailGitIncident(dropped: readonly string[]): boolean {
-  return dropped.some((rel) => rel === ".git" || rel.startsWith(".git/"));
 }
 
 function formatLevel3(level3: { scripts: string[]; references: string[]; assets: string[] }): string[] {
@@ -496,26 +479,39 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   };
   await writeResume(null);
 
-  const readSet = sandboxReadSet({
-    projectRoot: opts.projectRoot,
-    runId,
-    specId: opts.specId,
-    taskId: opts.taskId,
-  });
   let sandbox: SandboxHandle | undefined;
-  if (skillUsesSandbox(opts.config, opts.skillId)) {
+  const jailed = opts.skillId === "execute" || opts.config.sandbox.skills.includes(opts.skillId);
+  if (jailed) {
+    const filtered = filterSpawnEnv(process.env, adapter.id, adapter.binary);
     sandbox = await materializeJail({
       projectRoot: opts.projectRoot,
       runId,
-      allowedWrites: sandboxAllowedWrites(runId, opts.fileContract),
-      readSet,
-      adapterBinary: spawnableAdapterBinary(tmpl.binary),
+      allowedWrites: sandboxAllowedWrites(runId, opts.skillId, opts.specId, opts.fileContract),
+      readSet: sandboxReadSet({
+        projectRoot: opts.projectRoot,
+        runId,
+        specId: opts.specId,
+        taskId: opts.taskId,
+      }),
+      adapterBinary: tmpl.binary.startsWith("(") ? undefined : tmpl.binary,
+      backend: opts.config.sandbox.backend,
+      allowDegradedCopy:
+        opts.skillId !== "execute" ||
+        Boolean(opts.allowNoSandbox) ||
+        opts.config.sandbox.allowCopyJail ||
+        !opts.config.sandbox.requireHardened,
+      credentialKeys: [...new Set(Object.values(ADAPTER_CREDENTIAL_KEYS).flat())].filter(
+        (key) => filtered[key] !== undefined,
+      ),
     });
   }
 
   let handle: AgentHandle;
   try {
     const spawnOpts = sandbox?.spawnOpts();
+    const env: Record<string, string> = spawnOpts
+      ? Object.fromEntries(Object.entries(spawnOpts.env).filter((entry): entry is [string, string] => entry[1] !== undefined))
+      : filterSpawnEnv(process.env, adapter.id, adapter.binary);
     handle = await adapter.spawn({
       runId,
       skillId: opts.skillId,
@@ -523,7 +519,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       pointerPrompt: buildPointerPrompt(runId, opts.skillId),
       cwd: spawnOpts?.cwd ?? opts.projectRoot,
       timeoutMs: DEFAULT_TIMEOUT_MS,
-      env: spawnOpts ? envRecord(spawnOpts.env) : filterSpawnEnv(process.env, adapter.id, adapter.binary),
+      env,
       expectedArtifacts: opts.fakeArtifacts,
       ...(spawnOpts?.wrapper ? { wrapper: spawnOpts.wrapper } : {}),
     });
@@ -552,7 +548,6 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     binary: tmpl.binary,
     argvSummary,
     sandbox,
-    readSet,
   };
 }
 
@@ -574,17 +569,17 @@ export async function finishStartedSpawn(
 ): Promise<RevertResult> {
   let copied: string[] = [];
   let dropped: string[] = [];
+  const resumePath = join(
+    started.revertCtx.projectRoot,
+    ".legion-cli",
+    "cache",
+    "runs",
+    started.runId,
+    "resume.json",
+  );
+  let resumeRaw: string | undefined;
   try {
     if (started.sandbox) {
-      const resumePath = join(
-        started.revertCtx.projectRoot,
-        ".legion-cli",
-        "cache",
-        "runs",
-        started.runId,
-        "resume.json",
-      );
-      let resumeRaw: string | undefined;
       try {
         resumeRaw = await readFile(resumePath, "utf8");
       } catch {
@@ -593,23 +588,39 @@ export async function finishStartedSpawn(
       const out = await started.sandbox.copyOut();
       copied = out.copied;
       dropped = out.dropped;
-      if (resumeRaw !== undefined) {
-        await writeFile(resumePath, resumeRaw, "utf8");
-      }
     }
     const revert = await revertExtras(started.revertCtx);
-    const jailExtras = started.readSet
-      ? jailContractExtras(dropped, started.revertCtx.allowedRoots, started.readSet)
-      : [];
-    const extrasReverted = [...new Set([...jailExtras, ...revert.extrasReverted])];
+    const extrasReverted = new Set(revert.extrasReverted);
+    let incident = revert.incident;
+    if (started.sandbox) {
+      for (const rel of dropped) {
+        if (rel === ".git" || rel.startsWith(".git/")) incident = true;
+        if (isAllowedPath(rel, started.revertCtx.allowedRoots)) continue;
+        const before = started.sandbox.copyInHashes.get(rel);
+        if (before !== undefined) {
+          try {
+            const after = createHash("sha256")
+              .update(await readFile(join(started.sandbox.jailRoot, ...rel.split("/"))))
+              .digest("hex");
+            if (after === before) continue;
+          } catch {
+            // missing/unreadable mutated read is an extra
+          }
+        }
+        extrasReverted.add(rel);
+      }
+    }
     return {
       ...revert,
-      extrasReverted,
-      incident: revert.incident || jailGitIncident(dropped),
+      extrasReverted: [...extrasReverted],
+      incident,
       sandboxCopied: copied,
       sandboxDropped: dropped,
     };
   } finally {
+    if (resumeRaw !== undefined) {
+      await writeFile(resumePath, resumeRaw, "utf8").catch(() => undefined);
+    }
     await started.sandbox?.destroy().catch(() => undefined);
     await clearLiveSpawnMarker(started.revertCtx.projectRoot, started.runId);
   }

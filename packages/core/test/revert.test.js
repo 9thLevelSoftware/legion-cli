@@ -46,8 +46,10 @@ test("restoreChangedTaskFiles recreates the tasks dir and replaces symlinks", as
 
 test("FileContract revert still runs after sandboxed execute copy-out", async () => {
   await withFakeAdapter(async () => {
+    let projectDir;
     await withEngine(
       async ({ engine, store, dir }) => {
+        projectDir = dir;
         await initProject(engine);
         await seedPlanReady(store, {
           task: {
@@ -63,9 +65,15 @@ test("FileContract revert still runs after sandboxed execute copy-out", async ()
         assert.equal(result.status, "blocked");
         assert.equal(existsSync(join(dir, "src", "secret.ts")), false);
         assert.ok(result.tasks[0].extrasReverted.includes("src/secret.ts"));
+        assert.equal(existsSync(join(dir, "src", "operator-extra.ts")), false);
+        assert.ok(result.tasks[0].extrasReverted.includes("src/operator-extra.ts"));
       },
       {
         fakeArtifacts: [{ path: "src/secret.ts", content: "export const secret = true;\n" }],
+        fakeOnWait: async () => {
+          await mkdir(join(projectDir, "src"), { recursive: true });
+          await writeFile(join(projectDir, "src", "operator-extra.ts"), "only-revert-sees-this\n", "utf8");
+        },
       },
     );
   });

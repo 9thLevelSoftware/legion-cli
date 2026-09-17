@@ -1967,15 +1967,13 @@ export class LegionEngine {
         cliAdapter: opts.adapter,
         taskAdapter: task.adapter,
       });
-      if (config.sandbox.skills.includes("execute")) {
-        try {
-          assertExecuteSandbox(config, { allowNoSandbox: opts.allowNoSandbox });
-        } catch (err) {
-          if (err instanceof SandboxError) {
-            refuse(err.message, HINT.allowNoSandbox);
-          }
-          throw err;
+      try {
+        assertExecuteSandbox(config, { allowNoSandbox: opts.allowNoSandbox });
+      } catch (err) {
+        if (err instanceof SandboxError) {
+          refuse(err.message, HINT.allowNoSandbox);
         }
+        throw err;
       }
       if (state.phase !== "executing") {
         assertCanTransition(state.phase, "executing");
@@ -2014,6 +2012,7 @@ export class LegionEngine {
           required: true,
           cliAdapter: opts.adapter,
           taskAdapter: task.adapter,
+          allowNoSandbox: opts.allowNoSandbox,
         });
       } catch (err) {
         await this.#transitionTaskTo(task.id, "blocked");

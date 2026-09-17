@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { copyFile, lstat, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import {
@@ -22,14 +22,18 @@ export type SandboxPolicy = {
   allowedWrites: readonly string[];
   readSet: readonly string[];
   adapterBinary?: string;
-  env?: NodeJS.ProcessEnv;
-  backend?: SandboxBackend | "auto";
+  backend?: "auto" | "bwrap" | "seatbelt" | "copy";
+  /** When LSM bind fails, copy jail is allowed only if a hatch was already granted. */
+  allowDegradedCopy?: boolean;
+  /** Adapter-scoped vendor keys only; never the full credential dump. */
+  credentialKeys?: readonly string[];
 };
 
 export interface SandboxHandle {
   backend: SandboxBackend;
   hardened: boolean;
   jailRoot: string;
+  copyInHashes: ReadonlyMap<string, string>;
   spawnOpts(): { cwd: string; env: NodeJS.ProcessEnv; wrapper?: { bin: string; argvPrefix: string[] } };
   copyOut(): Promise<{ copied: string[]; dropped: string[] }>;
   destroy(): Promise<void>;
@@ -236,7 +240,11 @@ function canonicalBlocked(projectRoot: string, abs: string): boolean {
   }
 }
 
-function buildSandboxEnv(jailRoot: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+function buildSandboxEnv(
+  jailRoot: string,
+  credentialKeys: readonly string[] = [],
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
   const home = join(jailRoot, "home");
   const tmp = join(jailRoot, "tmp");
   const env: NodeJS.ProcessEnv = {};
@@ -256,11 +264,51 @@ function buildSandboxEnv(jailRoot: string, source: NodeJS.ProcessEnv = process.e
   env.APPDATA = home;
   env.LOCALAPPDATA = home;
   env.GIT_DIR = join(jailRoot, ".git-null");
+  const allowedCreds = new Set(credentialKeys);
   for (const key of ADAPTER_CREDENTIAL_KEYS) {
+    if (!allowedCreds.has(key)) continue;
     const value = source[key];
     if (value !== undefined) env[key] = value;
   }
   return env;
+}
+
+function selectJailBackend(requested: SandboxPolicy["backend"]): { want: SandboxBackend; hardened: boolean } {
+  const detected = detectSandbox();
+  const req = requested ?? "auto";
+  if (req === "copy") return { want: "copy", hardened: false };
+  if (req === "auto") return { want: detected.backend, hardened: detected.hardened };
+  if (detected.backend === req && detected.hardened) return { want: req, hardened: true };
+  return { want: "copy", hardened: false };
+}
+
+function assertJailRealpath(projectRoot: string, jailRoot: string): void {
+  const projectReal = tryRealpath(projectRoot) ?? resolve(projectRoot);
+  const expected = resolve(projectReal, ".legion-cli", "sandbox");
+  const jailReal = tryRealpath(jailRoot);
+  if (!jailReal || lexicalRel(expected, jailReal) === undefined) {
+    throw new PathEscapeError(jailRoot);
+  }
+}
+
+async function hashJailFiles(jailRoot: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const rel of await listJailFiles(jailRoot)) {
+    let src: string;
+    try {
+      src = toFsPath(jailRoot, rel);
+    } catch {
+      continue;
+    }
+    try {
+      const st = await lstat(src);
+      if (!st.isFile() || st.isSymbolicLink()) continue;
+      out.set(rel, createHash("sha256").update(await readFile(src)).digest("hex"));
+    } catch {
+      // skip unreadable
+    }
+  }
+  return out;
 }
 
 function homeRealpaths(): string[] {
@@ -664,21 +712,16 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
   const jailRoot = toFsPath(projectRoot, `.legion-cli/sandbox/${runId}`);
   const sandboxDir = legionPaths(projectRoot).sandboxDir;
   if (await pathHasSymlinkAncestor(sandboxDir, projectRoot)) {
-    throw new SandboxError("sandbox directory is a symlink");
+    throw new PathEscapeError(jailRoot);
   }
   try {
     const leftover = await lstat(jailRoot);
     if (leftover.isSymbolicLink()) {
-      throw new SandboxError("sandbox directory is a symlink");
+      throw new PathEscapeError(jailRoot);
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-  await rm(jailRoot, { recursive: true, force: true });
-  await mkdir(jailRoot, { recursive: true });
-  await mkdir(join(jailRoot, "home"), { recursive: true });
-  await mkdir(join(jailRoot, "tmp"), { recursive: true });
-  await mkdir(join(jailRoot, ".git-null"), { recursive: true });
 
   const extraFiles: string[] = [];
   const destroyCreated = async () => {
@@ -687,6 +730,13 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
   };
 
   try {
+    await rm(jailRoot, { recursive: true, force: true });
+    await mkdir(jailRoot, { recursive: true });
+    assertJailRealpath(projectRoot, jailRoot);
+    await mkdir(join(jailRoot, "home"), { recursive: true });
+    await mkdir(join(jailRoot, "tmp"), { recursive: true });
+    await mkdir(join(jailRoot, ".git-null"), { recursive: true });
+
     for (const posix of readSet) {
       await copySparsePath(projectRoot, jailRoot, posix, false);
     }
@@ -694,34 +744,34 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
       await copySparsePath(projectRoot, jailRoot, posix, true);
     }
 
-    const detected = detectSandbox();
-    const requested = policy.backend ?? "auto";
-    const selected: SandboxBackend =
-      requested === "auto" ? detected.backend : requested;
-    if (requested !== "auto" && detected.backend !== requested && requested !== "copy") {
-      if (requested === "bwrap" && !findRunnableBwrap()) throw new SandboxError(HARDENED_REQUIRED);
-      if (requested === "seatbelt" && !findOnPath("sandbox-exec", true)) throw new SandboxError(HARDENED_REQUIRED);
-    }
+    const selected = selectJailBackend(policy.backend);
     const binds = realpathsToBind(policy.adapterBinary);
-    const env = buildSandboxEnv(jailRoot, policy.env ?? process.env);
+    const env = buildSandboxEnv(jailRoot, policy.credentialKeys ?? []);
     let wrapper: { bin: string; argvPrefix: string[] } | undefined;
     let backend: SandboxBackend = "copy";
     let hardened = false;
 
-    if (selected === "copy") {
-      backend = "copy";
-      hardened = false;
-    } else {
-      if (!binds.ok) {
+    const useCopy = selected.want === "copy" || !selected.hardened || !binds.ok;
+    if (useCopy) {
+      if (selected.want !== "copy" && selected.hardened && !policy.allowDegradedCopy) {
         throw new SandboxError(HARDENED_REQUIRED);
       }
-      if (selected === "bwrap") {
-        const bin = findRunnableBwrap();
-        if (!bin) throw new SandboxError(HARDENED_REQUIRED);
-        wrapper = { bin, argvPrefix: bwrapArgvPrefix({ jailRoot, projectRoot, bindPaths: binds.paths }) };
+      backend = "copy";
+      hardened = false;
+    } else if (selected.want === "bwrap") {
+      const bin = findRunnableBwrap();
+      if (!bin) {
+        if (!policy.allowDegradedCopy) throw new SandboxError(HARDENED_REQUIRED);
       } else {
-        const bin = findOnPath("sandbox-exec", true);
-        if (!bin) throw new SandboxError(HARDENED_REQUIRED);
+        wrapper = { bin, argvPrefix: bwrapArgvPrefix({ jailRoot, projectRoot, bindPaths: binds.paths }) };
+        backend = "bwrap";
+        hardened = true;
+      }
+    } else {
+      const bin = findOnPath("sandbox-exec", true);
+      if (!bin) {
+        if (!policy.allowDegradedCopy) throw new SandboxError(HARDENED_REQUIRED);
+      } else {
         const profilePath = join(legionPaths(projectRoot).sandboxDir, `${runId}.sb`);
         await mkdir(dirname(profilePath), { recursive: true });
         try {
@@ -736,15 +786,18 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
         await writeFile(profilePath, seatbeltProfile(jailRoot), { encoding: "utf8", flag: "wx" });
         extraFiles.push(profilePath);
         wrapper = { bin, argvPrefix: ["-f", profilePath, "--"] };
+        backend = "seatbelt";
+        hardened = true;
       }
-      backend = selected;
-      hardened = true;
     }
+
+    const copyInHashes = await hashJailFiles(jailRoot);
 
     return {
       backend,
       hardened,
       jailRoot,
+      copyInHashes,
       spawnOpts() {
         const next: { cwd: string; env: NodeJS.ProcessEnv; wrapper?: { bin: string; argvPrefix: string[] } } = {
           cwd: jailRoot,
