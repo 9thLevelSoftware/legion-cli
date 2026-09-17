@@ -1,4 +1,4 @@
-import { createLegionEngine, findSkillsDir, isSliceTerminal } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, findSkillsDir, HINT, isSliceTerminal } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
@@ -32,6 +32,7 @@ export async function runExecute(
   const viewer = `http://${config.dashboard.bind}:${config.dashboard.port}`;
   const last = result.tasks.at(-1);
   const blocked = result.status === "blocked";
+  const nextRun = last?.ticketId ? HINT.ticket(last.taskId) : next.run;
 
   if (opts.json) {
     writeJson({
@@ -43,7 +44,7 @@ export async function runExecute(
       warnings: result.warnings,
       extrasReverted: last?.extrasReverted ?? [],
       incident: Boolean(last?.incident),
-      next: next.run,
+      next: nextRun,
       viewer,
     });
     return blocked ? 1 : 0;
@@ -57,7 +58,13 @@ export async function runExecute(
     }
     if (outcome.extrasReverted.length > 0) {
       writeOut(`FileContract extras reverted: ${outcome.extrasReverted.join(", ")}`);
-      if (outcome.ticketId) writeOut(`Filed ${outcome.ticketId} (type: scope).`);
+    }
+    if (outcome.ticketId) {
+      writeOut(
+        outcome.extrasReverted.length > 0
+          ? `Filed ${outcome.ticketId} (type: scope).`
+          : `Filed ${outcome.ticketId}.`,
+      );
     }
     if (outcome.status === "done") {
       writeOut(`Verification PASS. ${outcome.taskId} done.`);
@@ -67,9 +74,9 @@ export async function runExecute(
   }
   for (const warning of result.warnings) writeOut(warning);
   if (flags.untilBlocked && isSliceTerminal(slice) && !blocked) {
-    writeOut(`Slice complete. Next: ${next.run}`);
+    writeOut(`Slice complete. Next: ${nextRun}`);
   } else {
-    writeOut(`Next: ${next.run}`);
+    writeOut(`Next: ${nextRun}`);
   }
   writeOut(`Dashboard: ${viewer}`);
   return blocked ? 1 : 0;

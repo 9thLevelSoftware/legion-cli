@@ -105,7 +105,7 @@ async function walk(root: string, rel: string, out: Set<string>): Promise<void> 
   for (const entry of entries) {
     const posix = toPosixPath(rel ? `${rel}/${entry.name}` : entry.name);
     if (posix === ".git" || posix.startsWith(".git/")) continue;
-    if (entry.name === "node_modules" || entry.name === "dist") continue;
+    // Walk dist/node_modules too: gitignored extras there must still revert.
     if (isEngineOwned(posix)) continue;
     if (entry.isDirectory()) {
       await walk(root, posix, out);

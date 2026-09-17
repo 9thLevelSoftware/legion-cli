@@ -10,9 +10,11 @@ import { readAuditEvents, summarizeAuditMetrics } from "@9thlevelsoftware/legion
 import {
   argvSummarySafe,
   HEAD_MOVED_WARNING,
+  HINT,
   LegionEngine,
   LegionRefuseError,
   optionalSkillSpawn,
+  regressionTestPath,
   revertExtras,
 } from "../dist/index.js";
 import { snapshotGitPolicy } from "../dist/revert.js";
@@ -67,6 +69,7 @@ async function seedExecute(store, opts = {}) {
     },
     extraTasks: opts.extraTasks,
     phase: opts.phase,
+    lastReview: opts.lastReview,
   });
 }
 
@@ -818,6 +821,7 @@ test("extra.json glob files a notes ticket and blocks instead of stuck in_progre
         assert.equal(ticket.title, "also glob");
         assert.deepEqual(ticket.contract.filesAllowed, ["notes/TSK-0002.md"]);
         assert.equal(ticket.parentId, "TSK-0001");
+        assert.equal(result.tasks[0].ticketId, "TSK-0002");
       },
       {
         fakeArtifacts: [
@@ -835,20 +839,74 @@ test("extra.json glob files a notes ticket and blocks instead of stuck in_progre
   });
 });
 
-test("fix overlapping src/main.ts refuses", async () => {
+test("ticket create overlapping filesAllowed refuses with ticket Next", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedExecute(store);
+    await assert.rejects(
+      () =>
+        engine.fileTicket({
+          title: "also main",
+          contract: { filesAllowed: ["src/main.ts"] },
+        }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /overlapping filesAllowed/);
+        assert.equal(err.nextHint, HINT.ticket("TSK-x"));
+        return true;
+      },
+    );
+  });
+});
+
+test("extra.json overlapping filesAllowed is coerced and blocks the parent", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+        const ticket = (await store.readTask("TSK-0002")).data;
+        assert.deepEqual(ticket.contract.filesAllowed, ["notes/TSK-0002.md"]);
+        assert.equal(result.tasks[0].ticketId, "TSK-0002");
+      },
+      {
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "also main",
+              parentId: "TSK-0001",
+              filesAllowed: ["src/main.ts"],
+            }),
+          },
+        ],
+      },
+    );
+  });
+});
+
+test("fix overlapping src/main.ts refuses before lastReview or regression tests", async () => {
   await withEngine(async ({ engine, store, dir }) => {
     await initProject(engine);
-    await seedExecute(store, { phase: "executing" });
+    await seedExecute(store, { phase: "executing", lastReview: "PASS" });
     await mkdir(join(dir, "src"), { recursive: true });
     await writeFile(join(dir, "src", "main.js"), "export const ok = false;\n", "utf8");
+    const testPath = regressionTestPath("crash on tap");
     await assert.rejects(
       () => engine.fix("crash on tap"),
       (err) => {
         assert.equal(err instanceof LegionRefuseError, true);
         assert.match(err.message, /overlapping filesAllowed/);
+        assert.equal(err.nextHint, HINT.fix);
         return true;
       },
     );
+    assert.equal((await engine.getState()).lastReview, "PASS");
+    assert.equal(existsSync(join(dir, ...testPath.split("/"))), false);
   });
 });
 
@@ -874,6 +932,35 @@ test("gitignore extras revert only new ignored paths, not pre-existing secret/ke
       },
       {
         fakeArtifacts: [{ path: "secret/x", content: "leaked\n" }],
+      },
+    );
+  });
+});
+
+test("gitignore extras under dist/ revert new files, not pre-existing dist/keep", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        await mkdir(join(dir, "dist"), { recursive: true });
+        await writeFile(join(dir, "dist", "keep"), "keep-me\n", "utf8");
+        const gitignore = await readFile(join(dir, ".gitignore"), "utf8").catch(() => "");
+        await writeFile(
+          join(dir, ".gitignore"),
+          `${gitignore.endsWith("\n") ? gitignore : `${gitignore}\n`}dist/\n`,
+          "utf8",
+        );
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.equal(existsSync(join(dir, "dist", "x")), false);
+        assert.ok(result.tasks[0].extrasReverted.includes("dist/x"));
+        assert.equal(result.tasks[0].extrasReverted.includes("dist/keep"), false);
+        assert.equal(existsSync(join(dir, "dist", "keep")), true);
+      },
+      {
+        fakeArtifacts: [{ path: "dist/x", content: "leaked\n" }],
       },
     );
   });
