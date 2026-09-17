@@ -129,8 +129,10 @@ test("help --all does not call control-mode later", () => {
   assert.doesNotMatch(later, /vendor extra-adapter argv/);
   assert.match(out, /v0 gap; follow-up PRs in this series/);
   const gap = helpSection(out, "v0 gap; follow-up PRs in this series:", "Not in this product:");
-  assert.match(gap, /control-mode/);
+  assert.doesNotMatch(gap, /control-mode/);
   assert.match(gap, /verified vendor extra-adapter argv/);
+  const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");
+  assert.match(alwaysOn, /control-mode \[mode\]/);
 });
 
 test("help --all init lists --mode; intent drops --resume; dashboard is view-only", () => {
@@ -177,14 +179,6 @@ test("intent --resume is an unknown option", () => {
   assert.equal(result.status, 1);
   const err = normalize(result.stderr);
   assert.match(err, /unknown option '--resume'/i);
-});
-
-test("control-mode is an unknown command (verb lands in a follow-up PR)", () => {
-  const result = runCli(["control-mode"]);
-  assert.equal(result.status, 1);
-  const err = normalize(result.stderr);
-  assert.match(err, /unknown command 'control-mode'/);
-  assert.match(err, /help --all/);
 });
 
 test("parent verbs require a subcommand and print Next", () => {

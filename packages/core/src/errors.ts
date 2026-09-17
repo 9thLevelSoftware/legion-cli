@@ -17,7 +17,7 @@ export const HINT = {
   doctor: "legion-cli doctor",
   amend: "legion-cli task amend",
   blockers: "legion-cli status --blockers",
-  advisory: "legion-cli",
+  advisory: "legion-cli control-mode guarded",
   execute: "legion-cli next / legion-cli execute",
   verify: "legion-cli verify",
   review: "legion-cli review",
@@ -39,7 +39,7 @@ export const HINT = {
   inRepo: "in-repo path",
   noCommit: "legion-cli ingest --no-commit",
   show: "legion-cli show <page>",
-  controlMode: "guarded or surgical",
+  controlMode: "legion-cli control-mode",
   designGenerate: "legion-cli design-system generate",
   initMode: "legion-cli init --mode greenfield|brownfield",
   brownfield: "legion-cli brownfield --effort 1",
@@ -61,7 +61,6 @@ export function refuseKind(nextHint: string): string {
   if (match?.[1]) return match[1];
   if (/concrete paths/i.test(nextHint)) return "plan";
   if (/in-repo path/i.test(nextHint)) return "ingest";
-  if (/guarded or surgical/i.test(nextHint)) return "control-mode";
   if (nextHint.trim() === "legion-cli") return "status";
   return "other";
 }

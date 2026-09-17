@@ -11,6 +11,7 @@ import { runBrief } from "./brief.js";
 import { runBrownfield } from "./brownfield.js";
 import { runDashboard } from "./dashboard.js";
 import { runDiscuss } from "./discuss.js";
+import { runControlMode } from "./control-mode.js";
 import { runDoctor } from "./doctor.js";
 import { runExecute } from "./execute.js";
 import { runFix } from "./fix.js";
@@ -136,6 +137,14 @@ export function createProgram(): Command {
     .action(async (opts, cmd: Command) => {
       const flags = opts as { metrics?: boolean };
       const code = await runDoctor(resolveOpts(cmd), { metrics: Boolean(flags.metrics) });
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("control-mode").description("Show or set guarded|surgical|advisory"))
+    .argument("[mode]", "guarded | surgical | advisory")
+    .allowExcessArguments(false)
+    .action(async (mode: string | undefined, _opts, cmd: Command) => {
+      const code = await runControlMode(resolveOpts(cmd), mode);
       process.exitCode = code;
     });
 
