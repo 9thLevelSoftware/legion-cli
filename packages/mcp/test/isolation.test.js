@@ -28,6 +28,13 @@ test("package does not depend on core or execute", async () => {
   assert.ok(deps["@9thlevelsoftware/legion-cli-graph"]);
 });
 
+test("reader sliceTasks matches core: missing activeSpecId is empty, not all tasks", async () => {
+  const src = await readFile(join(pkgRoot, "src", "reader.ts"), "utf8");
+  assert.match(src, /if \(!activeSpecId\) return \[\]/);
+  assert.doesNotMatch(src, /if \(!activeSpecId\) return \[\.\.\.tasks\]/);
+  assert.doesNotMatch(src, /slice\.length > 0 \? slice : \[\.\.\.tasks\]/);
+});
+
 test("source must not import core/execute or take the engine lock", async () => {
   const files = await listTs(join(pkgRoot, "src"));
   assert.ok(files.length > 0);

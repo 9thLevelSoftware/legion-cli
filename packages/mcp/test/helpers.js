@@ -52,6 +52,32 @@ export async function withClient(dir, fn) {
   }
 }
 
+export function otherSpecTask(overrides = {}) {
+  const { contract, ...rest } = overrides;
+  return {
+    schemaVersion: "legion-cli-task/v1",
+    id: "TSK-9999",
+    title: "other spec work",
+    status: "ready",
+    type: "feature",
+    priority: "P1",
+    specId: "spec-other",
+    blockedBy: [],
+    blocks: [],
+    assignee: "agent",
+    notes: "",
+    ...rest,
+    contract: {
+      filesAllowed: ["src/other.ts"],
+      filesForbidden: [".git/**"],
+      expectedArtifacts: ["src/other.ts"],
+      verificationCommands: ["pnpm test"],
+      maxFilesTouched: 20,
+      ...contract,
+    },
+  };
+}
+
 export function parseTool(result) {
   const text = result.content?.map((item) => item.text).join("\n") ?? "";
   return { isError: Boolean(result.isError), text, json: tryJson(text) };
