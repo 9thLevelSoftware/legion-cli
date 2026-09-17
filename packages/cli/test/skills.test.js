@@ -72,7 +72,6 @@ test("skills install local --unsigned writes overlay", async () => {
     assert.equal(shown.status, 0, shown.stderr);
     assert.match(normalize(shown.stdout), /source: overlay/);
     assert.match(normalize(shown.stdout), /OVERLAY_EXECUTE_DESC_TOKEN/);
-    assert.match(normalize(shown.stdout), /matches-tree: yes/);
     assert.match(normalize(shown.stdout), /bodyChars: /);
   });
 });

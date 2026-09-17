@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   findSkillsDir,
-  hashSkillTree,
   installSkillOverlay,
   listResolvedSkillCatalog,
   parseIntegritySha256,
@@ -83,9 +82,6 @@ export async function runSkillsShow(opts: CliOpts, id: string): Promise<number> 
       HINT.skillsShow,
     );
   }
-  const treeSha256 = resolved.treeSha256 ?? (await hashSkillTree(resolved.skillDir));
-  const pinSha = resolved.pin?.integrity.sha256;
-  const matchesTree = pinSha ? pinSha === treeSha256 : null;
   const payload = {
     skillId,
     source: resolved.source,
@@ -101,8 +97,6 @@ export async function runSkillsShow(opts: CliOpts, id: string): Promise<number> 
           ref: resolved.pin.source.ref,
         }
       : null,
-    treeSha256,
-    matchesTree,
   };
   if (opts.json) {
     writeJson(payload);
@@ -118,8 +112,6 @@ export async function runSkillsShow(opts: CliOpts, id: string): Promise<number> 
   ];
   if (payload.pin) {
     lines.push(`pin: ${payload.pin.sha256}`);
-    lines.push(`tree: ${payload.treeSha256}`);
-    lines.push(`matches-tree: ${payload.matchesTree ? "yes" : "no"}`);
     lines.push(`origin: ${payload.pin.type} ${payload.pin.origin}${payload.pin.ref ? `@${payload.pin.ref}` : ""}`);
   }
   writeOut(lines.join("\n"));

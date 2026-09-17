@@ -39,6 +39,7 @@ import { AgentError } from "./errors.js";
 
 export const OVERLAY_PIN_FILENAME = "overlay.json";
 const DECLARED_HASH_FILENAME = "sha256.hex";
+const MINISIG_FILENAME = "sha256.hex.minisig";
 
 const GITHUB_PREFIX = /^github:/i;
 const WINDOWS_DRIVE = /^[a-zA-Z]:(?:[\\/]|$)/;
@@ -330,10 +331,6 @@ function ownerLooksLikeHost(owner: string): boolean {
   return owner.includes(".");
 }
 
-async function listMinisigFiles(dir: string): Promise<string[]> {
-  return walkSkillFiles(dir, (name) => name.endsWith(".minisig"));
-}
-
 async function verifyOverlaySignature(opts: {
   payload: string;
   signature: string;
@@ -464,11 +461,10 @@ export type InstalledSkillOverlay = {
   pin: SkillOverlayPin;
 };
 
-async function firstMinisig(dirs: readonly string[]): Promise<{ dir: string; rel: string } | undefined> {
+async function findMinisig(dirs: readonly string[]): Promise<{ dir: string; rel: string } | undefined> {
   for (const dir of dirs) {
-    const files = await listMinisigFiles(dir);
-    const rel = files[0];
-    if (rel) return { dir, rel };
+    const abs = join(dir, MINISIG_FILENAME);
+    if (existsSync(abs) && statSync(abs).isFile()) return { dir, rel: MINISIG_FILENAME };
   }
   return undefined;
 }
@@ -479,7 +475,7 @@ async function requireSignature(
   trustKeys: readonly string[],
   missingMessage: string,
 ): Promise<string> {
-  const found = await firstMinisig(searchDirs);
+  const found = await findMinisig(searchDirs);
   if (!found) {
     throw new AgentError(missingMessage);
   }
@@ -602,7 +598,7 @@ async function materializeOverlay(opts: {
       "remote skill install requires a minisign signature",
     );
   } else {
-    const found = await firstMinisig(opts.searchDirs);
+    const found = await findMinisig(opts.searchDirs);
     if (found) {
       signature = await requireSignature(
         opts.searchDirs,
