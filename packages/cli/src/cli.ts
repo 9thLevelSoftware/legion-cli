@@ -303,7 +303,9 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("review").description("Spec-level review; fix tasks mean FAIL and re-review"))
+  addGlobalOptions(
+    program.command("review").description("Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review"),
+  )
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {

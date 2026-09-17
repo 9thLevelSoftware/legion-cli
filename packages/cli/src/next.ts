@@ -88,7 +88,7 @@ export function nextCommand(
     if (state.lastReview === "PASS") {
       return { run: "legion-cli qa", hint: "score the product (the slice is done)." };
     }
-    return { run: "legion-cli review", hint: "spec-level review; fix tasks mean FAIL and re-review." };
+    return { run: "legion-cli review", hint: "spec-level review; fix tasks or in-place rewrites mean FAIL and re-review." };
   }
   return NEXT_BY_PHASE[state.phase];
 }

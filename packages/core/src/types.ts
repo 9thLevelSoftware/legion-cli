@@ -146,6 +146,7 @@ export type ReviewResult = {
   verdict: ReviewVerdict;
   createdTaskIds: string[];
   extrasReverted: string[];
+  rewrittenExistingTaskIds: string[];
 };
 
 export type ShipReceipt = {

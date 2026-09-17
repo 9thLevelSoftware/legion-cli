@@ -125,12 +125,59 @@ test("help lists verify and review", async () => {
   const review = runCli(["help", "review"]);
   assert.equal(review.status, 0, review.stderr);
   assert.match(normalize(review.stdout), /FAIL/);
+  assert.match(normalize(review.stdout), /in-place rewrites/);
+  const layer1 = runCli(["help"]);
+  assert.equal(layer1.status, 0, layer1.stderr);
+  assert.match(normalize(layer1.stdout), /in-place rewrites/);
   const all = runCli(["help", "--all"]);
   assert.equal(all.status, 0, all.stderr);
   const out = normalize(all.stdout);
   assert.match(out, /verify \[id\]/);
   assert.match(out, /review/);
+  assert.match(out, /in-place rewrites/);
   assert.match(out, /--adapter/);
+});
+
+test("review FAIL when spawn rewrites an existing TSK", async () => {
+  await withTempDir(async (dir) => {
+    await seedExecutingDone(dir);
+    const fakeArtifacts = JSON.stringify([
+      {
+        path: ".legion-cli/tasks/TSK-0001.md",
+        content:
+          "---\nschemaVersion: legion-cli-task/v1\nid: TSK-0001\ntitle: in/out button\nstatus: todo\ntype: feature\npriority: P0\nspecId: spec-checkin\nblockedBy: []\nblocks: []\ncontract:\n  filesAllowed:\n    - src/hacked.ts\n  filesForbidden:\n    - .git/**\n  expectedArtifacts:\n    - src/hacked.ts\n  verificationCommands:\n    - pnpm test\nassignee: agent\nnotes: \"\"\n---\n\nrewritten by review spawn.\n",
+      },
+    ]);
+    const env = { LEGION_CLI_ADAPTER: "fake", LEGION_CLI_FAKE_ARTIFACTS: fakeArtifacts };
+    const human = runCli(["review", "--project", dir], { env });
+    assert.equal(human.status, 1, `${human.stdout}\n${human.stderr}`);
+    assert.match(normalize(human.stdout), /Existing tasks were rewritten: TSK-0001/);
+    const engine = createLegionEngine(dir);
+    assert.equal((await engine.getState()).lastReview, "FAIL");
+    assert.equal((await engine.store.readTask("TSK-0001")).data.status, "done");
+  });
+});
+
+test("review --json FAIL names rewrittenExistingTaskIds", async () => {
+  await withTempDir(async (dir) => {
+    await seedExecutingDone(dir);
+    const fakeArtifacts = JSON.stringify([
+      {
+        path: ".legion-cli/tasks/TSK-0001.md",
+        content:
+          "---\nschemaVersion: legion-cli-task/v1\nid: TSK-0001\ntitle: in/out button\nstatus: todo\ntype: feature\npriority: P0\nspecId: spec-checkin\nblockedBy: []\nblocks: []\ncontract:\n  filesAllowed:\n    - src/hacked.ts\n  filesForbidden:\n    - .git/**\n  expectedArtifacts:\n    - src/hacked.ts\n  verificationCommands:\n    - pnpm test\nassignee: agent\nnotes: \"\"\n---\n\nrewritten by review spawn.\n",
+      },
+    ]);
+    const result = runCli(["review", "--json", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake", LEGION_CLI_FAKE_ARTIFACTS: fakeArtifacts },
+    });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.verdict, "FAIL");
+    assert.deepEqual(body.createdTaskIds, []);
+    assert.deepEqual(body.rewrittenExistingTaskIds, ["TSK-0001"]);
+    assert.equal(body.lastReview, "FAIL");
+  });
 });
 
 test("review --adapter grok refuses via cli when grok is unspawnable", async () => {
