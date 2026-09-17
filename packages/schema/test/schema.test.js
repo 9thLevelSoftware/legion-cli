@@ -569,6 +569,14 @@ test("adapter routing: generic-if-routed, strict HTTP keys, named keys, optional
       false,
       `HTTP-router key ${Object.keys(extra)[0]} must fail parse`,
     );
+    assert.equal(
+      LegionConfigSchema.safeParse({
+        ...configBase,
+        adapter: { default: "claude", grok: extra },
+      }).success,
+      false,
+      `nested extra HTTP-router key ${Object.keys(extra)[0]} must fail parse`,
+    );
   }
 
   const task = {

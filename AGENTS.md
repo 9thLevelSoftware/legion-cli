@@ -14,6 +14,7 @@
 - Supported invocation: `pnpm exec legion-cli`.
 - `init` requires `--adapter` (or a TTY prompt). Two brownfield surfaces (document both; do not merge): (1) `init --mode brownfield` sets `project.mode` and next-command (10-verb `execute` stays **in-place**); (2) `legion-cli brownfield` is the effort-1 audit extra (`--execute` is the only worktree path).
 - Parent verbs `wiki` / `ticket` / `task` / `context` / `run` print `requires <sub>` + `Next:` (same pattern as `packet` / `assume`).
-- `legion-cli control-mode` is shipped (show / set `guarded|surgical|advisory`; refuse `autonomous`; engine under lock). Verified vendor extra-adapter argv remains a **v0 gap** in this series (not “later”).
+- `legion-cli control-mode` is shipped (show / set `guarded|surgical|advisory`; refuse `autonomous`; engine under lock).
+- Extra adapters (`grok` / `openai` / `codex` / `mimo` / `minimax`) spawn with **verified vendor argv** (`grok -p`, `codex exec`, `mimo run`, `mcode exec`; `{{pointer}}` required). Nested extra config is `.strict()`. No HTTP completions client.
 - Node 22+, ESM, pnpm workspaces (`packageManager: pnpm@9`).
 - CI: typecheck + test. Publish: git tag `v*` only; GitHub Actions trusted publisher; `pnpm publish -r --access public` with provenance. No publish from untagged main. No long-lived npm token.

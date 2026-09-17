@@ -23,7 +23,7 @@ The product is the **10-verb lifecycle core** plus extras in `legion-cli help --
 
 `init` → `intent` → `discuss` → `spec` → `plan` → `execute` → `verify` → `review` → `qa` → `ship`
 
-Init requires `--adapter` (`claude` | `generic` | `fake` | extras). There is no product default. Dashboard is a **view-only** board: writes are CLI or token POST; it is not the source of truth.
+Init requires `--adapter` (`claude` | `generic` | `fake` | `grok` | `openai` | `codex` | `mimo` | `minimax`). There is no product default. `fake` is test-only (`LEGION_CLI_ADAPTER=fake`). Extra adapters spawn with verified vendor argv (`grok -p`, `codex exec`, `mimo run`, `mcode exec`). Dashboard is a **view-only** board: writes are CLI or token POST; it is not the source of truth.
 
 From this repo:
 

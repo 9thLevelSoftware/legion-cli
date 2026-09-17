@@ -115,10 +115,12 @@ export const IntentAnswersFileSchema = z.object({
 });
 export type IntentAnswersFile = z.infer<typeof IntentAnswersFileSchema>;
 
-export const ExtraAdapterConfigSchema = z.object({
-  binary: z.string().min(1).optional(),
-  args: z.array(z.string()).optional(),
-});
+export const ExtraAdapterConfigSchema = z
+  .object({
+    binary: z.string().min(1).optional(),
+    args: z.array(z.string()).optional(),
+  })
+  .strict();
 export type ExtraAdapterConfig = z.infer<typeof ExtraAdapterConfigSchema>;
 
 export const AdapterRoutesSchema = z

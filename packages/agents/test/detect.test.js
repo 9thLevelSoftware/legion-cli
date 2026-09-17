@@ -97,6 +97,37 @@ test("extra adapter args that omit {{pointer}} are not spawnable and spawn throw
   }
 });
 
+test("extra adapter args that drop the vendor prefix fail closed on the assumed binary", async () => {
+  const cases = [
+    ["grok", "-p"],
+    ["openai", "exec"],
+    ["codex", "exec"],
+    ["mimo", "run"],
+    ["minimax", "exec"],
+  ];
+  for (const [id, prefix] of cases) {
+    const adapter = createAdapter(id, {
+      [id]: { args: ["{{pointer}}"] },
+    });
+    const detected = await adapter.detect();
+    assert.equal(detected.ok, false, id);
+    assert.match(detected.reason ?? "", new RegExp(`must keep ${prefix}`));
+    await assert.rejects(
+      () =>
+        adapter.spawn({
+          runId: "r",
+          skillId: "plan",
+          promptPath: "p",
+          pointerPrompt: "x",
+          cwd: process.cwd(),
+          timeoutMs: 1000,
+          env: {},
+        }),
+      (err) => err instanceof AdapterConfigError && new RegExp(`must keep ${prefix}`).test(err.message),
+    );
+  }
+});
+
 test("resolveAdapter uses user-set default and has no product fallback", () => {
   const fake = resolveAdapter({ adapter: { default: "fake" } });
   assert.equal(fake.id, "fake");

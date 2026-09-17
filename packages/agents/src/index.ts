@@ -4,13 +4,23 @@ export {
   CODEX_FROZEN_ARGV,
   DEFAULT_GENERIC_ARGS,
   FROZEN_ARGV_TABLE,
+  GROK_FROZEN_ARGV,
+  KD7_EXTRA_ARGV,
+  MIMO_FROZEN_ARGV,
+  MINIMAX_FROZEN_ARGV,
   POINTER_PLACEHOLDER,
   argsIncludePointer,
+  basenameBinary,
   buildClaudeArgv,
   buildGenericArgv,
   extraArgsOrDefault,
+  extraArgvIsSpawnable,
+  extraArgvPrefixCompatible,
+  extraArgvRefuseReason,
+  extraVendorPrefix,
   genericArgsOrDefault,
   templateArgv,
+  usesAssumedExtraBinary,
 } from "./argv.js";
 export { AdapterConfigError, AdapterNotEnabled, AgentError } from "./errors.js";
 export { filterSpawnEnv } from "./env.js";

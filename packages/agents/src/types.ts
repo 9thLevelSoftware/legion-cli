@@ -81,7 +81,7 @@ export type GenericAdapterConfig = {
   args: string[];
 };
 
-/** Override assumed PATH name and fill generic-style argv (vendor flags unverified). */
+/** Override assumed PATH name. Args must keep the KD-7 vendor prefix and `{{pointer}}`. */
 export type ExtraAdapterConfig = {
   binary?: string;
   args?: string[];

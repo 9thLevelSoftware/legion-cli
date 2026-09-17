@@ -17,11 +17,10 @@ test("help --all lists control-mode in always-on, not later or v0 gap", () => {
   const out = normalize(result.stdout);
   assert.match(out, /Always-on operations:[\s\S]*control-mode \[mode\]/);
   assert.doesNotMatch(out, /Later, not this series:[\s\S]*control-mode/);
-  const gapIdx = out.indexOf("v0 gap; follow-up PRs in this series:");
-  assert.notEqual(gapIdx, -1);
-  const gap = out.slice(gapIdx, out.indexOf("Not in this product:"));
-  assert.doesNotMatch(gap, /control-mode/);
-  assert.match(gap, /verified vendor extra-adapter argv/);
+  assert.doesNotMatch(out, /Later, not this series:[\s\S]*vendor extra-adapter argv/);
+  assert.doesNotMatch(out, /v0 gap; follow-up PRs in this series/);
+  assert.doesNotMatch(out, /v0 gap/);
+  assert.match(out, /Later, not this series:\n {2}map, wireframe, skills list\|install, serve/);
 });
 
 test("control-mode shows default guarded and sets surgical|advisory", async () => {
