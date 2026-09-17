@@ -12,9 +12,7 @@ import {
   extraArgvRefuseReason,
   genericArgsOrDefault,
   hashSkillTree,
-  isRequiredSkillId,
   listResolvedSkillCatalog,
-  overlaySkillDir,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
 import {
@@ -482,18 +480,8 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   }
 
   const overlayLines: string[] = [];
-  for (const skillId of SkillIdSchema.options) {
-    const overlayDir = overlaySkillDir(opts.project, skillId);
-    if (!existsSync(join(overlayDir, "overlay.json"))) continue;
-    const overlayEntry = catalogResult.overlays.find((row) => row.skillId === skillId);
-    let overlayHash = overlayEntry?.pin.integrity.sha256;
-    if (!overlayHash) {
-      try {
-        overlayHash = await hashSkillTree(overlayDir);
-      } catch (err) {
-        overlayHash = err instanceof Error ? err.message : String(err);
-      }
-    }
+  for (const overlay of catalogResult.overlays) {
+    const skillId = overlay.skillId;
     let packagedHash = "missing";
     if (skillsDir && existsSync(join(skillsDir, skillId, "SKILL.md"))) {
       try {
@@ -502,27 +490,21 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
         packagedHash = err instanceof Error ? err.message : String(err);
       }
     }
-    const origin = overlayEntry
-      ? overlayEntry.pin.source.type === "github"
-        ? `github:${overlayEntry.pin.source.origin}@${overlayEntry.pin.source.ref}`
-        : `local ${overlayEntry.pin.source.origin}`
-      : "unreadable pin";
-    overlayLines.push(`  ${skillId.padEnd(13)}pin ${overlayHash}  ${origin}  packaged ${packagedHash}`);
-    const skipped = skippedBySkill.get(skillId);
-    const digestOk = overlayEntry?.digestOk === true && overlayEntry.pin.integrity.sha256 === overlayHash;
-    if (isRequiredSkillId(skillId) && (!overlayEntry || !digestOk || skipped)) {
-      const existing = checks.find((check) => check.label === `skill ${skillId} frontmatter`);
-      if (existing && existing.ok) {
-        existing.ok = false;
-        existing.detail = skipped?.reason ?? "overlay pin digest mismatch";
-      } else if (!existing) {
-        checks.push({
-          ok: false,
-          label: `skill ${skillId} overlay pin`,
-          detail: skipped?.reason ?? "overlay pin digest mismatch",
-        });
-      }
+    if (!overlay.pin) {
+      overlayLines.push(`  ${skillId.padEnd(13)}unreadable overlay.json  packaged ${packagedHash}`);
+      continue;
     }
+    const origin =
+      overlay.pin.source.type === "github"
+        ? `github:${overlay.pin.source.origin}@${overlay.pin.source.ref}`
+        : `local ${overlay.pin.source.origin}`;
+    if (!overlay.digestOk) {
+      overlayLines.push(
+        `  ${skillId.padEnd(13)}pin ${overlay.pin.integrity.sha256} tree ${overlay.treeSha256 ?? "unreadable"}  ${origin}  packaged ${packagedHash}`,
+      );
+      continue;
+    }
+    overlayLines.push(`  ${skillId.padEnd(13)}pin ${overlay.pin.integrity.sha256}  ${origin}  packaged ${packagedHash}`);
   }
 
   const secrets: SecretHit[] = await scanWikiSecrets(engine.store.paths.wikiDir);

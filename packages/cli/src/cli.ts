@@ -676,10 +676,16 @@ export function createProgram(): Command {
   addGlobalOptions(skills.command("install").description("Install a pinned skill overlay"))
     .argument("<source>", "local directory or github:owner/repo@tag")
     .option("--unsigned", "allow a local overlay with no minisign signature (TTY warn)")
+    .option("--skill <id>", "skill id when the bundle contains more than one")
+    .option("--integrity <sha256>", "sha256:<hex> expected tree digest")
     .allowExcessArguments(false)
     .action(async (source: string, opts, cmd: Command) => {
-      const flags = opts as { unsigned?: boolean };
-      const code = await runSkillsInstall(resolveOpts(cmd), source, { unsigned: Boolean(flags.unsigned) });
+      const flags = opts as { unsigned?: boolean; skill?: string; integrity?: string };
+      const code = await runSkillsInstall(resolveOpts(cmd), source, {
+        unsigned: Boolean(flags.unsigned),
+        skill: flags.skill,
+        integrity: flags.integrity,
+      });
       process.exitCode = code;
     });
 

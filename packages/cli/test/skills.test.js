@@ -66,6 +66,39 @@ test("skills install local --unsigned writes overlay", async () => {
     assert.equal(shown.status, 0, shown.stderr);
     assert.match(normalize(shown.stdout), /source: overlay/);
     assert.match(normalize(shown.stdout), /OVERLAY_EXECUTE_DESC_TOKEN/);
+    assert.match(normalize(shown.stdout), /matches-tree: yes/);
+    assert.match(normalize(shown.stdout), /bodyChars: /);
+  });
+});
+
+test("skills install --unsigned github: refuses before fetch", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const result = runCli(["skills", "install", "github:acme/skills@v1", "--unsigned", "--project", dir]);
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /cannot use --unsigned/);
+    assert.match(normalize(result.stderr), /Next: legion-cli skills install/);
+  });
+});
+
+test("skills install --integrity mismatch refuses", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const src = join(dir, "execute");
+    await mkdir(src, { recursive: true });
+    await writeFile(join(src, "SKILL.md"), skillMarkdown("execute"), "utf8");
+    const result = runCli([
+      "skills",
+      "install",
+      src,
+      "--unsigned",
+      "--integrity",
+      `sha256:${"a".repeat(64)}`,
+      "--project",
+      dir,
+    ]);
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /integrity mismatch/);
   });
 });
 
@@ -93,6 +126,36 @@ test("doctor prints overlay pin vs packaged", async () => {
     assert.match(out, /Overlays \(pin vs packaged\)/);
     assert.match(out, /execute\s+pin [a-f0-9]{64}/);
     assert.match(out, /packaged [a-f0-9]{64}/);
+    assert.doesNotMatch(out, /unreadable overlay\.json/);
+  });
+});
+
+test("doctor overlay lines distinguish digest mismatch from unreadable pin", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const overlay = overlaySkillDir(dir, "execute");
+    await mkdir(overlay, { recursive: true });
+    await writeFile(join(overlay, "SKILL.md"), skillMarkdown("execute", { description: "tampered overlay" }), "utf8");
+    await writeFile(
+      join(overlay, "overlay.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-skill-overlay/v1",
+        skillId: "execute",
+        source: { type: "local", origin: overlay },
+        integrity: { sha256: "a".repeat(64) },
+        installedAt: "2026-09-17T00:00:00Z",
+      })}\n`,
+      "utf8",
+    );
+    const mismatch = runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.equal(mismatch.status, 1, `${mismatch.stdout}\n${mismatch.stderr}`);
+    assert.match(normalize(mismatch.stdout), /pin a{64} tree [a-f0-9]{64}/);
+    assert.doesNotMatch(normalize(mismatch.stdout), /unreadable overlay\.json/);
+
+    await writeFile(join(overlay, "overlay.json"), "{not-json\n", "utf8");
+    const unreadable = runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.equal(unreadable.status, 1, `${unreadable.stdout}\n${unreadable.stderr}`);
+    assert.match(normalize(unreadable.stdout), /unreadable overlay\.json/);
   });
 });
 

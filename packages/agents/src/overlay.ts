@@ -53,13 +53,24 @@ export type ResolvedSkillDir =
       skillDir: string;
       source: SkillDirSource;
       pin?: SkillOverlayPin;
+      treeSha256?: string;
     }
   | {
       ok: false;
       reason: string;
       pinned: boolean;
       source: SkillDirSource | "missing";
+      pin?: SkillOverlayPin;
+      treeSha256?: string;
     };
+
+export type OverlayReport = {
+  skillId: SkillId;
+  pin?: SkillOverlayPin;
+  treeSha256?: string;
+  digestOk: boolean;
+  pinError?: string;
+};
 
 function isExcludedOverlayName(name: string): boolean {
   return name === OVERLAY_PIN_FILENAME || name === DECLARED_HASH_FILENAME || name.endsWith(".minisig");
@@ -169,9 +180,11 @@ export async function resolveSkillDir(opts: {
         reason: `overlay pin digest mismatch for ${opts.skillId}`,
         pinned: true,
         source: "overlay",
+        pin: pinRead.pin,
+        treeSha256: digest,
       };
     }
-    return { ok: true, skillDir: overlayDir, source: "overlay", pin: pinRead.pin };
+    return { ok: true, skillDir: overlayDir, source: "overlay", pin: pinRead.pin, treeSha256: digest };
   }
 
   const packagedDir = opts.packagedSkillsDir ?? findSkillsDir();
@@ -194,7 +207,7 @@ export async function listResolvedSkillCatalog(opts: {
 }): Promise<{
   catalog: SkillCatalog;
   skipped: Array<{ path: string; reason: string; required: boolean }>;
-  overlays: Array<{ skillId: SkillId; pin: SkillOverlayPin; digestOk: boolean }>;
+  overlays: OverlayReport[];
 }> {
   const packagedDir = opts.packagedSkillsDir ?? findSkillsDir();
   const base = packagedDir
@@ -209,7 +222,7 @@ export async function listResolvedSkillCatalog(opts: {
       };
   const skills = new Map(base.catalog.skills.map((skill) => [skill.skillId, skill] as const));
   const skippedByPath = new Map(base.skipped.map((row) => [row.path, row] as const));
-  const overlays: Array<{ skillId: SkillId; pin: SkillOverlayPin; digestOk: boolean }> = [];
+  const overlays: OverlayReport[] = [];
 
   const dropPackagedSkip = (skillId: SkillId): void => {
     skippedByPath.delete(skillCatalogPath(skillId));
@@ -233,7 +246,12 @@ export async function listResolvedSkillCatalog(opts: {
         skills.delete(skillId);
         dropPackagedSkip(skillId);
         skippedByPath.set(catalogPath, { path: catalogPath, reason, required: isRequiredSkillId(skillId) });
-        if (resolved.pin) overlays.push({ skillId, pin: resolved.pin, digestOk: true });
+        overlays.push({
+          skillId,
+          pin: resolved.pin,
+          treeSha256: resolved.treeSha256,
+          digestOk: true,
+        });
         continue;
       }
       const parsed = parseSkillFrontmatter(raw, catalogPath);
@@ -245,12 +263,22 @@ export async function listResolvedSkillCatalog(opts: {
           reason: parsed.reason,
           required: isRequiredSkillId(skillId),
         });
-        if (resolved.pin) overlays.push({ skillId, pin: resolved.pin, digestOk: true });
+        overlays.push({
+          skillId,
+          pin: resolved.pin,
+          treeSha256: resolved.treeSha256,
+          digestOk: true,
+        });
         continue;
       }
       const resources = listLevel3Resources(resolved.skillDir);
       skills.set(skillId, { ...parsed.entry, resources, path: catalogPath });
-      if (resolved.pin) overlays.push({ skillId, pin: resolved.pin, digestOk: true });
+      overlays.push({
+        skillId,
+        pin: resolved.pin,
+        treeSha256: resolved.treeSha256,
+        digestOk: true,
+      });
       continue;
     }
     if (!resolved.ok && resolved.pinned) {
@@ -261,6 +289,13 @@ export async function listResolvedSkillCatalog(opts: {
         path: catalogPath,
         reason: resolved.reason,
         required: isRequiredSkillId(skillId),
+      });
+      overlays.push({
+        skillId,
+        pin: resolved.pin,
+        treeSha256: resolved.treeSha256,
+        digestOk: false,
+        pinError: resolved.reason,
       });
     }
   }
@@ -347,25 +382,68 @@ async function readDeclaredHash(skillDir: string): Promise<string | undefined> {
   }
 }
 
-function peekSkillId(raw: string): SkillId | undefined {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(raw);
-  if (!match) return undefined;
-  const block = match[1] ?? "";
-  const line = /skillId:\s*([A-Za-z0-9-]+)/.exec(block);
-  const parsed = SkillIdSchema.safeParse(line?.[1]);
-  return parsed.success ? parsed.data : undefined;
+type InstallCandidate = { dir: string; dirName: string };
+
+function uniqueInstallCandidates(rows: InstallCandidate[]): InstallCandidate[] {
+  const seen = new Set<string>();
+  const out: InstallCandidate[] = [];
+  for (const row of rows) {
+    const key = resolve(row.dir);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
 }
 
-async function findInstallSkillDir(root: string): Promise<string> {
-  const direct = join(root, "SKILL.md");
-  if (existsSync(direct) && statSync(direct).isFile()) return root;
-  for (const skillId of SkillIdSchema.options) {
-    const nested = join(root, skillId, "SKILL.md");
-    if (existsSync(nested) && statSync(nested).isFile()) return join(root, skillId);
-    const underSkills = join(root, "skills", skillId, "SKILL.md");
-    if (existsSync(underSkills) && statSync(underSkills).isFile()) return join(root, "skills", skillId);
+function listInstallCandidates(root: string): InstallCandidate[] {
+  const out: InstallCandidate[] = [];
+  const rootMd = join(root, "SKILL.md");
+  if (existsSync(rootMd) && statSync(rootMd).isFile()) {
+    out.push({ dir: root, dirName: basename(root) });
   }
-  throw new AgentError("skill overlay is missing SKILL.md");
+  for (const skillId of SkillIdSchema.options) {
+    for (const rel of [skillId, join("skills", skillId)]) {
+      const dir = join(root, rel);
+      const md = join(dir, "SKILL.md");
+      if (existsSync(md) && statSync(md).isFile()) {
+        out.push({ dir, dirName: skillId });
+      }
+    }
+  }
+  return uniqueInstallCandidates(out);
+}
+
+function selectInstallCandidate(candidates: InstallCandidate[], skillId?: SkillId): InstallCandidate {
+  if (candidates.length === 0) {
+    throw new AgentError("skill overlay is missing SKILL.md");
+  }
+  if (skillId) {
+    const hit = candidates.filter((row) => row.dirName === skillId);
+    if (hit.length === 0) {
+      throw new AgentError(`skill overlay does not contain ${skillId}`);
+    }
+    if (hit.length > 1) {
+      throw new AgentError(`multi-skill bundle requires --skill ${skillId}`);
+    }
+    const selected = hit[0];
+    if (!selected) throw new AgentError(`skill overlay does not contain ${skillId}`);
+    return selected;
+  }
+  if (candidates.length > 1) {
+    throw new AgentError("multi-skill bundle requires --skill <id>");
+  }
+  const only = candidates[0];
+  if (!only) throw new AgentError("skill overlay is missing SKILL.md");
+  return only;
+}
+
+export function parseIntegritySha256(value: string): string {
+  const match = /^sha256:([a-f0-9]{64})$/i.exec(value.trim());
+  if (!match?.[1]) {
+    throw new AgentError("skills install --integrity must be sha256:<hex>");
+  }
+  return match[1].toLowerCase();
 }
 
 async function copySkillTree(srcDir: string, destDir: string): Promise<void> {
@@ -387,6 +465,8 @@ export type InstallSkillOverlayOpts = {
   projectRoot: string;
   source: string;
   unsigned?: boolean;
+  skillId?: SkillId;
+  integritySha256?: string;
   cwd?: string;
   trustKeys?: readonly string[];
   ttyWarn?: (message: string) => void;
@@ -424,12 +504,12 @@ async function requireSignature(
     declared = await readDeclaredHash(dir);
     if (declared) break;
   }
-  if (declared && declared !== computed) {
-    throw new AgentError("skill overlay integrity mismatch");
-  }
   const payload = declared ?? computed;
   const signature = await readFile(toFsPath(found.dir, found.rel), "utf8");
   await verifyOverlaySignature({ payload, signature, trustKeys });
+  if (declared && declared !== computed) {
+    throw new AgentError("skill overlay integrity mismatch");
+  }
   return signature;
 }
 
@@ -440,6 +520,9 @@ export async function installSkillOverlay(opts: InstallSkillOverlayOpts): Promis
   }
   const trustKeys = opts.trustKeys ?? [];
   const remote = GITHUB_PREFIX.test(source);
+  if (remote && opts.unsigned) {
+    throw new AgentError("remote skill install cannot use --unsigned");
+  }
   if (remote) {
     const parsed = parseGithubRepoSource(source);
     if (ownerLooksLikeHost(parsed.owner)) {
@@ -454,15 +537,16 @@ export async function installSkillOverlay(opts: InstallSkillOverlayOpts): Promis
     const tmp = join(opts.projectRoot, ".legion-cli", "cache", "skill-install", randomUUID());
     try {
       await unzipZipball(fetched.body, tmp);
-      const unpacked = await findInstallSkillDir(tmp);
+      const chosen = selectInstallCandidate(listInstallCandidates(tmp), opts.skillId);
       return await materializeOverlay({
         projectRoot: opts.projectRoot,
-        srcDir: unpacked,
-        searchDirs: [unpacked, tmp],
+        srcDir: chosen.dir,
+        searchDirs: [chosen.dir, tmp],
         origin: `${parsed.owner}/${parsed.repo}`,
         ref: parsed.ref,
         type: "github",
         unsigned: false,
+        expectedSha256: opts.integritySha256,
         trustKeys,
         requireSig: true,
       });
@@ -481,14 +565,15 @@ export async function installSkillOverlay(opts: InstallSkillOverlayOpts): Promis
   if (!existsSync(abs) || !statSync(abs).isDirectory()) {
     throw new AgentError(`skills install path is not a local directory: ${source}`);
   }
-  const srcDir = await findInstallSkillDir(abs);
+  const chosen = selectInstallCandidate(listInstallCandidates(abs), opts.skillId);
   return materializeOverlay({
     projectRoot: opts.projectRoot,
-    srcDir,
-    searchDirs: [srcDir, abs],
+    srcDir: chosen.dir,
+    searchDirs: [chosen.dir, abs],
     origin: abs,
     type: "local",
     unsigned: Boolean(opts.unsigned),
+    expectedSha256: opts.integritySha256,
     trustKeys,
     requireSig: false,
     ttyWarn: opts.ttyWarn,
@@ -503,6 +588,7 @@ async function materializeOverlay(opts: {
   ref?: string;
   type: "local" | "github";
   unsigned: boolean;
+  expectedSha256?: string;
   trustKeys: readonly string[];
   requireSig: boolean;
   ttyWarn?: (message: string) => void;
@@ -510,19 +596,20 @@ async function materializeOverlay(opts: {
   const skillMd = join(opts.srcDir, "SKILL.md");
   const raw = await readFile(skillMd, "utf8");
   const dirName = basename(opts.srcDir);
-  const dirIsSkillId = SkillIdSchema.safeParse(dirName).success;
-  const catalogId = dirIsSkillId ? dirName : (peekSkillId(raw) ?? dirName);
-  const parsed = parseSkillFrontmatter(raw, skillCatalogPath(catalogId));
+  const parsed = parseSkillFrontmatter(raw, skillCatalogPath(dirName));
   if (!parsed.ok) {
     throw new AgentError(`skill overlay frontmatter is invalid (${parsed.reason})`);
   }
   const skillId = parsed.entry.skillId;
-  if (dirIsSkillId && dirName !== skillId) {
+  if (parsed.entry.name !== dirName || skillId !== dirName) {
     throw new AgentError(`name "${parsed.entry.name}" must equal directory "${dirName}" and skillId "${skillId}"`);
   }
 
   let signature: string | undefined;
   const computedSrc = await hashSkillTree(opts.srcDir);
+  if (opts.expectedSha256 && computedSrc !== opts.expectedSha256) {
+    throw new AgentError("skill overlay integrity mismatch");
+  }
   if (opts.requireSig) {
     signature = await requireSignature(
       opts.searchDirs,

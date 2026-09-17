@@ -2,8 +2,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   findSkillsDir,
+  hashSkillTree,
   installSkillOverlay,
   listResolvedSkillCatalog,
+  parseIntegritySha256,
   parseSkillFrontmatter,
   resolveSkillDir,
   skillCatalogPath,
@@ -38,14 +40,15 @@ export async function runSkillsList(opts: CliOpts): Promise<number> {
       skipped: result.skipped,
       overlays: result.overlays.map((row) => ({
         skillId: row.skillId,
-        source: row.pin.source,
-        sha256: row.pin.integrity.sha256,
+        source: row.pin?.source,
+        sha256: row.pin?.integrity.sha256,
         digestOk: row.digestOk,
+        pinError: row.pinError,
       })),
     });
     return 0;
   }
-  const overlayIds = new Set(result.overlays.map((row) => row.skillId));
+  const overlayIds = new Set(result.overlays.filter((row) => row.digestOk).map((row) => row.skillId));
   const lines = ["# Skills"];
   for (const skill of result.catalog.skills) {
     const source = overlayIds.has(skill.skillId) ? "overlay" : "packaged";
@@ -80,12 +83,16 @@ export async function runSkillsShow(opts: CliOpts, id: string): Promise<number> 
       HINT.skillsShow,
     );
   }
+  const treeSha256 = await hashSkillTree(resolved.skillDir);
+  const pinSha = resolved.pin?.integrity.sha256;
+  const matchesTree = pinSha ? pinSha === treeSha256 : null;
   const payload = {
     skillId,
     source: resolved.source,
     path: skillCatalogPath(skillId, resolved.source),
     description: parsed.entry.description,
     required: parsed.entry.required,
+    bodyChars: parsed.entry.bodyChars,
     pin: resolved.pin
       ? {
           sha256: resolved.pin.integrity.sha256,
@@ -94,6 +101,8 @@ export async function runSkillsShow(opts: CliOpts, id: string): Promise<number> 
           ref: resolved.pin.source.ref,
         }
       : null,
+    treeSha256,
+    matchesTree,
   };
   if (opts.json) {
     writeJson(payload);
@@ -104,10 +113,13 @@ export async function runSkillsShow(opts: CliOpts, id: string): Promise<number> 
     `source: ${payload.source}`,
     `path: ${payload.path}`,
     `required: ${payload.required}`,
+    `bodyChars: ${payload.bodyChars}`,
     `description: ${payload.description}`,
   ];
   if (payload.pin) {
     lines.push(`pin: ${payload.pin.sha256}`);
+    lines.push(`tree: ${payload.treeSha256}`);
+    lines.push(`matches-tree: ${payload.matchesTree ? "yes" : "no"}`);
     lines.push(`origin: ${payload.pin.type} ${payload.pin.origin}${payload.pin.ref ? `@${payload.pin.ref}` : ""}`);
   }
   writeOut(lines.join("\n"));
@@ -116,6 +128,8 @@ export async function runSkillsShow(opts: CliOpts, id: string): Promise<number> 
 
 export type SkillsInstallFlags = {
   unsigned?: boolean;
+  skill?: string;
+  integrity?: string;
 };
 
 export async function runSkillsInstall(opts: CliOpts, source: string, flags: SkillsInstallFlags = {}): Promise<number> {
@@ -135,11 +149,30 @@ export async function runSkillsInstall(opts: CliOpts, source: string, flags: Ski
     const message = err instanceof Error ? err.message : String(err);
     refuse(message, HINT.init);
   }
+  let skillId: SkillId | undefined;
+  if (flags.skill) {
+    const parsedSkill = SkillIdSchema.safeParse(flags.skill.trim());
+    if (!parsedSkill.success) {
+      refuse(`unknown skillId '${flags.skill}'`, HINT.skillsInstall);
+    }
+    skillId = parsedSkill.data;
+  }
+  let integritySha256: string | undefined;
+  if (flags.integrity) {
+    try {
+      integritySha256 = parseIntegritySha256(flags.integrity);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      refuse(message, HINT.skillsInstall);
+    }
+  }
   try {
     const installed = await installSkillOverlay({
       projectRoot: opts.project,
       source: src,
       unsigned: Boolean(flags.unsigned),
+      skillId,
+      integritySha256,
       cwd: process.cwd(),
       trustKeys,
       ttyWarn: ttyWarn(),

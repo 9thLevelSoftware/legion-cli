@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { crc32 } from "node:zlib";
 
-import { SsrfError } from "@9thlevelsoftware/legion-cli-persist";
+import { MinisignError, SsrfError } from "@9thlevelsoftware/legion-cli-persist";
 import {
   AgentError,
   hashSkillTree,
@@ -189,6 +189,30 @@ test("github:evil.com/foo is refused by allowlist", async () => {
   });
 });
 
+test("remote without signature refuses even with --unsigned", async () => {
+  await withTempDir(async (dir) => {
+    let fetched = false;
+    await assert.rejects(
+      () =>
+        installSkillOverlay({
+          projectRoot: dir,
+          source: "github:acme/skills@v1",
+          unsigned: true,
+          fetchZip: async () => {
+            fetched = true;
+            return { body: Buffer.from("nope") };
+          },
+        }),
+      (err) => {
+        assert.equal(err instanceof AgentError, true);
+        assert.match(err.message, /cannot use --unsigned/);
+        return true;
+      },
+    );
+    assert.equal(fetched, false);
+  });
+});
+
 test("remote without signature refuses", async () => {
   await withTempDir(async (dir) => {
     const zip = makeZip([
@@ -210,13 +234,37 @@ test("remote without signature refuses", async () => {
   });
 });
 
-test("remote integrity mismatch refuses", async () => {
+test("remote bad minisign signature refuses via verifyMinisign", async () => {
   await withTempDir(async (dir) => {
-    const declared = await readFile(join(minisignFixture, "sha256.hex"), "utf8");
+    const signature = await readFile(join(minisignFixture, "sha256.hex.minisig"), "utf8");
+    const zip = makeZip([
+      { name: "skills-v1/execute/SKILL.md", data: skillMarkdown("execute") },
+      { name: "skills-v1/execute/sha256.hex.minisig", data: signature },
+    ]);
+    await assert.rejects(
+      () =>
+        installSkillOverlay({
+          projectRoot: dir,
+          source: "github:acme/skills@v1",
+          fetchZip: async () => ({ body: zip }),
+        }),
+      (err) => {
+        assert.equal(err instanceof MinisignError, true);
+        assert.match(err.message, /minisign/);
+        return true;
+      },
+    );
+  });
+});
+
+test("remote integrity mismatch refuses after verifying minisign", async () => {
+  await withTempDir(async (dir) => {
+    const declared = (await readFile(join(minisignFixture, "sha256.hex"), "utf8")).trim();
+    const signature = await readFile(join(minisignFixture, "sha256.hex.minisig"), "utf8");
     const zip = makeZip([
       { name: "skills-v1/execute/SKILL.md", data: skillMarkdown("execute") },
       { name: "skills-v1/execute/sha256.hex", data: declared },
-      { name: "skills-v1/execute/sha256.hex.minisig", data: "not-a-real-sig\n" },
+      { name: "skills-v1/execute/sha256.hex.minisig", data: signature },
     ]);
     await assert.rejects(
       () =>
@@ -231,6 +279,47 @@ test("remote integrity mismatch refuses", async () => {
         return true;
       },
     );
+  });
+});
+
+test("folder pwned with skillId execute refuses", async () => {
+  await withTempDir(async (dir) => {
+    const src = join(dir, "pwned");
+    await mkdir(src, { recursive: true });
+    await writeFile(join(src, "SKILL.md"), skillMarkdown("execute"), "utf8");
+    await assert.rejects(
+      () => installSkillOverlay({ projectRoot: dir, source: src, unsigned: true }),
+      (err) => {
+        assert.equal(err instanceof AgentError, true);
+        assert.match(err.message, /must equal directory "pwned" and skillId "execute"/);
+        return true;
+      },
+    );
+  });
+});
+
+test("multi-skill bundle without --skill refuses", async () => {
+  await withTempDir(async (dir) => {
+    const src = join(dir, "bundle");
+    await mkdir(join(src, "execute"), { recursive: true });
+    await mkdir(join(src, "plan"), { recursive: true });
+    await writeFile(join(src, "execute", "SKILL.md"), skillMarkdown("execute"), "utf8");
+    await writeFile(join(src, "plan", "SKILL.md"), skillMarkdown("plan"), "utf8");
+    await assert.rejects(
+      () => installSkillOverlay({ projectRoot: dir, source: src, unsigned: true }),
+      (err) => {
+        assert.equal(err instanceof AgentError, true);
+        assert.match(err.message, /multi-skill bundle requires --skill/);
+        return true;
+      },
+    );
+    const installed = await installSkillOverlay({
+      projectRoot: dir,
+      source: src,
+      unsigned: true,
+      skillId: "execute",
+    });
+    assert.equal(installed.skillId, "execute");
   });
 });
 

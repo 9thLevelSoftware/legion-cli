@@ -80,7 +80,7 @@ const SHIPPED_ADJACENT = [
   ["design-system generate", "Generate a design system from a brief", "--name, --work-type, --platforms, --wcag, --brand"],
   ["skills list", "List packaged and overlay skills", ""],
   ["skills show <id>", "Show one packaged or overlay skill", ""],
-  ["skills install <dir|github:owner/repo@tag>", "Install a pinned skill overlay", "--unsigned"],
+  ["skills install <dir|github:owner/repo@tag>", "Install a pinned skill overlay", "--unsigned, --skill, --integrity"],
   ["wireframe", "Re-generate HTML wireframes after spec edits", "--restyle, --spawn, --adapter"],
 ] as const;
 
