@@ -1,13 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants as fsConstants } from "node:fs";
+import { lstat, mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { runCachePaths } from "@9thlevelsoftware/legion-cli-agents";
-import {
-  ensureGitignore,
-  redactSecrets,
-  toFsPath,
-  writeTextFile,
-} from "@9thlevelsoftware/legion-cli-persist";
+import { ensureGitignore, redactSecrets, toFsPath } from "@9thlevelsoftware/legion-cli-persist";
 import {
   ChatActionSchema,
   ChatProposalActionSchema,
@@ -200,11 +196,7 @@ function answersAreParseOf(answers: readonly string[], utterance: string): boole
   if (answers.length === lines.length && answers.every((answer, i) => answer === lines[i])) {
     return true;
   }
-  if (answers.length === 1 && answers[0] === normalized.trim()) return true;
-  return answers.every((answer) => {
-    const needle = answer.trim();
-    return needle.length > 0 && normalized.includes(needle);
-  });
+  return answers.length === 1 && answers[0] === normalized.trim();
 }
 
 function parseRawAction(raw: unknown): ChatAction | null {
@@ -312,11 +304,54 @@ function chatSessionPath(id: string): string {
   return `.legion-cli/chat/${safe}.json`;
 }
 
+async function assertNotSymlink(abs: string): Promise<void> {
+  try {
+    const st = await lstat(abs);
+    if (st.isSymbolicLink()) {
+      refuse("chat session path is a symlink", HINT.chat);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+}
+
 async function writeSessionFile(engine: LegionEngine, session: ChatSessionFile): Promise<void> {
   const parsed = ChatSessionFileSchema.parse(session);
   const abs = toFsPath(engine.projectRoot, chatSessionPath(parsed.id));
+  const dir = dirname(abs);
+  await mkdir(dir, { recursive: true });
+  await assertNotSymlink(dir);
+  await assertNotSymlink(abs);
   const body = redactSecrets(`${JSON.stringify(parsed, null, 2)}\n`);
-  await writeTextFile(abs, body);
+  const tmp = join(dir, `.${parsed.id}.${randomBytes(8).toString("hex")}.tmp`);
+  const flags =
+    fsConstants.O_WRONLY |
+    fsConstants.O_CREAT |
+    fsConstants.O_EXCL |
+    (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(tmp, flags);
+    await handle.writeFile(body, "utf8");
+    await handle.close();
+    handle = undefined;
+    await assertNotSymlink(abs);
+    await rename(tmp, abs);
+  } catch (err) {
+    if (handle) {
+      try {
+        await handle.close();
+      } catch {
+        // already closed
+      }
+    }
+    try {
+      await unlink(tmp);
+    } catch {
+      // tmp may not exist
+    }
+    throw err;
+  }
 }
 
 export async function saveChatSession(engine: LegionEngine, session: ChatSessionFile): Promise<void> {

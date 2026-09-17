@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -10,6 +10,7 @@ import {
   createChatSession,
   gateChatAction,
   LegionEngine,
+  LegionRefuseError,
   routeChatTurn,
   sanitizeChatAction,
 } from "../dist/index.js";
@@ -52,10 +53,19 @@ test("intent_draft two answers propose and do not write intent-answers.yaml", as
       assert.equal(turn.action.answers.length, 2);
     }
     assert.match(turn.proposal ?? "", /Proposed:/);
-    assert.equal(existsSync(join(dir, ".legion-cli", "wiki", "product", "intent-answers.yaml")), false);
+    const answersPath = join(dir, ".legion-cli", "wiki", "product", "intent-answers.yaml");
+    assert.equal(existsSync(answersPath), false);
     const applied = await applyChatAction(engine, turn.action);
     assert.equal(applied.applied, false);
-    assert.equal(existsSync(join(dir, ".legion-cli", "wiki", "product", "intent-answers.yaml")), false);
+    assert.equal(existsSync(answersPath), false);
+    const utterance =
+      "Teammates who keep missing who's in the office.\nThey ping five chat apps every morning.";
+    const wrote = await applyChatAction(engine, turn.action, { confirmed: true, utterance });
+    assert.equal(wrote.applied, true);
+    assert.equal(existsSync(answersPath), true);
+    const yaml = await readFile(answersPath, "utf8");
+    assert.match(yaml, /Teammates who keep missing who's in the office/);
+    assert.match(yaml, /They ping five chat apps every morning/);
   });
 });
 
@@ -171,6 +181,42 @@ test("extra keys are stripped and fabricated intent_answer is dropped", () => {
     { phase: "initialized", utterance: "hello there" },
   );
   assert.equal(wrongPhase.type, "next_verb");
+
+  const substring = sanitizeChatAction(
+    { type: "intent_answer", answers: ["foo"] },
+    { phase: "intent_draft", utterance: "I like foo" },
+  );
+  assert.equal(substring.type, "next_verb");
+});
+
+test("session write refuses a symlink and does not follow into src/pwn", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    const pwn = join(dir, "src", "pwn");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(pwn, "SAFE\n", "utf8");
+    const session = createChatSession();
+    const dest = join(dir, ".legion-cli", "chat", `${session.id}.json`);
+    await mkdir(join(dir, ".legion-cli", "chat"), { recursive: true });
+    let linked = false;
+    try {
+      await symlink(pwn, dest);
+      linked = true;
+    } catch (err) {
+      if (process.platform !== "win32" || err?.code !== "EPERM") throw err;
+    }
+    if (!linked) return;
+    await assert.rejects(
+      () => routeChatTurn(engine, session, "where am I"),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /symlink/i);
+        return true;
+      },
+    );
+    assert.equal(await readFile(pwn, "utf8"), "SAFE\n");
+    assert.equal((await lstat(dest)).isSymbolicLink(), true);
+  });
 });
 
 test("chat spawn wait is outside mutate", async () => {
