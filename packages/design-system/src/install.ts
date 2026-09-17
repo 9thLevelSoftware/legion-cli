@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import {
   DesignSystemPackageSchema,
   LegionConfigSchema,
@@ -9,16 +9,17 @@ import {
 } from "@9thlevelsoftware/legion-cli-schema";
 import {
   fetchGithubZipball,
+  hashTreeFiles,
   legionPaths,
   MinisignError,
-  parseGithubRepoSource,
   PathEscapeError,
   PersistError,
   readNinthlevelMinisignPub,
   SsrfError,
+  toFsPath,
+  toPosixPath,
   unzipZipball,
   verifyMinisign,
-  type GithubRepoRef,
   type SsrfLookup,
 } from "@9thlevelsoftware/legion-cli-persist";
 import { parse as parseYaml } from "yaml";
@@ -77,40 +78,23 @@ async function readConfigTrustKeys(projectRoot: string): Promise<string[]> {
   }
 }
 
-function existsSafe(path: string): boolean {
-  try {
-    return existsSync(path);
-  } catch {
-    return false;
-  }
-}
-
-function resolveTrustKey(projectRoot: string, key: string): string {
+async function trustKeyMaterial(projectRoot: string, key: string): Promise<string> {
   const trimmed = key.trim();
   if (!trimmed || trimmed.includes("\n") || /untrusted comment:/i.test(trimmed)) return trimmed;
-  if (existsSafe(trimmed)) return trimmed;
-  const relative = resolve(projectRoot, trimmed);
-  if (existsSafe(relative)) return relative;
+  for (const candidate of [trimmed, resolve(projectRoot, trimmed)]) {
+    try {
+      if ((await stat(candidate)).isFile()) return await readFile(candidate, "utf8");
+    } catch {
+      // inline key material, not a file
+    }
+  }
   return trimmed;
 }
 
-async function loadTrustKeyMaterial(projectRoot: string, key: string): Promise<string> {
-  const resolved = resolveTrustKey(projectRoot, key);
-  if (!existsSafe(resolved)) return key;
-  try {
-    if ((await stat(resolved)).isFile()) return await readFile(resolved, "utf8");
-  } catch {
-    return key;
-  }
-  return key;
-}
-
 async function collectTrustKeys(projectRoot: string, extra?: string[]): Promise<string[]> {
-  const fromConfig = await readConfigTrustKeys(projectRoot);
-  const raw = [...(extra ?? []), ...fromConfig];
   const loaded: string[] = [];
-  for (const key of raw) {
-    loaded.push(await loadTrustKeyMaterial(projectRoot, key));
+  for (const key of [...(extra ?? []), ...(await readConfigTrustKeys(projectRoot))]) {
+    loaded.push(await trustKeyMaterial(projectRoot, key));
   }
   return loaded;
 }
@@ -128,12 +112,38 @@ async function assertMinisign(payload: string, signature: string, trustKeys: str
   refuse("design-system minisign verification failed", DS_HINT.install);
 }
 
+async function listTreeFiles(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  async function walk(rel: string): Promise<void> {
+    const abs = rel ? toFsPath(dir, rel) : dir;
+    const ents = await readdir(abs, { withFileTypes: true });
+    for (const ent of ents) {
+      if (ent.name === "." || ent.name === "..") continue;
+      const child = rel ? `${rel}/${ent.name}` : ent.name;
+      if (ent.isSymbolicLink()) throw new PathEscapeError(child);
+      if (ent.isDirectory()) await walk(child);
+      else if (ent.isFile()) out.push(toPosixPath(child));
+    }
+  }
+  await walk("");
+  return out.sort();
+}
+
+async function replaceDestTree(srcDir: string, dest: string, files: string[]): Promise<void> {
+  await rm(dest, { recursive: true, force: true });
+  await mkdir(dest, { recursive: true });
+  for (const file of files) {
+    const to = toFsPath(dest, file);
+    await mkdir(dirname(to), { recursive: true });
+    await cp(toFsPath(srcDir, file), to, { dereference: true, force: true });
+  }
+}
+
 async function materializeFromDir(opts: {
   projectRoot: string;
   srcDir: string;
   origin: DesignSystemPackage["source"];
   expectedSha?: string;
-  fromGithub: boolean;
   trustKeys: string[];
 }): Promise<InstallResult> {
   const manifestPath = join(opts.srcDir, "manifest.json");
@@ -148,42 +158,57 @@ async function materializeFromDir(opts: {
   if (!parsed.success) {
     refuse("design-system install requires schemaVersion legion-cli-design-system/v1", DS_HINT.importOd);
   }
-  const files = declaredFiles(parsed.data);
-  for (const file of files) {
+  const declared = declaredFiles(parsed.data);
+  for (const file of declared) {
     if (file === "manifest.json") continue;
     if (!existsSync(join(opts.srcDir, file))) {
       refuse(`design-system package is missing ${file}`, DS_HINT.install);
     }
   }
 
-  const copied = files.filter((file) => file !== "manifest.json");
+  const remote = opts.origin.type === "github" || parsed.data.source.type === "github";
+  let tree: string[];
+  try {
+    tree = await listTreeFiles(opts.srcDir);
+  } catch (err) {
+    wrapPersist(err);
+  }
+  const hashedFiles = remote
+    ? tree.filter((file) => file !== "manifest.json")
+    : declared.filter((file) => file !== "manifest.json");
+  const extras = ["components.html", "components.manifest.json"];
+  const localCopy = remote
+    ? tree.filter((file) => file !== "manifest.json")
+    : [...new Set([...hashedFiles, ...extras.filter((file) => existsSync(join(opts.srcDir, file)))])];
+
   const manifestSha = parsed.data.integrity?.sha256;
   if (opts.expectedSha && manifestSha && opts.expectedSha !== manifestSha) {
     refuse("design-system integrity.sha256 mismatch", DS_HINT.install);
   }
   const expected = opts.expectedSha ?? manifestSha;
-  const requireIntegrity = opts.fromGithub || parsed.data.source.type === "github";
-  const hashed = await assertIntegrity(opts.srcDir, copied, expected, { required: requireIntegrity });
-  const sha = hashed ?? (await hashPackageFiles(opts.srcDir, copied));
+  let sha: string;
+  if (remote) {
+    if (!expected) refuse("remote design-system install requires integrity.sha256", DS_HINT.install);
+    try {
+      sha = await hashTreeFiles(opts.srcDir, hashedFiles);
+    } catch (err) {
+      wrapPersist(err);
+    }
+    if (sha !== expected) refuse("design-system integrity.sha256 mismatch", DS_HINT.install);
+  } else {
+    const hashed = await assertIntegrity(opts.srcDir, hashedFiles, expected, { required: false });
+    sha = hashed ?? (await hashPackageFiles(opts.srcDir, hashedFiles));
+  }
   if (parsed.data.integrity?.minisign) {
     await assertMinisign(sha, parsed.data.integrity.minisign, opts.trustKeys);
-  } else if (opts.fromGithub) {
+  } else if (opts.origin.type === "github") {
     refuse("remote design-system install requires integrity.minisign", DS_HINT.install);
   }
 
   const dest = designPaths(opts.projectRoot).packageDir(parsed.data.id);
-  await mkdir(dest, { recursive: true });
   const alreadyInPlace = sameDir(opts.srcDir, dest);
   if (!alreadyInPlace) {
-    for (const file of files) {
-      if (file === "manifest.json") continue;
-      await cp(join(opts.srcDir, file), join(dest, file), { dereference: true, force: true });
-    }
-    for (const extra of ["components.html", "components.manifest.json"]) {
-      if (existsSync(join(opts.srcDir, extra))) {
-        await cp(join(opts.srcDir, extra), join(dest, extra), { dereference: true, force: true });
-      }
-    }
+    await replaceDestTree(opts.srcDir, dest, localCopy);
   }
 
   const manifest: DesignSystemPackage = {
@@ -195,6 +220,7 @@ async function materializeFromDir(opts: {
       ...(parsed.data.integrity?.minisign ? { minisign: parsed.data.integrity.minisign } : {}),
     },
   };
+  await mkdir(dirname(join(dest, "manifest.json")), { recursive: true });
   await writeFile(join(dest, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
   const prev = (await readActive(opts.projectRoot)) ?? {
@@ -213,16 +239,6 @@ async function materializeFromDir(opts: {
 }
 
 async function installFromGithub(opts: InstallOpts, source: string): Promise<InstallResult> {
-  let parsed: GithubRepoRef;
-  try {
-    parsed = parseGithubRepoSource(source);
-  } catch (err) {
-    wrapPersist(err);
-  }
-  if (!parsed.ref) {
-    refuse("github: zipball fetch requires @tag", DS_HINT.localOnly);
-  }
-
   const pin = parseIntegrityPin(opts.integrity);
   const trustKeys = await collectTrustKeys(opts.projectRoot, opts.trustKeys);
   const fetchZip = opts.fetchZipball ?? fetchGithubZipball;
@@ -248,7 +264,6 @@ async function installFromGithub(opts: InstallOpts, source: string): Promise<Ins
       srcDir: tmp,
       origin: { type: "github", origin: source },
       expectedSha: pin,
-      fromGithub: true,
       trustKeys,
     });
   } finally {
@@ -265,15 +280,12 @@ export async function install(opts: InstallOpts): Promise<InstallResult> {
     return installFromGithub(opts, source);
   }
   const srcDir = resolveLocalDir(source, opts.cwd ?? process.cwd());
-  const pin = parseIntegrityPin(opts.integrity);
-  const trustKeys = await collectTrustKeys(opts.projectRoot, opts.trustKeys);
   return materializeFromDir({
     projectRoot: opts.projectRoot,
     srcDir,
     origin: { type: "local", origin: srcDir },
-    expectedSha: pin,
-    fromGithub: false,
-    trustKeys,
+    expectedSha: parseIntegrityPin(opts.integrity),
+    trustKeys: await collectTrustKeys(opts.projectRoot, opts.trustKeys),
   });
 }
 

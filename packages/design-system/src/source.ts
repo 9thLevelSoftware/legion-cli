@@ -31,16 +31,19 @@ export function isRemoteInstallSource(source: string): boolean {
   return isRemoteLooking(source);
 }
 
+const GITHUB_LOCAL_ONLY =
+  "import-od / generate are local-dir only; github install is legion-cli design-system install github:owner/repo@tag";
+
 function refuseRemote(source: string, asUrlFetch: boolean, label?: string): void {
   const trimmed = source.trim();
   if (isGithubInstallSource(trimmed)) {
     if (asUrlFetch) {
-      refuse(`${label ?? "design-system"} refuses github: until signed remote`, "path or none");
+      refuse(GITHUB_LOCAL_ONLY, "path or none");
     }
     if (!GITHUB_PREFIX.test(trimmed)) {
       refuse("design-system install uses github:owner/repo@tag, not a GitHub URL", DS_HINT.localOnly);
     }
-    refuse("github: design-system install is not available yet", DS_HINT.localOnly);
+    refuse(GITHUB_LOCAL_ONLY, DS_HINT.localOnly);
   }
   if (isRemoteLooking(trimmed)) {
     if (asUrlFetch) {

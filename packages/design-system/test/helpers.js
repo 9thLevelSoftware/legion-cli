@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32 } from "node:zlib";
+import { hashTreeRecords } from "@9thlevelsoftware/legion-cli-persist";
 
 export const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const odFixture = join(pkgRoot, "test", "fixtures", "od-acme");
@@ -35,6 +36,15 @@ export function hashPackageRecords(files) {
     hash.update("\0");
   }
   return hash.digest("hex");
+}
+
+export function hashTreePackageRecords(files) {
+  return hashTreeRecords(
+    files.map((file) => ({
+      path: file.name,
+      bytes: Buffer.isBuffer(file.data) ? file.data : Buffer.from(file.data),
+    })),
+  );
 }
 
 export function makeZip(files) {
@@ -124,7 +134,7 @@ export function makeDesignZip(opts = {}) {
     { name: "DESIGN.md", data: "# Acme\n" },
     { name: "tokens.css", data: ":root { --legion-ink: #111111; }\n" },
   ];
-  const sha = opts.sha256 ?? hashPackageRecords(files);
+  const sha = opts.sha256 ?? hashTreePackageRecords(files);
   const pair = opts.pair ?? (opts.minisign || opts.sign ? makeMinisignPair() : undefined);
   const minisign = opts.minisign ?? (pair ? signMinisign(sha, pair) : undefined);
   const manifest = {
