@@ -18,6 +18,7 @@ import {
   REBUILD_SQL,
   ensureGitignore,
   legionPaths,
+  serveJsonPath,
   appendAuditEvent,
   auditEventsPath,
   formatAuditDayLine,
@@ -107,6 +108,8 @@ test("legionPaths includes map, skills overlay, chat, and sandbox dirs", () => {
   assert.equal(paths.skillsOverlayDir, join("proj", ".legion-cli", "skills"));
   assert.equal(paths.chatDir, join("proj", ".legion-cli", "chat"));
   assert.equal(paths.sandboxDir, join("proj", ".legion-cli", "sandbox"));
+  assert.equal(paths.serveJson, join("proj", ".legion-cli", "serve.json"));
+  assert.equal(serveJsonPath(), ".legion-cli/serve.json");
 });
 
 test("rebuild SQL is idempotent DROP+CREATE including FTS5", () => {

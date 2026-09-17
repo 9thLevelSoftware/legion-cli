@@ -44,20 +44,7 @@ function skillMarkdown(skillId, overrides = {}) {
   ].join("\n");
 }
 
-const ALL_SKILL_IDS = [
-  "interview",
-  "discuss",
-  "spec",
-  "ingest",
-  "plan",
-  "execute",
-  "verify",
-  "review",
-  "qa",
-  "map",
-  "wireframe",
-  "chat",
-];
+const ALL_SKILL_IDS = [...SkillIdSchema.options];
 
 async function writeSkillTree(skillsDir, opts = {}) {
   const invalidId = opts.invalidId;

@@ -516,6 +516,7 @@
           "default": [
             "execute"
           ],
+          "minItems": 1,
           "type": "array",
           "items": {
             "type": "string",
@@ -563,7 +564,8 @@
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
           }
         },
         "ignore": {
@@ -581,6 +583,7 @@
     "schemaVersion",
     "adapter"
   ],
+  "additionalProperties": false,
   "allOf": [
     {
       "if": {
@@ -861,6 +864,356 @@
               "default",
               "generic"
             ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "adapter": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "default": {
+                    "const": "http"
+                  }
+                },
+                "required": [
+                  "default"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "interview": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "interview"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "discuss": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "discuss"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "spec": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "spec"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "ingest": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "ingest"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "plan": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "plan"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "execute": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "execute"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "verify": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "verify"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "review": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "review"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "qa": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "qa"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "map": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "map"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "wireframe": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "wireframe"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "chat": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "chat"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "named": {
+                    "type": "object",
+                    "not": {
+                      "additionalProperties": {
+                        "not": {
+                          "const": "http"
+                        }
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "named"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "adapter"
+        ]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "adapter": {
+            "type": "object",
+            "required": [
+              "default",
+              "http"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "adapter": {
+            "type": "object",
+            "properties": {
+              "http": {
+                "type": "object",
+                "properties": {
+                  "allowLoopback": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "allowLoopback"
+                ]
+              }
+            },
+            "required": [
+              "http"
+            ]
+          }
+        },
+        "required": [
+          "adapter"
+        ]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "adapter": {
+            "type": "object",
+            "properties": {
+              "http": {
+                "type": "object",
+                "properties": {
+                  "baseUrl": {
+                    "type": "string",
+                    "pattern": "^(https://[^/@]+|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:\\d+)?)([/?#].*)?$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "type": "object",
+        "properties": {
+          "adapter": {
+            "type": "object",
+            "properties": {
+              "http": {
+                "type": "object",
+                "properties": {
+                  "baseUrl": {
+                    "type": "string",
+                    "pattern": "^https://[^/@]+([/?#].*)?$"
+                  }
+                }
+              }
+            }
           }
         }
       }

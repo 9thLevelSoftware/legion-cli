@@ -49,6 +49,9 @@ export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> 
     refuse(`adapter.default must be ${ADAPTER_ID_HELP}`, `legion-cli init --adapter ${ADAPTER_ID_HELP}`);
   }
   const adapter: AdapterId = adapterParsed.data;
+  if (adapter === "http") {
+    refuse("adapter http is not selectable yet", `legion-cli init --adapter ${ADAPTER_ID_HELP}`);
+  }
 
   let generic: { binary: string; args: string[] } | undefined;
   if (adapter === "generic") {

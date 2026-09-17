@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { SkillIdSchema } from "@9thlevelsoftware/legion-cli-schema";
-import { SKILL_CONTRACTS, skillContract } from "../dist/index.js";
+import { SKILL_CONTRACTS, isEngineOwned, skillContract } from "../dist/index.js";
 
 test("SKILL_CONTRACTS covers every SkillId including map, wireframe, chat", () => {
   assert.deepEqual(Object.keys(SKILL_CONTRACTS).sort(), [...SkillIdSchema.options].sort());
@@ -22,4 +22,11 @@ test("SKILL_CONTRACTS covers every SkillId including map, wireframe, chat", () =
   ]);
   const chat = skillContract("chat", { runId: "abc" });
   assert.deepEqual(chat.allowedRoots, [".legion-cli/cache/runs/abc/**"]);
+  const wireframeNoSpec = skillContract("wireframe", { runId: "abc" });
+  assert.deepEqual(wireframeNoSpec.allowedRoots, [
+    ".legion-cli/specs/*/wireframes/**",
+    ".legion-cli/cache/runs/abc/**",
+  ]);
+  assert.equal(isEngineOwned(".legion-cli/sandbox/run-1/src/main.ts"), true);
+  assert.equal(isEngineOwned(".legion-cli/chat/session.json"), true);
 });

@@ -30,6 +30,7 @@ test("detect matrix covers every adapter id", async () => {
     assert.equal(typeof matrix[id].ok, "boolean");
   }
   assert.equal(matrix.generic.ok, true);
+  assert.equal(matrix.http.ok, false);
 });
 
 test("fake detect is ok only when LEGION_CLI_ADAPTER=fake", async () => {
@@ -223,7 +224,18 @@ test("resolveAdapterId ignores Task.adapter unless skill is execute or verify", 
   const config = {
     adapter: { default: "claude", routes: { plan: "grok", review: "codex" } },
   };
-  for (const skillId of ["plan", "review", "interview", "discuss", "spec", "ingest", "qa"]) {
+  for (const skillId of [
+    "plan",
+    "review",
+    "interview",
+    "discuss",
+    "spec",
+    "ingest",
+    "qa",
+    "map",
+    "wireframe",
+    "chat",
+  ]) {
     const expected =
       skillId === "plan"
         ? { id: "grok", source: "route" }
@@ -277,6 +289,28 @@ test("isResolvedAdapterSpawnable uses default when id is omitted", async () => {
   } finally {
     restoreEnv(FAKE_ADAPTER_ENV, previous);
   }
+});
+
+test("createAdapter http detect is not ok and spawn throws", async () => {
+  const adapter = createAdapter("http");
+  assert.equal(adapter.id, "http");
+  assert.equal(adapter.binary, "(http)");
+  const detected = await adapter.detect();
+  assert.equal(detected.ok, false);
+  assert.match(detected.reason ?? "", /adapter\.http is not configured/);
+  await assert.rejects(
+    () =>
+      adapter.spawn({
+        runId: "r",
+        skillId: "plan",
+        promptPath: "p",
+        pointerPrompt: "x",
+        cwd: process.cwd(),
+        timeoutMs: 1000,
+        env: {},
+      }),
+    (err) => err instanceof AdapterConfigError && /adapter\.http is not configured/.test(err.message),
+  );
 });
 
 test("generic without a binary is not spawnable", async () => {

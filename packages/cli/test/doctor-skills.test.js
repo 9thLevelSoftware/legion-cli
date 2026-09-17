@@ -3,20 +3,11 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { SkillIdSchema } from "@9thlevelsoftware/legion-cli-schema";
 import { normalize, runCli, withTempDir } from "./helpers.js";
 
 const REQUIRED_SKILL_IDS = ["plan", "execute", "review"];
-const ALL_SKILL_IDS = [
-  "interview",
-  "discuss",
-  "spec",
-  "ingest",
-  "plan",
-  "execute",
-  "verify",
-  "review",
-  "qa",
-];
+const ALL_SKILL_IDS = [...SkillIdSchema.options];
 
 function skillMarkdown(skillId, overrides = {}) {
   const required = REQUIRED_SKILL_IDS.includes(skillId);

@@ -71,7 +71,7 @@ export const FROZEN_ARGV_TABLE = {
   },
   http: {
     binary: "(http)",
-    argv: ["POST", "{{pointer}}"],
+    argv: null,
     spawnable: true,
   },
 } as const satisfies Record<
@@ -189,9 +189,6 @@ export function templateArgv(
       };
     }
     case "http":
-      return {
-        binary: FROZEN_ARGV_TABLE.http.binary,
-        argv: [...FROZEN_ARGV_TABLE.http.argv],
-      };
+      return { binary: FROZEN_ARGV_TABLE.http.binary, argv: [] };
   }
 }

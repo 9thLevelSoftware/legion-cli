@@ -74,5 +74,59 @@
     "source",
     "integrity",
     "installedAt"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "github"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "object",
+            "required": [
+              "type",
+              "origin",
+              "ref"
+            ],
+            "properties": {
+              "origin": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+              }
+            }
+          },
+          "integrity": {
+            "type": "object",
+            "required": [
+              "sha256",
+              "minisign"
+            ]
+          }
+        },
+        "required": [
+          "source",
+          "integrity"
+        ]
+      }
+    }
   ]
 }

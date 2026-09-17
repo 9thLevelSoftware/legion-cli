@@ -38,6 +38,7 @@ export type LegionPaths = {
   skillsOverlayDir: string;
   chatDir: string;
   sandboxDir: string;
+  serveJson: string;
 };
 
 export function legionPaths(projectRoot: string): LegionPaths {
@@ -73,6 +74,7 @@ export function legionPaths(projectRoot: string): LegionPaths {
     skillsOverlayDir: join(root, "skills"),
     chatDir: join(root, "chat"),
     sandboxDir: join(root, "sandbox"),
+    serveJson: join(root, "serve.json"),
   };
 }
 
@@ -103,6 +105,10 @@ export function ingestReceiptPath(id: string): string {
 
 export function auditEventsPath(): string {
   return ".legion-cli/audit/events.jsonl";
+}
+
+export function serveJsonPath(): string {
+  return ".legion-cli/serve.json";
 }
 
 export function auditDayPath(day: string): string {

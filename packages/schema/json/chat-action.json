@@ -77,7 +77,8 @@
               "const": "discuss_decide"
             },
             "id": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             },
             "status": {
               "type": "string",
@@ -101,10 +102,12 @@
               "const": "ticket"
             },
             "title": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             },
             "parentId": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             }
           },
           "required": [
@@ -120,7 +123,8 @@
               "const": "assume_answer"
             },
             "id": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             },
             "status": {
               "type": "string",

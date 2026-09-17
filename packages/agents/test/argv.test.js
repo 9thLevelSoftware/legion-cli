@@ -133,7 +133,7 @@ test("frozen argv table deepEquals the KD-7 vendor rows", () => {
   assert.equal(FROZEN_ARGV_TABLE.claude.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.generic.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.http.binary, "(http)");
-  assert.deepEqual([...FROZEN_ARGV_TABLE.http.argv], ["POST", "{{pointer}}"]);
+  assert.equal(FROZEN_ARGV_TABLE.http.argv, null);
   assert.equal(FROZEN_ARGV_TABLE.http.spawnable, true);
 });
 
@@ -195,6 +195,10 @@ test("templateArgv leaves {{pointer}} unexpanded and omits the pointer-prompt bo
   const fake = templateArgv("fake", config);
   assert.equal(fake.binary, "(in-process)");
   assert.deepEqual([...fake.argv], []);
+
+  const http = templateArgv("http", config);
+  assert.equal(http.binary, "(http)");
+  assert.deepEqual([...http.argv], []);
 
   const minimax = templateArgv("minimax", config);
   assert.equal(minimax.binary, "custom-mcode");

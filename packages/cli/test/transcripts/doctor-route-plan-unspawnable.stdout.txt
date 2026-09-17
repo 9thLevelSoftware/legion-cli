@@ -57,6 +57,7 @@ Adapter
   codex        <detect>
   mimo         <detect>
   minimax      <detect>
+  http         not configured
 
 Routes
   default      fake  spawnable

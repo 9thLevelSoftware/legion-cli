@@ -45,5 +45,6 @@
     "tokenSha256",
     "startedAt",
     "pid"
-  ]
+  ],
+  "additionalProperties": false
 }

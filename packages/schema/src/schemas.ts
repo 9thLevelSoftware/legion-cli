@@ -127,6 +127,25 @@ const SHA256_HEX_REGEX = /^[a-f0-9]{64}$/;
 export const Sha256HexSchema = z.string().regex(SHA256_HEX_REGEX);
 
 const HTTP_HEADER_SECRET_NAMES = ["authorization", "x-api-key"];
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+const GITHUB_OWNER_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+function httpBaseUrlIssue(baseUrl: string, allowLoopback: boolean): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return "adapter.http.baseUrl must be a URL";
+  }
+  if (parsed.username || parsed.password) {
+    return "adapter.http.baseUrl cannot include userinfo";
+  }
+  if (parsed.protocol === "https:") return null;
+  if (parsed.protocol === "http:" && allowLoopback && LOOPBACK_HOSTS.has(parsed.hostname)) {
+    return null;
+  }
+  return "adapter.http.baseUrl must be https: (http: loopback only with allowLoopback)";
+}
 
 export const HttpAdapterConfigSchema = z
   .object({
@@ -138,6 +157,10 @@ export const HttpAdapterConfigSchema = z
   })
   .strict()
   .superRefine((val, ctx) => {
+    const baseUrlIssue = httpBaseUrlIssue(val.baseUrl, val.allowLoopback);
+    if (baseUrlIssue) {
+      ctx.addIssue({ code: "custom", message: baseUrlIssue, path: ["baseUrl"] });
+    }
     for (const key of Object.keys(val.headers ?? {})) {
       if (HTTP_HEADER_SECRET_NAMES.includes(key.toLowerCase())) {
         ctx.addIssue({
@@ -155,7 +178,7 @@ export const SandboxConfigSchema = z
     requireHardened: z.boolean().default(true),
     allowCopyJail: z.boolean().default(false),
     backend: z.enum(["auto", "bwrap", "seatbelt", "copy"]).default("auto"),
-    skills: z.array(SkillIdSchema).default(["execute"]),
+    skills: z.array(SkillIdSchema).min(1).default(["execute"]),
   })
   .strict();
 export type SandboxConfig = z.infer<typeof SandboxConfigSchema>;
@@ -169,7 +192,7 @@ export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 export const MapConfigSchema = z
   .object({
-    roots: z.array(z.string().min(1)).optional(),
+    roots: z.array(ConcretePosixPathSchema).optional(),
     ignore: z.array(z.string().min(1)).optional(),
   })
   .strict();
@@ -204,15 +227,18 @@ export const NamedAdapterRoutesSchema = z.record(
 );
 export type NamedAdapterRoutes = z.infer<typeof NamedAdapterRoutesSchema>;
 
-function adapterTargetsGeneric(adapter: {
-  default: z.infer<typeof AdapterIdSchema>;
-  routes?: AdapterRoutes;
-  named?: NamedAdapterRoutes;
-}): boolean {
-  if (adapter.default === "generic") return true;
+function adapterTargetsId(
+  adapter: {
+    default: z.infer<typeof AdapterIdSchema>;
+    routes?: AdapterRoutes;
+    named?: NamedAdapterRoutes;
+  },
+  id: z.infer<typeof AdapterIdSchema>,
+): boolean {
+  if (adapter.default === id) return true;
   const routed = adapter.routes ? Object.values(adapter.routes) : [];
   const named = adapter.named ? Object.values(adapter.named) : [];
-  return routed.includes("generic") || named.includes("generic");
+  return routed.includes(id) || named.includes(id);
 }
 
 export const LegionConfigSchema = z.object({
@@ -241,9 +267,13 @@ export const LegionConfigSchema = z.object({
       named: NamedAdapterRoutesSchema.optional(),
     })
     .strict()
-    .refine((adapter) => !adapterTargetsGeneric(adapter) || adapter.generic !== undefined, {
+    .refine((adapter) => !adapterTargetsId(adapter, "generic") || adapter.generic !== undefined, {
       message: "adapter.generic is required when adapter.default or any routes/named target is generic",
       path: ["generic"],
+    })
+    .refine((adapter) => !adapterTargetsId(adapter, "http") || adapter.http !== undefined, {
+      message: "adapter.http is required when adapter.default or any routes/named target is http",
+      path: ["http"],
     }),
   ingest: z
     .object({
@@ -280,7 +310,7 @@ export const LegionConfigSchema = z.object({
   }),
   skills: SkillsConfigSchema.default({ trustKeys: [] }),
   map: MapConfigSchema.default({}),
-});
+}).strict();
 export type LegionConfig = z.infer<typeof LegionConfigSchema>;
 
 export const AcceptanceCriterionSchema = z.object({
@@ -536,7 +566,7 @@ export const DesignSystemPackageSchema = z.object({
   wcag: z.enum(["A", "AA", "AAA"]).optional(),
   integrity: z
     .object({
-      sha256: z.string().min(1),
+      sha256: Sha256HexSchema,
       minisign: z.string().min(1).optional(),
     })
     .optional(),
@@ -615,13 +645,15 @@ export const ModuleFingerprintSchema = z.object({
 });
 export type ModuleFingerprint = z.infer<typeof ModuleFingerprintSchema>;
 
-export const FingerprintFileSchema = z.object({
-  schemaVersion: z.literal(SCHEMA_VERSION.fingerprint),
-  generatedAt: z.string().min(1),
-  backend: z.enum(["lsp", "fallback"]),
-  rootHash: Sha256HexSchema,
-  modules: z.array(ModuleFingerprintSchema).max(10_000),
-});
+export const FingerprintFileSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.fingerprint),
+    generatedAt: z.string().min(1),
+    backend: z.enum(["lsp", "fallback"]),
+    rootHash: Sha256HexSchema,
+    modules: z.array(ModuleFingerprintSchema).max(10_000),
+  })
+  .strict();
 export type FingerprintFile = z.infer<typeof FingerprintFileSchema>;
 
 export const SkillOverlayPinSchema = z
@@ -639,8 +671,24 @@ export const SkillOverlayPinSchema = z
     }),
     installedAt: z.string().min(1),
   })
+  .strict()
   .superRefine((val, ctx) => {
-    if (val.source.type === "github" && !val.integrity.minisign) {
+    if (val.source.type !== "github") return;
+    if (!GITHUB_OWNER_REPO.test(val.source.origin)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "github overlay origin must be owner/repo",
+        path: ["source", "origin"],
+      });
+    }
+    if (!val.source.ref) {
+      ctx.addIssue({
+        code: "custom",
+        message: "source.ref is required when source.type is github",
+        path: ["source", "ref"],
+      });
+    }
+    if (!val.integrity.minisign) {
       ctx.addIssue({
         code: "custom",
         message: "integrity.minisign is required when source.type is github",
@@ -661,13 +709,17 @@ export const ChatProposalActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("intent_answer"), answers: z.array(z.string()).min(1).max(2) }),
   z.object({
     type: z.literal("discuss_decide"),
-    id: z.string(),
+    id: z.string().min(1),
     status: z.enum(["accepted", "rejected"]),
   }),
-  z.object({ type: z.literal("ticket"), title: z.string(), parentId: z.string().optional() }),
+  z.object({
+    type: z.literal("ticket"),
+    title: z.string().min(1),
+    parentId: z.string().min(1).optional(),
+  }),
   z.object({
     type: z.literal("assume_answer"),
-    id: z.string(),
+    id: z.string().min(1),
     status: z.enum(["confirmed", "rejected"]),
   }),
 ]);
@@ -676,14 +728,32 @@ export type ChatProposalAction = z.infer<typeof ChatProposalActionSchema>;
 export const ChatActionSchema = z.union([ChatReadActionSchema, ChatProposalActionSchema]);
 export type ChatAction = z.infer<typeof ChatActionSchema>;
 
-export const ServeFileSchema = z.object({
-  schemaVersion: z.literal(SCHEMA_VERSION.serve),
-  port: z.number().int().min(1).max(65535),
-  bind: z.string().min(1),
-  mcpPath: z.literal("/mcp"),
-  mcpHttp: z.boolean(),
-  tokenSha256: Sha256HexSchema,
-  startedAt: z.string().min(1),
-  pid: z.number().int().positive(),
-});
+export const ChatSessionFileSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.chatSession),
+    id: z.string().min(1),
+    startedAt: z.string().min(1),
+    turns: z.array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        text: z.string(),
+        action: ChatActionSchema.optional(),
+      }),
+    ),
+  })
+  .strict();
+export type ChatSessionFile = z.infer<typeof ChatSessionFileSchema>;
+
+export const ServeFileSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.serve),
+    port: z.number().int().min(1).max(65535),
+    bind: z.string().min(1),
+    mcpPath: z.literal("/mcp"),
+    mcpHttp: z.boolean(),
+    tokenSha256: Sha256HexSchema,
+    startedAt: z.string().min(1),
+    pid: z.number().int().positive(),
+  })
+  .strict();
 export type ServeFile = z.infer<typeof ServeFileSchema>;

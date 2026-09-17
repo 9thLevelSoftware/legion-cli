@@ -208,3 +208,12 @@ test("run promote --help says untrusted until wiki trust", () => {
   assert.match(out, /Next is first page/);
   assert.match(out, /--yes does not review/);
 });
+
+test("init --adapter http refuses until http flags land", () => {
+  const result = runCli(["init", "--name", "Checkin", "--adapter", "http"]);
+  assert.equal(result.status, 1);
+  const err = normalize(result.stderr);
+  assert.match(err, /adapter http is not selectable yet/);
+  assert.match(err, /--adapter claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax/);
+  assert.doesNotMatch(err, /\|http/);
+});

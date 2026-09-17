@@ -73,7 +73,7 @@
       "properties": {
         "sha256": {
           "type": "string",
-          "minLength": 1
+          "pattern": "^[a-f0-9]{64}$"
         },
         "minisign": {
           "type": "string",
