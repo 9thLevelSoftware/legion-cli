@@ -11,10 +11,10 @@ export class DesignSystemError extends Error {
 export const DS_HINT = {
   init: "legion-cli init",
   show: "legion-cli design-system show",
-  install: "legion-cli design-system install <local-dir>",
+  install: "legion-cli design-system install <dir|github:owner/repo@tag>",
   importOd: "legion-cli design-system import-od <dir>",
   generate: "legion-cli design-system generate",
-  localOnly: "local directory copy only until signed remote",
+  localOnly: "legion-cli design-system install <dir|github:owner/repo@tag>",
 } as const;
 
 export function refuse(message: string, nextHint: string): never {

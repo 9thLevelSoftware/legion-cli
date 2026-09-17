@@ -18,6 +18,19 @@ export async function hashPackageFiles(dir: string, files: string[]): Promise<st
   return hash.digest("hex");
 }
 
+const SHA256_PIN = /^sha256:([a-fA-F0-9]{64})$/;
+
+export function parseIntegrityPin(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const match = SHA256_PIN.exec(trimmed);
+  if (!match?.[1]) {
+    refuse("integrity must be sha256:<64 hex>", DS_HINT.install);
+  }
+  return match[1].toLowerCase();
+}
+
 export async function assertIntegrity(
   dir: string,
   files: string[],
@@ -26,7 +39,7 @@ export async function assertIntegrity(
 ): Promise<string | undefined> {
   if (!expected) {
     if (opts.required) {
-      refuse("remote design-system install requires integrity.sha256", DS_HINT.localOnly);
+      refuse("remote design-system install requires integrity.sha256", DS_HINT.install);
     }
     return undefined;
   }

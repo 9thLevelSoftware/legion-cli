@@ -146,6 +146,9 @@ importers:
 
   packages/design-system:
     dependencies:
+      '@9thlevelsoftware/legion-cli-persist':
+        specifier: workspace:*
+        version: link:../persist
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:../schema

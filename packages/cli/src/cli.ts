@@ -603,11 +603,14 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(designSystem.command("install").description("Copy a local design-system directory"))
-    .argument("<dir>", "local directory (github: rejected)")
+  addGlobalOptions(designSystem.command("install").description("Install a local directory or github:owner/repo@tag package"))
+    .argument("<source>", "local directory or github:owner/repo@tag")
+    .option("--integrity <sha256>", "pin as sha256:<hex>")
+    .option("--allow-branch", "fetch refs/heads instead of refs/tags (TTY confirmation)")
     .allowExcessArguments(false)
-    .action(async (dir: string, _opts, cmd: Command) => {
-      const code = await runDesignSystemInstall(resolveOpts(cmd), dir);
+    .action(async (source: string, opts, cmd: Command) => {
+      const flags = opts as { integrity?: string; allowBranch?: boolean };
+      const code = await runDesignSystemInstall(resolveOpts(cmd), source, flags);
       process.exitCode = code;
     });
 

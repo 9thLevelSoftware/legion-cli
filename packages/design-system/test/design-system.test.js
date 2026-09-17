@@ -21,7 +21,17 @@ import {
   showDesignSystem,
   threeLensReview,
 } from "../dist/index.js";
-import { initStub, legionFixture, odFixture, withTempDir } from "./helpers.js";
+import {
+  hashPackageRecords,
+  initStub,
+  legionFixture,
+  makeDesignZip,
+  makeMinisignPair,
+  makeZip,
+  odFixture,
+  signMinisign,
+  withTempDir,
+} from "./helpers.js";
 
 function isRefuse(err, message, hint) {
   assert.equal(err instanceof DesignSystemError, true, `expected DesignSystemError, got ${err?.name}: ${err?.message}`);
@@ -58,7 +68,7 @@ test("copyShippedCraft writes the five craft files", async () => {
   });
 });
 
-test("github: sources are rejected", () => {
+test("github: sources are detected", () => {
   assert.equal(isGithubInstallSource("github:acme/brand"), true);
   assert.equal(isGithubInstallSource("https://github.com/acme/brand"), true);
   assert.equal(isGithubInstallSource("//github.com/acme/brand"), true);
@@ -84,12 +94,16 @@ test("protocol-relative, UNC, and URL schemes are remote", () => {
   assert.equal(isRemoteInstallSource("./brand"), false);
 });
 
-test("install rejects github:", async () => {
+test("github: without tag refuses", async () => {
   await withTempDir(async (dir) => {
     await initStub(dir);
     await assert.rejects(
       () => installLocalDir({ projectRoot: dir, source: "github:acme/brand" }),
-      (err) => isRefuse(err, /github:/, /local directory/),
+      (err) => isRefuse(err, /@tag/, /design-system install/),
+    );
+    await assert.rejects(
+      () => installLocalDir({ projectRoot: dir, source: "github:owner/repo" }),
+      (err) => isRefuse(err, /@tag/, /design-system install/),
     );
   });
 });
@@ -102,11 +116,11 @@ test("install, import-od, and generate refuse UNC and protocol-relative paths be
     for (const source of githubPaths) {
       await assert.rejects(
         () => installLocalDir({ projectRoot: dir, source }),
-        (err) => isRefuse(err, /github:/, /local directory/),
+        (err) => isRefuse(err, /github:/, /design-system install/),
       );
       await assert.rejects(
         () => importOpenDesign({ projectRoot: dir, source }),
-        (err) => isRefuse(err, /github:/, /local directory/),
+        (err) => isRefuse(err, /github:/, /design-system install/),
       );
       await assert.rejects(
         () =>
@@ -125,11 +139,11 @@ test("install, import-od, and generate refuse UNC and protocol-relative paths be
     }
     await assert.rejects(
       () => installLocalDir({ projectRoot: dir, source: other }),
-      (err) => isRefuse(err, /local directory copy only/, /local directory/),
+      (err) => isRefuse(err, /local directory copy only/, /design-system install/),
     );
     await assert.rejects(
       () => importOpenDesign({ projectRoot: dir, source: other }),
-      (err) => isRefuse(err, /local directory copy only/, /local directory/),
+      (err) => isRefuse(err, /local directory copy only/, /design-system install/),
     );
     await assert.rejects(
       () =>
@@ -189,6 +203,102 @@ test("install copies a local Legion package and activates it", async () => {
     const shown = await showDesignSystem(dir);
     assert.equal(shown.packageId, "fixture-neutral");
     assert.equal(shown.source.type, "local");
+  });
+});
+
+test("github zip with ../../etc/passwd refuses", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const zip = makeZip([{ name: "../../etc/passwd", data: "root:x:0:0:root:/root:/bin/sh\n" }]);
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          fetchZipball: async () => ({ body: zip }),
+        }),
+      (err) => isRefuse(err, /path is outside|passwd/, /design-system install/),
+    );
+  });
+});
+
+test("github sha256 mismatch refuses", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const files = [
+      { name: "DESIGN.md", data: "# Acme\n" },
+      { name: "tokens.css", data: ":root { --legion-ink: #111111; }\n" },
+    ];
+    const actual = hashPackageRecords(files);
+    const wrong = "a".repeat(64);
+    const { zip } = makeDesignZip({
+      files,
+      sha256: wrong,
+      minisign: signMinisign(wrong, pair),
+      pair,
+    });
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          fetchZipball: async () => ({ body: zip }),
+          trustKeys: [pair.publicKey],
+        }),
+      (err) => isRefuse(err, /integrity\.sha256 mismatch/, /design-system install/),
+    );
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          integrity: `sha256:${wrong}`,
+          fetchZipball: async () => ({ body: makeDesignZip({ files, sha256: actual, pair }).zip }),
+          trustKeys: [pair.publicKey],
+        }),
+      (err) => isRefuse(err, /integrity\.sha256 mismatch/, /design-system install/),
+    );
+  });
+});
+
+test("github mock lookup 127.0.0.1 refuses", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          lookup: async () => ({ address: "127.0.0.1", family: 4 }),
+        }),
+      (err) => isRefuse(err, /private-network/, /design-system install/),
+    );
+  });
+});
+
+test("github fake fetch persists source.type github and sets active packageId", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const { zip, sha, manifest } = makeDesignZip({ pair, sign: true });
+    const result = await installLocalDir({
+      projectRoot: dir,
+      source: "github:acme/brand@v1.2.0",
+      integrity: `sha256:${sha}`,
+      fetchZipball: async () => ({ body: zip }),
+      trustKeys: [pair.publicKey],
+    });
+    assert.equal(result.id, "acme");
+    assert.equal(result.manifest.source.type, "github");
+    assert.equal(result.manifest.source.origin, "github:acme/brand@v1.2.0");
+    assert.doesNotMatch(result.manifest.source.origin, /zip-|cache|tmp/i);
+    assert.equal(result.manifest.integrity.sha256, sha);
+    const shown = await showDesignSystem(dir);
+    assert.equal(shown.packageId, "acme");
+    assert.equal(shown.source.type, "github");
+    assert.equal(shown.source.origin, "github:acme/brand@v1.2.0");
+    assert.equal(manifest.id, "acme");
   });
 });
 

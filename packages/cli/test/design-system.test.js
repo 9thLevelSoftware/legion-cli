@@ -9,14 +9,31 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 const odFixture = join(repoRoot, "packages", "design-system", "test", "fixtures", "od-acme");
 const legionFixture = join(repoRoot, "design-systems", "_fixture-neutral");
 
-test("design-system install rejects github:", async () => {
+test("design-system install github: without tag refuses", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(init.status, 0, init.stderr);
     const result = runCli(["design-system", "install", "github:acme/brand", "--project", dir]);
     assert.equal(result.status, 1);
-    assert.match(normalize(result.stderr), /github:/);
-    assert.match(normalize(result.stderr), /local directory/);
+    assert.match(normalize(result.stderr), /@tag/);
+    assert.match(normalize(result.stderr), /design-system install/);
+  });
+});
+
+test("design-system install --allow-branch without TTY refuses", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const result = runCli([
+      "design-system",
+      "install",
+      "github:acme/brand@main",
+      "--allow-branch",
+      "--project",
+      dir,
+    ]);
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /TTY/);
   });
 });
 
@@ -144,6 +161,8 @@ test("help --all lists design-system commands", () => {
   const out = normalize(result.stdout);
   assert.match(out, /design-system show/);
   assert.match(out, /design-system install/);
+  assert.match(out, /github:owner\/repo@tag/);
+  assert.doesNotMatch(out, /github: rejected/);
   assert.match(out, /design-system import-od/);
   assert.match(out, /design-system generate/);
 });

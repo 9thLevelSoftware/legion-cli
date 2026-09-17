@@ -17,6 +17,10 @@ export function isRemoteLooking(source: string): boolean {
   return false;
 }
 
+export function isGithubColonSource(source: string): boolean {
+  return GITHUB_PREFIX.test(source.trim());
+}
+
 export function isGithubInstallSource(source: string): boolean {
   const trimmed = source.trim();
   if (GITHUB_PREFIX.test(trimmed)) return true;
@@ -33,6 +37,9 @@ function refuseRemote(source: string, asUrlFetch: boolean, label?: string): void
     if (asUrlFetch) {
       refuse(`${label ?? "design-system"} refuses github: until signed remote`, "path or none");
     }
+    if (!GITHUB_PREFIX.test(trimmed)) {
+      refuse("design-system install uses github:owner/repo@tag, not a GitHub URL", DS_HINT.localOnly);
+    }
     refuse("github: design-system install is not available yet", DS_HINT.localOnly);
   }
   if (isRemoteLooking(trimmed)) {
@@ -43,9 +50,15 @@ function refuseRemote(source: string, asUrlFetch: boolean, label?: string): void
   }
 }
 
-/** Local dir copy only. Reject github: and URL fetch until the signed-remote PR. */
+/** Local dir copy only. Reject github: and URL fetch (import-od / generate brand). */
 export function assertLocalInstallSource(source: string): void {
   refuseRemote(source, false);
+}
+
+/** Install allows github:owner/repo@tag; other remotes still refuse. */
+export function assertInstallSource(source: string): void {
+  if (isGithubColonSource(source)) return;
+  refuseRemote(source.trim(), false);
 }
 
 export function resolveLocalDir(source: string, cwd = process.cwd()): string {

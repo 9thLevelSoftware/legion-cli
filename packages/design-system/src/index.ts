@@ -3,8 +3,8 @@ export { CRAFT_SLUGS, designPaths } from "./paths.js";
 export { findCraftDir, copyShippedCraft, readCraftFiles } from "./craft.js";
 export { composeDesignContext, COMPOSE_ORDER } from "./compose.js";
 export type { ComposeResult, ComposeSection } from "./compose.js";
-export { installLocalDir } from "./install.js";
-export type { InstallResult } from "./install.js";
+export { install, installLocalDir } from "./install.js";
+export type { InstallOpts, InstallResult } from "./install.js";
 export { importOpenDesign } from "./import-od.js";
 export type { ImportOdResult } from "./import-od.js";
 export {
@@ -21,8 +21,10 @@ export { isBrandViolationBlockingFreeze } from "./freeze.js";
 export { threeLensReview, isUiWork } from "./review.js";
 export type { ThreeLensReview, ReviewInput, LensResult } from "./review.js";
 export {
+  assertInstallSource,
   assertLocalInstallSource,
   assertNoUrlFetch,
+  isGithubColonSource,
   isGithubInstallSource,
   isRemoteInstallSource,
   isRemoteLooking,
