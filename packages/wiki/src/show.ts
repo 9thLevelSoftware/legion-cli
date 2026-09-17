@@ -1,11 +1,11 @@
-import { readdir } from "node:fs/promises";
-import { basename } from "node:path";
+import { readFile, readdir } from "node:fs/promises";
+import { basename, join } from "node:path";
 import type { LegionReader } from "@9thlevelsoftware/legion-cli-persist";
 import { loadWikiPages, type WikiPageRow } from "./graph.js";
 import { ensureWikiIndex } from "./brief.js";
 
 export type ShownPage = {
-  kind: "wiki" | "spec" | "task" | "decision" | "assumption";
+  kind: "wiki" | "spec" | "task" | "decision" | "assumption" | "map";
   path: string;
   title: string;
   trust?: "untrusted" | "reviewed";
@@ -45,6 +45,22 @@ export async function showPage(
 ): Promise<ShownPage> {
   const ref = normalizeRef(pageRef);
   await ensureWikiIndex(store, opts);
+
+  const mapRef = ref.toLowerCase();
+  if (mapRef === ".legion-cli/map/architecture.md" || mapRef === "map/architecture.md") {
+    const storePath = ".legion-cli/map/ARCHITECTURE.md";
+    if (!(await store.pathExists(storePath))) {
+      throw new Error(`unknown page ${pageRef}`);
+    }
+    const body = await readFile(join(store.paths.mapDir, "ARCHITECTURE.md"), "utf8");
+    const heading = /^#\s+(.+)$/m.exec(body);
+    return {
+      kind: "map",
+      path: storePath,
+      title: heading?.[1]?.trim() || "Architecture",
+      body,
+    };
+  }
 
   if (/^TSK-/i.test(ref) || ref.startsWith(".legion-cli/tasks/")) {
     const id = basename(ref).replace(/\.md$/i, "");

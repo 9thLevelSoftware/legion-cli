@@ -75,6 +75,7 @@ import {
 import {
   ADAPTER_ID_HELP,
   ControlModeSchema,
+  FingerprintFileSchema,
   QAScoreSchema,
   SCHEMA_VERSION,
   type AdapterId,
@@ -182,6 +183,15 @@ import type {
   WireframeResult,
 } from "./types.js";
 import { promoteBrownfieldRun, runBrownfield } from "./brownfield.js";
+import {
+  generateEngineMap,
+  MAP_ARCHITECTURE_PATH,
+  MAP_FINGERPRINTS_PATH,
+  MAP_SHOW_NEXT,
+  MAP_SPAWN_PROMPT,
+  type MapOptions,
+  type MapResult,
+} from "./map.js";
 import { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands } from "./verify.js";
 import { palettePresent } from "./wireframes.js";
 import { finishWireframe, prepareWireframe, screenPagesFor, writeWireframeFiles } from "./wireframe-run.js";
@@ -605,12 +615,22 @@ export class LegionEngine {
       const { catalog } = skillsDir
         ? listSkillCatalog(skillsDir)
         : { catalog: { schemaVersion: SCHEMA_VERSION.skillCatalog, skills: [] } };
+      let mapRootHash: string | undefined;
+      try {
+        const parsed = FingerprintFileSchema.safeParse(
+          JSON.parse(await readFile(join(this.store.paths.mapDir, "fingerprints.json"), "utf8")),
+        );
+        if (parsed.success) mapRootHash = parsed.data.rootHash;
+      } catch {
+        // map not generated yet
+      }
       return buildSessionBrief(this.store, {
         skills: catalog.skills.map((skill) => ({
           skillId: skill.skillId,
           name: skill.name,
           description: skill.description,
         })),
+        mapRootHash,
       });
     });
   }
@@ -634,6 +654,71 @@ export class LegionEngine {
       }
       await ensureWikiIndex(this.store);
       return gardenReport(this.projectRoot);
+    });
+  }
+
+  async map(opts: MapOptions = {}): Promise<MapResult> {
+    let started: StartedSkillSpawn | undefined;
+    let generated: Awaited<ReturnType<typeof generateEngineMap>> | undefined;
+
+    await this.#withLockOrRefuse(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("Map needs a Legion CLI project first", HINT.init);
+      }
+      generated = await generateEngineMap(this.projectRoot, opts);
+      let config: LegionConfig;
+      try {
+        config = await this.#readConfig();
+      } catch {
+        return;
+      }
+      started = await startSkillSpawn({
+        ...this.#skillSpawnFields(),
+        config,
+        skillId: "map",
+        promptBody: MAP_SPAWN_PROMPT,
+        required: false,
+      });
+    });
+
+    const waited = started?.spawned ? await waitStartedSpawn(started) : undefined;
+
+    return this.#withLockOrRefuse(async () => {
+      if (!generated) {
+        refuse("Map needs a Legion CLI project first", HINT.init);
+      }
+      if (started?.spawned) {
+        const revert = await finishStartedSpawn(started);
+        if (revert.incident) {
+          refuse("inspect .git — spawn touched .git/", HINT.map);
+        }
+        if (revert.extrasReverted.length > 0) {
+          refuse(
+            `spawn wrote files outside SkillContract; reverted: ${revert.extrasReverted.join(", ")}`,
+            HINT.map,
+          );
+        }
+        if (waited?.error) {
+          const message = waited.error instanceof Error ? waited.error.message : String(waited.error);
+          refuse(`map skill spawn failed: ${message}`, HINT.map);
+        }
+      }
+      const state = await this.#readState();
+      await this.#audit(opts.refresh ? "map_refresh" : "map", state.phase, "user", {
+        backend: generated.backend,
+        modules: generated.fingerprints.modules.length,
+        changedCount: generated.changed.length,
+        rootHash: generated.fingerprints.rootHash,
+      });
+      return {
+        path: MAP_ARCHITECTURE_PATH,
+        fingerprintsPath: MAP_FINGERPRINTS_PATH,
+        backend: generated.backend,
+        modules: generated.fingerprints.modules.length,
+        changed: generated.changed,
+        next: MAP_SHOW_NEXT,
+      };
     });
   }
 

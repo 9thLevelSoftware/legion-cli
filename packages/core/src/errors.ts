@@ -53,6 +53,7 @@ export const HINT = {
   packet: "legion-cli packet new --title <title>",
   packetRespond: (id = "<id>") => `legion-cli packet respond ${id}`,
   compact: "legion-cli context compact",
+  map: "legion-cli map",
   status: "legion-cli status",
   assumeList: "legion-cli assume list",
   assumeAnswer: "legion-cli assume answer <id> --status confirmed|rejected",
