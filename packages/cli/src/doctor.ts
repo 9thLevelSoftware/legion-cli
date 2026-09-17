@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -10,7 +11,10 @@ import {
   extraArgvIsSpawnable,
   extraArgvRefuseReason,
   genericArgsOrDefault,
-  listSkillCatalog,
+  hashSkillTree,
+  isRequiredSkillId,
+  listResolvedSkillCatalog,
+  overlaySkillDir,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
 import {
@@ -435,19 +439,13 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   }
 
   const skillsDir = findSkillsDir();
-  const catalogResult = skillsDir
-    ? listSkillCatalog(skillsDir)
-    : {
-        catalog: { schemaVersion: SCHEMA_VERSION.skillCatalog, skills: [] },
-        skipped: REQUIRED_SKILL_IDS.map((skillId) => ({
-          path: `skills/${skillId}/SKILL.md`,
-          reason: "skills dir not found",
-          required: true as const,
-        })),
-      };
+  const catalogResult = await listResolvedSkillCatalog({
+    projectRoot: opts.project,
+    packagedSkillsDir: skillsDir,
+  });
   const skippedBySkill = new Map(
     catalogResult.skipped.map((row) => {
-      const id = row.path.replace(/^skills\//, "").replace(/\/SKILL\.md$/i, "");
+      const id = row.path.replace(/^(?:\.legion-cli\/)?skills\//, "").replace(/\/SKILL\.md$/i, "");
       return [id, row] as const;
     }),
   );
@@ -481,6 +479,50 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     if (skipped.required) continue;
     if (skipped.reason === "missing SKILL.md") continue;
     warnings.push(`optional skill ${skipped.path}: ${skipped.reason}`);
+  }
+
+  const overlayLines: string[] = [];
+  for (const skillId of SkillIdSchema.options) {
+    const overlayDir = overlaySkillDir(opts.project, skillId);
+    if (!existsSync(join(overlayDir, "overlay.json"))) continue;
+    const overlayEntry = catalogResult.overlays.find((row) => row.skillId === skillId);
+    let overlayHash = overlayEntry?.pin.integrity.sha256;
+    if (!overlayHash) {
+      try {
+        overlayHash = await hashSkillTree(overlayDir);
+      } catch (err) {
+        overlayHash = err instanceof Error ? err.message : String(err);
+      }
+    }
+    let packagedHash = "missing";
+    if (skillsDir && existsSync(join(skillsDir, skillId, "SKILL.md"))) {
+      try {
+        packagedHash = await hashSkillTree(join(skillsDir, skillId));
+      } catch (err) {
+        packagedHash = err instanceof Error ? err.message : String(err);
+      }
+    }
+    const origin = overlayEntry
+      ? overlayEntry.pin.source.type === "github"
+        ? `github:${overlayEntry.pin.source.origin}@${overlayEntry.pin.source.ref}`
+        : `local ${overlayEntry.pin.source.origin}`
+      : "unreadable pin";
+    overlayLines.push(`  ${skillId.padEnd(13)}pin ${overlayHash}  ${origin}  packaged ${packagedHash}`);
+    const skipped = skippedBySkill.get(skillId);
+    const digestOk = overlayEntry?.digestOk === true && overlayEntry.pin.integrity.sha256 === overlayHash;
+    if (isRequiredSkillId(skillId) && (!overlayEntry || !digestOk || skipped)) {
+      const existing = checks.find((check) => check.label === `skill ${skillId} frontmatter`);
+      if (existing && existing.ok) {
+        existing.ok = false;
+        existing.detail = skipped?.reason ?? "overlay pin digest mismatch";
+      } else if (!existing) {
+        checks.push({
+          ok: false,
+          label: `skill ${skillId} overlay pin`,
+          detail: skipped?.reason ?? "overlay pin digest mismatch",
+        });
+      }
+    }
   }
 
   const secrets: SecretHit[] = await scanWikiSecrets(engine.store.paths.wikiDir);
@@ -541,6 +583,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       matrix: adapterMatrix,
     },
     secrets: secrets.map((hit) => ({ name: hit.name, file: hit.file })),
+    overlays: overlayLines.map((line) => line.trim()),
     ...(metrics
       ? {
           metrics: {
@@ -584,6 +627,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     "",
     "Routes",
     ...(routed.length > 0 ? routed.map(formatRoutedLine) : ["  (none)"]),
+    ...(overlayLines.length > 0 ? ["", "Overlays (pin vs packaged)", ...overlayLines] : []),
     "",
     secrets.length === 0 ? "Secrets     none" : `Secrets     ${secrets.length} hit(s)`,
   ];

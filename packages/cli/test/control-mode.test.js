@@ -20,7 +20,7 @@ test("help --all lists control-mode in always-on, not later or v0 gap", () => {
   assert.doesNotMatch(out, /Later, not this series:[\s\S]*vendor extra-adapter argv/);
   assert.doesNotMatch(out, /v0 gap; follow-up PRs in this series/);
   assert.doesNotMatch(out, /v0 gap/);
-  assert.match(out, /Later, not this series:\n {2}skills list\|install/);
+  assert.doesNotMatch(out, /Later, not this series:[\s\S]*skills list/);
   assert.doesNotMatch(out, /Later, not this series:[\s\S]*wireframe/);
   assert.doesNotMatch(out, /Later, not this series:[\s\S]*\bserve\b/);
   assert.doesNotMatch(out, /Later, not this series:[\s\S]*\bmap\b/);

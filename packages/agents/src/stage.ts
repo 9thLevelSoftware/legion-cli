@@ -1,5 +1,5 @@
 import { cp, mkdir, readdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { runCachePaths } from "./paths.js";
 
 export type StageSkillOptions = {
@@ -9,11 +9,21 @@ export type StageSkillOptions = {
   craftDir?: string;
 };
 
+function isOverlayMetadataName(name: string): boolean {
+  return name === "overlay.json" || name === "sha256.hex" || name.endsWith(".minisig");
+}
+
 /** Copy (not symlink) the skill directory into `.legion-cli/cache/skills/<run-id>/`. */
 export async function stageSkill(opts: StageSkillOptions): Promise<string> {
   const dest = runCachePaths(opts.projectRoot, opts.runId).skillDir;
   await mkdir(dirname(dest), { recursive: true });
-  await cp(opts.skillDir, dest, { recursive: true, dereference: true, force: true });
+  await cp(opts.skillDir, dest, {
+    recursive: true,
+    dereference: true,
+    force: true,
+    // Pin/signature files are overlay metadata, not skill protocol.
+    filter: (src) => !isOverlayMetadataName(basename(src)),
+  });
   if (opts.craftDir) {
     const craftDest = join(dest, "craft");
     await mkdir(craftDest, { recursive: true });

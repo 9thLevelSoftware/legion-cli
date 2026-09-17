@@ -53,9 +53,15 @@ function directoryFromSkillPath(path: string): string {
   return last;
 }
 
+export function skillCatalogPath(skillId: string, source: "overlay" | "packaged" = "packaged"): string {
+  return source === "overlay" ? `.legion-cli/skills/${skillId}/SKILL.md` : `skills/${skillId}/SKILL.md`;
+}
+
 function catalogPathFor(directory: string, fallbackPath: string): string {
-  if (directory) return `skills/${directory}/SKILL.md`;
-  return toPosixPath(fallbackPath);
+  const posix = toPosixPath(fallbackPath);
+  if (posix.startsWith(".legion-cli/skills/") && /\/SKILL\.md$/i.test(posix)) return posix;
+  if (directory) return skillCatalogPath(directory);
+  return posix;
 }
 
 function yamlRecord(value: unknown): Record<string, unknown> | undefined {

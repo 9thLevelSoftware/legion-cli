@@ -78,6 +78,12 @@ test("parseSkillFrontmatter accepts valid execute frontmatter", () => {
   assert.match(parsed.entry.description, /Activated only by/);
 });
 
+test("parseSkillFrontmatter keeps overlay catalog path", () => {
+  const parsed = parseSkillFrontmatter(skillMarkdown("execute"), ".legion-cli/skills/execute/SKILL.md");
+  assert.equal(parsed.ok, true, parsed.ok ? "" : parsed.reason);
+  assert.equal(parsed.entry.path, ".legion-cli/skills/execute/SKILL.md");
+});
+
 test("parseSkillFrontmatter fails when name does not equal directory and skillId", () => {
   const parsed = parseSkillFrontmatter(
     skillMarkdown("execute", { name: "not-execute" }),

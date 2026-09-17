@@ -10,10 +10,12 @@ import {
   isRequiredSkillId,
   isResolvedAdapterSpawnable,
   listLevel3Resources,
-  listSkillCatalog,
+  listResolvedSkillCatalog,
   parseSkillFrontmatter,
   resolveAdapter,
   resolveAdapterId,
+  resolveSkillDir as resolveOverlaySkillDir,
+  skillCatalogPath,
   stageSkill,
   templateArgv,
   writeRunPrompt,
@@ -21,6 +23,7 @@ import {
   type AgentHandle,
   type FakeArtifact,
   type FakeHoldWait,
+  type ResolvedSkillDir,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
 import { isPidAlive, type LegionReader } from "@9thlevelsoftware/legion-cli-persist";
@@ -47,6 +50,14 @@ import {
 } from "./revert.js";
 
 export { findSkillsDir };
+
+export async function resolveSkillDir(opts: {
+  projectRoot: string;
+  skillId: SkillId;
+  packagedSkillsDir?: string;
+}): Promise<ResolvedSkillDir> {
+  return resolveOverlaySkillDir(opts);
+}
 
 type LiveSpawnMarker = { enginePid: number; skillId: SkillId; runId: string };
 
@@ -220,13 +231,16 @@ async function assembleSpawnPrompt(opts: {
   runId: string;
   skillId: SkillId;
   skillDir: string;
-  skillsDir: string;
+  skillsDir?: string;
   promptBody: string;
   allowedRoots: readonly string[];
   fileContract?: FileContract;
   store?: LegionReader;
 }): Promise<{ body: string; skipDesignAppend: boolean }> {
-  const catalogResult = listSkillCatalog(opts.skillsDir);
+  const catalogResult = await listResolvedSkillCatalog({
+    projectRoot: opts.projectRoot,
+    packagedSkillsDir: opts.skillsDir,
+  });
   const skills = catalogResult.catalog.skills.map((skill) => ({
     skillId: skill.skillId,
     name: skill.name,
@@ -294,29 +308,39 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   }
 
   const skillsDir = opts.skillsDir ?? findSkillsDir();
-  const skillDir = skillsDir ? join(skillsDir, opts.skillId) : undefined;
-  const skillMd = skillDir ? join(skillDir, "SKILL.md") : undefined;
   const required = Boolean(opts.required) || isRequiredSkillId(opts.skillId);
-  if (!skillsDir || !skillDir || !skillMd || !existsSync(skillMd)) {
-    if (required) {
-      refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
+  const resolved = await resolveSkillDir({
+    projectRoot: opts.projectRoot,
+    skillId: opts.skillId,
+    packagedSkillsDir: skillsDir,
+  });
+  if (!resolved.ok) {
+    if (required || resolved.pinned) {
+      refuse(resolved.reason, skillMissingHint(opts.skillId));
     }
     return { spawned: false, runId, resolution };
   }
+  const skillDir = resolved.skillDir;
+  const skillMd = join(skillDir, "SKILL.md");
   let skillRaw: string;
   try {
     skillRaw = await readFile(skillMd, "utf8");
   } catch {
-    if (required) {
-      refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
+    if (required || resolved.source === "overlay") {
+      refuse(
+        resolved.source === "overlay"
+          ? `${opts.skillId} overlay is missing SKILL.md`
+          : `${opts.skillId} requires skills/${opts.skillId}/SKILL.md`,
+        skillMissingHint(opts.skillId),
+      );
     }
     return { spawned: false, runId, resolution };
   }
-  const parsed = parseSkillFrontmatter(skillRaw, `skills/${opts.skillId}/SKILL.md`);
+  const parsed = parseSkillFrontmatter(skillRaw, skillCatalogPath(opts.skillId, resolved.source));
   if (!parsed.ok) {
-    if (required) {
+    if (required || resolved.source === "overlay") {
       refuse(
-        `${opts.skillId} requires valid skills/${opts.skillId}/SKILL.md frontmatter (${parsed.reason})`,
+        `${opts.skillId} requires valid ${skillCatalogPath(opts.skillId, resolved.source)} frontmatter (${parsed.reason})`,
         skillMissingHint(opts.skillId),
       );
     }

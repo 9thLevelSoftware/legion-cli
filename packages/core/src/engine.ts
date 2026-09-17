@@ -1,8 +1,10 @@
 import {
   isResolvedAdapterSpawnable,
-  listSkillCatalog,
+  listResolvedSkillCatalog,
   parseSkillFrontmatter,
   resolveAdapterId,
+  resolveSkillDir,
+  skillCatalogPath,
   type FakeArtifact,
 } from "@9thlevelsoftware/legion-cli-agents";
 import {
@@ -617,9 +619,10 @@ export class LegionEngine {
         refuse("Brief needs a Legion CLI project first", HINT.init);
       }
       const skillsDir = this.#skillsDir ?? findSkillsDir();
-      const { catalog } = skillsDir
-        ? listSkillCatalog(skillsDir)
-        : { catalog: { schemaVersion: SCHEMA_VERSION.skillCatalog, skills: [] } };
+      const { catalog } = await listResolvedSkillCatalog({
+        projectRoot: this.projectRoot,
+        packagedSkillsDir: skillsDir,
+      });
       return buildSessionBrief(this.store, {
         skills: catalog.skills.map((skill) => ({
           skillId: skill.skillId,
@@ -2230,19 +2233,30 @@ export class LegionEngine {
     }
     const skillsDir = this.#skillsDir ?? findSkillsDir();
     const hint = skillId === "execute" ? HINT.execute : skillId === "review" ? HINT.review : HINT.plan;
-    const skillMd = skillsDir ? join(skillsDir, skillId, "SKILL.md") : undefined;
-    if (!skillsDir || !skillMd || !existsSync(skillMd)) {
-      refuse(`${skillId} requires skills/${skillId}/SKILL.md`, hint);
+    const resolved = await resolveSkillDir({
+      projectRoot: this.projectRoot,
+      skillId,
+      packagedSkillsDir: skillsDir,
+    });
+    if (!resolved.ok) {
+      refuse(resolved.reason, hint);
     }
+    const skillMd = join(resolved.skillDir, "SKILL.md");
     let raw: string;
     try {
       raw = await readFile(skillMd, "utf8");
     } catch {
-      refuse(`${skillId} requires skills/${skillId}/SKILL.md`, hint);
+      refuse(
+        resolved.source === "overlay"
+          ? `${skillId} overlay is missing SKILL.md`
+          : `${skillId} requires skills/${skillId}/SKILL.md`,
+        hint,
+      );
     }
-    const parsed = parseSkillFrontmatter(raw, `skills/${skillId}/SKILL.md`);
+    const catalogPath = skillCatalogPath(skillId, resolved.source);
+    const parsed = parseSkillFrontmatter(raw, catalogPath);
     if (!parsed.ok) {
-      refuse(`${skillId} requires valid skills/${skillId}/SKILL.md frontmatter (${parsed.reason})`, hint);
+      refuse(`${skillId} requires valid ${catalogPath} frontmatter (${parsed.reason})`, hint);
     }
   }
 

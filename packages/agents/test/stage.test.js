@@ -35,6 +35,21 @@ test("stageSkill recursively copies L3 dirs and stray files", async () => {
   });
 });
 
+test("stageSkill omits overlay pin metadata", async () => {
+  await withTempDir(async (dir) => {
+    const skillDir = join(dir, "skills", "execute");
+    await writeSkill(skillDir, "# execute\n");
+    await writeFile(join(skillDir, "overlay.json"), "{}\n", "utf8");
+    await writeFile(join(skillDir, "sha256.hex"), "aa\n", "utf8");
+    await writeFile(join(skillDir, "sha256.hex.minisig"), "sig\n", "utf8");
+    const dest = await stageSkill({ projectRoot: dir, runId: "run-overlay", skillDir });
+    assert.equal(existsSync(join(dest, "SKILL.md")), true);
+    assert.equal(existsSync(join(dest, "overlay.json")), false);
+    assert.equal(existsSync(join(dest, "sha256.hex")), false);
+    assert.equal(existsSync(join(dest, "sha256.hex.minisig")), false);
+  });
+});
+
 test("stageSkill copies craft/*.md into the staged tree", async () => {
   await withTempDir(async (dir) => {
     const skillDir = join(dir, "skills", "execute");
