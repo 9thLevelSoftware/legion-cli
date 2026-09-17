@@ -1,5 +1,6 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { unwrapCmdShim } from "@9thlevelsoftware/legion-cli-agents";
 
 function uniquePaths(paths: string[]): string[] {
   const seen = new Set<string>();
@@ -84,29 +85,18 @@ function asText(result: ReturnType<typeof spawnSync>): SpawnText {
   };
 }
 
-function spawnDirect(
-  command: string,
-  args: string[],
-  cwd: string | undefined,
-  timeout?: number,
-): SpawnText {
+function spawnDirect(command: string, args: string[], cwd: string | undefined): SpawnText {
   return asText(
     spawnSync(command, args, {
       cwd,
       encoding: "utf8",
       windowsHide: true,
       shell: false,
-      timeout,
     }),
   );
 }
 
-function spawnCmdFile(
-  command: string,
-  args: string[],
-  cwd: string | undefined,
-  timeout?: number,
-): SpawnText {
+function spawnCmdFile(command: string, args: string[], cwd: string | undefined): SpawnText {
   const line = [command, ...args].map(quoteCmdArg).join(" ");
   return asText(
     spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", line], {
@@ -115,7 +105,6 @@ function spawnCmdFile(
       windowsHide: true,
       shell: false,
       windowsVerbatimArguments: true,
-      timeout,
     }),
   );
 }
@@ -124,10 +113,9 @@ export function runTool(
   name: string,
   args: string[],
   cwd?: string,
-  timeoutMs?: number,
 ): { status: number; stdout: string; stderr: string } {
   if (process.platform !== "win32") {
-    const result = spawnDirect(name, args, cwd, timeoutMs);
+    const result = spawnDirect(name, args, cwd);
     if (result.error) return { status: 1, stdout: "", stderr: "not found" };
     return {
       status: result.status ?? 1,
@@ -144,9 +132,7 @@ export function runTool(
     if (seen.has(key)) continue;
     seen.add(key);
     const viaCmd = /\.(cmd|bat)$/i.test(cmd);
-    const result = viaCmd
-      ? spawnCmdFile(cmd, args, cwd, timeoutMs)
-      : spawnDirect(cmd, args, cwd, timeoutMs);
+    const result = viaCmd ? spawnCmdFile(cmd, args, cwd) : spawnDirect(cmd, args, cwd);
     if (result.error) continue;
     return {
       status: result.status ?? 1,
@@ -155,6 +141,86 @@ export function runTool(
     };
   }
   return { status: 1, stdout: "", stderr: "not found" };
+}
+
+function killProcessTree(pid: number): void {
+  if (pid <= 0) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      shell: false,
+      encoding: "utf8",
+    });
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
+    }
+  }
+}
+
+function boundedSpawnArgv(
+  file: string,
+  args: string[],
+): { command: string; argv: string[]; verbatim: boolean } {
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(file)) {
+    const unwrapped = unwrapCmdShim(file);
+    if (unwrapped) {
+      return { command: unwrapped.command, argv: [...unwrapped.prefixArgs, ...args], verbatim: false };
+    }
+    const line = [file, ...args].map(quoteCmdArg).join(" ");
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      argv: ["/d", "/s", "/c", line],
+      verbatim: true,
+    };
+  }
+  return { command: file, argv: args, verbatim: false };
+}
+
+/** Spawn one resolved binary with a timeout that kills the process tree (Windows .cmd grandchildren included). */
+export async function runBounded(
+  file: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<{ status: number; stdout: string; stderr: string; timedOut: boolean }> {
+  const { command, argv, verbatim } = boundedSpawnArgv(file, args);
+  const child = spawn(command, argv, {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    shell: false,
+    detached: process.platform !== "win32",
+    windowsVerbatimArguments: verbatim,
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr?.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    if (child.pid) killProcessTree(child.pid);
+  }, timeoutMs);
+
+  const status = await new Promise<number>((resolve) => {
+    child.once("error", () => resolve(1));
+    child.once("close", (code) => resolve(code ?? 1));
+  });
+  clearTimeout(timer);
+  return { status, stdout, stderr, timedOut };
 }
 
 export function isSpawnableBinary(binary: string): boolean {

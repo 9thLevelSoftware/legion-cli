@@ -36,7 +36,7 @@ import {
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { scanWikiSecrets, type SecretHit } from "./secrets.js";
-import { isSpawnableBinary, listOnPath, runTool } from "./which.js";
+import { isSpawnableBinary, listOnPath, runBounded, runTool } from "./which.js";
 
 export type DoctorCheck = {
   ok: boolean;
@@ -76,17 +76,28 @@ function formatPathGroup(name: string, paths: string[]): string[] {
 }
 
 function looksLikeInstallerHelp(text: string): boolean {
+  // Real `@9thlevelsoftware/legion` printHelp() tokens: package name + `--uninstall`.
+  // PE help also mentions the package; it never prints `--uninstall`.
   return (
     text.includes("@9thlevelsoftware/legion") &&
-    /plugin installer/i.test(text) &&
+    /--uninstall\b/.test(text) &&
     !text.includes(PE_HELP_FINGERPRINT)
   );
 }
 
-function installerFingerprintWarning(legionPaths: string[]): string | undefined {
-  const probe = legionPaths[0];
+function pickLegionProbe(legionPaths: string[]): string | undefined {
+  if (process.platform === "win32") {
+    const winBin = legionPaths.find((abs) => /\.(cmd|bat|exe)$/i.test(abs));
+    if (winBin) return winBin;
+  }
+  return legionPaths[0];
+}
+
+async function installerFingerprintWarning(legionPaths: string[]): Promise<string | undefined> {
+  const probe = pickLegionProbe(legionPaths);
   if (!probe) return undefined;
-  const result = runTool(probe, ["--help"], undefined, 5_000);
+  const result = await runBounded(probe, ["--help"], 5_000);
+  if (result.timedOut) return undefined;
   const text = `${result.stdout}\n${result.stderr}`;
   return looksLikeInstallerHelp(text) ? INSTALLER_PATH_WARNING : undefined;
 }
@@ -355,7 +366,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   if (legionCliPaths.length > 1) {
     warnings.push("multiple legion-cli binaries on PATH (collision check)");
   }
-  const installerWarn = installerFingerprintWarning(legionPaths);
+  const installerWarn = await installerFingerprintWarning(legionPaths);
   if (installerWarn) warnings.push(installerWarn);
 
   const playwright = runTool("pnpm", ["exec", "playwright", "--version"], opts.project);
