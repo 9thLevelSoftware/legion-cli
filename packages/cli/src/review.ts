@@ -20,6 +20,7 @@ export async function runReview(opts: CliOpts, flags: { adapter?: string } = {})
       ok: passed,
       verdict: result.verdict,
       createdTaskIds: result.createdTaskIds,
+      rewrittenExistingTaskIds: result.rewrittenExistingTaskIds,
       extrasReverted: result.extrasReverted,
       phase: state.phase,
       lastReview: state.lastReview ?? null,
@@ -33,6 +34,8 @@ export async function runReview(opts: CliOpts, flags: { adapter?: string } = {})
     writeOut("Review PASS.");
   } else if (result.createdTaskIds.length > 0) {
     writeOut(`Review FAIL. Spawn created ${result.createdTaskIds.join(", ")}.`);
+  } else if (result.rewrittenExistingTaskIds.length > 0) {
+    writeOut(`Review FAIL. Existing tasks were rewritten: ${result.rewrittenExistingTaskIds.join(", ")}.`);
   } else {
     writeOut("Review FAIL.");
   }

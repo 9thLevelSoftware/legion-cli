@@ -27,7 +27,13 @@ export {
   splitLines,
   splitMustNotAndOutOfScope,
 } from "./intent.js";
-export { HEAD_MOVED_WARNING, revertExtras } from "./revert.js";
+export {
+  HEAD_MOVED_WARNING,
+  restoreChangedTaskFiles,
+  revertExtras,
+  snapshotTaskFiles,
+} from "./revert.js";
+export type { TaskFileSnapshot } from "./revert.js";
 export {
   ensureRegressionTest,
   fixFilesAllowed,

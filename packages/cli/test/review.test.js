@@ -125,11 +125,13 @@ test("help lists verify and review", async () => {
   const review = runCli(["help", "review"]);
   assert.equal(review.status, 0, review.stderr);
   assert.match(normalize(review.stdout), /FAIL/);
+  assert.match(normalize(review.stdout), /in-place rewrites/);
   const all = runCli(["help", "--all"]);
   assert.equal(all.status, 0, all.stderr);
   const out = normalize(all.stdout);
   assert.match(out, /verify \[id\]/);
   assert.match(out, /review/);
+  assert.match(out, /in-place rewrites/);
   assert.match(out, /--adapter/);
 });
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -92,6 +92,7 @@ test("review spawn with zero new tasks is PASS and stays executing", async () =>
         const review = await engine.review();
         assert.equal(review.verdict, "PASS");
         assert.deepEqual(review.createdTaskIds, []);
+        assert.deepEqual(review.rewrittenExistingTaskIds, []);
         assert.equal((await engine.getState()).phase, "executing");
         assert.equal((await engine.getState()).lastReview, "PASS");
       },
@@ -181,6 +182,82 @@ test("review spawn cannot stamp status done; child must execute before re-review
       {
         skillsDir,
         fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0002.md", content: taskMarkdown(stamped) }],
+      },
+    );
+  });
+});
+
+test("review spawn that rewrites an existing TSK is lastReview FAIL and restores bytes", async () => {
+  await withFakeAdapter(async () => {
+    const originalTask = makeTask({
+      id: "TSK-0001",
+      status: "done",
+      contract: { filesAllowed: ["src/main.ts"], expectedArtifacts: ["src/main.ts"] },
+    });
+    const rewritten = makeTask({
+      id: "TSK-0001",
+      title: "in/out button",
+      status: "todo",
+      contract: { filesAllowed: ["src/hacked.ts"], expectedArtifacts: ["src/hacked.ts"] },
+    });
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
+        const taskPath = join(dir, ".legion-cli", "tasks", "TSK-0001.md");
+        const original = await readFile(taskPath);
+        const review = await engine.review();
+        assert.equal(review.verdict, "FAIL");
+        assert.deepEqual(review.createdTaskIds, []);
+        assert.deepEqual(review.rewrittenExistingTaskIds, ["TSK-0001"]);
+        assert.equal((await engine.getState()).lastReview, "FAIL");
+        assert.equal((await engine.getState()).phase, "executing");
+        const restored = (await store.readTask("TSK-0001")).data;
+        assert.equal(restored.status, originalTask.status);
+        assert.deepEqual(restored.contract.filesAllowed, originalTask.contract.filesAllowed);
+        assert.deepEqual(await readFile(taskPath), original);
+        await assert.rejects(
+          () => engine.qa({ score: makeQaScore() }),
+          (err) => {
+            assert.equal(err instanceof LegionRefuseError, true);
+            assert.match(err.nextHint, /legion-cli review/);
+            return true;
+          },
+        );
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0001.md", content: taskMarkdown(rewritten) }],
+      },
+    );
+  });
+});
+
+test("review spawn notes-only edit of existing TSK is FAIL and restores bytes", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
+        const taskPath = join(dir, ".legion-cli", "tasks", "TSK-0001.md");
+        const original = await readFile(taskPath, "utf8");
+        const review = await engine.review();
+        assert.equal(review.verdict, "FAIL");
+        assert.deepEqual(review.createdTaskIds, []);
+        assert.deepEqual(review.rewrittenExistingTaskIds, ["TSK-0001"]);
+        assert.equal((await engine.getState()).lastReview, "FAIL");
+        assert.equal(await readFile(taskPath, "utf8"), original);
+        const task = (await store.readTask("TSK-0001")).data;
+        assert.equal(task.status, "done");
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/tasks/TSK-0001.md",
+            content: "---\nschemaVersion: legion-cli-task/v1\nid: TSK-0001\n---\nnotes only\n",
+          },
+        ],
       },
     );
   });

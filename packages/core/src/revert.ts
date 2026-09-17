@@ -1,4 +1,5 @@
-import { readdir, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   gitDiscoverChanges,
@@ -25,6 +26,58 @@ export type RevertResult = {
   headMoved: boolean;
   preSpawnRef: string | null;
 };
+
+/** Pre-spawn bytes of `.legion-cli/tasks/*.md`, keyed by filename. */
+export type TaskFileSnapshot = Map<string, { hash: string; bytes: Buffer }>;
+
+function sha256Bytes(contents: Buffer): string {
+  return createHash("sha256").update(contents).digest("hex");
+}
+
+async function listTaskMarkdown(tasksDir: string): Promise<string[]> {
+  let names: string[];
+  try {
+    names = await readdir(tasksDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  return names.filter((name) => name.toLowerCase().endsWith(".md"));
+}
+
+export async function snapshotTaskFiles(tasksDir: string): Promise<TaskFileSnapshot> {
+  const out: TaskFileSnapshot = new Map();
+  for (const fileName of await listTaskMarkdown(tasksDir)) {
+    try {
+      const bytes = await readFile(join(tasksDir, fileName));
+      out.set(fileName, { hash: sha256Bytes(bytes), bytes });
+    } catch {
+      // missing between list and read
+    }
+  }
+  return out;
+}
+
+/** Restore pre-spawn bytes for any existing task file that changed. Returns rewritten ids. */
+export async function restoreChangedTaskFiles(
+  tasksDir: string,
+  before: ReadonlyMap<string, { hash: string; bytes: Buffer }>,
+): Promise<string[]> {
+  const rewritten: string[] = [];
+  for (const [fileName, snap] of before) {
+    let currentHash: string | undefined;
+    try {
+      currentHash = sha256Bytes(await readFile(join(tasksDir, fileName)));
+    } catch {
+      currentHash = undefined;
+    }
+    if (currentHash === snap.hash) continue;
+    rewritten.push(fileName.replace(/\.md$/i, ""));
+    await writeFile(join(tasksDir, fileName), snap.bytes);
+  }
+  rewritten.sort((a, b) => a.localeCompare(b));
+  return rewritten;
+}
 
 export function recordPreSpawnRef(projectRoot: string): string | null {
   return tryGitHead(projectRoot);

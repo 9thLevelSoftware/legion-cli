@@ -110,7 +110,7 @@ import {
 import { assertCanTransition, assertLegalPhase } from "./phases.js";
 import { evaluateReadiness, filesAllowedFailsPlan, type ReadinessReport } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
-import { HEAD_MOVED_WARNING } from "./revert.js";
+import { HEAD_MOVED_WARNING, restoreChangedTaskFiles, snapshotTaskFiles } from "./revert.js";
 import { findSkillsDir, optionalSkillSpawn, spawnableAdapterRefuseMessage } from "./spawn.js";
 import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
 import { compactTaskBody, outcomeFromTask } from "./compact.js";
@@ -1040,6 +1040,7 @@ export class LegionEngine {
       await this.#assertSkillSpawnable(config, "review", { cliAdapter: opts?.adapter });
 
       const before = await this.snapshotTaskIds();
+      const beforeFiles = await snapshotTaskFiles(this.store.paths.tasksDir);
       const result = await optionalSkillSpawn({
         projectRoot: this.projectRoot,
         config,
@@ -1051,7 +1052,8 @@ export class LegionEngine {
           `Read .legion-cli/specs/${specId}/SPEC.md and .legion-cli/tasks/*.md.`,
           "Write notes to .legion-cli/qa/review.md.",
           "If the slice does not meet the spec, file tasks under .legion-cli/tasks/ (type: fix) or extra.json.",
-          "Creating any new task id FAILs this review. Zero new tasks is PASS.",
+          "Creating any new task id or rewriting existing TSK-*.md FAILs this review.",
+          "PASS only if ids are unchanged and existing task files are byte-identical.",
           "Do not git add or git commit. Do not write packets.",
         ].join("\n"),
         skillsDir: this.#skillsDir,
@@ -1071,9 +1073,20 @@ export class LegionEngine {
         await this.#clampSpawnedTaskStatuses(createdTaskIds);
         await this.#promoteReadyTasks(specId, "executing", config.control_mode);
       }
+      const rewrittenExistingTaskIds = await restoreChangedTaskFiles(this.store.paths.tasksDir, beforeFiles);
       await this.#refuseSpawnContract("review", result.revert, result.error, createdTaskIds, before, after);
-      const verdict = await this.#applyReviewSnapshotsLocked(await this.#readState(), before, after);
-      return { verdict, createdTaskIds, extrasReverted: result.revert?.extrasReverted ?? [] };
+      const verdict = await this.#applyReviewSnapshotsLocked(
+        await this.#readState(),
+        before,
+        after,
+        rewrittenExistingTaskIds,
+      );
+      return {
+        verdict,
+        createdTaskIds,
+        extrasReverted: result.revert?.extrasReverted ?? [],
+        rewrittenExistingTaskIds,
+      };
     });
   }
 
@@ -1083,7 +1096,9 @@ export class LegionEngine {
   }
 
   /**
-   * Models review-spawn comparison: PASS only when after has no ids that before lacked.
+   * Models review-spawn comparison: PASS only when after has no ids that before
+   * lacked and no existing TSK file was rewritten (id-only helper; spawn path
+   * also snapshots file hashes).
    */
   async applyReviewSnapshots(
     beforeTaskIds: readonly string[],
@@ -2770,10 +2785,12 @@ export class LegionEngine {
     state: StateFile,
     beforeTaskIds: readonly string[],
     afterTaskIds: readonly string[],
+    rewrittenExistingTaskIds: readonly string[] = [],
   ): Promise<ReviewVerdict> {
     const before = new Set(beforeTaskIds);
     const created = afterTaskIds.filter((id) => !before.has(id));
-    const verdict: ReviewVerdict = created.length === 0 ? "PASS" : "FAIL";
+    const verdict: ReviewVerdict =
+      created.length === 0 && rewrittenExistingTaskIds.length === 0 ? "PASS" : "FAIL";
     let phase = state.phase;
     if (verdict === "FAIL" && phase === "ready_to_ship") {
       phase = "executing";

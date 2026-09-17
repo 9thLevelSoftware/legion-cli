@@ -131,7 +131,7 @@ test("slice is all tasks of activeSpecId", async () => {
   });
 });
 
-test("review PASS only if spawn created zero new tasks", async () => {
+test("review PASS only if spawn created zero new tasks and did not rewrite existing TSK", async () => {
   await withFakeAdapter(async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);

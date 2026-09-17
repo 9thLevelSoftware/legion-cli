@@ -1,7 +1,7 @@
 ---
 name: review
 description: >
-  Spec-level review of a terminal slice; new task ids FAIL the review.
+  Spec-level review of a terminal slice; new task ids or in-place TSK rewrites FAIL the review.
   Activated only by `legion-cli review`. Do not load other skill bodies.
 license: UNLICENSED
 compatibility: "Legion CLI staging; not vendor auto-discovery"
@@ -16,7 +16,7 @@ metadata:
 
 Spec-level review of a terminal slice (every task `done` or `blocked`). Required: Legion CLI refuses if no spawnable adapter is configured.
 
-PASS is decided by the engine: only if this spawn created zero new task ids. Filing any task (`type: fix` or otherwise) is FAIL and requires another review after those tasks are done. Do not write `.legion-cli/packets/**`. Packets are a human verb (`legion-cli packet new`); this spawn files fix tasks or extra.json only.
+PASS is decided by the engine: only if this spawn created zero new task ids **and** left every existing `TSK-*.md` byte-identical. Filing any task (`type: fix` or otherwise) or rewriting an existing task file is FAIL and requires another review after those tasks are done (and existing files are restored). Do not write `.legion-cli/packets/**`. Packets are a human verb (`legion-cli packet new`); this spawn files fix tasks or extra.json only. File review comments in `.legion-cli/qa/**`, not in existing task bodies.
 
 ## Contract
 
@@ -40,6 +40,6 @@ Write review notes to `.legion-cli/qa/review.md`.
 
 If the slice does not meet the spec, file fix-plan tasks under `.legion-cli/tasks/` (`type: fix`, `parentId`) or `.legion-cli/cache/runs/<id>/extra.json`. Do not expand a live task's `filesAllowed`. Extra work is a linked ticket.
 
-If the slice is acceptable, write notes only. Do not create tasks.
+If the slice is acceptable, write notes only. Do not create tasks. Do not rewrite existing `TSK-*.md`.
 
 When finished, write a short summary to `.legion-cli/cache/runs/<id>/summary.md`.

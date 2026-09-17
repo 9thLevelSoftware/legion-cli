@@ -9,6 +9,7 @@ export const SKILL_CONTRACTS: Record<SkillId, readonly string[]> = {
   plan: [".legion-cli/plans/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
   execute: [".legion-cli/cache/runs/<id>/**"],
   verify: [".legion-cli/qa/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
+  // tasks/** is for filing new fix tasks; mutating existing TSK-*.md still FAILs review.
   review: [".legion-cli/qa/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
   qa: [".legion-cli/qa/**", ".legion-cli/cache/runs/<id>/**"],
 };
