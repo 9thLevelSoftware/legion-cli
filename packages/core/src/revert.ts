@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   gitDiscoverChanges,
@@ -64,16 +64,25 @@ export async function restoreChangedTaskFiles(
   before: ReadonlyMap<string, { hash: string; bytes: Buffer }>,
 ): Promise<string[]> {
   const rewritten: string[] = [];
+  await mkdir(tasksDir, { recursive: true });
   for (const [fileName, snap] of before) {
+    const abs = join(tasksDir, fileName);
     let currentHash: string | undefined;
     try {
-      currentHash = sha256Bytes(await readFile(join(tasksDir, fileName)));
+      currentHash = sha256Bytes(await readFile(abs));
     } catch {
       currentHash = undefined;
     }
     if (currentHash === snap.hash) continue;
     rewritten.push(fileName.replace(/\.md$/i, ""));
-    await writeFile(join(tasksDir, fileName), snap.bytes);
+    try {
+      const st = await lstat(abs);
+      if (st.isSymbolicLink() || st.isFile()) await unlink(abs);
+      else await rm(abs, { recursive: true, force: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    await writeFile(abs, snap.bytes);
   }
   rewritten.sort((a, b) => a.localeCompare(b));
   return rewritten;

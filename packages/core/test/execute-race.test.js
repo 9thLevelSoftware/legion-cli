@@ -174,6 +174,67 @@ test("two processes execute auto: second is refused and never two in_progress", 
   });
 });
 
+test("task amend is refused while review wait is live", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ store, dir }) => {
+      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "review-ready");
+      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "review-release");
+      const engine = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
+      });
+      await initProject(engine);
+      await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
+      initGitRepo(dir);
+      const pending = engine.review();
+      await waitUntil(() => existsSync(readyPath), 10_000, "fake wait never became ready");
+      const contract = (await store.readTask("TSK-0001")).data.contract;
+      await assert.rejects(
+        () => engine.amendTask("TSK-0001", contract),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /task amend is refused while review is running/);
+          assert.equal(err.nextHint, HINT.status);
+          return true;
+        },
+      );
+      await writeFile(releasePath, "go\n");
+      const review = await pending;
+      assert.equal(review.verdict, "PASS");
+    });
+  });
+});
+
+test("ticket create is refused while execute wait is live", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ store, dir }) => {
+      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "ticket-ready");
+      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "ticket-release");
+      const engine = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
+      });
+      await initProject(engine);
+      await seedExecute(store);
+      initGitRepo(dir);
+      const pending = engine.execute("auto");
+      await waitUntil(() => existsSync(readyPath), 10_000, "fake wait never became ready");
+      await assert.rejects(
+        () => engine.fileTicket({ title: "park extra" }),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /ticket create is refused while /);
+          assert.equal(err.nextHint, HINT.status);
+          return true;
+        },
+      );
+      await writeFile(releasePath, "go\n");
+      const result = await pending;
+      assert.equal(result.status, "done");
+    });
+  });
+});
+
 test("live resume pid is not demoted by recovery", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {

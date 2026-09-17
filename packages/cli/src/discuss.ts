@@ -22,6 +22,9 @@ export async function runDiscuss(opts: CliOpts): Promise<number> {
       for (const item of batch) {
         writeOut(`Decision ${item.id}: ${item.statement} Accept?  [Y/n]`);
         const answer = await readLine("> ");
+        if (!process.stdin.isTTY && answer.length === 0) {
+          refuse("discuss needs an explicit Y or n", HINT.discuss);
+        }
         if (isNo(answer)) {
           decisions.push({ id: item.id, status: "rejected" });
         } else if (answer.length === 0 || /^(y|yes)$/i.test(answer)) {

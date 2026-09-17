@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   AgentError,
@@ -46,6 +46,58 @@ import {
 } from "./revert.js";
 
 export { findSkillsDir };
+
+type LiveSpawnMarker = { enginePid: number; skillId: SkillId; runId: string };
+
+function liveSpawnPath(projectRoot: string): string {
+  return join(projectRoot, ".legion-cli", "cache", "live-spawn.json");
+}
+
+export async function writeLiveSpawnMarker(
+  projectRoot: string,
+  skillId: SkillId,
+  runId: string,
+): Promise<void> {
+  await mkdir(join(projectRoot, ".legion-cli", "cache"), { recursive: true });
+  await writeFile(
+    liveSpawnPath(projectRoot),
+    `${JSON.stringify({ enginePid: process.pid, skillId, runId })}\n`,
+    "utf8",
+  );
+}
+
+export async function clearLiveSpawnMarker(projectRoot: string, runId?: string): Promise<void> {
+  try {
+    if (runId) {
+      const raw = await readFile(liveSpawnPath(projectRoot), "utf8");
+      const parsed = JSON.parse(raw) as LiveSpawnMarker;
+      if (parsed.runId !== runId) return;
+    }
+    await unlink(liveSpawnPath(projectRoot));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+}
+
+export async function readLiveSpawnMarker(projectRoot: string): Promise<LiveSpawnMarker | null> {
+  try {
+    const parsed = JSON.parse(await readFile(liveSpawnPath(projectRoot), "utf8")) as LiveSpawnMarker;
+    if (typeof parsed?.enginePid !== "number" || typeof parsed.skillId !== "string") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function refuseIfLiveSkillSpawn(projectRoot: string, action: string): Promise<void> {
+  const live = await readLiveSpawnMarker(projectRoot);
+  if (!live) return;
+  if (!isPidAlive(live.enginePid)) {
+    await clearLiveSpawnMarker(projectRoot);
+    return;
+  }
+  refuse(`${action} is refused while ${live.skillId} is running`, HINT.status);
+}
 
 function skillMissingHint(skillId: SkillId): string {
   if (skillId === "execute") return HINT.execute;
@@ -360,6 +412,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     expectedArtifacts: opts.fakeArtifacts,
   });
   await writeResume(handle.pid);
+  await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, runId);
   return {
     spawned: true,
     runId,
@@ -396,7 +449,11 @@ export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spa
 export async function finishStartedSpawn(
   started: Extract<StartedSkillSpawn, { spawned: true }>,
 ): Promise<RevertResult> {
-  return revertExtras(started.revertCtx);
+  try {
+    return await revertExtras(started.revertCtx);
+  } finally {
+    await clearLiveSpawnMarker(started.revertCtx.projectRoot, started.runId);
+  }
 }
 
 export async function optionalSkillSpawn(opts: SkillSpawnOpts): Promise<OptionalSpawnResult> {

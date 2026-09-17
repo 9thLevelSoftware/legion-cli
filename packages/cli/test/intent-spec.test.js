@@ -116,6 +116,27 @@ test("spec --skip-wireframes does not write INDEX.html", async () => {
   });
 });
 
+test("intent --yes does not confirm", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const result = runCli(["intent", "--project", dir, "--done", "--yes"], {
+      input:
+        [
+          "Teammates who keep missing who's in the office.",
+          "They ping five chat apps every morning.",
+          "People can tap in or out on their phone in under five seconds.",
+          "No payroll, no badges, no calendar sync in v0.",
+          "n",
+        ].join("\n") + "\n",
+    });
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.doesNotMatch(normalize(result.stdout), /Next: legion-cli discuss/);
+    const state = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
+    assert.match(state, /phase: intent_draft/);
+    assert.doesNotMatch(state, /intent_ready/);
+  });
+});
+
 test("discuss --yes cannot skip product decisions", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
@@ -140,6 +161,30 @@ test("discuss --yes cannot skip product decisions", async () => {
     const discussMd = await readFile(join(dir, ".legion-cli", "discuss", "DISCUSS.md"), "utf8");
     assert.doesNotMatch(discussMd, /D-001/);
     assert.doesNotMatch(discussMd, /status: proposed/);
+  });
+});
+
+test("discuss empty stdin cannot skip product decisions", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const intent = runCli(["intent", "--project", dir, "--done"], {
+      input: [
+        "Teammates who keep missing who's in the office.",
+        "They ping five chat apps every morning.",
+        "People can tap in or out on their phone in under five seconds.",
+        "Do not change auth. We will not build payroll, badges, or calendar sync.",
+        "Y",
+      ].join("\n") + "\n",
+    });
+    assert.equal(intent.status, 0, intent.stderr);
+
+    const discuss = runCli(["discuss", "--project", dir], { input: "" });
+    assert.equal(discuss.status, 1, `${discuss.stdout}\n${discuss.stderr}`);
+    assert.match(normalize(discuss.stderr), /needs an explicit Y or n/);
+    assert.match(normalize(discuss.stderr), /Next: legion-cli discuss/);
+    const discussMd = await readFile(join(dir, ".legion-cli", "discuss", "DISCUSS.md"), "utf8");
+    assert.match(discussMd, /status: proposed/);
+    assert.doesNotMatch(discussMd, /status: accepted/);
   });
 });
 

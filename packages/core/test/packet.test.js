@@ -1,10 +1,28 @@
 import assert from "node:assert/strict";
-import { access, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { access, readdir, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { LegionRefuseError } from "../dist/index.js";
 import { initProject, seedPlanReady, withEngine } from "./helpers.js";
+
+const coreRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+function extractTsMethod(src, signature) {
+  const start = src.indexOf(signature);
+  assert.notEqual(start, -1, `missing ${signature}`);
+  const brace = src.indexOf("{", start);
+  let depth = 0;
+  for (let i = brace; i < src.length; i++) {
+    if (src[i] === "{") depth += 1;
+    else if (src[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return src.slice(start, i + 1);
+    }
+  }
+  throw new Error(`unclosed ${signature}`);
+}
 
 async function inProgressCount(store) {
   let files;
@@ -106,6 +124,22 @@ test("respondPacket refuses unknown, already-responded, and missing spec", async
       },
     );
   });
+});
+
+test("respondPacket source does not spawn execute", async () => {
+  const packets = await readFile(join(coreRoot, "src", "packets.ts"), "utf8");
+  assert.doesNotMatch(packets, /optionalSkillSpawn/);
+  assert.doesNotMatch(packets, /startSkillSpawn/);
+  assert.doesNotMatch(packets, /waitStartedSpawn/);
+  assert.doesNotMatch(packets, /\.execute\s*\(/);
+
+  const engine = await readFile(join(coreRoot, "src", "engine.ts"), "utf8");
+  const body = extractTsMethod(engine, "async #respondPacketLocked");
+  assert.doesNotMatch(body, /optionalSkillSpawn/);
+  assert.doesNotMatch(body, /startSkillSpawn/);
+  assert.doesNotMatch(body, /waitStartedSpawn/);
+  assert.doesNotMatch(body, /this\.execute\s*\(/);
+  assert.match(body, /#fileTicketLocked/);
 });
 
 test("newPacket refuses uninitialized and empty title", async () => {

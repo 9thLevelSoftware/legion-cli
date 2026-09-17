@@ -67,6 +67,13 @@ function printUnknownCommand(name: string): void {
   writeErr(`unknown command '${name}'\n(run legion-cli help --all)`);
 }
 
+function requireSub(verb: string, sub: string, next: string): () => void {
+  return () => {
+    writeErr(`${verb} requires ${sub}\nNext: ${next}`);
+    process.exitCode = 1;
+  };
+}
+
 const builtinHelp = new Help();
 
 export function createProgram(): Command {
@@ -162,10 +169,7 @@ export function createProgram(): Command {
     });
 
   const wiki = addGlobalOptions(program.command("wiki").description("Wiki operations"));
-  wiki.allowExcessArguments(false).action(() => {
-    writeErr("wiki requires trust\nNext: legion-cli wiki trust <page>");
-    process.exitCode = 1;
-  });
+  wiki.allowExcessArguments(false).action(requireSub("wiki", "trust", "legion-cli wiki trust <page>"));
   addGlobalOptions(wiki.command("trust").description("I have read this ingested page; treat it as real"))
     .argument("<page>", "wiki page id or path")
     .action(async (page: string, _opts, cmd: Command) => {
@@ -198,10 +202,7 @@ export function createProgram(): Command {
   );
 
   const index = addGlobalOptions(program.command("index").description("Repair search"));
-  index.allowExcessArguments(false).action(() => {
-    writeErr("index requires rebuild\nNext: legion-cli index rebuild");
-    process.exitCode = 1;
-  });
+  index.allowExcessArguments(false).action(requireSub("index", "rebuild", "legion-cli index rebuild"));
   addGlobalOptions(index.command("rebuild").description("Repair search"))
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
@@ -373,10 +374,7 @@ export function createProgram(): Command {
     });
 
   const assume = addGlobalOptions(program.command("assume").description("Open questions that block work"));
-  assume.allowExcessArguments(false).action(() => {
-    writeErr("assume requires list or answer\nNext: legion-cli assume list");
-    process.exitCode = 1;
-  });
+  assume.allowExcessArguments(false).action(requireSub("assume", "list or answer", "legion-cli assume list"));
   addGlobalOptions(assume.command("list").description("Open questions that block work"))
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
@@ -405,10 +403,9 @@ export function createProgram(): Command {
     });
 
   const packet = addGlobalOptions(program.command("packet").description("PM/designer request without the DAG"));
-  packet.allowExcessArguments(false).action(() => {
-    writeErr("packet requires new or respond\nNext: legion-cli packet new --title <title>");
-    process.exitCode = 1;
-  });
+  packet
+    .allowExcessArguments(false)
+    .action(requireSub("packet", "new or respond", "legion-cli packet new --title <title>"));
   addGlobalOptions(packet.command("new").description("File a PM/designer request (review packet back)"))
     .requiredOption("--title <title>", "request title")
     .option("--request <text>", "request body")
@@ -433,10 +430,9 @@ export function createProgram(): Command {
     });
 
   const ticket = addGlobalOptions(program.command("ticket").description("Park extra work"));
-  ticket.allowExcessArguments(false).action(() => {
-    writeErr("ticket requires create\nNext: legion-cli ticket create --title <title>");
-    process.exitCode = 1;
-  });
+  ticket
+    .allowExcessArguments(false)
+    .action(requireSub("ticket", "create", "legion-cli ticket create --title <title>"));
   addGlobalOptions(ticket.command("create").description("Park extra work as a linked ticket"))
     .requiredOption("--title <title>", "ticket title")
     .option("--parent <id>", "parent task id")
@@ -461,10 +457,7 @@ export function createProgram(): Command {
     });
 
   const task = addGlobalOptions(program.command("task").description("Task file contracts"));
-  task.allowExcessArguments(false).action(() => {
-    writeErr("task requires amend\nNext: legion-cli task amend <id>");
-    process.exitCode = 1;
-  });
+  task.allowExcessArguments(false).action(requireSub("task", "amend", "legion-cli task amend <id>"));
   addGlobalOptions(task.command("amend").description("Human changes a file contract"))
     .argument("<id>", "task id")
     .option("--files-allowed <paths...>", "concrete POSIX paths")
@@ -513,10 +506,7 @@ export function createProgram(): Command {
     });
 
   const run = addGlobalOptions(program.command("run").description("Brownfield run artifacts"));
-  run.allowExcessArguments(false).action(() => {
-    writeErr("run requires promote\nNext: legion-cli run promote <id>");
-    process.exitCode = 1;
-  });
+  run.allowExcessArguments(false).action(requireSub("run", "promote", "legion-cli run promote <id>"));
   addGlobalOptions(
     run
       .command("promote")
@@ -592,10 +582,7 @@ export function createProgram(): Command {
     });
 
   const context = addGlobalOptions(program.command("context").description("Session context"));
-  context.allowExcessArguments(false).action(() => {
-    writeErr("context requires compact\nNext: legion-cli context compact");
-    process.exitCode = 1;
-  });
+  context.allowExcessArguments(false).action(requireSub("context", "compact", "legion-cli context compact"));
   addGlobalOptions(context.command("compact").description("Compact done tasks"))
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {

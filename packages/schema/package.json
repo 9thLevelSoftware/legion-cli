@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node dist/emit-json-schema.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm run build && node --test test/schema.test.js",
+    "test": "pnpm run build && node --test test/*.test.js",
     "prepublishOnly": "pnpm run build"
   },
   "publishConfig": {

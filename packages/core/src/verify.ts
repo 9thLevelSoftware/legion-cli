@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { filterSpawnEnv } from "@9thlevelsoftware/legion-cli-agents";
 
 /** Minutes, not hours — hung verify must not hold the lock for process lifetime. */
 export const DEFAULT_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
@@ -39,7 +38,7 @@ export function runVerificationCommands(
     if (argv.length === 0) {
       throw new Error("verificationCommands entry is empty (engine bug)");
     }
-    const env = filterSpawnEnv(process.env);
+    const env = { ...process.env };
     // Nested `node --test` inherits this and exits 0 without running the file.
     delete env.NODE_TEST_CONTEXT;
     const result = spawnSync(argv[0], argv.slice(1), {

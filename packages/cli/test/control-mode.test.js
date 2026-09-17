@@ -76,11 +76,30 @@ test("control-mode autonomous and unknown modes refuse", async () => {
   });
 });
 
-test("execute in advisory refuses with Next control-mode guarded", async () => {
+test("status in advisory recommends control-mode guarded not execute", async () => {
   await withTempDir(async (dir) => {
-    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const engine = createLegionEngine(dir);
+    await engine.init({ name: "Checkin", adapter: "fake" });
     const set = runCli(["control-mode", "advisory", "--project", dir]);
     assert.equal(set.status, 0, set.stderr);
+    const state = await engine.store.readState();
+    await engine.store.writeState({ ...state.data, phase: "plan_ready" }, state.body);
+
+    const status = runCli(["status", "--project", dir, "--plain"]);
+    assert.equal(status.status, 0, status.stderr);
+    assert.match(normalize(status.stdout), /next\tlegion-cli control-mode guarded/);
+    assert.doesNotMatch(normalize(status.stdout), /next\tlegion-cli execute/);
+  });
+});
+
+test("execute in advisory refuses with Next control-mode guarded", async () => {
+  await withTempDir(async (dir) => {
+    const engine = createLegionEngine(dir);
+    await engine.init({ name: "Checkin", adapter: "fake" });
+    const set = runCli(["control-mode", "advisory", "--project", dir]);
+    assert.equal(set.status, 0, set.stderr);
+    const state = await engine.store.readState();
+    await engine.store.writeState({ ...state.data, phase: "plan_ready" }, state.body);
 
     const result = runCli(["execute", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     assert.equal(result.status, 1);
