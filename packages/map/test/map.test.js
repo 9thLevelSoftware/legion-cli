@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -24,6 +24,22 @@ import {
 
 function moduleOf(result, path) {
   return result.fingerprints.modules.find((row) => row.path === path);
+}
+
+const GENERATED_START_RE = new RegExp(GENERATED_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+const GENERATED_END_RE = new RegExp(GENERATED_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+
+async function mapArtifacts(dir) {
+  const base = join(dir, ".legion-cli", "map");
+  const read = async (name) => {
+    try {
+      return await readFile(join(base, name));
+    } catch (err) {
+      if (err && err.code === "ENOENT") return null;
+      throw err;
+    }
+  };
+  return { fingerprints: await read("fingerprints.json"), architecture: await read("ARCHITECTURE.md") };
 }
 
 const lspRequire = {
@@ -85,7 +101,7 @@ test("--refresh preserves prose outside generated markers", async () => {
     await writeTree(dir, THREE_TS);
     const first = await generateMap(dir);
     const original = await readFile(first.architecturePath, "utf8");
-    assert.match(original, new RegExp(GENERATED_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(original, GENERATED_START_RE);
     assert.match(original, /backend: fallback/);
     assert.match(original, /Human prose below this line is preserved across --refresh/);
 
@@ -105,8 +121,8 @@ test("--refresh preserves prose outside generated markers", async () => {
     assert.match(after, /BEFORE_MARKER/);
     assert.match(after, /HUMAN_PROSE_TOKEN keep/);
     assert.match(after, /refresh/);
-    assert.match(after, new RegExp(GENERATED_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(after, new RegExp(GENERATED_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(after, GENERATED_START_RE);
+    assert.match(after, GENERATED_END_RE);
     const generated = after.slice(after.indexOf(GENERATED_START), after.indexOf(GENERATED_END));
     assert.equal(generated.includes("HUMAN_PROSE_TOKEN"), false);
     assert.equal(generated.includes("BEFORE_MARKER"), false);
@@ -122,8 +138,31 @@ test("unchanged hashes still recreate a missing ARCHITECTURE.md", async () => {
     assert.equal(second.fingerprints.generatedAt, first.fingerprints.generatedAt);
     assert.deepEqual(second.changed, []);
     const body = await readFile(second.architecturePath, "utf8");
+    assert.match(body, GENERATED_START_RE);
+    assert.match(body, GENERATED_END_RE);
     assert.match(body, /backend: fallback/);
     assert.match(body, /src\/auth\.ts/);
+  });
+});
+
+test("--refresh restores generated block without source edits (stable generatedAt)", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const first = await generateMap(dir);
+    const original = await readFile(first.architecturePath, "utf8");
+    const start = original.indexOf(GENERATED_START);
+    const end = original.indexOf(GENERATED_END);
+    const clobbered = `${original.slice(0, start)}${GENERATED_START}\nCLOBBERED\n${original.slice(end)}`;
+    await writeFile(first.architecturePath, clobbered, "utf8");
+    const second = await generateMap(dir, { refresh: true });
+    assert.equal(second.fingerprints.generatedAt, first.fingerprints.generatedAt);
+    assert.deepEqual(second.changed, []);
+    const after = await readFile(second.architecturePath, "utf8");
+    assert.match(after, GENERATED_START_RE);
+    assert.match(after, GENERATED_END_RE);
+    assert.match(after, /Human prose below this line is preserved across --refresh/);
+    assert.equal(after.includes("CLOBBERED"), false);
+    assert.match(after, /backend: fallback/);
   });
 });
 
@@ -200,6 +239,7 @@ test("win32 skips mixed-case .LEGION-CLI", { skip: process.platform !== "win32" 
 test("--lsp with no server throws so PR-04 can map Next: legion-cli map --no-lsp", async () => {
   await withTempDir(async (dir) => {
     await writeTree(dir, THREE_TS);
+    const before = await mapArtifacts(dir);
     await assert.rejects(
       () => generateMap(dir, { lsp: "require", resolveBinary: () => null }),
       (err) => {
@@ -208,12 +248,14 @@ test("--lsp with no server throws so PR-04 can map Next: legion-cli map --no-lsp
         return true;
       },
     );
+    assert.deepEqual(await mapArtifacts(dir), before);
   });
 });
 
 test("walk roots reject .. (ConcretePosixPath)", async () => {
   await withTempDir(async (dir) => {
     await writeTree(dir, THREE_TS);
+    const before = await mapArtifacts(dir);
     await assert.rejects(
       () => generateMap(dir, { roots: ["../outside"] }),
       (err) => {
@@ -222,6 +264,7 @@ test("walk roots reject .. (ConcretePosixPath)", async () => {
         return true;
       },
     );
+    assert.deepEqual(await mapArtifacts(dir), before);
   });
 });
 
@@ -377,6 +420,7 @@ test("walk skips symlink directory cycles", async () => {
 test("map refuses when walk exceeds 10000 modules", { timeout: 60_000 }, async () => {
   await withTempDir(async (dir) => {
     await writeManyTs(dir, 10_001);
+    const before = await mapArtifacts(dir);
     await assert.rejects(
       () => generateMap(dir),
       (err) => {
@@ -386,5 +430,33 @@ test("map refuses when walk exceeds 10000 modules", { timeout: 60_000 }, async (
         return true;
       },
     );
+    assert.deepEqual(await mapArtifacts(dir), before);
+  });
+});
+
+test("map dir junction is replaced; files are not written outside the project", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const outside = join(dir, "outside-map");
+    await mkdir(outside, { recursive: true });
+    await mkdir(join(dir, ".legion-cli"), { recursive: true });
+    try {
+      await symlink(outside, join(dir, ".legion-cli", "map"), process.platform === "win32" ? "junction" : "dir");
+    } catch (err) {
+      if (err && (err.code === "EPERM" || err.code === "EACCES")) return;
+      throw err;
+    }
+    await generateMap(dir);
+    const outsideNames = await readdir(outside);
+    assert.equal(outsideNames.includes("fingerprints.json"), false);
+    assert.equal(outsideNames.includes("ARCHITECTURE.md"), false);
+    const mapDir = join(dir, ".legion-cli", "map");
+    const mapStat = await lstat(mapDir);
+    assert.equal(mapStat.isDirectory(), true);
+    assert.equal(mapStat.isSymbolicLink(), false);
+    const fp = await lstat(join(mapDir, "fingerprints.json"));
+    const arch = await lstat(join(mapDir, "ARCHITECTURE.md"));
+    assert.equal(fp.isFile() && !fp.isSymbolicLink(), true);
+    assert.equal(arch.isFile() && !arch.isSymbolicLink(), true);
   });
 });

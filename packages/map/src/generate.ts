@@ -1,9 +1,9 @@
-import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
 import {
   legionPaths,
   parseYamlDocument,
-  writeTextFile,
+  toPosixPath,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   FingerprintFileSchema,
@@ -78,6 +78,45 @@ function decideBackend(mode: MapLspMode, existing: FingerprintFile | undefined):
   return existing?.backend ?? "fallback";
 }
 
+async function lstatOrNull(absPath: string) {
+  try {
+    return await lstat(absPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+/** Drop map-dir junctions so writeFile cannot land fingerprints outside the project. */
+async function ensureRealMapDir(projectRoot: string, mapDir: string): Promise<void> {
+  const legionDir = dirname(mapDir);
+  await mkdir(legionDir, { recursive: true });
+  const legionStat = await lstatOrNull(legionDir);
+  if (legionStat?.isSymbolicLink()) {
+    refuse("map output escaped the project workspace", MAP_HINT.concretePaths);
+  }
+  const mapStat = await lstatOrNull(mapDir);
+  if (mapStat?.isSymbolicLink()) {
+    await rm(mapDir, { recursive: false, force: true });
+  } else if (mapStat && !mapStat.isDirectory()) {
+    await rm(mapDir, { recursive: false, force: true });
+  }
+  await mkdir(mapDir, { recursive: true });
+  const expected = resolve(await realpath(projectRoot), ".legion-cli", "map");
+  const actual = await realpath(mapDir);
+  const rel = toPosixPath(relative(expected, actual));
+  const escaped = rel.startsWith("../") || rel === ".." || /^[A-Za-z]:/.test(rel) || rel.startsWith("/");
+  if (escaped) refuse("map output escaped the project workspace", MAP_HINT.concretePaths);
+}
+
+async function writeMapFile(absPath: string, contents: string): Promise<void> {
+  const st = await lstatOrNull(absPath);
+  if (st && (st.isSymbolicLink() || !st.isFile())) {
+    await rm(absPath, { recursive: false, force: true });
+  }
+  await writeFile(absPath, contents, "utf8");
+}
+
 function changedPaths(prev: FingerprintFile | undefined, next: readonly ModuleFingerprint[]): string[] {
   const old = new Map((prev?.modules ?? []).map((module) => [module.path, module.hash]));
   const changed: string[] = [];
@@ -102,6 +141,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   const paths = legionPaths(root);
   const fingerprintsPath = join(paths.mapDir, "fingerprints.json");
   const architecturePath = join(paths.mapDir, "ARCHITECTURE.md");
+  await ensureRealMapDir(root, paths.mapDir);
   const existing = await readExistingFingerprints(fingerprintsPath);
   const lspMode = options.lsp ?? "auto";
   let backend = decideBackend(lspMode, existing);
@@ -169,7 +209,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
 
   if (unchanged && existing) {
     if (options.refresh || existingArch === undefined) {
-      await writeTextFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(existing)));
+      await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(existing)));
     }
     return {
       backend: existing.backend,
@@ -188,8 +228,8 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
     modules,
   });
 
-  await writeTextFile(fingerprintsPath, `${JSON.stringify(fingerprints, null, 2)}\n`);
-  await writeTextFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(fingerprints)));
+  await writeMapFile(fingerprintsPath, `${JSON.stringify(fingerprints, null, 2)}\n`);
+  await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(fingerprints)));
 
   return { backend, fingerprints, architecturePath, fingerprintsPath, changed };
 }
