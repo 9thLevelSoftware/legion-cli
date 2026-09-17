@@ -83,25 +83,34 @@ test("run promote copies run pages into the wiki as untrusted", async () => {
     });
     const promoted = await engine.promoteRun("bbbbbbbb");
     assert.ok(promoted.pages.includes(".legion-cli/wiki/runs/bbbbbbbb/intent.md"));
+    assert.ok(promoted.pages.includes(".legion-cli/wiki/runs/bbbbbbbb/analysis.md"));
     assert.equal(promoted.trust, "untrusted");
+    for (const dest of promoted.pages) {
+      const doc = await store.readWikiPage(dest);
+      assert.equal(doc.data.trust, "untrusted", dest);
+    }
     const page = await store.readWikiPage(".legion-cli/wiki/runs/bbbbbbbb/intent.md");
-    assert.equal(page.data.trust, "untrusted");
     assert.equal(page.data.source, ".legion-cli/runs/bbbbbbbb/intent.md");
     assert.match(page.body, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
+    const analysis = await store.readWikiPage(".legion-cli/wiki/runs/bbbbbbbb/analysis.md");
+    assert.match(analysis.body, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
     const resume = JSON.parse(
       await readFile(join(dir, ".legion-cli", "runs", "bbbbbbbb", "resume.json"), "utf8"),
     );
     assert.equal(resume.promoted, true);
 
     const brief = await engine.brief();
-    const entry = brief.wiki.find((item) => item.path === ".legion-cli/wiki/runs/bbbbbbbb/intent.md");
-    assert.ok(entry);
-    assert.equal(entry.trust, "untrusted");
-    assert.equal(entry.summary ?? null, null);
+    const runWiki = brief.wiki.filter((item) => item.path.includes("/runs/bbbbbbbb/"));
+    assert.equal(runWiki.length > 0, true);
+    for (const entry of runWiki) {
+      assert.equal(entry.trust, "untrusted", entry.path);
+      assert.equal(entry.summary ?? null, null, entry.path);
+    }
     assert.doesNotMatch(JSON.stringify(brief.wiki), /PROMOTE_UNTRUSTED_BODY_TOKEN/);
 
     const index = await store.readWikiPage(".legion-cli/wiki/index.md");
     assert.match(index.body, /runs\/bbbbbbbb\/intent/);
+    assert.match(index.body, /runs\/bbbbbbbb\/analysis/);
     assert.match(index.body, /Untrusted \(titles only; run legion-cli wiki trust\)/);
     assert.doesNotMatch(index.body, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
 
@@ -115,6 +124,26 @@ test("run promote copies run pages into the wiki as untrusted", async () => {
     assert.ok(trustedEntry);
     assert.equal(trustedEntry.trust, "reviewed");
     assert.notEqual(trustedEntry.summary ?? null, null);
+  });
+});
+
+test("run promote re-promote overwrites wiki trust", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine, { mode: "brownfield" });
+    initGitRepo(dir);
+    await engine.brownfield({ effort: 1, runId: "abababab" });
+    const trusted = await engine.promoteRun("abababab", { trust: true });
+    assert.equal(trusted.trust, "reviewed");
+    assert.equal(
+      (await store.readWikiPage(".legion-cli/wiki/runs/abababab/intent.md")).data.trust,
+      "reviewed",
+    );
+    const again = await engine.promoteRun("abababab");
+    assert.equal(again.trust, "untrusted");
+    assert.equal(
+      (await store.readWikiPage(".legion-cli/wiki/runs/abababab/intent.md")).data.trust,
+      "untrusted",
+    );
   });
 });
 

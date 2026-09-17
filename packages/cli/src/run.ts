@@ -6,6 +6,7 @@ export type PromoteFlags = {
   trust?: boolean;
 };
 
+/** Next is the first promoted page (BROWNFIELD_PAGES[0] = intent.md), not all six. */
 function wikiTrustNext(pages: string[]): string {
   const first = pages[0];
   if (!first) return HINT.wikiTrust;
@@ -33,6 +34,7 @@ export async function runPromote(opts: CliOpts, runId: string, flags: PromoteFla
   for (const page of result.pages) writeOut(`  ${page}`);
   if (result.trust === "untrusted") {
     writeOut("Pages stay untrusted until wiki trust.");
+    writeOut("Re-promote overwrites wiki trust. Next is the first promoted page.");
   }
   writeOut(`Next: ${next}`);
   return 0;

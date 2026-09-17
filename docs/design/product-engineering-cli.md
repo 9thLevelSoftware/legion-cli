@@ -1026,7 +1026,7 @@ Craft files actually shipped: `typography.md`, `color.md`, `anti-ai-slop.md`, `a
 | Code | Created under contracts after spec freeze | Evidence, not ground truth |
 | First artifacts | Intent interview, PRD, wireframes, SPEC | Intent brief, assumptions, then SPEC |
 | Map | Optional notes | `.legion-cli/map/` + fingerprints are **later, not this series** (not LSP) |
-| Runs | Execute runs under `.legion-cli/cache/runs/` | `.legion-cli/runs/<id>/` analysis; `legion-cli run promote` (untrusted until `wiki trust`; optional `--trust` is an explicit human gate) |
+| Runs | Execute runs under `.legion-cli/cache/runs/` | `.legion-cli/runs/<id>/` analysis; `legion-cli run promote` (untrusted until `wiki trust`; optional `--trust` is an explicit human gate; `--yes` does not review; re-promote overwrites; Next is first page) |
 | Acceptance | Spec AC + tests + contract porcelain | Same + no unrelated debt in this task |
 | Execute isolation | In-place working tree | 10-verb `execute` after `init --mode brownfield` is **in-place**. **git worktrees** only for `legion-cli brownfield --execute` |
 
@@ -1170,7 +1170,7 @@ Off the default window. Packets spawn tickets, not execute. Compaction is manual
 | `legion-cli garden` | Stale wiki, orphans, duplicates (read-only report) |
 | `legion-cli context compact` | Manual compaction of `done` tasks (no `in_progress` sibling) |
 | `legion-cli mcp` | Read-only stdio server |
-| `legion-cli run promote` | Copy brownfield run pages into the wiki (untrusted until `wiki trust`). Optional `--trust` is an explicit human gate, not the default. |
+| `legion-cli run promote` | Copy brownfield run pages into the wiki (untrusted until `wiki trust`). Optional `--trust` is an explicit human gate (`--yes` does not review). Re-promote **overwrites** existing wiki body and trust (unlike unchanged ingest). Next is `wiki trust` of the **first** promoted page (`intent.md`). |
 | `legion-cli packet new \| respond` | PM/designer request without the DAG; respond files one ticket |
 | `legion-cli design-system show \| install \| import-od \| generate` | Local dir only until signed remote |
 | `legion-cli init --mode brownfield` | Sets `project.mode`; `--adapter` still required; 10-verb `execute` stays in-place |
@@ -1950,7 +1950,7 @@ Historical founding series from an empty repo. **PR-01–PR-16 were v0.** Packet
 
 - **Files/components:** `legion-cli brownfield`, `.legion-cli/runs/<id>/`, `legion-cli run promote`
 - **Depends on:** PR-08, PR-12
-- **Description:** No LSP. Resume JSON. Not the durable wiki unless promoted (untrusted until `wiki trust`; optional `--trust` is an explicit human gate). `legion-cli brownfield --execute` uses **git worktrees** (v0 greenfield execute stays in-place).
+- **Description:** No LSP. Resume JSON. Not the durable wiki unless promoted (untrusted until `wiki trust`; optional `--trust` is an explicit human gate; `--yes` does not review). Re-promote overwrites wiki body/trust (ingest skip-if-unchanged does not apply). Next is first promoted page (`intent.md`). `legion-cli brownfield --execute` uses **git worktrees** (v0 greenfield execute stays in-place).
 
 ### PR-20 — MCP Apps HTML + WebMCP page tools (flagged off)
 

@@ -32,7 +32,7 @@ export async function runBrownfield(opts: CliOpts, flags: BrownfieldFlags): Prom
   writeOut(`Brownfield run ${result.runId}, effort 1: architecture + code. execute: ${result.execute}`);
   writeOut(`Wrote .legion-cli/runs/${result.runId}/`);
   writeOut(`Pages: ${result.pages.join(", ")}`);
-  writeOut("Not the durable wiki unless promoted (untrusted until wiki trust).");
+  writeOut("Not the durable wiki unless promoted (untrusted until wiki trust; re-promote overwrites).");
   if (result.worktreePath) {
     writeOut(`Worktree: ${result.worktreePath} (branch brownfield/${result.runId})`);
     writeOut("Greenfield execute stays in-place; brownfield --execute uses git worktrees.");

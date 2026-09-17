@@ -163,7 +163,8 @@ function renderPages(input: {
   layout: string[];
   sources: string[];
 }): Record<(typeof BROWNFIELD_PAGES)[number], string> {
-  const context = input.context.trim() || "(none)";
+  const rawContext = input.context.trim();
+  const context = rawContext || "(none)";
   const layout = input.layout.length > 0 ? input.layout.map((p) => `- ${p}`).join("\n") : "- (empty tree)";
   const sources =
     input.sources.length > 0 ? input.sources.map((p) => `- ${p}`).join("\n") : "- (no source files listed)";
@@ -242,6 +243,7 @@ function renderPages(input: {
     "analysis.md": [
       "# Brownfield analysis findings",
       "",
+      ...(rawContext ? [rawContext, ""] : []),
       "Effort 1: Architecture + Code only. No LSP.",
       "",
       "### Architecture Summary",
@@ -412,6 +414,7 @@ export async function promoteBrownfieldRun(
   }
   const runId = parseRunId(runIdRaw);
   const run = await readRunResume(store, runId);
+  // Re-promote always overwrites wiki body and trust. Ingest skip-if-unchanged does not apply.
   const trust = opts.trust === true ? "reviewed" : "untrusted";
   const copied: string[] = [];
   for (const name of run.pages) {

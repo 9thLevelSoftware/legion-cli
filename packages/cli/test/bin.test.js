@@ -210,4 +210,7 @@ test("run promote --help says untrusted until wiki trust", () => {
   const out = normalize(result.stdout);
   assert.match(out, /untrusted until wiki trust/);
   assert.match(out, /--trust/);
+  assert.match(out, /re-promote\s+overwrites/);
+  assert.match(out, /Next is first page/);
+  assert.match(out, /--yes does not review/);
 });

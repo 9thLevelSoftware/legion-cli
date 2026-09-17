@@ -74,29 +74,35 @@ test("legion-cli brownfield writes .legion-cli/runs and not wiki", async () => {
   });
 });
 
-test("legion-cli run promote copies run pages into the wiki as untrusted", async () => {
+test("legion-cli run promote copies run pages untrusted even with --yes", async () => {
   await withTempDir(async (dir) => {
     await seedBrownfield(dir);
     const created = runCli(["brownfield", "--project", dir, "--json", "PROMOTE_UNTRUSTED_BODY_TOKEN"]);
     assert.equal(created.status, 0, created.stderr);
     const runId = JSON.parse(created.stdout).runId;
-    const result = runCli(["run", "promote", runId, "--project", dir, "--json"]);
+    const result = runCli(["run", "promote", runId, "--project", dir, "--yes", "--json"]);
     assert.equal(result.status, 0, result.stderr);
     const body = JSON.parse(result.stdout);
     assert.ok(body.pages.includes(`.legion-cli/wiki/runs/${runId}/intent.md`));
+    assert.ok(body.pages.includes(`.legion-cli/wiki/runs/${runId}/analysis.md`));
     assert.equal(body.trust, "untrusted");
-    assert.match(body.next, /wiki trust/);
+    assert.equal(body.next, `legion-cli wiki trust runs/${runId}/intent`);
     const page = await readFile(join(dir, ".legion-cli", "wiki", "runs", runId, "intent.md"), "utf8");
     assert.match(page, /trust: untrusted/);
     assert.match(page, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
+    const analysis = await readFile(join(dir, ".legion-cli", "wiki", "runs", runId, "analysis.md"), "utf8");
+    assert.match(analysis, /trust: untrusted/);
+    assert.match(analysis, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
 
     const brief = runCli(["brief", "--project", dir, "--json"]);
     assert.equal(brief.status, 0, brief.stderr);
     const briefBody = JSON.parse(brief.stdout);
-    const entry = briefBody.wiki.find((item) => item.path === `.legion-cli/wiki/runs/${runId}/intent.md`);
-    assert.ok(entry);
-    assert.equal(entry.trust, "untrusted");
-    assert.equal(entry.summary ?? null, null);
+    const runWiki = briefBody.wiki.filter((item) => item.path.includes(`/runs/${runId}/`));
+    assert.equal(runWiki.length > 0, true);
+    for (const entry of runWiki) {
+      assert.equal(entry.trust, "untrusted", entry.path);
+      assert.equal(entry.summary ?? null, null, entry.path);
+    }
     assert.doesNotMatch(brief.stdout, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
 
     const search = runCli(["search", "--project", dir, "PROMOTE_UNTRUSTED_BODY_TOKEN"]);
