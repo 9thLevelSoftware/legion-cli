@@ -98,46 +98,38 @@ function rateLimitOk(socket: Socket | undefined): boolean {
   return true;
 }
 
-async function readBody(req: IncomingMessage, provided?: Buffer): Promise<Buffer> {
+async function readCappedBody(req: IncomingMessage, provided?: Buffer): Promise<Buffer | "too-large"> {
   if (provided) {
-    if (provided.length > MCP_HTTP_MAX_BODY_BYTES) {
-      throw Object.assign(new Error("payload too large"), { status: 413 });
-    }
-    return provided;
+    return provided.length > MCP_HTTP_MAX_BODY_BYTES ? "too-large" : provided;
   }
-  return await new Promise<Buffer>((resolve, reject) => {
+  const declared = Number(req.headers["content-length"]);
+  if (Number.isFinite(declared) && declared > MCP_HTTP_MAX_BODY_BYTES) {
+    return "too-large";
+  }
+  return await new Promise<Buffer | "too-large">((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
-    const fail = (err: unknown) => {
+    const done = (value: Buffer | "too-large") => {
       if (settled) return;
       settled = true;
-      reject(err);
+      resolve(value);
     };
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > MCP_HTTP_MAX_BODY_BYTES) {
         req.pause();
-        fail(Object.assign(new Error("payload too large"), { status: 413 }));
+        done("too-large");
         return;
       }
       chunks.push(chunk);
     });
-    req.on("end", () => {
+    req.on("end", () => done(Buffer.concat(chunks)));
+    req.on("error", (err) => {
       if (settled) return;
       settled = true;
-      resolve(Buffer.concat(chunks));
+      reject(err);
     });
-    req.on("error", fail);
-  });
-}
-
-function drainRequest(req: IncomingMessage): Promise<void> {
-  return new Promise((resolve) => {
-    req.on("end", resolve);
-    req.on("close", resolve);
-    req.on("error", () => resolve());
-    req.resume();
   });
 }
 
@@ -248,6 +240,31 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
 
   const scope = scopeFor(projectRoot);
   trackResponse(scope, res);
+
+  let parsedBody: unknown;
+  if (method === "POST" || method === "DELETE") {
+    let raw: Buffer | "too-large";
+    try {
+      raw = await readCappedBody(req, method === "POST" ? opts.body : undefined);
+    } catch (err) {
+      jsonRpcError(res, 400, -32700, err instanceof Error ? err.message : "Parse error");
+      return;
+    }
+    if (raw === "too-large") {
+      jsonRpcError(res, 413, -32000, "payload too large");
+      req.destroy();
+      return;
+    }
+    if (method === "POST") {
+      try {
+        parsedBody = parseJsonBody(raw);
+      } catch {
+        jsonRpcError(res, 400, -32700, "Parse error");
+        return;
+      }
+    }
+  }
+
   const sessionId = sessionHeader(req);
   const existing = sessionId ? scope.sessions.get(sessionId) : undefined;
 
@@ -266,31 +283,6 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
       return;
     }
     writeStandaloneSse(res, false);
-    return;
-  }
-
-  let parsedBody: unknown;
-  try {
-    if (method === "POST") {
-      const declared = Number(req.headers["content-length"]);
-      if (Number.isFinite(declared) && declared > MCP_HTTP_MAX_BODY_BYTES) {
-        await drainRequest(req);
-        jsonRpcError(res, 413, -32000, "payload too large");
-        return;
-      }
-      const raw = await readBody(req, opts.body);
-      parsedBody = parseJsonBody(raw);
-    } else if (opts.body && opts.body.length > 0) {
-      parsedBody = parseJsonBody(opts.body);
-    }
-  } catch (err) {
-    const status = (err as { status?: number }).status ?? 400;
-    if (status === 413) {
-      jsonRpcError(res, 413, -32000, "payload too large");
-      req.resume();
-      return;
-    }
-    jsonRpcError(res, 400, -32700, "Parse error");
     return;
   }
 

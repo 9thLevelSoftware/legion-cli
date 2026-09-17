@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { ServeFileSchema } from "@9thlevelsoftware/legion-cli-schema";
 import { ENGINE_WRITE_METHODS, startDashboard, startServe } from "../dist/index.js";
 import { otherSpecTask, todoTask, withStore, withTempDir } from "./helpers.js";
 
@@ -659,6 +660,15 @@ test("second startServe while pid is live refuses; dead pid is overwritten", asy
       mcpHttp: false,
     });
     try {
+      const occupancy = ServeFileSchema.parse(
+        JSON.parse(await readFile(join(dir, ".legion-cli", "serve.json"), "utf8")),
+      );
+      assert.equal(occupancy.pid, process.pid);
+      assert.equal(occupancy.port, first.port);
+      assert.equal(occupancy.bind, "127.0.0.1");
+      assert.equal(occupancy.mcpPath, "/mcp");
+      assert.equal(occupancy.mcpHttp, false);
+      assert.match(occupancy.tokenSha256, /^[a-f0-9]{64}$/);
       await assert.rejects(
         () => startServe({ projectRoot: dir, port: 0, open: false, warn: () => {}, mcpHttp: false }),
         (err) => {
@@ -693,11 +703,43 @@ test("second startServe while pid is live refuses; dead pid is overwritten", asy
       mcpHttp: false,
     });
     try {
-      const written = JSON.parse(await readFile(servePath, "utf8"));
+      const written = ServeFileSchema.parse(JSON.parse(await readFile(servePath, "utf8")));
       assert.equal(written.pid, process.pid);
       assert.equal(written.port, revived.port);
+      assert.equal(written.mcpPath, "/mcp");
     } finally {
       await revived.close();
+    }
+  });
+});
+
+test("EADDRINUSE Next is legion-cli serve --port <n>", async () => {
+  await withTempDir(async (dir) => {
+    const first = await startDashboard({
+      projectRoot: dir,
+      port: 0,
+      open: false,
+      warn: () => {},
+    });
+    try {
+      await withTempDir(async (other) => {
+        await assert.rejects(
+          () =>
+            startDashboard({
+              projectRoot: other,
+              port: first.port,
+              open: false,
+              warn: () => {},
+            }),
+          (err) => {
+            assert.match(String(err.message), /already in use/);
+            assert.equal(err.nextHint, `legion-cli serve --port ${first.port + 1}`);
+            return true;
+          },
+        );
+      });
+    } finally {
+      await first.close();
     }
   });
 });

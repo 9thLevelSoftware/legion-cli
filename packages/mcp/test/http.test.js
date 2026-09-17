@@ -135,23 +135,13 @@ test("/mcp without token succeeds on loopback GET and POST", async () => {
   });
 });
 
-test("unknown Mcp-Session-Id is 404; missing DELETE session is 400", async () => {
+test("unknown Mcp-Session-Id is 404; missing DELETE session is 400; POST body is consumed", async () => {
   await withTempDir(async (dir) => {
     await withMcpHttp(dir, async (base) => {
       const get = await fetch(`${base}/mcp`, {
         headers: { Accept: "text/event-stream", "MCP-Session-Id": "missing-session" },
       });
       assert.equal(get.status, 404);
-      const post = await fetch(`${base}/mcp`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-          "MCP-Session-Id": "missing-session",
-        },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-      });
-      assert.equal(post.status, 404);
       const delUnknown = await fetch(`${base}/mcp`, {
         method: "DELETE",
         headers: { "MCP-Session-Id": "missing-session" },
@@ -159,46 +149,106 @@ test("unknown Mcp-Session-Id is 404; missing DELETE session is 400", async () =>
       assert.equal(delUnknown.status, 404);
       const delMissing = await fetch(`${base}/mcp`, { method: "DELETE" });
       assert.equal(delMissing.status, 400);
+
+      const url = new URL(`${base}/mcp`);
+      const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+      const postUnknown = await new Promise((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: url.hostname,
+            port: url.port,
+            path: "/mcp",
+            method: "POST",
+            agent,
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json, text/event-stream",
+              "MCP-Session-Id": "missing-session",
+            },
+          },
+          (res) => {
+            res.resume();
+            res.on("end", () => resolve(res.statusCode));
+          },
+        );
+        req.on("error", reject);
+        req.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }));
+      });
+      assert.equal(postUnknown, 404);
+      const init = await new Promise((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: url.hostname,
+            port: url.port,
+            path: "/mcp",
+            method: "POST",
+            agent,
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json, text/event-stream",
+            },
+          },
+          (res) => {
+            res.resume();
+            res.on("end", () => resolve(res.statusCode));
+          },
+        );
+        req.on("error", reject);
+        req.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 2,
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-03-26",
+              capabilities: {},
+              clientInfo: { name: "reuse", version: "0" },
+            },
+          }),
+        );
+      });
+      agent.destroy();
+      assert.equal(init, 200);
     });
   });
 });
 
-test("MCP POST over 1 MB is 413", async () => {
+test("MCP POST oversized body (real stream) is 413", async () => {
   await withTempDir(async (dir) => {
-    const server = createServer((req, res) => {
-      void handleMcpHttp({
-        req,
-        res,
-        projectRoot: dir,
-        body: Buffer.alloc(MCP_HTTP_MAX_BODY_BYTES + 1),
+    await withMcpHttp(dir, async (base) => {
+      const url = new URL(`${base}/mcp`);
+      const huge = await new Promise((resolve, reject) => {
+        let status;
+        const req = http.request(
+          {
+            hostname: url.hostname,
+            port: url.port,
+            path: "/mcp",
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json, text/event-stream",
+              "Transfer-Encoding": "chunked",
+            },
+          },
+          (res) => {
+            status = res.statusCode;
+            res.resume();
+            res.on("end", () => resolve(status));
+          },
+        );
+        req.on("error", (err) => {
+          if (status === 413) {
+            resolve(413);
+            return;
+          }
+          reject(err);
+        });
+        req.write(Buffer.alloc(MCP_HTTP_MAX_BODY_BYTES + 1, 0x78));
+        req.end();
       });
+      assert.equal(huge, 413);
     });
-    await new Promise((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        server.off("error", reject);
-        resolve();
-      });
-    });
-    const addr = server.address();
-    const base = `http://127.0.0.1:${addr.port}`;
-    try {
-      const huge = await fetch(`${base}/mcp`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-        },
-        body: "{}",
-      });
-      assert.equal(huge.status, 413);
-    } finally {
-      await closeMcpHttp(dir);
-      server.closeAllConnections?.();
-      await new Promise((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
-      });
-    }
   });
 });
 

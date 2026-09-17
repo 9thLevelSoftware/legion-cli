@@ -266,6 +266,26 @@ test("serve --expose with MCP HTTP refused", async () => {
   });
 });
 
+test("EADDRINUSE Next is legion-cli serve --port <n>", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const { child, url } = startServeCli(["serve", "--project", dir, "--no-open", "--port", "0", "--no-mcp-http"]);
+    try {
+      const viewer = await url;
+      const port = Number(new URL(viewer).port);
+      await withTempDir(async (other) => {
+        runCli(["init", "--project", other, "--name", "Other", "--adapter", "fake"]);
+        const second = runCli(["serve", "--project", other, "--no-open", `--port`, String(port), "--no-mcp-http"]);
+        assert.equal(second.status, 1, second.stderr);
+        assert.match(normalize(second.stderr), /already in use/);
+        assert.match(normalize(second.stderr), new RegExp(`Next: legion-cli serve --port ${port + 1}`));
+      });
+    } finally {
+      await stop(child);
+    }
+  });
+});
+
 test("second serve while pid is live refuses", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
