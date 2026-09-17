@@ -1,4 +1,4 @@
-import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
+import type { FakeArtifact, FakeHoldWait } from "@9thlevelsoftware/legion-cli-agents";
 import type { GardenReport, SearchHit } from "@9thlevelsoftware/legion-cli-wiki";
 import type {
   AdapterId,
@@ -30,6 +30,9 @@ export type LegionEngineOptions = {
   fakeArtifacts?: FakeArtifact[];
   fakeThrowAfterWrite?: boolean;
   fakeTimedOut?: boolean;
+  fakeHoldWait?: FakeHoldWait;
+  fakeOnWait?: () => Promise<void>;
+  verificationTimeoutMs?: number;
 };
 
 export type IntentState = {

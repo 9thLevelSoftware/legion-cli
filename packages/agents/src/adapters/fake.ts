@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { AgentError } from "../errors.js";
 import { assertRepoRelative, runCachePaths } from "../paths.js";
 import {
@@ -11,7 +12,20 @@ import {
   type AgentResult,
   type DetectResult,
   type FakeArtifact,
+  type FakeHoldWait,
 } from "../types.js";
+
+export const FAKE_WAIT_READY_ENV = "LEGION_CLI_FAKE_WAIT_READY";
+export const FAKE_WAIT_RELEASE_ENV = "LEGION_CLI_FAKE_WAIT_RELEASE";
+
+export function holdWaitFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): FakeHoldWait | undefined {
+  const readyPath = env[FAKE_WAIT_READY_ENV];
+  const releasePath = env[FAKE_WAIT_RELEASE_ENV];
+  if (!readyPath || !releasePath) return undefined;
+  return { readyPath, releasePath };
+}
 
 function normalizeArtifact(entry: string | FakeArtifact): FakeArtifact {
   if (typeof entry === "string") return { path: entry, content: "\n" };
@@ -86,11 +100,20 @@ export class FakeAdapter implements AgentAdapter {
   readonly #artifacts: FakeArtifact[];
   readonly #throwAfterWrite: boolean;
   readonly #timedOut: boolean;
+  readonly #holdWait?: FakeHoldWait;
+  readonly #onWait?: () => Promise<void>;
 
-  constructor(artifacts: FakeArtifact[] = [], throwAfterWrite = false, timedOut = false) {
+  constructor(
+    artifacts: FakeArtifact[] = [],
+    throwAfterWrite = false,
+    timedOut = false,
+    hold?: { holdWait?: FakeHoldWait; onWait?: () => Promise<void> },
+  ) {
     this.#artifacts = artifacts;
     this.#throwAfterWrite = throwAfterWrite;
     this.#timedOut = timedOut;
+    this.#holdWait = hold?.holdWait ?? holdWaitFromEnv();
+    this.#onWait = hold?.onWait;
   }
 
   async detect(): Promise<DetectResult> {
@@ -150,6 +173,9 @@ export class FakeAdapter implements AgentAdapter {
       throw new AgentError("fake adapter throwAfterWrite");
     }
 
+    if (this.#onWait) await this.#onWait();
+    if (this.#holdWait) await waitForHoldRelease(this.#holdWait);
+
     await writeFile(
       paths.summaryPath,
       `Fake adapter completed skill=${job.skillId} runId=${job.runId}\n`,
@@ -166,5 +192,23 @@ export class FakeAdapter implements AgentAdapter {
       stderrPath: paths.stderrPath,
       summaryPath: paths.summaryPath,
     };
+  }
+}
+
+async function waitForHoldRelease(hold: FakeHoldWait): Promise<void> {
+  await mkdir(dirname(hold.readyPath), { recursive: true });
+  await writeFile(hold.readyPath, "ready\n", "utf8");
+  const timeoutMs = hold.timeoutMs ?? 60_000;
+  const started = Date.now();
+  while (true) {
+    try {
+      await access(hold.releasePath);
+      return;
+    } catch {
+      if (Date.now() - started >= timeoutMs) {
+        throw new AgentError("fake hold wait timed out");
+      }
+      await delay(20);
+    }
   }
 }

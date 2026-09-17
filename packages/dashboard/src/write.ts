@@ -2,10 +2,12 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import {
   createLegionEngine,
+  HINT,
   LegionRefuseError,
   type LegionEngine,
   type NewTicket,
 } from "@9thlevelsoftware/legion-cli-core";
+import { EngineLockedError } from "@9thlevelsoftware/legion-cli-persist";
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -126,6 +128,13 @@ export async function dispatchEngineWrite(
     throw new EngineWriteError(404, { error: "unknown engine method" });
   }
   try {
+    const live = await engine.peekLiveSpawn();
+    if (live) {
+      throw new EngineWriteError(409, {
+        error: `dashboard write is refused while ${live.taskId} is in_progress`,
+        next: HINT.status,
+      });
+    }
     if (method === "ticket") {
       const ticket = await engine.fileTicket(parseTicket(body));
       return { ok: true, id: ticket.id, parentId: ticket.parentId ?? null, next: "legion-cli next" };
@@ -149,8 +158,12 @@ export async function dispatchEngineWrite(
     throw new EngineWriteError(404, { error: "unknown engine method" });
   } catch (err) {
     if (err instanceof EngineWriteError) throw err;
+    if (err instanceof EngineLockedError) {
+      throw new EngineWriteError(409, { error: err.message, next: HINT.status });
+    }
     if (err instanceof LegionRefuseError) {
-      throw new EngineWriteError(400, { error: err.message, next: err.nextHint });
+      const conflict = /in_progress/i.test(err.message);
+      throw new EngineWriteError(conflict ? 409 : 400, { error: err.message, next: err.nextHint });
     }
     throw err;
   }

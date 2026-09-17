@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   AgentError,
@@ -18,15 +18,19 @@ import {
   templateArgv,
   writeRunPrompt,
   type AdapterResolution,
+  type AgentHandle,
   type FakeArtifact,
+  type FakeHoldWait,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
-import type { LegionReader } from "@9thlevelsoftware/legion-cli-persist";
+import { isPidAlive, type LegionReader } from "@9thlevelsoftware/legion-cli-persist";
 import {
+  ResumeFileSchema,
   SCHEMA_VERSION,
   type AdapterId,
   type FileContract,
   type LegionConfig,
+  type ResumeFile,
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
@@ -78,6 +82,61 @@ export type OptionalSpawnResult = {
   resolution?: AdapterResolution;
   binary?: string;
   argvSummary?: string;
+};
+
+export type SkillSpawnOpts = {
+  projectRoot: string;
+  config: LegionConfig;
+  skillId: SkillId;
+  specId?: string;
+  taskId?: string;
+  promptBody: string;
+  fileContract?: FileContract;
+  extraAllowedRoots?: readonly string[];
+  filesForbidden?: readonly string[];
+  skillsDir?: string;
+  fakeArtifacts?: FakeArtifact[];
+  throwAfterWrite?: boolean;
+  timedOut?: boolean;
+  required?: boolean;
+  cliAdapter?: AdapterId;
+  taskAdapter?: AdapterId;
+  store?: LegionReader;
+  holdWait?: FakeHoldWait;
+  onWait?: () => Promise<void>;
+};
+
+type SpawnRevertCtx = {
+  projectRoot: string;
+  preSpawnRef: string | null;
+  allowedRoots: string[];
+  filesForbidden: readonly string[] | undefined;
+  snapshot: Awaited<ReturnType<typeof snapshotPaths>> | undefined;
+  gitPolicy: Awaited<ReturnType<typeof snapshotGitPolicy>>;
+  dirtyAtStart: ReturnType<typeof snapshotDirtyPaths>;
+};
+
+export type StartedSkillSpawn =
+  | {
+      spawned: false;
+      runId: string;
+      resolution?: AdapterResolution;
+    }
+  | {
+      spawned: true;
+      runId: string;
+      handle: AgentHandle;
+      started: number;
+      revertCtx: SpawnRevertCtx;
+      resolution: AdapterResolution;
+      binary: string;
+      argvSummary: string;
+    };
+
+export type WaitedSkillSpawn = {
+  error?: unknown;
+  timedOut: boolean;
+  durationMs: number;
 };
 
 function formatLevel3(level3: { scripts: string[]; references: string[]; assets: string[] }): string[] {
@@ -163,25 +222,7 @@ async function assembleSpawnPrompt(opts: {
   return { body, skipDesignAppend };
 }
 
-export async function optionalSkillSpawn(opts: {
-  projectRoot: string;
-  config: LegionConfig;
-  skillId: SkillId;
-  specId?: string;
-  taskId?: string;
-  promptBody: string;
-  fileContract?: FileContract;
-  extraAllowedRoots?: readonly string[];
-  filesForbidden?: readonly string[];
-  skillsDir?: string;
-  fakeArtifacts?: FakeArtifact[];
-  throwAfterWrite?: boolean;
-  timedOut?: boolean;
-  required?: boolean;
-  cliAdapter?: AdapterId;
-  taskAdapter?: AdapterId;
-  store?: LegionReader;
-}): Promise<OptionalSpawnResult> {
+export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkillSpawn> {
   const runId = `${opts.skillId}-${Date.now().toString(36)}`;
   const resolution = resolveAdapterId({
     config: opts.config,
@@ -194,7 +235,7 @@ export async function optionalSkillSpawn(opts: {
     if (opts.required) {
       refuse(spawnableAdapterRefuseMessage(opts.skillId, resolution), HINT.doctor);
     }
-    return { spawned: false, runId, revert: null, resolution };
+    return { spawned: false, runId, resolution };
   }
 
   const skillsDir = opts.skillsDir ?? findSkillsDir();
@@ -205,7 +246,7 @@ export async function optionalSkillSpawn(opts: {
     if (required) {
       refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
     }
-    return { spawned: false, runId, revert: null, resolution };
+    return { spawned: false, runId, resolution };
   }
   let skillRaw: string;
   try {
@@ -214,7 +255,7 @@ export async function optionalSkillSpawn(opts: {
     if (required) {
       refuse(`${opts.skillId} requires skills/${opts.skillId}/SKILL.md`, skillMissingHint(opts.skillId));
     }
-    return { spawned: false, runId, revert: null, resolution };
+    return { spawned: false, runId, resolution };
   }
   const parsed = parseSkillFrontmatter(skillRaw, `skills/${opts.skillId}/SKILL.md`);
   if (!parsed.ok) {
@@ -224,7 +265,7 @@ export async function optionalSkillSpawn(opts: {
         skillMissingHint(opts.skillId),
       );
     }
-    return { spawned: false, runId, revert: null, resolution };
+    return { spawned: false, runId, resolution };
   }
 
   const adapter = resolveAdapter(opts.config, {
@@ -232,6 +273,8 @@ export async function optionalSkillSpawn(opts: {
     artifacts: opts.fakeArtifacts ?? [],
     throwAfterWrite: opts.throwAfterWrite,
     timedOut: opts.timedOut,
+    holdWait: opts.holdWait,
+    onWait: opts.onWait,
   });
   const tmpl = templateArgv(resolution.id, opts.config);
   const argvSummary = argvSummarySafe(tmpl.argv);
@@ -314,18 +357,12 @@ export async function optionalSkillSpawn(opts: {
     expectedArtifacts: opts.fakeArtifacts,
   });
   await writeResume(handle.pid);
-  let revert: RevertResult | null = null;
-  let error: unknown;
-  let timedOut = false;
-  const started = Date.now();
-  try {
-    const agentResult = await handle.wait();
-    timedOut = Boolean(agentResult.timedOut);
-    if (timedOut) error = new AgentError("spawn timed out");
-  } catch (err) {
-    error = err;
-  } finally {
-    revert = await revertExtras({
+  return {
+    spawned: true,
+    runId,
+    handle,
+    started: Date.now(),
+    revertCtx: {
       projectRoot: opts.projectRoot,
       preSpawnRef,
       allowedRoots,
@@ -333,17 +370,82 @@ export async function optionalSkillSpawn(opts: {
       snapshot,
       gitPolicy,
       dirtyAtStart,
-    });
-  }
-  return {
-    spawned: true,
-    runId,
-    revert,
-    error,
-    timedOut,
-    durationMs: Date.now() - started,
+    },
     resolution,
     binary: tmpl.binary,
     argvSummary,
   };
+}
+
+export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spawned: true }>): Promise<WaitedSkillSpawn> {
+  let error: unknown;
+  let timedOut = false;
+  try {
+    const agentResult = await started.handle.wait();
+    timedOut = Boolean(agentResult.timedOut);
+    if (timedOut) error = new AgentError("spawn timed out");
+  } catch (err) {
+    error = err;
+  }
+  return { error, timedOut, durationMs: Date.now() - started.started };
+}
+
+export async function finishStartedSpawn(
+  started: Extract<StartedSkillSpawn, { spawned: true }>,
+): Promise<RevertResult> {
+  return revertExtras(started.revertCtx);
+}
+
+export async function optionalSkillSpawn(opts: SkillSpawnOpts): Promise<OptionalSpawnResult> {
+  const started = await startSkillSpawn(opts);
+  if (!started.spawned) {
+    return { spawned: false, runId: started.runId, revert: null, resolution: started.resolution };
+  }
+  const waited = await waitStartedSpawn(started);
+  const revert = await finishStartedSpawn(started);
+  return {
+    spawned: true,
+    runId: started.runId,
+    revert,
+    error: waited.error,
+    timedOut: waited.timedOut,
+    durationMs: waited.durationMs,
+    resolution: started.resolution,
+    binary: started.binary,
+    argvSummary: started.argvSummary,
+  };
+}
+
+export function resumePidIsLive(resume: Pick<ResumeFile, "pid">): boolean {
+  if (typeof resume.pid !== "number" || !Number.isInteger(resume.pid) || resume.pid <= 0) return false;
+  return isPidAlive(resume.pid);
+}
+
+export async function listCacheResumes(projectRoot: string): Promise<ResumeFile[]> {
+  const runsDir = join(projectRoot, ".legion-cli", "cache", "runs");
+  let names: string[];
+  try {
+    names = await readdir(runsDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  const out: ResumeFile[] = [];
+  for (const name of names) {
+    try {
+      const raw = await readFile(join(runsDir, name, "resume.json"), "utf8");
+      const parsed = ResumeFileSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) out.push(parsed.data);
+    } catch {
+      // missing or invalid resume
+    }
+  }
+  return out;
+}
+
+export async function findLatestTaskResume(projectRoot: string, taskId: string): Promise<ResumeFile | null> {
+  const matches = (await listCacheResumes(projectRoot)).filter((resume) => resume.taskId === taskId);
+  if (matches.length === 0) return null;
+  matches.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  return matches[matches.length - 1] ?? null;
 }

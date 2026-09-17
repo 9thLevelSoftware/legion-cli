@@ -9,6 +9,7 @@ export { extractJsonPayload, parseTestReport, reportFailClosed } from "./reports
 export type { ParsedTest } from "./reports.js";
 export {
   DEFAULT_PLAYWRIGHT_COMMAND,
+  DEFAULT_QA_COMMAND_TIMEOUT_MS,
   DEFAULT_UNIT_COMMAND,
   runCommand,
   runProjectQa,
