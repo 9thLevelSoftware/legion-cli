@@ -507,11 +507,19 @@ export function createProgram(): Command {
     writeErr("run requires promote\nNext: legion-cli run promote <id>");
     process.exitCode = 1;
   });
-  addGlobalOptions(run.command("promote").description("Copy brownfield run pages into the wiki (untrusted until wiki trust)"))
+  addGlobalOptions(
+    run
+      .command("promote")
+      .description(
+        "Copy brownfield run pages into the wiki (untrusted until wiki trust; re-promote overwrites; Next is first page)",
+      ),
+  )
     .argument("<id>", "brownfield run id")
+    .option("--trust", "explicit human gate: mark promoted pages reviewed (default untrusted; --yes does not review)")
     .allowExcessArguments(false)
-    .action(async (id: string, _opts, cmd: Command) => {
-      const code = await runPromote(resolveOpts(cmd), id);
+    .action(async (id: string, opts, cmd: Command) => {
+      const flags = opts as { trust?: boolean };
+      const code = await runPromote(resolveOpts(cmd), id, flags);
       process.exitCode = code;
     });
 

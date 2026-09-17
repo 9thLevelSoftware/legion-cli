@@ -45,6 +45,7 @@ export const HINT = {
   brownfield: "legion-cli brownfield --effort 1",
   brownfieldResume: "legion-cli brownfield --resume <id>",
   promote: "legion-cli run promote <id>",
+  wikiTrust: "legion-cli wiki trust <page>",
   gitRepo: "git init (brownfield requires a git repository)",
   ticket: (taskId: string) => `legion-cli ticket create --parent ${taskId}`,
   packet: "legion-cli packet new --title <title>",

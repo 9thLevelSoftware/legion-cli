@@ -64,7 +64,11 @@ const SHIPPED_ADJACENT = [
   ["context compact", "Manual compaction of done tasks", ""],
   ["garden", "Stale wiki, orphans, duplicates", ""],
   ["brownfield", "Audit an existing app (effort 1)", "--effort, --execute, --resume"],
-  ["run promote", "Copy brownfield run pages into the wiki (untrusted until wiki trust)", ""],
+  [
+    "run promote",
+    "Copy brownfield run pages into the wiki (untrusted until wiki trust; re-promote overwrites; Next is first page)",
+    "--trust",
+  ],
   ["mcp", "Read-only stdio MCP server", ""],
   ["design-system show", "Show the active design-system package", ""],
   ["design-system install <dir>", "Copy a local design-system directory", "github: rejected"],

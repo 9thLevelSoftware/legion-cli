@@ -149,6 +149,7 @@ import type {
   LegionEngineOptions,
   NewPacket,
   NewTicket,
+  PromoteRunOptions,
   PromoteRunResult,
   PacketRespondInput,
   PacketResult,
@@ -1560,8 +1561,12 @@ export class LegionEngine {
     return this.#mutate(() => runBrownfield(this.store, opts));
   }
 
-  async promoteRun(runId: string): Promise<PromoteRunResult> {
-    return this.#mutate(() => promoteBrownfieldRun(this.store, runId));
+  async promoteRun(runId: string, opts: PromoteRunOptions = {}): Promise<PromoteRunResult> {
+    return this.#mutate(async () => {
+      const result = await promoteBrownfieldRun(this.store, runId, opts);
+      await this.#refreshWikiCatalogLocked();
+      return result;
+    });
   }
 
   async #executeOneLocked(

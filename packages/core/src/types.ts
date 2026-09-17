@@ -76,9 +76,15 @@ export type BrownfieldResult = {
   resumePath: string;
 };
 
+export type PromoteRunOptions = {
+  /** Explicit human gate. Default promote stays ingest-class untrusted. */
+  trust?: boolean;
+};
+
 export type PromoteRunResult = {
   runId: string;
   pages: string[];
+  trust: "untrusted" | "reviewed";
 };
 
 export type QaOptions = {
