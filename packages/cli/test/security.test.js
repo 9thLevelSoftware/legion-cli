@@ -48,6 +48,37 @@ test("doctor warns on multiple legion-cli binaries on PATH", async () => {
   });
 });
 
+test("doctor fails spawnable when extra adapter args drop the vendor prefix", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "grok"]);
+    assert.equal(init.status, 0, init.stderr);
+    const grokDir = await mkdtemp(join(tmpdir(), "legion-grok-"));
+    const grokName = process.platform === "win32" ? "grok.cmd" : "grok";
+    const grokBody = process.platform === "win32" ? "@echo off\r\necho stub\r\n" : "#!/bin/sh\necho stub\n";
+    const grokAbs = join(grokDir, grokName);
+    await writeFile(grokAbs, grokBody, "utf8");
+    if (process.platform !== "win32") await chmod(grokAbs, 0o755);
+    const configPath = join(dir, ".legion-cli", "config.yaml");
+    const config = await readFile(configPath, "utf8");
+    const patched = config.replace(
+      /adapter:\r?\n  default: grok/,
+      ["adapter:", "  default: grok", "  grok:", "    args:", "      - '{{pointer}}'"].join("\n"),
+    );
+    assert.notEqual(patched, config, "expected to patch adapter.grok args");
+    await writeFile(configPath, patched, "utf8");
+    const result = runCli(["doctor", "--project", dir, "--json"], {
+      env: pathEnvWith([grokDir]),
+    });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.adapter.spawnable, false);
+    assert.ok(
+      body.warnings.some((warning) => /adapter\.grok\.args must keep -p \(vendor argv\)/.test(warning)),
+      `expected vendor-prefix warning, got ${JSON.stringify(body.warnings)}`,
+    );
+  });
+});
+
 test("doctor fails spawnable when extra adapter args omit {{pointer}}", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "grok"]);

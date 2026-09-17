@@ -2,10 +2,13 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   DEFAULT_GENERIC_ARGS,
+  FROZEN_ARGV_TABLE,
   REQUIRED_SKILL_IDS,
   SKILL_BODY_WARN_CHARS,
   argsIncludePointer,
   extraArgsOrDefault,
+  extraArgvIsSpawnable,
+  extraArgvRefuseReason,
   genericArgsOrDefault,
   listSkillCatalog,
 } from "@9thlevelsoftware/legion-cli-agents";
@@ -77,9 +80,13 @@ function extraOnPath(id: ExtraAdapterId, config: LegionConfig | null): boolean {
   return isSpawnableBinary(extraBinary(id, config));
 }
 
+function extraResolvedArgs(id: ExtraAdapterId, config: LegionConfig | null): string[] {
+  return extraArgsOrDefault(id, config?.adapter[id]?.args ?? [], extraBinary(id, config));
+}
+
 /** Match ExtraAdapter argv without executing the binary (`versionOf` / `--version`). */
-function extraPointerOk(id: ExtraAdapterId, config: LegionConfig | null): boolean {
-  return argsIncludePointer(extraArgsOrDefault(id, config?.adapter[id]?.args ?? [], extraBinary(id, config)));
+function extraArgvOk(id: ExtraAdapterId, config: LegionConfig | null): boolean {
+  return extraArgvIsSpawnable(id, config?.adapter[id]?.args ?? [], extraBinary(id, config));
 }
 
 function isConfiguredSpawnable(config: LegionConfig, id: AdapterId): boolean {
@@ -90,7 +97,7 @@ function isConfiguredSpawnable(config: LegionConfig, id: AdapterId): boolean {
     if (!spec?.binary) return false;
     return argsIncludePointer(genericArgsOrDefault(spec.args ?? [])) && isSpawnableBinary(spec.binary);
   }
-  return extraOnPath(id, config) && extraPointerOk(id, config);
+  return extraOnPath(id, config) && extraArgvOk(id, config);
 }
 
 const REQUIRED_ROUTE_SKILLS = new Set<SkillId>(["plan", "execute", "review"]);
@@ -114,6 +121,11 @@ function sameArgs(left: readonly string[], right: readonly string[]): boolean {
 function isFrozenGenericArgs(args: readonly string[] | undefined): boolean {
   if (!args || args.length === 0) return true;
   return sameArgs(args, DEFAULT_GENERIC_ARGS);
+}
+
+function isFrozenExtraArgs(id: ExtraAdapterId, args: readonly string[] | undefined): boolean {
+  if (!args || args.length === 0) return true;
+  return sameArgs(args, FROZEN_ARGV_TABLE[id].argv ?? DEFAULT_GENERIC_ARGS);
 }
 
 function formatArgsTrustWarning(label: string, args: readonly string[]): string {
@@ -143,7 +155,7 @@ function pushArgsTrustWarnings(config: LegionConfig, warnings: string[]): void {
   }
   for (const id of EXTRA_ADAPTER_IDS) {
     const args = config.adapter[id]?.args;
-    if (!isFrozenGenericArgs(args) && args) {
+    if (!isFrozenExtraArgs(id, args) && args) {
       warnings.push(formatArgsTrustWarning(`${id} args`, args));
     }
   }
@@ -167,9 +179,8 @@ function pushDefaultPathWarnings(id: AdapterId, config: LegionConfig, warnings: 
     if (!isSpawnableBinary(binary)) {
       warnings.push(`configured binary ${binary} is missing from PATH`);
     }
-    if (!extraPointerOk(extraId, config)) {
-      warnings.push(`adapter.${extraId}.args must include {{pointer}}`);
-    }
+    const argvReason = extraArgvRefuseReason(extraId, extraResolvedArgs(extraId, config), binary);
+    if (argvReason) warnings.push(argvReason);
   }
 }
 

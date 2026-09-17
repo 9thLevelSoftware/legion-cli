@@ -1,22 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   ASSUMED_EXTRA_BINARIES,
   CLAUDE_FROZEN_ARGV,
+  CODEX_FROZEN_ARGV,
   DEFAULT_GENERIC_ARGS,
   EXTRA_ADAPTER_IDS,
   FROZEN_ARGV_TABLE,
+  GROK_FROZEN_ARGV,
+  KD7_EXTRA_ARGV,
+  MIMO_FROZEN_ARGV,
+  MINIMAX_FROZEN_ARGV,
   POINTER_PLACEHOLDER,
   POINTER_PROMPT_MAX_CHARS,
   SPAWNABLE_ADAPTER_IDS,
   extraArgsOrDefault,
+  extraArgvIsSpawnable,
+  extraArgvPrefixCompatible,
+  extraVendorPrefix,
   argsIncludePointer,
   buildClaudeArgv,
   buildGenericArgv,
   buildPointerPrompt,
   genericArgsOrDefault,
   templateArgv,
+  usesAssumedExtraBinary,
 } from "../dist/index.js";
+
+const srcRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
 test("frozen claude argv is -p --output-format json pointerPrompt", () => {
   const pointer = buildPointerPrompt("run-9", "execute");
@@ -75,7 +89,7 @@ test("pointer prompt includes run/skill paths and forbids git commit", () => {
   assert.match(prompt, /\.legion-cli\/cache\/runs\/abc\/summary\.md/);
 });
 
-test("frozen argv table marks extra adapters spawnable with fillable generic-style argv", () => {
+test("frozen argv table deepEquals the KD-7 vendor rows", () => {
   assert.deepEqual([...EXTRA_ADAPTER_IDS], ["grok", "openai", "codex", "mimo", "minimax"]);
   assert.deepEqual(ASSUMED_EXTRA_BINARIES, {
     grok: "grok",
@@ -84,26 +98,66 @@ test("frozen argv table marks extra adapters spawnable with fillable generic-sty
     mimo: "mimo",
     minimax: "mcode",
   });
+  assert.deepEqual([...GROK_FROZEN_ARGV], ["-p", "{{pointer}}"]);
+  assert.deepEqual([...CODEX_FROZEN_ARGV], ["exec", "{{pointer}}"]);
+  assert.deepEqual([...MIMO_FROZEN_ARGV], ["run", "{{pointer}}"]);
+  assert.deepEqual([...MINIMAX_FROZEN_ARGV], ["exec", "{{pointer}}"]);
+  assert.deepEqual([...KD7_EXTRA_ARGV.grok], ["-p", "{{pointer}}"]);
+  assert.deepEqual([...KD7_EXTRA_ARGV.openai], ["exec", "{{pointer}}"]);
+  assert.deepEqual([...KD7_EXTRA_ARGV.codex], ["exec", "{{pointer}}"]);
+  assert.deepEqual([...KD7_EXTRA_ARGV.mimo], ["run", "{{pointer}}"]);
+  assert.deepEqual([...KD7_EXTRA_ARGV.minimax], ["exec", "{{pointer}}"]);
   for (const id of EXTRA_ADAPTER_IDS) {
     assert.equal(FROZEN_ARGV_TABLE[id].spawnable, true);
     assert.equal(FROZEN_ARGV_TABLE[id].binary, ASSUMED_EXTRA_BINARIES[id]);
+    assert.deepEqual([...FROZEN_ARGV_TABLE[id].argv], [...KD7_EXTRA_ARGV[id]]);
     assert.equal(argsIncludePointer(FROZEN_ARGV_TABLE[id].argv), true);
     assert.ok(SPAWNABLE_ADAPTER_IDS.includes(id));
+    assert.notDeepEqual([...FROZEN_ARGV_TABLE[id].argv], [...DEFAULT_GENERIC_ARGS]);
   }
-  assert.deepEqual([...FROZEN_ARGV_TABLE.grok.argv], [...DEFAULT_GENERIC_ARGS]);
-  assert.deepEqual([...FROZEN_ARGV_TABLE.mimo.argv], [...DEFAULT_GENERIC_ARGS]);
-  assert.deepEqual([...FROZEN_ARGV_TABLE.minimax.argv], [...DEFAULT_GENERIC_ARGS]);
-  assert.deepEqual([...FROZEN_ARGV_TABLE.openai.argv], ["exec", "{{pointer}}"]);
-  assert.deepEqual([...FROZEN_ARGV_TABLE.codex.argv], ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("grok"), ["-p", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("mimo"), ["run", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("minimax"), ["exec", "{{pointer}}"]);
   assert.deepEqual(extraArgsOrDefault("openai"), ["exec", "{{pointer}}"]);
   assert.deepEqual(extraArgsOrDefault("codex"), ["exec", "{{pointer}}"]);
-  assert.deepEqual(extraArgsOrDefault("grok"), [...DEFAULT_GENERIC_ARGS]);
-  assert.deepEqual(extraArgsOrDefault("openai", ["{{pointer}}"]), ["exec", "{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("openai", ["{{pointer}}"]), ["{{pointer}}"]);
   assert.deepEqual(extraArgsOrDefault("codex", ["exec", "{{pointer}}"]), ["exec", "{{pointer}}"]);
   assert.deepEqual(extraArgsOrDefault("openai", ["{{pointer}}"], process.execPath), ["{{pointer}}"]);
+  assert.deepEqual(extraArgsOrDefault("grok", ["-p", "--model", "grok-4", "{{pointer}}"]), [
+    "-p",
+    "--model",
+    "grok-4",
+    "{{pointer}}",
+  ]);
   assert.equal(FROZEN_ARGV_TABLE.fake.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.claude.spawnable, true);
   assert.equal(FROZEN_ARGV_TABLE.generic.spawnable, true);
+});
+
+test("extra argv is prefix-compatible with the frozen vendor template", () => {
+  assert.equal(extraVendorPrefix("grok"), "-p");
+  assert.equal(extraVendorPrefix("openai"), "exec");
+  assert.equal(extraVendorPrefix("codex"), "exec");
+  assert.equal(extraVendorPrefix("mimo"), "run");
+  assert.equal(extraVendorPrefix("minimax"), "exec");
+  assert.equal(usesAssumedExtraBinary("grok"), true);
+  assert.equal(usesAssumedExtraBinary("grok", "grok.exe"), true);
+  assert.equal(usesAssumedExtraBinary("openai", "codex"), true);
+  assert.equal(usesAssumedExtraBinary("minimax", "mcode"), true);
+  assert.equal(usesAssumedExtraBinary("grok", process.execPath), false);
+  assert.equal(extraArgvPrefixCompatible("grok", ["-p", "{{pointer}}"]), true);
+  assert.equal(extraArgvPrefixCompatible("grok", ["-p", "--model", "x", "{{pointer}}"]), true);
+  assert.equal(extraArgvPrefixCompatible("grok", ["{{pointer}}"]), false);
+  assert.equal(extraArgvPrefixCompatible("openai", ["{{pointer}}"]), false);
+  assert.equal(extraArgvPrefixCompatible("mimo", ["{{pointer}}"]), false);
+  assert.equal(extraArgvPrefixCompatible("minimax", ["{{pointer}}"]), false);
+  assert.equal(extraArgvPrefixCompatible("openai", ["exec", "{{pointer}}"]), true);
+  assert.equal(extraArgvPrefixCompatible("grok", ["{{pointer}}"], process.execPath), true);
+  assert.equal(extraArgvIsSpawnable("grok"), true);
+  assert.equal(extraArgvIsSpawnable("grok", ["{{pointer}}"]), false);
+  assert.equal(extraArgvIsSpawnable("grok", ["-p"]), false);
+  assert.equal(extraArgvIsSpawnable("grok", ["{{pointer}}"], process.execPath), true);
+  assert.equal(extraArgvIsSpawnable("openai", ["exec", "--sandbox", "{{pointer}}"]), true);
 });
 
 test("templateArgv leaves {{pointer}} unexpanded and omits the pointer-prompt body", () => {
@@ -112,7 +166,7 @@ test("templateArgv leaves {{pointer}} unexpanded and omits the pointer-prompt bo
     adapter: {
       default: "claude",
       claude: { extraArgs: ["--model", "opus"] },
-      grok: { args: ["--model", "grok-4", "{{pointer}}"] },
+      grok: { args: ["-p", "--model", "grok-4", "{{pointer}}"] },
       generic: { binary: "node", args: ["-p", "{{pointer}}"] },
       minimax: { binary: "custom-mcode" },
     },
@@ -125,7 +179,7 @@ test("templateArgv leaves {{pointer}} unexpanded and omits the pointer-prompt bo
 
   const grok = templateArgv("grok", config);
   assert.equal(grok.binary, ASSUMED_EXTRA_BINARIES.grok);
-  assert.deepEqual([...grok.argv], ["--model", "grok-4", POINTER_PLACEHOLDER]);
+  assert.deepEqual([...grok.argv], ["-p", "--model", "grok-4", POINTER_PLACEHOLDER]);
   assert.ok(!grok.argv.includes(pointer));
 
   const generic = templateArgv("generic", config);
@@ -138,7 +192,25 @@ test("templateArgv leaves {{pointer}} unexpanded and omits the pointer-prompt bo
 
   const minimax = templateArgv("minimax", config);
   assert.equal(minimax.binary, "custom-mcode");
-  assert.deepEqual([...minimax.argv], [...DEFAULT_GENERIC_ARGS]);
+  assert.deepEqual([...minimax.argv], ["exec", "{{pointer}}"]);
+});
+
+test("agents source has no fetch( or completions client", () => {
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = join(dir, entry.name);
+      if (entry.isDirectory()) walk(abs);
+      else if (entry.name.endsWith(".ts")) files.push(abs);
+    }
+  };
+  walk(srcRoot);
+  assert.ok(files.length > 0);
+  for (const file of files) {
+    const text = readFileSync(file, "utf8");
+    assert.doesNotMatch(text, /\bfetch\s*\(/, file);
+    assert.doesNotMatch(text, /\bcompletions\b/i, file);
+  }
 });
 
 test("templateArgv uses assumed extra binaries and frozen extra argv", () => {

@@ -6,10 +6,32 @@ export { ASSUMED_EXTRA_BINARIES };
 export const POINTER_PLACEHOLDER = "{{pointer}}";
 export const DEFAULT_GENERIC_ARGS = [POINTER_PLACEHOLDER] as const;
 export const CLAUDE_FROZEN_ARGV = ["-p", "--output-format", "json"] as const;
-/** Codex CLI: `codex exec` is the non-interactive subcommand. `openai` shares binary `codex`. */
-export const CODEX_FROZEN_ARGV = ["exec", POINTER_PLACEHOLDER] as const;
 
-/** Frozen argv. Extra adapters stay generic-style until vendor flags are verified. */
+/**
+ * Frozen extra-adapter argv (KD-7). `{{pointer}}` is the Legion pointer-prompt
+ * text, not a file path. Retrieved 2026-09-16 from public vendor docs. Do not
+ * invent flags here; operator extraArgs may append after the vendor prefix.
+ *
+ * - grok: https://docs.x.ai/build/cli/headless-scripting — `grok -p`
+ * - openai/codex: https://developers.openai.com/codex/noninteractive — `codex exec`
+ * - mimo: https://mimo.xiaomi.com/mimocode/cli-options — `mimo run`
+ * - minimax: https://agent.minimax.io/docs/cli/reference — `mcode exec` (`mcode` is not an AdapterId)
+ */
+export const GROK_FROZEN_ARGV = ["-p", POINTER_PLACEHOLDER] as const;
+export const CODEX_FROZEN_ARGV = ["exec", POINTER_PLACEHOLDER] as const;
+export const MIMO_FROZEN_ARGV = ["run", POINTER_PLACEHOLDER] as const;
+export const MINIMAX_FROZEN_ARGV = ["exec", POINTER_PLACEHOLDER] as const;
+
+/** KD-7 table: id → frozen argv. Tests deepEqual `FROZEN_ARGV_TABLE[id].argv` to these rows. */
+export const KD7_EXTRA_ARGV = {
+  grok: GROK_FROZEN_ARGV,
+  openai: CODEX_FROZEN_ARGV,
+  codex: CODEX_FROZEN_ARGV,
+  mimo: MIMO_FROZEN_ARGV,
+  minimax: MINIMAX_FROZEN_ARGV,
+} as const satisfies Record<ExtraAdapterId, readonly string[]>;
+
+/** Frozen argv. Extra adapters use verified vendor argv (KD-7); generic stays `{{pointer}}`. */
 export const FROZEN_ARGV_TABLE = {
   fake: { binary: "(in-process)", argv: null, spawnable: true },
   claude: {
@@ -24,27 +46,27 @@ export const FROZEN_ARGV_TABLE = {
   },
   grok: {
     binary: ASSUMED_EXTRA_BINARIES.grok,
-    argv: DEFAULT_GENERIC_ARGS,
+    argv: KD7_EXTRA_ARGV.grok,
     spawnable: true,
   },
   openai: {
     binary: ASSUMED_EXTRA_BINARIES.openai,
-    argv: CODEX_FROZEN_ARGV,
+    argv: KD7_EXTRA_ARGV.openai,
     spawnable: true,
   },
   codex: {
     binary: ASSUMED_EXTRA_BINARIES.codex,
-    argv: CODEX_FROZEN_ARGV,
+    argv: KD7_EXTRA_ARGV.codex,
     spawnable: true,
   },
   mimo: {
     binary: ASSUMED_EXTRA_BINARIES.mimo,
-    argv: DEFAULT_GENERIC_ARGS,
+    argv: KD7_EXTRA_ARGV.mimo,
     spawnable: true,
   },
   minimax: {
     binary: ASSUMED_EXTRA_BINARIES.minimax,
-    argv: DEFAULT_GENERIC_ARGS,
+    argv: KD7_EXTRA_ARGV.minimax,
     spawnable: true,
   },
 } as const satisfies Record<
@@ -65,23 +87,60 @@ export function genericArgsOrDefault(args: readonly string[]): string[] {
   return args.length === 0 ? [...DEFAULT_GENERIC_ARGS] : [...args];
 }
 
-function basenameBinary(binary: string): string {
+export function basenameBinary(binary: string): string {
   return binary.replaceAll("\\", "/").split("/").pop()?.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() ?? "";
 }
 
-function needsCodexExec(id: ExtraAdapterId, binary?: string): boolean {
-  if (id !== "openai" && id !== "codex") return false;
-  return basenameBinary(binary ?? ASSUMED_EXTRA_BINARIES[id]) === "codex";
+/** First frozen token (`-p` / `exec` / `run`). Required when spawning the assumed vendor binary. */
+export function extraVendorPrefix(id: ExtraAdapterId): string {
+  return KD7_EXTRA_ARGV[id][0];
 }
 
-/** Empty extra-adapter args use that id's frozen argv. Codex-binary openai/codex start with `exec`. */
-export function extraArgsOrDefault(id: ExtraAdapterId, args: readonly string[] = [], binary?: string): string[] {
+export function usesAssumedExtraBinary(id: ExtraAdapterId, binary?: string): boolean {
+  return basenameBinary(binary ?? ASSUMED_EXTRA_BINARIES[id]) === ASSUMED_EXTRA_BINARIES[id];
+}
+
+/**
+ * Prefix-compatible extension of the KD-7 frozen template.
+ * Assumed vendor binary: argv must start with `-p` / `exec` / `run`.
+ * Overridden binary (CI shim, `adapter.<id>.binary: node`): prefix is not required.
+ */
+export function extraArgvPrefixCompatible(
+  id: ExtraAdapterId,
+  args: readonly string[],
+  binary?: string,
+): boolean {
+  if (!usesAssumedExtraBinary(id, binary)) return true;
+  return args[0] === extraVendorPrefix(id);
+}
+
+/** Empty extra-adapter args use that id's frozen vendor argv. Explicit args are not auto-repaired. */
+export function extraArgsOrDefault(id: ExtraAdapterId, args: readonly string[] = [], _binary?: string): string[] {
   if (args.length === 0) {
-    const frozen = FROZEN_ARGV_TABLE[id].argv;
-    return frozen ? [...frozen] : [...DEFAULT_GENERIC_ARGS];
+    return [...KD7_EXTRA_ARGV[id]];
   }
-  if (needsCodexExec(id, binary) && args[0] !== "exec") return ["exec", ...args];
   return [...args];
+}
+
+export function extraArgvIsSpawnable(
+  id: ExtraAdapterId,
+  args: readonly string[] = [],
+  binary?: string,
+): boolean {
+  const resolved = extraArgsOrDefault(id, args, binary);
+  return argsIncludePointer(resolved) && extraArgvPrefixCompatible(id, resolved, binary);
+}
+
+export function extraArgvRefuseReason(
+  id: ExtraAdapterId,
+  args: readonly string[],
+  binary?: string,
+): string | null {
+  if (!argsIncludePointer(args)) return `adapter.${id}.args must include {{pointer}}`;
+  if (!extraArgvPrefixCompatible(id, args, binary)) {
+    return `adapter.${id}.args must keep ${extraVendorPrefix(id)} (vendor argv)`;
+  }
+  return null;
 }
 
 export function buildGenericArgv(args: readonly string[], pointerPrompt: string): string[] {

@@ -124,13 +124,12 @@ test("help --all does not call control-mode later", () => {
   const result = runCli(["help", "--all"]);
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
-  const later = helpSection(out, "Later, not this series:", "v0 gap");
+  const later = helpSection(out, "Later, not this series:", "Not in this product:");
   assert.doesNotMatch(later, /control-mode/);
   assert.doesNotMatch(later, /vendor extra-adapter argv/);
-  assert.match(out, /v0 gap; follow-up PRs in this series/);
-  const gap = helpSection(out, "v0 gap; follow-up PRs in this series:", "Not in this product:");
-  assert.doesNotMatch(gap, /control-mode/);
-  assert.match(gap, /verified vendor extra-adapter argv/);
+  assert.match(later, /map, wireframe, skills list\|install, serve/);
+  assert.doesNotMatch(out, /v0 gap; follow-up PRs in this series/);
+  assert.doesNotMatch(out, /v0 gap/);
   const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");
   assert.match(alwaysOn, /control-mode \[mode\]/);
 });

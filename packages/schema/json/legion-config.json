@@ -66,7 +66,8 @@
                 "type": "string"
               }
             }
-          }
+          },
+          "additionalProperties": false
         },
         "openai": {
           "type": "object",
@@ -81,7 +82,8 @@
                 "type": "string"
               }
             }
-          }
+          },
+          "additionalProperties": false
         },
         "codex": {
           "type": "object",
@@ -96,7 +98,8 @@
                 "type": "string"
               }
             }
-          }
+          },
+          "additionalProperties": false
         },
         "mimo": {
           "type": "object",
@@ -111,7 +114,8 @@
                 "type": "string"
               }
             }
-          }
+          },
+          "additionalProperties": false
         },
         "minimax": {
           "type": "object",
@@ -126,7 +130,8 @@
                 "type": "string"
               }
             }
-          }
+          },
+          "additionalProperties": false
         },
         "routes": {
           "type": "object",

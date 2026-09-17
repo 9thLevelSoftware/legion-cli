@@ -184,6 +184,14 @@ test("filterSpawnEnv scopes provider credentials to the selected adapter", () =>
   assert.equal(genericCodex.CLAUDE_API_KEY, undefined);
   assert.equal(generic.CLAUDE_API_KEY, undefined);
   assert.equal(generic.SECRET, undefined);
+  const grokNode = filterSpawnEnv(source, "grok", process.execPath);
+  assert.equal(grokNode.GROK_API_KEY, undefined);
+  assert.equal(grokNode.XAI_API_KEY, undefined);
+  const grokBin = filterSpawnEnv(source, "grok", "grok");
+  assert.equal(grokBin.GROK_API_KEY, "g");
+  assert.equal(grokBin.XAI_API_KEY, "x");
+  const openaiNode = filterSpawnEnv(source, "openai", "node");
+  assert.equal(openaiNode.OPENAI_API_KEY, undefined);
 });
 
 function extraShim(id, script) {
