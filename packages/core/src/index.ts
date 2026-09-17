@@ -96,7 +96,7 @@ export {
   LEGAL_TASK_TRANSITIONS,
   OPEN_TASK_STATUSES,
 } from "./tasks.js";
-export { BROWNFIELD_PAGES, formatAuditLines } from "./brownfield.js";
+export { BROWNFIELD_PAGES } from "./brownfield.js";
 export type {
   Actor,
   AmendTaskOptions,

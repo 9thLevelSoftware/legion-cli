@@ -366,7 +366,7 @@ function parseAuditNames(stdout: string): string[] {
 }
 
 /** Stdout-only JSON parse so stderr warnings cannot hide vulnerability names. */
-export function formatAuditLines(input: {
+function formatAuditLines(input: {
   lockfile: string;
   bin: string;
   stdout: string;
@@ -963,8 +963,6 @@ export async function commitBrownfield(
 
   if (effort >= 5 && extras.map) {
     await applyEffort5Map(store, next, extras.map);
-    // docs.md after map so fingerprint exports are present on the first run
-    if (effort >= 4) await writeDocsMd(store, next.runId, evidence);
     next = { ...next, pages: ladderPages(5, true) };
   }
 

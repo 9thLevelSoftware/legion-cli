@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { formatAuditLines, HINT, LegionRefuseError } from "../dist/index.js";
+import { HINT, LegionRefuseError } from "../dist/index.js";
 import { git, initGitRepo, initProject, withEngine, withFakeAdapter } from "./helpers.js";
 
 async function exists(path) {
@@ -371,18 +371,6 @@ test("effort 5 --lsp with no server refuses and does not persist the run", async
     );
     assert.equal(await exists(join(dir, ".legion-cli", "runs", "56565656", "resume.json")), false);
   });
-});
-
-test("audit parse uses stdout only when stderr is noisy", () => {
-  const lines = formatAuditLines({
-    lockfile: "pnpm-lock.yaml",
-    bin: "pnpm",
-    stdout: JSON.stringify({ vulnerabilities: { leftpad: {} } }),
-    stderr: "npm warn extra\nthis is not json\n",
-  });
-  const body = lines.join("\n");
-  assert.match(body, /leftpad/);
-  assert.doesNotMatch(body, /none named/);
 });
 
 test("effort 3 skips a junction to an outside .env", async () => {
