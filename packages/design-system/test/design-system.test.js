@@ -219,9 +219,11 @@ test("github zip with ../../etc/passwd refuses", async () => {
           source: "github:acme/brand@v1.2.0",
           fetchZipball: async () => ({ body: zip }),
         }),
-      (err) => isRefuse(err, /path is outside|passwd/, /design-system install/),
+      (err) => isRefuse(err, /path is outside/, /design-system install/),
     );
-    assert.equal(existsSync(join(dir, "etc", "passwd")), false);
+    // unzip dest is .legion-cli/cache/design-system/zip-*; ../../etc/passwd would be cache/etc/passwd
+    const escaped = join(dir, ".legion-cli", "cache", "etc", "passwd");
+    assert.equal(existsSync(escaped), false, escaped);
     assert.equal(existsSync(join(dir, ".legion-cli", "design", "packages", "acme")), false);
   });
 });
