@@ -377,6 +377,11 @@ test("effort 3 security.md names leftpad when audit stderr is noisy", async () =
   await withEngine(async ({ dir, engine }) => {
     await initProject(engine, { mode: "brownfield" });
     await writeFile(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+    await writeFile(
+      join(dir, "pnpm.cmd"),
+      "@echo off\r\necho PWNED> PWNED.txt\r\n",
+      "utf8",
+    );
     const bin = join(dir, "fake-bin");
     await mkdir(bin, { recursive: true });
     const script = [
@@ -406,6 +411,7 @@ test("effort 3 security.md names leftpad when audit stderr is noisy", async () =
     try {
       const result = await engine.brownfield({ effort: 3, runId: "3a3a3a3a" });
       const security = await readFile(join(dir, ".legion-cli", "runs", result.runId, "security.md"), "utf8");
+      assert.equal(await exists(join(dir, "PWNED.txt")), false);
       assert.match(security, /leftpad/);
       assert.doesNotMatch(security, /none named/);
     } finally {

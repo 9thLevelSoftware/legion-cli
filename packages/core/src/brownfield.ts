@@ -1,8 +1,9 @@
+import { unwrapCmdShim } from "@9thlevelsoftware/legion-cli-agents";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import {
   gitWorktreeAdd,
   isGitRepo,
@@ -390,6 +391,40 @@ function formatAuditLines(input: {
   return lines;
 }
 
+function samePath(a: string, b: string): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+/** PATH lookup that never returns a binary sitting in the project cwd (cmd.exe cwd-search RCE). */
+function resolveAuditBin(name: string, projectRoot: string): string | null {
+  const root = resolve(projectRoot);
+  const cwd = resolve(process.cwd());
+  const exts =
+    process.platform === "win32"
+      ? ["", ...(process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)]
+      : [""];
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir || dir === ".") continue;
+    const absDir = resolve(dir);
+    if (samePath(absDir, root) || samePath(absDir, cwd)) continue;
+    for (const ext of exts) {
+      const candidate = join(absDir, ext ? `${name}${ext}` : name);
+      if (!existsSync(candidate)) continue;
+      if (samePath(dirname(candidate), root)) continue;
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function quoteCmdArg(arg: string): string {
+  if (arg.length === 0) return '""';
+  if (!/[\t\r\n "]/.test(arg)) return arg;
+  return `"${arg.replaceAll('"', '""')}"`;
+}
+
 function runLockfileAudit(projectRoot: string): string[] {
   const pnpmLock = existsSync(join(projectRoot, "pnpm-lock.yaml"));
   const npmLock = existsSync(join(projectRoot, "package-lock.json"));
@@ -399,7 +434,11 @@ function runLockfileAudit(projectRoot: string): string[] {
   const bin = pnpmLock ? "pnpm" : "npm";
   const lockfile = pnpmLock ? "pnpm-lock.yaml" : "package-lock.json";
   const argv = ["audit", "--json"];
-  const env = { ...process.env };
+  const resolved = resolveAuditBin(bin, projectRoot);
+  if (!resolved) {
+    return formatAuditLines({ lockfile, bin, stdout: "", error: `${bin} not on PATH` });
+  }
+  const env: NodeJS.ProcessEnv = { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" };
   delete env.NODE_TEST_CONTEXT;
   const spawnOpts = {
     cwd: projectRoot,
@@ -411,11 +450,21 @@ function runLockfileAudit(projectRoot: string): string[] {
     env,
     maxBuffer: 8 * 1024 * 1024,
   };
-  // Windows cannot spawn .cmd with shell:false (EINVAL); cmd.exe /c still keeps Node shell:false.
-  const result =
-    process.platform === "win32"
-      ? spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", [bin, ...argv].join(" ")], spawnOpts)
-      : spawnSync(bin, argv, spawnOpts);
+  let result: ReturnType<typeof spawnSync>;
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
+    const unwrapped = unwrapCmdShim(resolved);
+    if (unwrapped) {
+      result = spawnSync(unwrapped.command, [...unwrapped.prefixArgs, ...argv], spawnOpts);
+    } else {
+      const line = [resolved, ...argv].map(quoteCmdArg).join(" ");
+      result = spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", line], {
+        ...spawnOpts,
+        windowsVerbatimArguments: true,
+      });
+    }
+  } else {
+    result = spawnSync(resolved, argv, spawnOpts);
+  }
   const timedOut =
     (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ||
     (result.signal === "SIGKILL" && result.status === null);
@@ -430,7 +479,12 @@ function runLockfileAudit(projectRoot: string): string[] {
       error: (result.error as NodeJS.ErrnoException).code ?? result.error.message,
     });
   }
-  return formatAuditLines({ lockfile, bin, stdout: result.stdout ?? "", stderr: result.stderr ?? "" });
+  return formatAuditLines({
+    lockfile,
+    bin,
+    stdout: String(result.stdout ?? ""),
+    stderr: String(result.stderr ?? ""),
+  });
 }
 
 function renderSecurityMd(findings: SecretFinding[], auditLines: string[]): string {
