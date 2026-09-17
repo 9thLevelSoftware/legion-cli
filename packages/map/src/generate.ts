@@ -29,6 +29,8 @@ export type MapOptions = {
   ignore?: string[];
   resolveBinary?: ResolveBinaryFn;
   spawnLsp?: LspSpawnFn;
+  /** Test hook: LSP file-loop budget (default 60s). */
+  lspDeadlineMs?: number;
 };
 
 export type GenerateMapResult = {
@@ -36,6 +38,7 @@ export type GenerateMapResult = {
   fingerprints: FingerprintFile;
   architecturePath: string;
   fingerprintsPath: string;
+  changed: string[];
 };
 
 async function loadMapConfig(projectRoot: string): Promise<MapConfig> {
@@ -75,6 +78,20 @@ function decideBackend(mode: MapLspMode, existing: FingerprintFile | undefined):
   return existing?.backend ?? "fallback";
 }
 
+function changedPaths(prev: FingerprintFile | undefined, next: readonly ModuleFingerprint[]): string[] {
+  const old = new Map((prev?.modules ?? []).map((module) => [module.path, module.hash]));
+  const changed: string[] = [];
+  const seen = new Set<string>();
+  for (const module of next) {
+    seen.add(module.path);
+    if (old.get(module.path) !== module.hash) changed.push(module.path);
+  }
+  for (const path of old.keys()) {
+    if (!seen.has(path)) changed.push(path);
+  }
+  return changed.sort();
+}
+
 export async function generateMap(projectRoot: string, options: MapOptions = {}): Promise<GenerateMapResult> {
   const root = resolve(projectRoot);
   const config = await loadMapConfig(root);
@@ -110,9 +127,11 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
         command: detected.command,
         args: detected.args,
         spawnLsp: options.spawnLsp,
+        deadlineMs: options.lspDeadlineMs,
       });
       if (lspExports) {
-        for (const [path, names] of lspExports) exportsByPath.set(path, names);
+        for (const [path, names] of lspExports.exports) exportsByPath.set(path, names);
+        if (!lspExports.complete) backend = "fallback";
       } else {
         backend = "fallback";
       }
@@ -150,5 +169,11 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   // `--refresh` and first write both replace only generated markers.
   await writeTextFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(fingerprints)));
 
-  return { backend, fingerprints, architecturePath, fingerprintsPath };
+  return {
+    backend,
+    fingerprints,
+    architecturePath,
+    fingerprintsPath,
+    changed: changedPaths(existing, modules),
+  };
 }

@@ -9,13 +9,27 @@ import {
   MapError,
   fingerprintHash,
   generateMap,
+  lspSpawnEnv,
   parseSource,
 } from "../dist/index.js";
-import { THREE_TS, spawnMockLsp, withTempDir, writeTree } from "./helpers.js";
+import {
+  THREE_TS,
+  spawnMockLsp,
+  spawnMockLspHangAfter,
+  withTempDir,
+  writeManyTs,
+  writeTree,
+} from "./helpers.js";
 
 function moduleOf(result, path) {
   return result.fingerprints.modules.find((row) => row.path === path);
 }
+
+const lspRequire = {
+  lsp: "require",
+  resolveBinary: (name) => (name === "typescript-language-server" ? process.execPath : null),
+  spawnLsp: spawnMockLsp,
+};
 
 test("fallback parser: three TS files, stable hash; comment-only does not churn; export add does", async () => {
   await withTempDir(async (dir) => {
@@ -24,6 +38,7 @@ test("fallback parser: three TS files, stable hash; comment-only does not churn;
     assert.equal(first.backend, "fallback");
     assert.equal(first.fingerprints.schemaVersion, "legion-cli-fingerprint/v1");
     assert.equal(first.fingerprints.modules.length, 3);
+    assert.deepEqual(first.changed, ["src/auth.ts", "src/db.ts", "src/index.ts"]);
 
     const auth = moduleOf(first, "src/auth.ts");
     assert.ok(auth);
@@ -41,11 +56,13 @@ test("fallback parser: three TS files, stable hash; comment-only does not churn;
     const second = await generateMap(dir);
     assert.equal(second.fingerprints.rootHash, first.fingerprints.rootHash);
     assert.equal(moduleOf(second, "src/auth.ts").hash, auth.hash);
+    assert.deepEqual(second.changed, []);
 
     await writeFile(join(dir, "src", "auth.ts"), `${THREE_TS["src/auth.ts"]}\n// comment only\n`, "utf8");
     const commented = await generateMap(dir);
     assert.equal(moduleOf(commented, "src/auth.ts").hash, auth.hash);
     assert.equal(commented.fingerprints.rootHash, first.fingerprints.rootHash);
+    assert.deepEqual(commented.changed, []);
 
     await writeFile(
       join(dir, "src", "auth.ts"),
@@ -57,6 +74,7 @@ test("fallback parser: three TS files, stable hash; comment-only does not churn;
     assert.deepEqual(addedAuth.exports, ["login", "logout", "refresh"]);
     assert.notEqual(addedAuth.hash, auth.hash);
     assert.notEqual(added.fingerprints.rootHash, first.fingerprints.rootHash);
+    assert.deepEqual(added.changed, ["src/auth.ts"]);
   });
 });
 
@@ -110,15 +128,10 @@ test("default map with typescript-language-server on PATH still uses fallback (n
   });
 });
 
-test("--lsp mock server: two depth-0 Function symbols become exports; hash stable", async () => {
+test("--lsp mock server: two depth-0 Function symbols become exports; hash stable; stderr flood does not deadlock", async () => {
   await withTempDir(async (dir) => {
     await writeTree(dir, THREE_TS);
-    const opts = {
-      lsp: "require",
-      resolveBinary: (name) => (name === "typescript-language-server" ? process.execPath : null),
-      spawnLsp: spawnMockLsp,
-    };
-    const first = await generateMap(dir, opts);
+    const first = await generateMap(dir, lspRequire);
     assert.equal(first.backend, "lsp");
     const auth = moduleOf(first, "src/auth.ts");
     assert.deepEqual(auth.exports, ["alpha", "beta"]);
@@ -126,25 +139,45 @@ test("--lsp mock server: two depth-0 Function symbols become exports; hash stabl
     assert.deepEqual(auth.imports, ["./db.js"]);
     assert.equal(auth.hash, fingerprintHash("src/auth.ts", ["alpha", "beta"], ["./db.js"]));
 
-    const second = await generateMap(dir, opts);
+    const second = await generateMap(dir, lspRequire);
     assert.equal(second.backend, "lsp");
     assert.equal(moduleOf(second, "src/auth.ts").hash, auth.hash);
     assert.equal(second.fingerprints.rootHash, first.fingerprints.rootHash);
   });
 });
 
-test("walk skips .legion-cli/map, node_modules, and default test globs", async () => {
+test("walk skips node_modules and .legion-cli at repo root, not only src test globs", async () => {
   await withTempDir(async (dir) => {
     await writeTree(dir, {
       ...THREE_TS,
       ".legion-cli/map/leaked.ts": "export function leaked() {}\n",
       "node_modules/pkg/index.ts": "export function nm() {}\n",
+      "src/node_modules/hidden.ts": "export function nestedNm() {}\n",
       "src/auth.test.ts": "export function testOnly() {}\n",
       "src/auth.spec.ts": "export function specOnly() {}\n",
     });
-    const result = await generateMap(dir);
+    const result = await generateMap(dir, { roots: [] });
     const paths = result.fingerprints.modules.map((row) => row.path).sort();
     assert.deepEqual(paths, ["src/auth.ts", "src/db.ts", "src/index.ts"]);
+    assert.equal(paths.includes(".legion-cli/map/leaked.ts"), false);
+    assert.equal(paths.includes("node_modules/pkg/index.ts"), false);
+    assert.equal(paths.includes("src/node_modules/hidden.ts"), false);
+  });
+});
+
+test("win32 skips mixed-case .LEGION-CLI", { skip: process.platform !== "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, {
+      ...THREE_TS,
+      ".LEGION-CLI/map/leaked.ts": "export function leaked() {}\n",
+    });
+    const result = await generateMap(dir, { roots: [] });
+    const paths = result.fingerprints.modules.map((row) => row.path);
+    assert.equal(
+      paths.some((path) => path.toLowerCase().includes(".legion-cli")),
+      false,
+    );
+    assert.ok(paths.includes("src/auth.ts"));
   });
 });
 
@@ -194,4 +227,71 @@ test("parseSource covers python/go/rust fallback regexes", () => {
   assert.equal(rs.language, "rs");
   assert.deepEqual(rs.exports.sort(), ["Thing", "open"]);
   assert.deepEqual(rs.imports, []);
+});
+
+test("LSP spawn env drops SSH_AUTH_SOCK and API keys", () => {
+  const env = lspSpawnEnv({
+    PATH: "/bin",
+    TERM: "xterm",
+    SSH_AUTH_SOCK: "/tmp/ssh.sock",
+    OPENAI_API_KEY: "sk-test",
+    GOPATH: "/go",
+  });
+  assert.equal(env.SSH_AUTH_SOCK, undefined);
+  assert.equal(env.OPENAI_API_KEY, undefined);
+  assert.equal(env.PATH, "/bin");
+  assert.equal(env.TERM, "xterm");
+  assert.equal(env.GOPATH, "/go");
+});
+
+test("resolve .cmd path is passed through to spawn", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const cmdPath = join(dir, "typescript-language-server.cmd");
+    let spawned = "";
+    const result = await generateMap(dir, {
+      lsp: "require",
+      resolveBinary: (name) => (name === "typescript-language-server" ? cmdPath : null),
+      spawnLsp: (command, args, cwd) => {
+        spawned = command;
+        return spawnMockLsp(command, args, cwd);
+      },
+    });
+    assert.equal(spawned, cmdPath);
+    assert.equal(result.backend, "lsp");
+  });
+});
+
+test("LSP timeout keeps collected symbols and records backend fallback", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const result = await generateMap(dir, {
+      lsp: "require",
+      resolveBinary: (name) => (name === "typescript-language-server" ? process.execPath : null),
+      spawnLsp: spawnMockLspHangAfter(1),
+      lspDeadlineMs: 1500,
+    });
+    assert.equal(result.backend, "fallback");
+    const withLsp = result.fingerprints.modules.filter((row) => row.exports.includes("alpha"));
+    const withFallback = result.fingerprints.modules.filter((row) => !row.exports.includes("alpha"));
+    assert.equal(withLsp.length, 1);
+    assert.ok(withFallback.length >= 1);
+    assert.deepEqual(withLsp[0].exports, ["alpha", "beta"]);
+    assert.equal(withFallback.some((row) => row.exports.includes("login") || row.exports.includes("connect") || row.exports.includes("main")), true);
+  });
+});
+
+test("map refuses when walk exceeds 10000 modules", { timeout: 60_000 }, async () => {
+  await withTempDir(async (dir) => {
+    await writeManyTs(dir, 10_001);
+    await assert.rejects(
+      () => generateMap(dir),
+      (err) => {
+        assert.equal(err instanceof MapError, true);
+        assert.equal(err.nextHint, "legion-cli map --no-lsp");
+        assert.match(err.message, /10000/);
+        return true;
+      },
+    );
+  });
 });

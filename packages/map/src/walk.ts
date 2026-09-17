@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
-import { extname, join, relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { PathEscapeError, toPosixPath, toProjectRelativePosix } from "@9thlevelsoftware/legion-cli-persist";
 import { ConcretePosixPathSchema } from "@9thlevelsoftware/legion-cli-schema";
 import { MAP_HINT, refuse } from "./errors.js";
@@ -25,35 +25,7 @@ export const SKIP_DIR_NAMES = new Set([
   ".cache",
 ]);
 
-const BINARY_EXTENSIONS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".ico",
-  ".pdf",
-  ".zip",
-  ".gz",
-  ".tgz",
-  ".woff",
-  ".woff2",
-  ".ttf",
-  ".eot",
-  ".exe",
-  ".dll",
-  ".so",
-  ".dylib",
-  ".bin",
-  ".wasm",
-  ".mp3",
-  ".mp4",
-  ".webm",
-  ".mov",
-  ".avi",
-  ".sqlite",
-  ".db",
-]);
+const SKIP_DIR_LOWER = new Set([...SKIP_DIR_NAMES].map((name) => name.toLowerCase()));
 
 export type WalkedFile = {
   path: string;
@@ -88,17 +60,22 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(out);
 }
 
-export function compileIgnore(globs: readonly string[]): RegExp[] {
+function compileIgnore(globs: readonly string[]): RegExp[] {
   return globs.filter((glob) => glob.length > 0).map(globToRegExp);
 }
 
-export function isIgnored(posixPath: string, rules: readonly RegExp[]): boolean {
+function isIgnored(posixPath: string, rules: readonly RegExp[]): boolean {
   return rules.some((rule) => rule.test(posixPath));
 }
 
+function isSkippedDirName(name: string): boolean {
+  if (SKIP_DIR_NAMES.has(name)) return true;
+  if (process.platform === "win32") return SKIP_DIR_LOWER.has(name.toLowerCase());
+  return false;
+}
+
 function hasSkipSegment(posixPath: string): boolean {
-  if (posixPath === ".legion-cli" || posixPath.startsWith(".legion-cli/")) return true;
-  return posixPath.split("/").some((segment) => SKIP_DIR_NAMES.has(segment));
+  return posixPath.split("/").some((segment) => isSkippedDirName(segment));
 }
 
 export function assertMapRoot(raw: string): string {
@@ -155,7 +132,6 @@ export async function walkSources(opts: {
       : opts.roots.map((root) => join(projectRoot, ...root.split("/")));
 
   async function walkDir(dir: string): Promise<void> {
-    if (out.length >= MAX_MODULES) return;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -164,9 +140,8 @@ export async function walkSources(opts: {
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (out.length >= MAX_MODULES) return;
       if (entry.name === "." || entry.name === "..") continue;
-      if (SKIP_DIR_NAMES.has(entry.name)) continue;
+      if (isSkippedDirName(entry.name)) continue;
       const abs = join(dir, entry.name);
       let posix: string | null;
       try {
@@ -196,7 +171,6 @@ export async function walkSources(opts: {
       if (isIgnored(posix, rules)) continue;
       const language = languageFromPath(posix);
       if (language === "other") continue;
-      if (BINARY_EXTENSIONS.has(extname(posix).toLowerCase())) continue;
       let meta;
       try {
         meta = await lstat(abs);
@@ -211,12 +185,14 @@ export async function walkSources(opts: {
         continue;
       }
       if (buf.byteLength > MAX_FILE_BYTES || looksBinary(buf)) continue;
+      if (out.length >= MAX_MODULES) {
+        refuse("map exceeds 10000 modules", MAP_HINT.noLsp);
+      }
       out.push({ path: posix, absPath: abs, language, text: buf.toString("utf8") });
     }
   }
 
   for (const start of starts) {
-    if (out.length >= MAX_MODULES) break;
     let posix: string | null;
     try {
       posix = existsSync(start) ? await posixInside(projectRoot, start) : null;
@@ -230,5 +206,5 @@ export async function walkSources(opts: {
   }
 
   out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return out.slice(0, MAX_MODULES);
+  return out;
 }

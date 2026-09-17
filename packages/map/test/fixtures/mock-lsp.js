@@ -19,8 +19,17 @@ const DEPTH0_FUNCTIONS = [
   { name: "beta", kind: 12, range: RANGE, selectionRange: RANGE },
 ];
 
+const hangAfter = Number(process.env.LEGION_MOCK_LSP_HANG_AFTER || "0");
+let symbolReplies = 0;
+
+function floodStderr() {
+  const chunk = Buffer.alloc(64 * 1024, 0x61);
+  for (let i = 0; i < 16; i += 1) process.stderr.write(chunk);
+}
+
 function handle(msg) {
   if (msg.method === "initialize") {
+    floodStderr();
     encode({
       jsonrpc: "2.0",
       id: msg.id,
@@ -37,6 +46,8 @@ function handle(msg) {
     return;
   }
   if (msg.method === "textDocument/documentSymbol") {
+    symbolReplies += 1;
+    if (hangAfter > 0 && symbolReplies > hangAfter) return;
     encode({ jsonrpc: "2.0", id: msg.id, result: DEPTH0_FUNCTIONS });
     return;
   }

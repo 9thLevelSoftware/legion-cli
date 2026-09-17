@@ -31,8 +31,8 @@ export async function writeTree(root, files) {
   }
 }
 
-export function spawnMockLsp(_command, _args, cwd) {
-  const env = { ...process.env };
+function spawnMock(cwd, extraEnv = {}) {
+  const env = { ...process.env, ...extraEnv };
   delete env.NODE_TEST_CONTEXT;
   return spawn(process.execPath, [mockLspPath], {
     cwd,
@@ -41,4 +41,27 @@ export function spawnMockLsp(_command, _args, cwd) {
     windowsHide: true,
     shell: false,
   });
+}
+
+export function spawnMockLsp(_command, _args, cwd) {
+  return spawnMock(cwd);
+}
+
+export function spawnMockLspHangAfter(n) {
+  return (_command, _args, cwd) => spawnMock(cwd, { LEGION_MOCK_LSP_HANG_AFTER: String(n) });
+}
+
+export async function writeManyTs(dir, count) {
+  const src = join(dir, "src");
+  await mkdir(src, { recursive: true });
+  const body = "export function f() {}\n";
+  const batch = 256;
+  for (let i = 0; i < count; i += batch) {
+    const jobs = [];
+    const end = Math.min(count, i + batch);
+    for (let j = i; j < end; j += 1) {
+      jobs.push(writeFile(join(src, `f${j}.ts`), body));
+    }
+    await Promise.all(jobs);
+  }
 }

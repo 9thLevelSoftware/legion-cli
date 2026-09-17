@@ -18,6 +18,11 @@ export type DetectedLsp = {
   languages: ReadonlySet<string>;
 };
 
+export type LspCollectResult = {
+  exports: Map<string, string[]>;
+  complete: boolean;
+};
+
 const EXPORT_SYMBOL_KINDS = new Set([
   2, // Module
   3, // Namespace
@@ -72,6 +77,37 @@ const LANGUAGE_IDS: Record<string, string> = {
   go: "go",
   rs: "rust",
 };
+
+const LSP_ENV_ALLOWLIST = new Set(
+  [
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "ComSpec",
+    "TERM",
+    "LANG",
+    "LC_ALL",
+    "GOPATH",
+    "GOROOT",
+    "GO111MODULE",
+    "GOPROXY",
+    "GOMODCACHE",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+    "NODE_PATH",
+    "SYSTEMROOT",
+    "WINDIR",
+    "SYSTEMDRIVE",
+    "PATHEXT",
+  ].map((key) => key.toUpperCase()),
+);
 
 type JsonRpc = {
   jsonrpc?: string;
@@ -137,16 +173,43 @@ export function detectLspServer(
   return null;
 }
 
+/** PATH/TERM plus language homes. Never SSH_AUTH_SOCK or API keys. */
+export function lspSpawnEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    const upper = key.toUpperCase();
+    if (upper === "SSH_AUTH_SOCK" || upper === "NODE_TEST_CONTEXT") continue;
+    if (!LSP_ENV_ALLOWLIST.has(upper)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+function quoteCmdArg(arg: string): string {
+  if (arg.length === 0) return '""';
+  if (!/[\t\r\n "]/.test(arg)) return arg;
+  return `"${arg.replaceAll('"', '""')}"`;
+}
+
 function defaultSpawn(command: string, args: readonly string[], cwd: string): ChildProcess {
-  const env = { ...process.env };
-  delete env.NODE_TEST_CONTEXT;
-  return spawn(command, [...args], {
+  const env = lspSpawnEnv();
+  const common = {
     cwd,
     env,
-    stdio: ["pipe", "pipe", "pipe"],
+    // ignore stderr so a chatty server cannot fill the pipe and deadlock
+    stdio: ["pipe", "pipe", "ignore"] as ["pipe", "pipe", "ignore"],
     windowsHide: true,
     shell: false,
-  });
+  };
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(command)) {
+    const line = [command, ...args].map(quoteCmdArg).join(" ");
+    return spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", line], {
+      ...common,
+      windowsVerbatimArguments: true,
+    });
+  }
+  return spawn(command, [...args], common);
 }
 
 class LspFramer {
@@ -233,6 +296,10 @@ class LspClient {
     child.stdout?.on("data", (chunk: Buffer) => {
       for (const msg of framer.push(chunk)) this.#onMessage(msg);
     });
+    child.stderr?.on("data", () => {
+      // drain so a piped chatty server cannot deadlock
+    });
+    child.stderr?.resume?.();
     const fail = (err: Error) => {
       this.#dead = true;
       this.#exitError = err;
@@ -329,6 +396,10 @@ function remaining(deadline: number): number {
   return deadline - Date.now();
 }
 
+function partialOrNull(exportsByPath: Map<string, string[]>): LspCollectResult | null {
+  return exportsByPath.size > 0 ? { exports: exportsByPath, complete: false } : null;
+}
+
 export async function collectLspExports(opts: {
   projectRoot: string;
   files: readonly WalkedFile[];
@@ -336,7 +407,7 @@ export async function collectLspExports(opts: {
   args: readonly string[];
   deadlineMs?: number;
   spawnLsp?: LspSpawnFn;
-}): Promise<Map<string, string[]> | null> {
+}): Promise<LspCollectResult | null> {
   const deadline = Date.now() + (opts.deadlineMs ?? LSP_BUDGET_MS);
   const files = opts.files.slice(0, MAX_LSP_FILES);
   let child: ChildProcess;
@@ -365,6 +436,7 @@ export async function collectLspExports(opts: {
         processId: process.pid,
         rootUri: pathToFileURL(opts.projectRoot).href,
         capabilities: {
+          workspace: { workspaceFolders: false },
           textDocument: {
             documentSymbol: {
               hierarchicalDocumentSymbolSupport: true,
@@ -377,8 +449,8 @@ export async function collectLspExports(opts: {
     client.notify("initialized", {});
 
     for (const file of files) {
-      if (remaining(deadline) <= 0) return null;
-      if (client.dead) return null;
+      if (remaining(deadline) <= 0) return { exports: exportsByPath, complete: false };
+      if (client.dead) return partialOrNull(exportsByPath);
       const uri = pathToFileURL(file.absPath).href;
       client.notify("textDocument/didOpen", {
         textDocument: {
@@ -388,12 +460,16 @@ export async function collectLspExports(opts: {
           text: file.text,
         },
       });
-      const result = await client.request(
-        "textDocument/documentSymbol",
-        { textDocument: { uri } },
-        remaining(deadline),
-      );
-      exportsByPath.set(file.path, exportsFromDocumentSymbols(result));
+      try {
+        const result = await client.request(
+          "textDocument/documentSymbol",
+          { textDocument: { uri } },
+          remaining(deadline),
+        );
+        exportsByPath.set(file.path, exportsFromDocumentSymbols(result));
+      } catch {
+        return { exports: exportsByPath, complete: false };
+      }
     }
 
     if (remaining(deadline) > 0 && !client.dead) {
@@ -404,9 +480,9 @@ export async function collectLspExports(opts: {
         // shutdown is best-effort once symbols are in
       }
     }
-    return exportsByPath;
+    return { exports: exportsByPath, complete: true };
   } catch {
-    return null;
+    return partialOrNull(exportsByPath);
   } finally {
     client.kill();
   }
