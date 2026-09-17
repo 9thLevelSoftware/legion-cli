@@ -318,13 +318,10 @@ async function copyTree(
   dest: string,
   projectRoot: string,
   depth = 0,
-  seen?: Set<string>,
+  seenDest?: Set<string>,
 ): Promise<void> {
   if (depth > MAX_COPY_DEPTH) return;
-  const visited = seen ?? new Set<string>();
-  const key = resolve(src);
-  if (visited.has(key)) return;
-  visited.add(key);
+  const visitedDest = seenDest ?? new Set<string>();
   let st;
   try {
     st = await lstat(src);
@@ -336,16 +333,19 @@ async function copyTree(
     const real = tryRealpath(src);
     if (!real) return;
     if (canonicalBlocked(projectRoot, real)) return;
-    await copyTree(real, dest, projectRoot, depth + 1, visited);
+    await copyTree(real, dest, projectRoot, depth + 1, visitedDest);
     return;
   }
   if (canonicalBlocked(projectRoot, src)) return;
+  const destKey = resolve(dest);
+  if (visitedDest.has(destKey)) return;
+  visitedDest.add(destKey);
   if (st.isDirectory()) {
     await mkdir(dest, { recursive: true });
     const entries = await readdir(src, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name === "node_modules" || entry.name === ".git") continue;
-      await copyTree(join(src, entry.name), join(dest, entry.name), projectRoot, depth + 1, visited);
+      await copyTree(join(src, entry.name), join(dest, entry.name), projectRoot, depth + 1, visitedDest);
     }
     return;
   }

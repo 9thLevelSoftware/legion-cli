@@ -421,6 +421,28 @@ test("copy-in is sparse: no node_modules, nested node_modules, or operator .git"
   });
 });
 
+test("copy-in copies one inode to every dest name", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await mkdir(join(dir, "src", "orig"), { recursive: true });
+    await writeFile(join(dir, "src", "orig", "file.ts"), "shared\n", "utf8");
+    const linked = await trySymlink(
+      join(dir, "src", "orig"),
+      join(dir, "src", "alias"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    assert.equal(linked, true, "could not create alias junction");
+    const handle = await materializeJail(policy(dir, { readSet: ["src"] }));
+    try {
+      assert.equal(await readFile(join(handle.jailRoot, "src", "orig", "file.ts"), "utf8"), "shared\n");
+      assert.equal(await readFile(join(handle.jailRoot, "src", "alias", "file.ts"), "utf8"), "shared\n");
+      assert.equal(lstatSync(join(handle.jailRoot, "src", "alias")).isSymbolicLink(), false);
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
 test("dangling junction in readSet does not hang materializeJail", { timeout: 5000 }, async () => {
   await withTempDir(async (dir) => {
     await seedProject(dir);
@@ -432,7 +454,10 @@ test("dangling junction in readSet does not hang materializeJail", { timeout: 50
     const handle = await materializeJail(policy(dir, { readSet: ["src", "src/dangling"] }));
     try {
       assert.equal(existsSync(join(handle.jailRoot, "src", "read.ts")), true);
-      assert.equal(existsSync(join(handle.jailRoot, "src", "dangling")), false);
+      assert.throws(
+        () => lstatSync(join(handle.jailRoot, "src", "dangling")),
+        (err) => err && err.code === "ENOENT",
+      );
     } finally {
       await handle.destroy();
     }
