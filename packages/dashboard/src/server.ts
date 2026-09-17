@@ -24,7 +24,6 @@ import {
   LOOPBACK_BIND,
   echoAllowedOrigin,
   headerValue,
-  isLoopbackHost,
   originIsAllowed,
   writeOriginIsAllowed,
 } from "./origin.js";
@@ -69,7 +68,6 @@ export type McpHttpHandler = (opts: {
   req: IncomingMessage;
   res: ServerResponse;
   projectRoot: string;
-  body?: Buffer;
 }) => Promise<void>;
 
 export type DashboardOptions = {
@@ -268,6 +266,9 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
   const token = mintWriteToken();
   const occupy = opts.occupy === true;
   const mcpHttp = opts.mcpHttp === true;
+  if (mcpHttp && !opts.handleMcpHttp) {
+    throw new Error("mcpHttp requires handleMcpHttp");
+  }
   if (mcpHttp && host === EXPOSE_BIND) {
     throw new LegionRefuseError(
       "MCP HTTP is loopback-only; --expose would bind unauthenticated /mcp on 0.0.0.0",
@@ -312,19 +313,6 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     const url = new URL(req.url ?? "/", `http://${hostHeader ?? `${host}:${boundPort}`}`);
     const pathname = decodeURIComponent(url.pathname);
     const mcpRoute = mcpHttp && pathname === MCP_PATH;
-    if (mcpRoute && originHeader) {
-      let originUrl: URL;
-      try {
-        originUrl = new URL(originHeader);
-      } catch {
-        forbidden(res, undefined, "Forbidden origin");
-        return;
-      }
-      if (!isLoopbackHost(originUrl.hostname)) {
-        forbidden(res, undefined, "Forbidden origin");
-        return;
-      }
-    }
 
     if (method === "OPTIONS") {
       setSecurityHeaders(res, cors);
@@ -385,6 +373,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       } catch (err) {
         if (err instanceof EngineWriteError) {
           sendJson(res, err.status, err.payload, cors);
+          if (err.status === 413) req.destroy();
           return;
         }
         throw err;
@@ -630,18 +619,6 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       if (occupy) await removeOwnServeFile(opts.projectRoot, process.pid);
     },
   };
-}
-
-export async function startServe(opts: DashboardOptions): Promise<DashboardHandle> {
-  const mcpHttp = opts.mcpHttp !== false;
-  if (mcpHttp && !opts.handleMcpHttp) {
-    throw new Error("startServe mcpHttp requires handleMcpHttp");
-  }
-  return startDashboard({
-    ...opts,
-    occupy: opts.occupy !== false,
-    mcpHttp,
-  });
 }
 
 export async function resolveDashboardListen(

@@ -15,7 +15,6 @@ export type HandleMcpHttpOpts = {
   req: IncomingMessage;
   res: ServerResponse;
   projectRoot: string;
-  body?: Buffer;
 };
 
 type McpSession = {
@@ -23,34 +22,21 @@ type McpSession = {
   server: McpServer;
 };
 
-type ProjectScope = {
-  sessions: Map<string, McpSession>;
-  open: Set<ServerResponse>;
-};
-
-const scopes = new Map<string, ProjectScope>();
+const sessions = new Map<string, McpSession>();
+const openResponses = new Set<ServerResponse>();
 const hitsBySocket = new WeakMap<Socket, number[]>();
 
-function scopeFor(projectRoot: string): ProjectScope {
-  let scope = scopes.get(projectRoot);
-  if (!scope) {
-    scope = { sessions: new Map(), open: new Set() };
-    scopes.set(projectRoot, scope);
-  }
-  return scope;
-}
-
-function trackResponse(scope: ProjectScope, res: ServerResponse): void {
-  scope.open.add(res);
+function trackResponse(res: ServerResponse): void {
+  openResponses.add(res);
   const done = () => {
-    scope.open.delete(res);
+    openResponses.delete(res);
   };
   res.once("close", done);
   res.once("finish", done);
 }
 
-function endOpenResponses(scope: ProjectScope): void {
-  for (const res of scope.open) {
+function endOpenResponses(): void {
+  for (const res of openResponses) {
     try {
       if (!res.writableEnded) res.end();
     } catch {
@@ -62,7 +48,7 @@ function endOpenResponses(scope: ProjectScope): void {
       // already destroyed
     }
   }
-  scope.open.clear();
+  openResponses.clear();
 }
 
 function sessionHeader(req: IncomingMessage): string | undefined {
@@ -98,10 +84,7 @@ function rateLimitOk(socket: Socket | undefined): boolean {
   return true;
 }
 
-async function readCappedBody(req: IncomingMessage, provided?: Buffer): Promise<Buffer | "too-large"> {
-  if (provided) {
-    return provided.length > MCP_HTTP_MAX_BODY_BYTES ? "too-large" : provided;
-  }
+async function readCappedBody(req: IncomingMessage): Promise<Buffer | "too-large"> {
   const declared = Number(req.headers["content-length"]);
   if (Number.isFinite(declared) && declared > MCP_HTTP_MAX_BODY_BYTES) {
     return "too-large";
@@ -161,40 +144,26 @@ function writeStandaloneSse(res: ServerResponse, headOnly: boolean): void {
   res.end("retry: 15000\n: connected\n\n");
 }
 
-async function createSession(projectRoot: string, scope: ProjectScope): Promise<McpSession> {
-  const session: McpSession = {
-    transport: undefined as unknown as StreamableHTTPServerTransport,
-    server: undefined as unknown as McpServer,
-  };
+async function createSession(projectRoot: string): Promise<McpSession> {
+  let server!: McpServer;
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
     enableJsonResponse: true,
     onsessioninitialized: (id) => {
-      scope.sessions.set(id, session);
+      sessions.set(id, { transport, server });
     },
     onsessionclosed: (id) => {
-      scope.sessions.delete(id);
+      sessions.delete(id);
     },
   });
-  const server = await createLegionMcpServer({ projectRoot });
-  session.transport = transport;
-  session.server = server;
+  server = await createLegionMcpServer({ projectRoot });
   transport.onclose = () => {
     const id = transport.sessionId;
-    if (id) scope.sessions.delete(id);
+    if (id) sessions.delete(id);
     void server.close();
   };
   await server.connect(transport);
-  return session;
-}
-
-async function handleWithSdk(
-  session: McpSession,
-  req: IncomingMessage,
-  res: ServerResponse,
-  parsedBody?: unknown,
-): Promise<void> {
-  await session.transport.handleRequest(req, res, parsedBody);
+  return { transport, server };
 }
 
 /**
@@ -238,14 +207,13 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
     return;
   }
 
-  const scope = scopeFor(projectRoot);
-  trackResponse(scope, res);
+  trackResponse(res);
 
   let parsedBody: unknown;
   if (method === "POST" || method === "DELETE") {
     let raw: Buffer | "too-large";
     try {
-      raw = await readCappedBody(req, method === "POST" ? opts.body : undefined);
+      raw = await readCappedBody(req);
     } catch (err) {
       jsonRpcError(res, 400, -32700, err instanceof Error ? err.message : "Parse error");
       return;
@@ -266,7 +234,7 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
   }
 
   const sessionId = sessionHeader(req);
-  const existing = sessionId ? scope.sessions.get(sessionId) : undefined;
+  const existing = sessionId ? sessions.get(sessionId) : undefined;
 
   if (sessionId && !existing) {
     jsonRpcError(res, 404, -32001, "Session not found");
@@ -279,7 +247,7 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
       return;
     }
     if (existing) {
-      await handleWithSdk(existing, req, res);
+      await existing.transport.handleRequest(req, res);
       return;
     }
     writeStandaloneSse(res, false);
@@ -287,17 +255,17 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
   }
 
   if (existing) {
-    await handleWithSdk(existing, req, res, parsedBody);
+    await existing.transport.handleRequest(req, res, parsedBody);
     return;
   }
 
   if (method === "POST" && isInit(parsedBody)) {
-    if (scope.sessions.size >= MCP_HTTP_MAX_SESSIONS) {
+    if (sessions.size >= MCP_HTTP_MAX_SESSIONS) {
       jsonRpcError(res, 429, -32000, "too many MCP sessions");
       return;
     }
-    const session = await createSession(projectRoot, scope);
-    await handleWithSdk(session, req, res, parsedBody);
+    const session = await createSession(projectRoot);
+    await session.transport.handleRequest(req, res, parsedBody);
     return;
   }
 
@@ -309,30 +277,22 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
   jsonRpcError(res, 400, -32000, "Bad Request: No valid session ID provided");
 }
 
-export async function closeMcpHttp(projectRoot?: string): Promise<void> {
-  const targets = projectRoot ? [scopes.get(projectRoot)] : [...scopes.values()];
-  if (projectRoot) scopes.delete(projectRoot);
-  else scopes.clear();
+export async function closeMcpHttp(): Promise<void> {
+  endOpenResponses();
+  const live = [...sessions.values()];
+  sessions.clear();
   await Promise.all(
-    targets.map(async (scope) => {
-      if (!scope) return;
-      endOpenResponses(scope);
-      const sessions = [...scope.sessions.values()];
-      scope.sessions.clear();
-      await Promise.all(
-        sessions.map(async (session) => {
-          try {
-            await session.transport.close();
-          } catch {
-            // already closed
-          }
-          try {
-            await session.server.close();
-          } catch {
-            // already closed
-          }
-        }),
-      );
+    live.map(async (session) => {
+      try {
+        await session.transport.close();
+      } catch {
+        // already closed
+      }
+      try {
+        await session.server.close();
+      } catch {
+        // already closed
+      }
     }),
   );
 }

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { ServeFileSchema } from "@9thlevelsoftware/legion-cli-schema";
-import { ENGINE_WRITE_METHODS, startDashboard, startServe } from "../dist/index.js";
+import { ENGINE_WRITE_METHODS, startDashboard } from "../dist/index.js";
 import { otherSpecTask, todoTask, withStore, withTempDir } from "./helpers.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -563,11 +564,12 @@ test("startServe routes GET/POST/DELETE /mcp inside one handle", async () => {
 
   await withTempDir(async (dir) => {
     const methods = [];
-    const handle = await startServe({
+    const handle = await startDashboard({
       projectRoot: dir,
       port: 0,
       open: false,
       warn: () => {},
+      occupy: true,
       mcpHttp: true,
       handleMcpHttp: async ({ req, res }) => {
         methods.push(req.method);
@@ -607,12 +609,13 @@ test("startServe refuses MCP HTTP on --expose; close does not hang on open SSE",
   await withTempDir(async (dir) => {
     await assert.rejects(
       () =>
-        startServe({
+        startDashboard({
           projectRoot: dir,
           host: "0.0.0.0",
           port: 0,
           open: false,
           warn: () => {},
+          occupy: true,
           mcpHttp: true,
           handleMcpHttp: async ({ res }) => {
             res.statusCode = 200;
@@ -626,11 +629,12 @@ test("startServe refuses MCP HTTP on --expose; close does not hang on open SSE",
       },
     );
 
-    const handle = await startServe({
+    const handle = await startDashboard({
       projectRoot: dir,
       port: 0,
       open: false,
       warn: () => {},
+      occupy: true,
       mcpHttp: true,
       handleMcpHttp: async ({ res }) => {
         res.statusCode = 200;
@@ -652,11 +656,12 @@ test("startServe refuses MCP HTTP on --expose; close does not hang on open SSE",
 
 test("second startServe while pid is live refuses; dead pid is overwritten", async () => {
   await withTempDir(async (dir) => {
-    const first = await startServe({
+    const first = await startDashboard({
       projectRoot: dir,
       port: 0,
       open: false,
       warn: () => {},
+      occupy: true,
       mcpHttp: false,
     });
     try {
@@ -670,7 +675,15 @@ test("second startServe while pid is live refuses; dead pid is overwritten", asy
       assert.equal(occupancy.mcpHttp, false);
       assert.match(occupancy.tokenSha256, /^[a-f0-9]{64}$/);
       await assert.rejects(
-        () => startServe({ projectRoot: dir, port: 0, open: false, warn: () => {}, mcpHttp: false }),
+        () =>
+          startDashboard({
+            projectRoot: dir,
+            port: 0,
+            open: false,
+            warn: () => {},
+            occupy: true,
+            mcpHttp: false,
+          }),
         (err) => {
           assert.match(String(err.message), /already running/);
           return true;
@@ -695,11 +708,12 @@ test("second startServe while pid is live refuses; dead pid is overwritten", asy
         pid: 1_000_000_000,
       })}\n`,
     );
-    const revived = await startServe({
+    const revived = await startDashboard({
       projectRoot: dir,
       port: 0,
       open: false,
       warn: () => {},
+      occupy: true,
       mcpHttp: false,
     });
     try {
@@ -741,5 +755,46 @@ test("EADDRINUSE Next is legion-cli serve --port <n>", async () => {
     } finally {
       await first.close();
     }
+  });
+});
+
+test("POST /engine/ticket over 64 KiB is 413", async () => {
+  await withStore(async ({ dir }) => {
+    await withServer(dir, async ({ handle }) => {
+      const url = new URL(`${handle.url}/engine/ticket`);
+      const origin = originFor(handle);
+      const huge = await new Promise((resolve, reject) => {
+        let status;
+        const req = http.request(
+          {
+            hostname: url.hostname,
+            port: url.port,
+            path: url.pathname,
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Origin: origin,
+              "X-Legion-Cli-Token": handle.token,
+              "Transfer-Encoding": "chunked",
+            },
+          },
+          (res) => {
+            status = res.statusCode;
+            res.resume();
+            res.on("end", () => resolve(status));
+          },
+        );
+        req.on("error", (err) => {
+          if (status === 413) {
+            resolve(413);
+            return;
+          }
+          reject(err);
+        });
+        req.write(Buffer.alloc(64 * 1024 + 1, 0x78));
+        req.end();
+      });
+      assert.equal(huge, 413);
+    });
   });
 });

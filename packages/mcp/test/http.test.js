@@ -35,7 +35,7 @@ async function withMcpHttp(dir, fn) {
   try {
     return await fn(base);
   } finally {
-    await closeMcpHttp(dir);
+    await closeMcpHttp();
     server.closeAllConnections?.();
     await new Promise((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
@@ -167,6 +167,7 @@ test("unknown Mcp-Session-Id is 404; missing DELETE session is 400; POST body is
             },
           },
           (res) => {
+            assert.notEqual((res.headers.connection ?? "").toLowerCase(), "close");
             res.resume();
             res.on("end", () => resolve(res.statusCode));
           },
@@ -189,6 +190,7 @@ test("unknown Mcp-Session-Id is 404; missing DELETE session is 400; POST body is
             },
           },
           (res) => {
+            assert.equal(req.reusedSocket, true);
             res.resume();
             res.on("end", () => resolve(res.statusCode));
           },
@@ -333,7 +335,7 @@ test("closeMcpHttp ends an open GET SSE so server.close does not hang", async ()
     });
     const streamed = await sse;
     assert.equal(streamed.status, 200);
-    const closed = closeMcpHttp(dir).then(
+    const closed = closeMcpHttp().then(
       () =>
         new Promise((resolve, reject) => {
           server.closeAllConnections?.();

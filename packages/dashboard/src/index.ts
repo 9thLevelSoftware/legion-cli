@@ -15,7 +15,7 @@ export {
   originIsAllowed,
   writeOriginIsAllowed,
 } from "./origin.js";
-export { startDashboard, startServe, resolveDashboardListen, readLiveServe } from "./server.js";
+export { startDashboard, resolveDashboardListen, readLiveServe } from "./server.js";
 export type { DashboardHandle, DashboardOptions, McpHttpHandler } from "./server.js";
 export { ENGINE_WRITE_METHODS } from "./write.js";
 export { loadSnapshot, LIFECYCLE_PATH, KANBAN_COLUMNS } from "./snapshot.js";

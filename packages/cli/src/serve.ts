@@ -1,5 +1,5 @@
 import { closeMcpHttp, handleMcpHttp } from "@9thlevelsoftware/legion-cli-mcp";
-import { resolveDashboardListen, startServe } from "@9thlevelsoftware/legion-cli-dashboard";
+import { resolveDashboardListen, startDashboard } from "@9thlevelsoftware/legion-cli-dashboard";
 import type { CliOpts } from "./io.js";
 import { writeErr, writeJson, writeOut } from "./io.js";
 
@@ -10,10 +10,6 @@ export type ServeFlags = {
   mcpHttp?: boolean;
   webmcp?: boolean;
   tokenStdout?: boolean;
-};
-
-export type ServeRunOpts = {
-  mcpHttp?: boolean;
 };
 
 function parsePort(raw: string | undefined): number | undefined {
@@ -33,27 +29,24 @@ function waitForSignal(): Promise<void> {
   });
 }
 
-export async function runServe(
-  opts: CliOpts,
-  flags: ServeFlags,
-  run: ServeRunOpts = {},
-): Promise<number> {
+export async function runServe(opts: CliOpts, flags: ServeFlags): Promise<number> {
   const portFlag = parsePort(flags.port);
   const listen = await resolveDashboardListen(opts.project, {
     port: portFlag,
     expose: flags.expose,
   });
-  const mcpHttp = run.mcpHttp ?? flags.mcpHttp !== false;
-  const handle = await startServe({
+  const mcpHttp = flags.mcpHttp !== false;
+  const handle = await startDashboard({
     projectRoot: opts.project,
     host: listen.host,
     port: listen.port,
     open: flags.open !== false,
     warn: writeErr,
+    occupy: true,
     mcpHttp,
     webmcp: flags.webmcp === true,
     handleMcpHttp: mcpHttp ? handleMcpHttp : undefined,
-    onClose: () => closeMcpHttp(opts.project),
+    onClose: () => closeMcpHttp(),
   });
 
   if (opts.json) {
@@ -67,11 +60,12 @@ export async function runServe(
       mcpPath: mcpHttp ? "/mcp" : null,
     });
   } else {
-    writeOut(`Viewer: ${handle.url}`);
-    if (mcpHttp) writeOut(`MCP HTTP: ${handle.url}/mcp (read-only tools).`);
-    writeOut(
+    const lines = [`Viewer: ${handle.url}`];
+    if (mcpHttp) lines.push(`MCP HTTP: ${handle.url}/mcp (read-only tools).`);
+    lines.push(
       "Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist). CLI remains the source of truth.",
     );
+    writeOut(lines.join("\n"));
     if (flags.tokenStdout) writeOut(`Write token: ${handle.token}`);
   }
 
