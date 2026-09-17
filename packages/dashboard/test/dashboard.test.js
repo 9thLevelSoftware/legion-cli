@@ -401,6 +401,7 @@ test("empty or missing activeSpecId is []; other-spec task never appears", async
       assert.deepEqual(state.tasks, []);
       assert.equal(state.currentTask, null);
       assert.deepEqual(state.graph.nodes, []);
+      assert.deepEqual(state.graph.edges, []);
       const board = await (await fetch(handle.url)).text();
       assert.doesNotMatch(board, /TSK-0002/);
       assert.doesNotMatch(board, /TSK-0003/);
@@ -414,6 +415,7 @@ test("empty or missing activeSpecId is []; other-spec task never appears", async
       assert.deepEqual(state.tasks, []);
       assert.equal(state.currentTask, null);
       assert.deepEqual(state.graph.nodes, []);
+      assert.deepEqual(state.graph.edges, []);
       const board = await (await fetch(handle.url)).text();
       assert.doesNotMatch(board, /TSK-0002/);
       assert.doesNotMatch(board, /TSK-9999/);
