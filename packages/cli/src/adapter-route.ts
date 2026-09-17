@@ -28,9 +28,6 @@ export function parseAdapterFlag(raw: string | undefined): AdapterId | undefined
   if (!parsed.success) {
     refuse(`adapter must be ${ADAPTER_ID_HELP}`, `--adapter ${ADAPTER_ID_HELP}`);
   }
-  if (parsed.data === "http") {
-    refuse("adapter http is not selectable yet", `--adapter ${ADAPTER_ID_HELP}`);
-  }
   return parsed.data;
 }
 

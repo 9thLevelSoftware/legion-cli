@@ -199,7 +199,7 @@ test("templateArgv leaves {{pointer}} unexpanded and omits the pointer-prompt bo
 
   const http = templateArgv("http", config);
   assert.equal(http.binary, "(http)");
-  assert.deepEqual([...http.argv], []);
+  assert.deepEqual([...http.argv], ["POST", "{{pointer}}"]);
 
   const minimax = templateArgv("minimax", config);
   assert.equal(minimax.binary, "custom-mcode");

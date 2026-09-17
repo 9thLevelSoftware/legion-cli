@@ -1107,7 +1107,7 @@ test("ADAPTER_IDS includes http and spawn extras stay strict", () => {
     "minimax",
     "http",
   ]);
-  assert.equal(ADAPTER_ID_HELP, "claude|generic|fake|grok|openai|codex|mimo|minimax");
+  assert.equal(ADAPTER_ID_HELP, "claude|generic|fake|grok|openai|codex|mimo|minimax|http");
   const configBase = { schemaVersion: "legion-cli-config/v1" };
   assert.equal(
     LegionConfigSchema.safeParse({ ...configBase, adapter: { default: "http" } }).success,

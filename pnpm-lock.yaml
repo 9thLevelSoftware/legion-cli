@@ -26,6 +26,9 @@ importers:
       '@9thlevelsoftware/legion-cli-graph':
         specifier: workspace:*
         version: link:packages/graph
+      '@9thlevelsoftware/legion-cli-http':
+        specifier: workspace:*
+        version: link:packages/http
       '@9thlevelsoftware/legion-cli-map':
         specifier: workspace:*
         version: link:packages/map
@@ -56,6 +59,9 @@ importers:
 
   packages/agents:
     dependencies:
+      '@9thlevelsoftware/legion-cli-http':
+        specifier: workspace:*
+        version: link:../http
       '@9thlevelsoftware/legion-cli-persist':
         specifier: workspace:*
         version: link:../persist
@@ -80,6 +86,9 @@ importers:
       '@9thlevelsoftware/legion-cli-design-system':
         specifier: workspace:*
         version: link:../design-system
+      '@9thlevelsoftware/legion-cli-http':
+        specifier: workspace:*
+        version: link:../http
       '@9thlevelsoftware/legion-cli-mcp':
         specifier: workspace:*
         version: link:../mcp
@@ -113,6 +122,9 @@ importers:
       '@9thlevelsoftware/legion-cli-graph':
         specifier: workspace:*
         version: link:../graph
+      '@9thlevelsoftware/legion-cli-http':
+        specifier: workspace:*
+        version: link:../http
       '@9thlevelsoftware/legion-cli-map':
         specifier: workspace:*
         version: link:../map
@@ -166,6 +178,12 @@ importers:
         version: 4.5.4
 
   packages/graph:
+    dependencies:
+      '@9thlevelsoftware/legion-cli-schema':
+        specifier: workspace:*
+        version: link:../schema
+
+  packages/http:
     dependencies:
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*

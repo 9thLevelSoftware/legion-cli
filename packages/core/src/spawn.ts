@@ -46,6 +46,7 @@ import {
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
+import { createHttpToolHost } from "./http-host.js";
 import {
   recordPreSpawnRef,
   revertExtras,
@@ -427,7 +428,10 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     handlePid: opts.handlePid,
   });
   const tmpl = templateArgv(resolution.id, opts.config);
-  const argvSummary = argvSummarySafe(tmpl.argv);
+  const argvSummary =
+    resolution.id === "http"
+      ? `POST /chat/completions model=${opts.config.adapter.http?.model ?? ""}`
+      : argvSummarySafe(tmpl.argv);
 
   const contract = skillContract(opts.skillId, { runId, specId: opts.specId });
   const extraAllowedRoots =
@@ -499,7 +503,10 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   await writeResume(null);
 
   let sandbox: SandboxHandle | undefined;
-  const jailed = opts.skillId === "execute" || opts.config.sandbox.skills.includes(opts.skillId);
+  const jailed =
+    opts.skillId === "execute" ||
+    opts.config.sandbox.skills.includes(opts.skillId) ||
+    resolution.id === "http";
   if (jailed) {
     try {
       assertExecuteSandbox(opts.config, { allowNoSandbox: opts.allowNoSandbox });
@@ -540,6 +547,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     const env: Record<string, string> = spawnOpts
       ? Object.fromEntries(Object.entries(spawnOpts.env).filter((entry): entry is [string, string] => entry[1] !== undefined))
       : filterSpawnEnv(process.env, adapter.id, adapter.binary);
+    const allowedWrites = sandboxAllowedWrites(runId, opts.skillId, opts.specId, opts.fileContract);
     handle = await adapter.spawn({
       runId,
       skillId: opts.skillId,
@@ -550,6 +558,17 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       env,
       expectedArtifacts: opts.fakeArtifacts,
       ...(spawnOpts?.wrapper ? { wrapper: spawnOpts.wrapper } : {}),
+      ...(sandbox
+        ? {
+            httpHost: createHttpToolHost({
+              jailRoot: sandbox.jailRoot,
+              allowedWrites,
+              filesForbidden,
+              hardened: sandbox.hardened,
+              spawnOpts: spawnOpts ?? { cwd: sandbox.jailRoot, env },
+            }),
+          }
+        : {}),
     });
   } catch (err) {
     await sandbox?.destroy().catch(() => undefined);

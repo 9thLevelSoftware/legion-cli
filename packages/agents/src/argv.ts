@@ -189,6 +189,6 @@ export function templateArgv(
       };
     }
     case "http":
-      return { binary: FROZEN_ARGV_TABLE.http.binary, argv: [] };
+      return { binary: FROZEN_ARGV_TABLE.http.binary, argv: [...FROZEN_ARGV_TABLE.http.argv] };
   }
 }

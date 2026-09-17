@@ -133,6 +133,10 @@ export function createProgram(): Command {
     .option("--mode <mode>", "greenfield or brownfield", "greenfield")
     .option("--generic-binary <bin>", "binary when --adapter generic")
     .option("--generic-args <args...>", "args when --adapter generic")
+    .option("--http-base-url <url>", "OpenAI-compat base URL when --adapter http")
+    .option("--http-model <id>", "model id when --adapter http")
+    .option("--http-api-key-env <ENV>", "env var holding the API key when --adapter http")
+    .option("--http-allow-loopback", "allow 127.0.0.1/localhost baseUrl when --adapter http")
     .action(async (opts, cmd: Command) => {
       const flags = opts as {
         name?: string;
@@ -140,6 +144,10 @@ export function createProgram(): Command {
         mode?: string;
         genericBinary?: string;
         genericArgs?: string[];
+        httpBaseUrl?: string;
+        httpModel?: string;
+        httpApiKeyEnv?: string;
+        httpAllowLoopback?: boolean;
       };
       const code = await runInit(resolveOpts(cmd), flags);
       process.exitCode = code;

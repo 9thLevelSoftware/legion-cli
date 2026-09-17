@@ -18,6 +18,7 @@
     "@9thlevelsoftware/legion-cli-core": "workspace:*",
     "@9thlevelsoftware/legion-cli-dashboard": "workspace:*",
     "@9thlevelsoftware/legion-cli-graph": "workspace:*",
+    "@9thlevelsoftware/legion-cli-http": "workspace:*",
     "@9thlevelsoftware/legion-cli-map": "workspace:*",
     "@9thlevelsoftware/legion-cli-design-system": "workspace:*",
     "@9thlevelsoftware/legion-cli-mcp": "workspace:*",

@@ -1,4 +1,4 @@
-# Adapter routing — spawn-CLI routing (not an HTTP model router)
+# Adapter routing — spawn-CLI or http adapter selection (not an open model marketplace)
 
 | Field | Value |
 | --- | --- |
@@ -15,7 +15,7 @@
 
 ## Overview
 
-Legion CLI already knows how to start a coding-agent program that is installed on the laptop (`claude`, `generic`, `fake`, `grok`, `openai`, `codex`, `mimo`, `minimax`). `mcode` is the assumed PATH binary for `minimax`, not an AdapterId. It does **not** call OpenAI / xAI / MiniMax HTTP APIs, does **not** store API keys, and does **not** pick a model through a provider table. Schema already has `adapter.routes` / `adapter.named` / `Task.adapter` (top-level adapter object `.strict()`). Agents already export `resolveAdapterId` (cli > task > route > default) and extras spawn via `ExtraAdapter`. Engine spawn (`optionalSkillSpawn`) calls `resolveAdapterId` / `isResolvedAdapterSpawnable` and persists resume adapter fields. Doctor fail-closes on required `adapter.routes` via the same spawnable path. CLI `--adapter` has landed on `plan` / `execute` / `review` / `verify` / `fix` (not init-only). Nested extra blocks (`adapter.grok` etc.) **and** the top-level adapter object are `.strict()` so `adapter.apiKey` / `adapter.grok.apiKey` fail parse. Extra adapters spawn with verified vendor argv (KD-7). This RFC remains the routing contract.
+Legion CLI already knows how to start a coding-agent program that is installed on the laptop (`claude`, `generic`, `fake`, `grok`, `openai`, `codex`, `mimo`, `minimax`). `mcode` is the assumed PATH binary for `minimax`, not an AdapterId. **Amendment (PR-11):** AdapterId `http` is an OpenAI-compatible in-process completions client (`packages/http`, `apiKeyEnv`, SSRF-bounded `baseUrl`). Spawn CLIs remain the default path. Nested extras stay spawn-only (no `baseUrl` / `provider` on `adapter.grok`). Inline `apiKey` still fails parse. This is not an open model marketplace. Schema already has `adapter.routes` / `adapter.named` / `Task.adapter` (top-level adapter object `.strict()`). Agents already export `resolveAdapterId` (cli > task > route > default) and extras spawn via `ExtraAdapter`. Engine spawn (`optionalSkillSpawn`) calls `resolveAdapterId` / `isResolvedAdapterSpawnable` and persists resume adapter fields. Doctor fail-closes on required `adapter.routes` via the same spawnable path. CLI `--adapter` has landed on `plan` / `execute` / `review` / `verify` / `fix` (not init-only). Nested extra blocks (`adapter.grok` etc.) **and** the top-level adapter object are `.strict()` so `adapter.apiKey` / `adapter.grok.apiKey` fail parse. Extra adapters spawn with verified vendor argv (KD-7). This RFC remains the routing contract.
 
 This design adds a **second resolution step** that still yields an existing `AdapterId`. The engine then calls the current `createAdapter` / `detect` / `spawn` path unchanged. Routing is how a user gets “task A on Grok CLI, task B on Codex CLI”: Legion chooses **which already-signed-in coding CLI to launch**; that CLI talks to the model. Optional `--model` (or any other vendor flag) stays in per-id `extraArgs` / `args` argv. Existing projects that only set `adapter.default` keep today’s behavior.
 
@@ -126,7 +126,7 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 
 | # | Decision | Default | Rationale |
 | --- | --- | --- | --- |
-| KD-R1 | **Routing is spawn-CLI selection, not a model router** | Resolve to `AdapterId` → existing `createAdapter`. No HTTP, no provider table. Top-level adapter object **and nested extra blocks** are `.strict()` so `apiKey`/`apiBase`/`model`/`provider` fail config parse. | Product definition. Strip-unknown would silently eat an HTTP table. |
+| KD-R1 | **Routing is spawn-CLI or http adapter selection, not an open model marketplace** | Resolve to `AdapterId` → existing `createAdapter` (spawn CLI **or** in-process OpenAI-compat `http`). Nested extras remain spawn-only `.strict()` (no `baseUrl` / `provider` on `adapter.grok`). `adapter.http` is a separate `.strict()` object (`apiKeyEnv`, never inline `apiKey`). Completions URL is `{baseUrl}/chat/completions`. | Product definition. One HTTP adapter is not LiteLLM. Strip-unknown would silently eat an HTTP table on spawn extras. |
 | KD-R2 | **Where routing lives (layered)** | Persist per-task on `Task.adapter`. Skill policy on `adapter.routes`. One-shot on CLI `--adapter`. Named aliases on `adapter.named` expand at **write** time in the CLI (`expandNamedAdapter`). SkillContract stays write-isolation only. | Task files are git-reviewed and survive resume. Skill routes cover plan/review (no task). CLI is for the operator without mutating the board. |
 | KD-R3 | **Precedence** | CLI `--adapter` > `Task.adapter` (execute/verify when a task is in scope) > `adapter.routes[skillId]` > `adapter.default`. | Operator present beats durable task beats workspace policy beats required fallback. |
 | KD-R4 | **`adapter.default` stays required** | Missing default still fails `LegionConfigSchema` and doctor. Fallback is only that user-set id. | KD5 of the design of record. Routing must not create a hidden product default. |
@@ -702,7 +702,7 @@ Existing tests that call `engine.plan("spec-checkin")` stay green.
 
 Plan promptBody **and** `skills/plan/SKILL.md` (PR-3):
 
-- Optional frontmatter `adapter:` is an `AdapterId` (`claude|generic|fake|grok|openai|codex|mimo|minimax`).
+- Optional frontmatter `adapter:` is an `AdapterId` (`claude|generic|fake|grok|openai|codex|mimo|minimax|http`).
 - Set it only when SPEC or DISCUSS names that coding CLI. Otherwise omit.
 - Never emit `adapter: fake` outside tests.
 - extra.json may include `"adapter": "grok"` (valid ids only; engine drops the rest).

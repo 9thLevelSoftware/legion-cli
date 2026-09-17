@@ -47,7 +47,7 @@ Every task MUST have:
 - `status: ready` if unblocked, else `todo` with `blockedBy`
 - `type: feature|fix|bug`, `priority: P0|P1|P2`, `specId` matching the active spec
 
-Optional frontmatter `adapter:` is an AdapterId (`claude|generic|fake|grok|openai|codex|mimo|minimax`). Set it only when SPEC or DISCUSS names that coding CLI; otherwise omit. Never emit `adapter: fake` outside tests.
+Optional frontmatter `adapter:` is an AdapterId (`claude|generic|fake|grok|openai|codex|mimo|minimax|http`). Set it only when SPEC or DISCUSS names that coding CLI or `http`; otherwise omit. Never emit `adapter: fake` outside tests.
 
 Emit at least one P0 task.
 
