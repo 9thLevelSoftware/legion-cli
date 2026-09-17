@@ -67,7 +67,7 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 | --- | --- | --- |
 | Nested extra HTTP keys | `ExtraAdapterConfigSchema` | Not `.strict()`. `adapter.grok.apiKey` **strips**. Do not treat this series as nested-key hardening. |
 
-**Design of record (rev 10):** KD5 and §5.1 of `docs/design/product-engineering-cli.md` say extras are **spawnable** (`DETECT_ONLY_ADAPTER_IDS` empty; `AdapterNotEnabled` is a dead path). Pre-rev-9 text said `grok`/`codex` were v0 detect-only. This design **does not** put extras back on detect-only. It builds on the spawnable extras that already exist. CLI `--adapter` on spawn verbs is landed (rev 10 snapshot).
+**Design of record (rev 11):** KD5 and §5.1 of `docs/design/product-engineering-cli.md` say extras are **spawnable** (`DETECT_ONLY_ADAPTER_IDS` empty; `AdapterNotEnabled` is a dead path). Pre-rev-9 text said `grok`/`codex` were v0 detect-only. This design **does not** put extras back on detect-only. It builds on the spawnable extras that already exist. CLI `--adapter` on spawn verbs is landed (rev 10 snapshot). Verified vendor argv is a v0 gap; follow-up PR in this series.
 
 ### Pain points
 
@@ -932,7 +932,7 @@ If product later wants a request-time picker, that is a dashboard write-surface 
 
 ## References
 
-- Design of record: `docs/design/product-engineering-cli.md` (rev 10 — shipped extras vs 10-verb lifecycle core; KD5 extras spawnable, §5.1 frozen argv, doctor, SkillContract table, PR-06 / PR-23).
+- Design of record: `docs/design/product-engineering-cli.md` (rev 11 — claim-source: 10-verb + extras; control-mode + vendor argv are this series; KD5 extras spawnable, §5.1 frozen argv, doctor, SkillContract table, PR-06 / PR-23).
 - Adapter ids and extras: `packages/schema/src/versions.ts` (`openai`/`codex` both → `codex`).
 - Config / Task / Resume: `packages/schema/src/schemas.ts`.
 - Resolve + create: `packages/agents/src/resolve.ts`, `packages/agents/src/types.ts`, `packages/agents/src/adapters/extra.ts`, `packages/agents/src/argv.ts`.

@@ -23,20 +23,13 @@ function helpSection(out, header, nextHeader) {
 
 function assertLayer1(out) {
   assert.match(out, /pnpm exec legion-cli/);
-  assert.match(out, /status/);
-  assert.match(out, /init/);
-  assert.match(out, /doctor/);
   assert.match(out, /Does not register bin legion/);
-  assert.match(out, /intent/);
-  assert.match(out, /discuss/);
-  assert.match(out, /spec/);
-  assert.match(out, /plan/);
-  assert.match(out, /execute/);
-  assert.match(out, /verify/);
-  assert.match(out, /review/);
-  assert.match(out, /\bqa\b/);
-  assert.match(out, /ship/);
-  assert.match(out, /help --all/);
+  assert.match(out, /^status \(default\) {2}/m);
+  assert.match(out, /^doctor {2}/m);
+  assert.match(out, /^help --all {2}/m);
+  for (const verb of ["init", "intent", "discuss", "spec", "plan", "execute", "verify", "review", "qa", "ship"]) {
+    assert.match(out, new RegExp(`^${verb} {2}`, "m"), `Layer-1 missing command ${verb}`);
+  }
   assert.doesNotMatch(out, /\bsearch\b/);
   assert.doesNotMatch(out, /\bbrief\b/);
   assert.doesNotMatch(out, /wiki trust/);
@@ -169,21 +162,41 @@ test("intent --help does not list --resume", () => {
   assert.match(out, /--done/);
 });
 
+test("intent --resume is an unknown option", () => {
+  const result = runCli(["intent", "--resume"]);
+  assert.equal(result.status, 1);
+  const err = normalize(result.stderr);
+  assert.match(err, /unknown option '--resume'/i);
+});
+
+test("control-mode is an unknown command (verb lands in a follow-up PR)", () => {
+  const result = runCli(["control-mode"]);
+  assert.equal(result.status, 1);
+  const err = normalize(result.stderr);
+  assert.match(err, /unknown command 'control-mode'/);
+  assert.match(err, /help --all/);
+});
+
 test("parent verbs require a subcommand and print Next", () => {
   const cases = [
-    [["wiki"], /wiki requires trust/, /legion-cli wiki trust/],
-    [["ticket"], /ticket requires create/, /legion-cli ticket create/],
-    [["task"], /task requires amend/, /legion-cli task amend/],
-    [["context"], /context requires compact/, /legion-cli context compact/],
-    [["run"], /run requires promote/, /legion-cli run promote/],
+    ["wiki", /wiki requires trust/, /Next: legion-cli wiki trust <page>/],
+    ["ticket", /ticket requires create/, /Next: legion-cli ticket create --title <title>/],
+    ["task", /task requires amend/, /Next: legion-cli task amend <id>/],
+    ["context", /context requires compact/, /Next: legion-cli context compact/],
+    ["run", /run requires promote/, /Next: legion-cli run promote <id>/],
   ];
-  for (const [argv, requires, next] of cases) {
-    const result = runCli(argv);
-    assert.equal(result.status, 1, argv.join(" "));
+  for (const [verb, requires, next] of cases) {
+    const result = runCli([verb]);
+    assert.equal(result.status, 1, verb);
     const err = normalize(result.stderr);
-    assert.match(err, requires);
-    assert.match(err, /Next:/);
-    assert.match(err, next);
-    assert.doesNotMatch(err, /too many arguments/);
+    assert.match(err, requires, verb);
+    assert.match(err, next, verb);
+    assert.doesNotMatch(err, /too many arguments/, verb);
   }
+});
+
+test("run promote --help says untrusted until wiki trust", () => {
+  const result = runCli(["run", "promote", "--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(normalize(result.stdout), /untrusted until wiki trust/);
 });

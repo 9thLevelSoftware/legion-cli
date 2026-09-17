@@ -32,7 +32,7 @@ These are the defaults this document commits to. Former open questions are recor
 
 | # | Decision | Default | Rationale |
 | --- | --- | --- | --- |
-| KD1 | **Name, binary, npm** | Product **Legion CLI**. Binary **`legion-cli`**. On-disk **`.legion-cli/`**. npm org **`@9thlevelsoftware`**. CLI package **`@9thlevelsoftware/legion-cli`** (public, bin `legion-cli`). Libraries `@9thlevelsoftware/legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard,design-system}`. Workspace **root** `"private": true`. Does **not** take the `legion` bin — that belongs to [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion) (plugin installer). Workspace is `D:\legion-cli`. | User: lean into the Legion brand. Sibling products, not a replace: installer stays `npx @9thlevelsoftware/legion --claude`; this engine is `npx @9thlevelsoftware/legion-cli`. `legion-cli doctor` lists `legion` and `legion-cli` on PATH so the installer is not shadowed. Supported invocation: **`pnpm exec legion-cli`**. After `npm i -g @9thlevelsoftware/legion-cli`, `legion-cli` is global. |
+| KD1 | **Name, binary, npm** | Product **Legion CLI**. Binary **`legion-cli`**. On-disk **`.legion-cli/`**. npm org **`@9thlevelsoftware`**. CLI package **`@9thlevelsoftware/legion-cli`** (public, bin `legion-cli`). Libraries `@9thlevelsoftware/legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard,design-system}`. Workspace **root** `"private": true`. Does **not** take the `legion` bin — that belongs to [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion) (plugin installer). Workspace is `D:\legion-cli`. | User: lean into the Legion brand. Sibling products, not a replace: installer stays `npx @9thlevelsoftware/legion --claude`; this engine is **`pnpm exec legion-cli`** (`npx` / global after first `v*`). `legion-cli doctor` lists `legion` and `legion-cli` on PATH so the installer is not shadowed. Do not claim already on npm. |
 | KD2 | **Language / toolchain** | TypeScript on Node.js 22+, pnpm workspaces, ESM | MCP SDK and a future WebMCP page host are first-class in JS/TS. One language for CLI, engine, and dashboard. |
 | KD3 | **CLI framework** | Commander | Subcommands map 1:1 to lifecycle verbs a non-coder can read. |
 | KD4 | **Persistence** | Git-reviewed markdown under `.legion-cli/` plus a derived, gitignored SQLite index | Humans and git review the wiki, specs, and tasks. SQLite is a cache. Rebuild via `store.rebuild()` / shipped `legion-cli index rebuild`. Single-writer lock on `.legion-cli/index/engine.lock`. **Ingest auto-commits** wiki pages on success (`--no-commit` to skip). **Execute does not auto-commit.** `legion-cli ship` stages and shows the diff. |
@@ -50,7 +50,7 @@ These are the defaults this document commits to. Former open questions are recor
 | KD16 | **QA bar** | Legion CLI scores Playwright/unit JSON itself. P0/P1/P2 from `@p0`/`@p1`/`@p2` tags (from `AC.priority`). Pass = `mode==full` AND `total≥85` AND `p0.failed==0` AND `visual.regressions==0`. Visual-bucket zero on a UI spec is a ship blocker. | Shipyard buckets, with the 85-with-visual-fail hole closed. No 8-agent loop in v0. |
 | KD17 | **Monorepo layout** | pnpm workspaces under `packages/*`. Lifecycle packages: `legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard}` plus `cli` (`@9thlevelsoftware/legion-cli`). `mcp` and `design-system` are **shipped extras**, off the 10-verb core. Root private; packages public. | User decision. Not a single package. Prefix avoids colliding with `@9thlevelsoftware/legion`. |
 | KD18 | **v0 cut / small set** | **Small set** = the 10-verb lifecycle core (`init`, `intent`, `discuss`, `spec`, `plan`, `execute`, `verify`, `review`, `qa`, `ship`) + wiki + DAG + QA + ship + dashboard viewer + one configured adapter. Workspace correctness (`0.0.0` until first `v*`); do not claim already on npm. Extras already spawn generic-style (KD5); that is not a v1 unlock. **Shipped extras** (off the default window): packets, compaction, brownfield worktrees, MCP, garden, design-system, dashboard tiny POSTs. **Shipped CLI** (founding table): `assume list` / `assume answer` / `index rebuild`. **Later, not this series:** `map` / `wireframe` / `skills list\|install` / `serve`, WebMCP, github design-system install. **v0 gap; follow-up PRs in this series:** `control-mode` verb, verified vendor extra-adapter argv. | Twenty PRs that secretly ship a second product is not a v0. Docs follow shipped code when the code matches the product bet. |
-| KD19 | **Brownfield execute (shipped extra)** | Engineer-operated `legion-cli brownfield --execute` uses **git worktrees**. Greenfield execute stays in-place. | User decision. Isolation for existing-code PRs; simpler path for greenfield. |
+| KD19 | **Brownfield execute (shipped extra)** | Two surfaces (KD13): `init --mode brownfield` sets `project.mode`; 10-verb `execute` after that is **in-place**. Engineer-operated `legion-cli brownfield --execute` is the only **git worktree** path. Do not merge. | User decision. Isolation for the audit extra; 10-verb execute after init-brownfield is not that path. |
 
 **Control-mode matrix (KD14)** — evaluated by `@9thlevelsoftware/legion-cli-core`, not by the model:
 
@@ -78,7 +78,7 @@ The result is scope creep, untested “done,” and a terminal wall that scares 
 
 ### Current state of this repo
 
-`D:\legion-cli` is the workspace. The engine exists as TypeScript on Node 22+, pnpm workspaces, ESM, packages under `@9thlevelsoftware/legion-cli-*`. This document is the founding architecture of record, reconciled in rev 10 with shipped code (packets, compaction, brownfield, MCP, garden, design-system, dashboard tiny POSTs are extras, not a second product).
+`D:\legion-cli` is the workspace. The engine exists as TypeScript on Node 22+, pnpm workspaces, ESM, packages under `@9thlevelsoftware/legion-cli-*`. This document is the founding architecture of record, reconciled in rev 10 with shipped extras and in rev 11 with claim-source (10-verb + extras; two brownfield surfaces; `0.0.0` until first `v*`).
 
 ### Pain points the mashup must kill
 
@@ -130,7 +130,7 @@ The result is scope creep, untested “done,” and a terminal wall that scares 
 3. The CLI refuses illegal transitions (plan without approved spec, execute without file contract, ship without QA, expand a live task, execute a blocked task).
 4. A local dashboard shows path, timeline, current task, dependencies, and audit trail. It never owns state. Optional token-gated POSTs are `ticket | wikiTrust | qaChecklist` only (Goal 13 shipped).
 5. Inspectable artifacts (intent brief, PRD, SPEC, clickable HTML wireframes, task files) that a non-coder can open in the dashboard or a browser and correct before approval.
-6. The CLI is installable from npm: `npx @9thlevelsoftware/legion-cli`, `npm i -g @9thlevelsoftware/legion-cli`, or `pnpm exec legion-cli` in this repo. Publish is tag-triggered with provenance.
+6. Supported invocation today: `pnpm exec legion-cli` in this repo. v0 bar is workspace correctness (`0.0.0` until first `v*`); do not claim already on npm. After the first `v*` tag, `npx @9thlevelsoftware/legion-cli` / `npm i -g @9thlevelsoftware/legion-cli` apply. Publish is tag-triggered with provenance.
 
 ### Goals (shipped extras vs later)
 
@@ -138,7 +138,7 @@ The result is scope creep, untested “done,” and a terminal wall that scares 
 8. **Shipped extra:** MCP read-only stdio server. MCP Apps dashboard inside visual MCP hosts and WebMCP tools stay **later**.
 9. **Shipped extra:** wiki gardening (`legion-cli garden`) and compaction of closed work (`legion-cli context compact`). Architecture fingerprint refresh and embeddings stay **later**. Compaction is manual; no auto-compact on ship.
 10. **Shipped extra:** review packets that PMs/designers can file without living in the task graph (`packet new` / `packet respond`). Packets spawn tickets, not execute.
-11. Verified vendor argv for extra adapters (`grok`, `codex`, …) plus a conformance suite — **later**. Extras already spawn generic-style (KD5); this is not a detect-only unlock.
+11. Verified vendor argv for extra adapters (`grok`, `codex`, …) plus a conformance suite — **v0 gap; follow-up PRs in this series**. Extras already spawn generic-style (KD5); this is not a detect-only unlock.
 12. **Shipped extra:** design-system packages (local copy), generate-from-brief, OpenDesign importer. Pinned github install stays **later**.
 13. **Shipped (Goal 13):** optional dashboard write surface — `POST /engine/{ticket,wikiTrust,qaChecklist}` with CSRF token — still not a second source of truth. Do not grow the set.
 
@@ -206,9 +206,9 @@ legion-cli/
 
 `packages/mcp`, `packages/design-system`, and `design-systems/_fixture-neutral/` are **shipped extras**.
 
-The workspace **root** is `"private": true`. Published packages are public: `@9thlevelsoftware/legion-cli` (CLI, bin `legion-cli`) plus `@9thlevelsoftware/legion-cli-*` libraries. v0 **does** publish to npm on git tags (`v*`) with provenance, using **GitHub Actions trusted publisher** on the `@9thlevelsoftware` org (same path as [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion)). Workspace is `D:\legion-cli`.
+The workspace **root** is `"private": true`. Packages are public under `@9thlevelsoftware` at `0.0.0` until the first `v*` tag: `@9thlevelsoftware/legion-cli` (CLI, bin `legion-cli`) plus `@9thlevelsoftware/legion-cli-*` libraries. Publish workflow is git tags (`v*`) with provenance via **GitHub Actions trusted publisher** on the `@9thlevelsoftware` org (same path as [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion)). Do not claim already on npm. Workspace is `D:\legion-cli`.
 
-Supported invocation: **`pnpm exec legion-cli`**, or `npx @9thlevelsoftware/legion-cli`, or a global `npm i -g @9thlevelsoftware/legion-cli`. `legion-cli doctor` lists every `legion` and `legion-cli` binary on PATH so the existing installer is not mistaken for this engine. A global install is collision-checked; it is not required. Do **not** register bin `legion`.
+Supported invocation today: **`pnpm exec legion-cli`**. After the first `v*` tag: `npx @9thlevelsoftware/legion-cli` or `npm i -g @9thlevelsoftware/legion-cli`. `legion-cli doctor` lists every `legion` and `legion-cli` binary on PATH so the existing installer is not mistaken for this engine. A global install is collision-checked; it is not required. Do **not** register bin `legion`.
 
 #### 1.2 A user project after `legion-cli init`
 
@@ -1780,7 +1780,7 @@ Pin the npm package. `git revert` `.legion-cli/` commits. Index rebuild. Bad exe
 | Mashup unproven for non-coders | **High** | Question bank; inspectable artifacts; viewer; dogfood; ~15 CLI verbs disclosed honestly |
 | FileContract is after-the-fact (no OS sandbox) | **High** | Revert algorithm; surgical execute; do not claim isolation; later door is worktrees + `OWNERSHIP.md` (§5.4), still not a sandbox |
 | QA 85 bar too heavy for v0 laptop | **Med** | In-process scorer, not 8 agents; degraded waiver |
-| `legion` vs `legion-cli` PATH (existing installer, Kali `legion`, other Legion CLIs) | **Med** | This product’s bin is **`legion-cli` only**. Doctor lists both. `pnpm exec legion-cli` / `npx @9thlevelsoftware/legion-cli`. |
+| `legion` vs `legion-cli` PATH (existing installer, Kali `legion`, other Legion CLIs) | **Med** | This product’s bin is **`legion-cli` only**. Doctor lists both. Supported now: `pnpm exec legion-cli`. `npx` / global after first `v*`. |
 | Wiki rot | **Med** | ingest receipts; shipped extra `garden` |
 | WebMCP never a Standard | **Low** | Not on the v0 path |
 | `claude -p` flags drift | **Med** | Frozen argv table; `generic` escape hatch; extraArgs warning |

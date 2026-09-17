@@ -505,7 +505,7 @@ export function createProgram(): Command {
     writeErr("run requires promote\nNext: legion-cli run promote <id>");
     process.exitCode = 1;
   });
-  addGlobalOptions(run.command("promote").description("Copy brownfield run pages into the wiki"))
+  addGlobalOptions(run.command("promote").description("Copy brownfield run pages into the wiki (untrusted until wiki trust)"))
     .argument("<id>", "brownfield run id")
     .allowExcessArguments(false)
     .action(async (id: string, _opts, cmd: Command) => {

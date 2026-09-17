@@ -51,7 +51,7 @@ export async function runDashboard(opts: CliOpts, flags: DashboardFlags): Promis
     });
   } else {
     writeOut(`Viewer: ${handle.url}`);
-    writeOut("Viewer with optional writes. CLI remains the source of truth.");
+    writeOut("View-only. Writes are CLI or token POST. CLI remains the source of truth.");
   }
 
   await waitForSignal();
