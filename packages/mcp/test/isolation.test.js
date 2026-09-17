@@ -53,3 +53,11 @@ test("source must not import core/execute or take the engine lock", async () => 
     }
   }
 });
+
+test("http.ts does not import core and uses the reader store", async () => {
+  const src = await readFile(join(pkgRoot, "src", "http.ts"), "utf8");
+  assert.doesNotMatch(src, /legion-cli-core/);
+  assert.match(src, /createReaderStore/);
+  assert.match(src, /handleRequest/);
+  assert.match(src, /StreamableHTTPServerTransport/);
+});

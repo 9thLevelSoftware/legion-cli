@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { ENGINE_WRITE_METHODS, startDashboard } from "../dist/index.js";
+import { ENGINE_WRITE_METHODS, startDashboard, startServe } from "../dist/index.js";
 import { otherSpecTask, todoTask, withStore, withTempDir } from "./helpers.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -551,5 +551,100 @@ test("open is opt-in; default does not spawn a browser", async () => {
       },
       { open: true },
     );
+  });
+});
+
+test("startServe routes GET/POST/DELETE /mcp inside one handle", async () => {
+  const src = await readFile(join(pkgRoot, "src", "server.ts"), "utf8");
+  assert.equal([...src.matchAll(/createServer\(/g)].length, 1);
+  assert.doesNotMatch(src, /server\.on\(\s*["']request["']/);
+  assert.match(src, /pathname === MCP_PATH/);
+
+  await withTempDir(async (dir) => {
+    const methods = [];
+    const handle = await startServe({
+      projectRoot: dir,
+      port: 0,
+      open: false,
+      warn: () => {},
+      mcpHttp: true,
+      handleMcpHttp: async ({ req, res }) => {
+        methods.push(req.method);
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.end(": ok\n\n");
+      },
+    });
+    try {
+      const get = await fetch(`${handle.url}/mcp`, { headers: { Accept: "text/event-stream" } });
+      assert.equal(get.status, 200);
+      assert.match(get.headers.get("content-type") ?? "", /text\/event-stream/);
+      assert.notEqual(get.status, 405);
+      const post = await fetch(`${handle.url}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(post.status, 200);
+      assert.notEqual(post.status, 403);
+      const del = await fetch(`${handle.url}/mcp`, { method: "DELETE" });
+      assert.equal(del.status, 200);
+      assert.deepEqual(methods.sort(), ["DELETE", "GET", "POST"]);
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+test("second startServe while pid is live refuses; dead pid is overwritten", async () => {
+  await withTempDir(async (dir) => {
+    const first = await startServe({
+      projectRoot: dir,
+      port: 0,
+      open: false,
+      warn: () => {},
+      mcpHttp: false,
+    });
+    try {
+      await assert.rejects(
+        () => startServe({ projectRoot: dir, port: 0, open: false, warn: () => {}, mcpHttp: false }),
+        (err) => {
+          assert.match(String(err.message), /already running/);
+          return true;
+        },
+      );
+    } finally {
+      await first.close();
+    }
+
+    const servePath = join(dir, ".legion-cli", "serve.json");
+    await mkdir(join(dir, ".legion-cli"), { recursive: true });
+    await writeFile(
+      servePath,
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-serve/v1",
+        port: 7420,
+        bind: "127.0.0.1",
+        mcpPath: "/mcp",
+        mcpHttp: false,
+        tokenSha256: "a".repeat(64),
+        startedAt: new Date().toISOString(),
+        pid: 1_000_000_000,
+      })}\n`,
+    );
+    const revived = await startServe({
+      projectRoot: dir,
+      port: 0,
+      open: false,
+      warn: () => {},
+      mcpHttp: false,
+    });
+    try {
+      const written = JSON.parse(await readFile(servePath, "utf8"));
+      assert.equal(written.pid, process.pid);
+      assert.equal(written.port, revived.port);
+    } finally {
+      await revived.close();
+    }
   });
 });

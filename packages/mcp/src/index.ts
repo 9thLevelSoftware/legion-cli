@@ -13,3 +13,11 @@ export {
   type McpToolName,
 } from "./server.js";
 export { serveLegionMcp } from "./stdio.js";
+export {
+  closeMcpHttp,
+  handleMcpHttp,
+  MCP_HTTP_MAX_BODY_BYTES,
+  MCP_HTTP_PATH,
+  MCP_HTTP_RATE_PER_SEC,
+} from "./http.js";
+export type { HandleMcpHttpOpts } from "./http.js";

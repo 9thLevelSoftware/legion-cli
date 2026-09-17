@@ -1,4 +1,5 @@
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+import { EXPOSE_BIND, LOOPBACK_BIND, readLiveServe } from "@9thlevelsoftware/legion-cli-dashboard";
 import type { AdapterId, LegionConfig, ProjectFile, StateFile } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
@@ -30,10 +31,12 @@ async function readOptionalConfig(engine: ReturnType<typeof createLegionEngine>)
   }
 }
 
-function viewerUrl(config: LegionConfig | null): string {
-  const port = config?.dashboard.port ?? 7420;
-  const bind = config?.dashboard.bind ?? "127.0.0.1";
-  return `http://${bind}:${port}`;
+async function liveViewer(projectRoot: string): Promise<{ viewer: string; live: boolean }> {
+  const live = await readLiveServe(projectRoot);
+  if (!live) return { viewer: "legion-cli serve", live: false };
+  const host =
+    live.bind === EXPOSE_BIND || live.bind === "::" || live.bind === "0.0.0.0" ? LOOPBACK_BIND : live.bind;
+  return { viewer: `http://${host}:${live.port}`, live: true };
 }
 
 function shouldHintCompact(slice: readonly { status: string }[]): boolean {
@@ -46,11 +49,12 @@ function formatHuman(input: {
   next: { run: string; hint: string };
   blockers: { detail: string }[];
   viewer: string;
+  viewerLive: boolean;
   blockersOnly: boolean;
   currentTaskAdapter: AdapterId | null;
   compactHint: boolean;
 }): string {
-  const { project, state, next, blockers, viewer, blockersOnly, currentTaskAdapter, compactHint } = input;
+  const { project, state, next, blockers, viewer, viewerLive, blockersOnly, currentTaskAdapter, compactHint } = input;
   if (blockersOnly) {
     if (blockers.length === 0) return "No blockers.";
     return ["Blockers:", ...blockers.map((item) => `  ${item.detail}`)].join("\n");
@@ -75,7 +79,7 @@ function formatHuman(input: {
   lines.push(`Next up: ${next.hint}`);
   lines.push(`Run:  ${next.run}`);
   if (compactHint) lines.push("Hint: legion-cli context compact");
-  lines.push(`Viewer: ${viewer}  (legion-cli dashboard)`);
+  lines.push(viewerLive ? `Viewer: ${viewer}  (legion-cli serve)` : `Viewer: ${viewer}`);
   if (blockers.length > 0) {
     lines.push("Blockers:");
     for (const item of blockers) lines.push(`  ${item.detail}`);
@@ -115,7 +119,7 @@ export async function runStatus(opts: CliOpts): Promise<number> {
   const slice = state.phase === "uninitialized" ? [] : await engine.listSliceTasks();
   const next = nextCommand(state, slice, project?.mode, config?.control_mode);
   const blockers = collectBlockers(state.lastReadiness, state.lastReview, slice);
-  const viewer = viewerUrl(config);
+  const { viewer, live: viewerLive } = await liveViewer(opts.project);
   const code = statusExitCode(state.lastReadiness, slice);
   const currentTaskAdapter = await readCurrentTaskAdapter(engine, state.currentTaskId);
 
@@ -132,6 +136,7 @@ export async function runStatus(opts: CliOpts): Promise<number> {
       next,
       blockers,
       viewer,
+      viewerLive,
     });
     return code;
   }
@@ -148,6 +153,7 @@ export async function runStatus(opts: CliOpts): Promise<number> {
       next,
       blockers,
       viewer,
+      viewerLive,
       blockersOnly: opts.blockers,
       currentTaskAdapter,
       compactHint: shouldHintCompact(slice),

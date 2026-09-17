@@ -280,7 +280,7 @@ test("status hints context compact below Run when a done task has no in_progress
     const out = normalize(result.stdout);
     assert.match(
       out,
-      /Run:  legion-cli execute\nHint: legion-cli context compact\nViewer: http:\/\/127\.0\.0\.1:7420  \(legion-cli dashboard\)/,
+      /Run:  legion-cli execute\nHint: legion-cli context compact\nViewer: legion-cli serve/,
     );
     const json = runCli(["status", "--json", "--project", dir]);
     assert.equal(JSON.parse(json.stdout).next.run, "legion-cli execute");
@@ -305,7 +305,7 @@ test("status omits compact hint when a done task has an in_progress sibling", as
     const result = runCli(["status", "--project", dir]);
     assert.equal(result.status, 0, result.stderr);
     const out = normalize(result.stdout);
-    assert.match(out, /Run:  legion-cli execute\nViewer: http:\/\/127\.0\.0\.1:7420  \(legion-cli dashboard\)/);
+    assert.match(out, /Run:  legion-cli execute\nViewer: legion-cli serve/);
     assert.doesNotMatch(out, /Hint: legion-cli context compact/);
   });
 });
@@ -317,7 +317,7 @@ test("status omits compact hint when slice tasks are compacted rather than done"
     assert.equal(result.status, 0, result.stderr);
     const out = normalize(result.stdout);
     assert.doesNotMatch(out, /Hint: legion-cli context compact/);
-    assert.match(out, /Viewer: http:\/\/127\.0\.0\.1:7420  \(legion-cli dashboard\)/);
+    assert.match(out, /Viewer: legion-cli serve/);
   });
 });
 
