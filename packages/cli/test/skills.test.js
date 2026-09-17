@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { overlaySkillDir } from "@9thlevelsoftware/legion-cli-agents";
 import { normalize, runCli, withTempDir } from "./helpers.js";
+
+const repoExecuteSkill = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills", "execute", "SKILL.md");
 
 function skillMarkdown(skillId, overrides = {}) {
   const required = ["plan", "execute", "review"].includes(skillId);
@@ -21,7 +24,7 @@ function skillMarkdown(skillId, overrides = {}) {
     `    allowedRootsRef: SKILL_CONTRACTS.${skillId}`,
     "---",
     "",
-    `# ${skillId}\n`,
+    overrides.body ?? `# ${skillId}\n`,
   ].join("\n");
 }
 
@@ -56,12 +59,15 @@ test("skills install local --unsigned writes overlay", async () => {
     const src = join(dir, "execute");
     await mkdir(src, { recursive: true });
     await writeFile(join(src, "SKILL.md"), skillMarkdown("execute", { description: "OVERLAY_EXECUTE_DESC_TOKEN" }), "utf8");
+    const packagedBefore = await readFile(repoExecuteSkill, "utf8");
     const result = runCli(["skills", "install", src, "--unsigned", "--project", dir]);
     assert.equal(result.status, 0, result.stderr);
     assert.match(normalize(result.stdout), /Installed overlay execute/);
     const pin = JSON.parse(await readFile(join(overlaySkillDir(dir, "execute"), "overlay.json"), "utf8"));
     assert.equal(pin.skillId, "execute");
     assert.equal(pin.source.type, "local");
+    assert.equal(await readFile(repoExecuteSkill, "utf8"), packagedBefore);
+    assert.doesNotMatch(packagedBefore, /OVERLAY_EXECUTE_DESC_TOKEN/);
     const shown = runCli(["skills", "show", "execute", "--project", dir]);
     assert.equal(shown.status, 0, shown.stderr);
     assert.match(normalize(shown.stdout), /source: overlay/);
@@ -127,6 +133,27 @@ test("doctor prints overlay pin vs packaged", async () => {
     assert.match(out, /execute\s+pin [a-f0-9]{64}/);
     assert.match(out, /packaged [a-f0-9]{64}/);
     assert.doesNotMatch(out, /unreadable overlay\.json/);
+  });
+});
+
+test("doctor overlay body warning uses overlay path", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const src = join(dir, "execute");
+    await mkdir(src, { recursive: true });
+    const body = `# execute\n${"x".repeat(20_001)}\n`;
+    await writeFile(
+      join(src, "SKILL.md"),
+      skillMarkdown("execute", { description: "overlay execute long body", body }),
+      "utf8",
+    );
+    const install = runCli(["skills", "install", src, "--unsigned", "--project", dir]);
+    assert.equal(install.status, 0, install.stderr);
+    const doctor = runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.equal(doctor.status, 0, `${doctor.stdout}\n${doctor.stderr}`);
+    const out = normalize(doctor.stdout);
+    assert.match(out, /\.legion-cli\/skills\/execute\/SKILL.md body is \d+ characters \(warn at 20000\)/);
+    assert.doesNotMatch(out, /^ {2}skills\/execute\/SKILL.md body is /m);
   });
 });
 

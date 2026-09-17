@@ -110,7 +110,7 @@ test("bad frontmatter overlay on required skill refuses spawn", async () => {
   });
 });
 
-test("unpinned missing overlay falls back to packaged spawn", async () => {
+test("unpinned overlay SKILL.md without overlay.json is ignored", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ dir, engine, store }) => {
       await initProject(engine);
@@ -119,7 +119,13 @@ test("unpinned missing overlay falls back to packaged spawn", async () => {
       });
       const skillsDir = join(dir, "skills");
       await writePackagedSkills(skillsDir);
-      await mkdir(join(dir, ".legion-cli", "skills", "execute"), { recursive: true });
+      const overlay = join(dir, ".legion-cli", "skills", "execute");
+      await mkdir(overlay, { recursive: true });
+      await writeFile(
+        join(overlay, "SKILL.md"),
+        skillMarkdown("execute", { description: "OVERLAY_EXECUTE_DESC_TOKEN" }),
+        "utf8",
+      );
       const gated = new LegionEngine(dir, undefined, { skillsDir });
       await gated.execute("TSK-0001");
       const prompt = await readLatestRunPrompt(dir, "execute");

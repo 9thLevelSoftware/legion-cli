@@ -80,8 +80,7 @@ export function overlaySkillDir(projectRoot: string, skillId: SkillId): string {
   return join(legionPaths(projectRoot).skillsOverlayDir, skillId);
 }
 
-/** Pin metadata is not skill protocol; hashing and staging omit it. */
-export async function listSkillTreeFiles(skillDir: string): Promise<string[]> {
+async function walkSkillFiles(skillDir: string, includeFile: (name: string) => boolean): Promise<string[]> {
   const out: string[] = [];
   async function walk(rel: string): Promise<void> {
     const abs = rel ? toFsPath(skillDir, rel) : skillDir;
@@ -94,17 +93,21 @@ export async function listSkillTreeFiles(skillDir: string): Promise<string[]> {
     }
     for (const ent of ents) {
       if (ent.name === "." || ent.name === "..") continue;
-      if (isExcludedOverlayName(ent.name)) continue;
       const child = rel ? `${rel}/${ent.name}` : ent.name;
       if (ent.isSymbolicLink()) {
         throw new PathEscapeError(child);
       }
       if (ent.isDirectory()) await walk(child);
-      else if (ent.isFile()) out.push(toPosixPath(child));
+      else if (ent.isFile() && includeFile(ent.name)) out.push(toPosixPath(child));
     }
   }
   await walk("");
   return out.sort();
+}
+
+/** Pin metadata is not skill protocol; hashing and staging omit it. */
+export async function listSkillTreeFiles(skillDir: string): Promise<string[]> {
+  return walkSkillFiles(skillDir, (name) => !isExcludedOverlayName(name));
 }
 
 export async function hashSkillTree(skillDir: string): Promise<string> {
@@ -328,26 +331,7 @@ function ownerLooksLikeHost(owner: string): boolean {
 }
 
 async function listMinisigFiles(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  async function walk(rel: string): Promise<void> {
-    const abs = rel ? toFsPath(dir, rel) : dir;
-    let ents;
-    try {
-      ents = await readdir(abs, { withFileTypes: true });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw err;
-    }
-    for (const ent of ents) {
-      if (ent.name === "." || ent.name === "..") continue;
-      const child = rel ? `${rel}/${ent.name}` : ent.name;
-      if (ent.isSymbolicLink()) throw new PathEscapeError(child);
-      if (ent.isDirectory()) await walk(child);
-      else if (ent.isFile() && ent.name.endsWith(".minisig")) out.push(toPosixPath(child));
-    }
-  }
-  await walk("");
-  return out.sort();
+  return walkSkillFiles(dir, (name) => name.endsWith(".minisig"));
 }
 
 async function verifyOverlaySignature(opts: {

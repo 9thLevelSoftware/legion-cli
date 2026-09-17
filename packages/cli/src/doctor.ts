@@ -454,7 +454,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       checks.push({ ok: true, label: `skill ${skillId} frontmatter`, detail: "ok" });
       if (entry.bodyChars > SKILL_BODY_WARN_CHARS) {
         warnings.push(
-          `skills/${skillId}/SKILL.md body is ${entry.bodyChars} characters (warn at ${SKILL_BODY_WARN_CHARS})`,
+          `${entry.path} body is ${entry.bodyChars} characters (warn at ${SKILL_BODY_WARN_CHARS})`,
         );
       }
     } else {
@@ -469,7 +469,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     if ((REQUIRED_SKILL_IDS as readonly string[]).includes(entry.skillId)) continue;
     if (entry.bodyChars > SKILL_BODY_WARN_CHARS) {
       warnings.push(
-        `skills/${entry.skillId}/SKILL.md body is ${entry.bodyChars} characters (warn at ${SKILL_BODY_WARN_CHARS})`,
+        `${entry.path} body is ${entry.bodyChars} characters (warn at ${SKILL_BODY_WARN_CHARS})`,
       );
     }
   }

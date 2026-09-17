@@ -83,7 +83,7 @@ export async function runSkillsShow(opts: CliOpts, id: string): Promise<number> 
       HINT.skillsShow,
     );
   }
-  const treeSha256 = await hashSkillTree(resolved.skillDir);
+  const treeSha256 = resolved.treeSha256 ?? (await hashSkillTree(resolved.skillDir));
   const pinSha = resolved.pin?.integrity.sha256;
   const matchesTree = pinSha ? pinSha === treeSha256 : null;
   const payload = {
