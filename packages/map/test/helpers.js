@@ -19,7 +19,18 @@ export async function withTempDir(fn) {
   try {
     return await fn(dir);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    let last;
+    for (let i = 0; i < 8; i += 1) {
+      try {
+        await rm(dir, { recursive: true, force: true });
+        last = undefined;
+        break;
+      } catch (err) {
+        last = err;
+        await new Promise((resolve) => setTimeout(resolve, 50 * (i + 1)));
+      }
+    }
+    if (last) throw last;
   }
 }
 
@@ -49,6 +60,10 @@ export function spawnMockLsp(_command, _args, cwd) {
 
 export function spawnMockLspHangAfter(n) {
   return (_command, _args, cwd) => spawnMock(cwd, { LEGION_MOCK_LSP_HANG_AFTER: String(n) });
+}
+
+export function spawnMockLspWithLog(logPath) {
+  return (_command, _args, cwd) => spawnMock(cwd, { LEGION_MOCK_LSP_LOG: logPath });
 }
 
 export async function writeManyTs(dir, count) {

@@ -34,7 +34,7 @@ export type WalkedFile = {
   text: string;
 };
 
-/** Minimatch-lite: `**`, `*`, `?`. Used only for config.map.ignore. */
+/** Minimatch-lite for ignore globs (`**`, `*`, `?`). */
 export function globToRegExp(glob: string): RegExp {
   const pattern = glob.replaceAll("\\", "/");
   let out = "^";
@@ -126,12 +126,24 @@ export async function walkSources(opts: {
   const projectRoot = resolve(opts.projectRoot);
   const rules = compileIgnore(opts.ignore);
   const out: WalkedFile[] = [];
+  const seenDirs = new Set<string>();
+  const seenFiles = new Set<string>();
   const starts =
     opts.roots === null
       ? [projectRoot]
       : opts.roots.map((root) => join(projectRoot, ...root.split("/")));
 
   async function walkDir(dir: string): Promise<void> {
+    let real: string;
+    try {
+      real = await realpath(dir);
+    } catch {
+      return;
+    }
+    const dirKey = process.platform === "win32" ? real.toLowerCase() : real;
+    if (seenDirs.has(dirKey)) return;
+    seenDirs.add(dirKey);
+
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -185,9 +197,11 @@ export async function walkSources(opts: {
         continue;
       }
       if (buf.byteLength > MAX_FILE_BYTES || looksBinary(buf)) continue;
+      if (seenFiles.has(posix)) continue;
       if (out.length >= MAX_MODULES) {
         refuse("map exceeds 10000 modules", MAP_HINT.noLsp);
       }
+      seenFiles.add(posix);
       out.push({ path: posix, absPath: abs, language, text: buf.toString("utf8") });
     }
   }

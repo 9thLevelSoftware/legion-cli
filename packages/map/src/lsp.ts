@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { WalkedFile } from "./walk.js";
 
@@ -77,6 +77,13 @@ const LANGUAGE_IDS: Record<string, string> = {
   go: "go",
   rs: "rust",
 };
+
+function languageIdFor(posixPath: string, language: string): string {
+  const ext = extname(posixPath).toLowerCase();
+  if (ext === ".tsx") return "typescriptreact";
+  if (ext === ".jsx") return "javascriptreact";
+  return LANGUAGE_IDS[language] ?? "plaintext";
+}
 
 const LSP_ENV_ALLOWLIST = new Set(
   [
@@ -390,6 +397,21 @@ class LspClient {
       // ignore
     }
   }
+
+  waitExit(ms: number): Promise<void> {
+    const child = this.#child;
+    return new Promise((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(resolve, ms);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
 }
 
 function remaining(deadline: number): number {
@@ -455,7 +477,7 @@ export async function collectLspExports(opts: {
       client.notify("textDocument/didOpen", {
         textDocument: {
           uri,
-          languageId: LANGUAGE_IDS[file.language] ?? "plaintext",
+          languageId: languageIdFor(file.path, file.language),
           version: 1,
           text: file.text,
         },
@@ -485,5 +507,6 @@ export async function collectLspExports(opts: {
     return partialOrNull(exportsByPath);
   } finally {
     client.kill();
+    await client.waitExit(1000);
   }
 }

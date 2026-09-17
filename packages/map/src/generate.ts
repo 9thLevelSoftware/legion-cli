@@ -113,7 +113,12 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   const exportsByPath = new Map(parsed.map((file) => [file.path, file.exports]));
 
   if (backend === "lsp") {
-    const detected = detectLspServer(root, roots, options.resolveBinary);
+    let detected: ReturnType<typeof detectLspServer> = null;
+    try {
+      detected = detectLspServer(root, roots, options.resolveBinary);
+    } catch {
+      detected = null;
+    }
     if (!detected) {
       if (lspMode === "require") {
         refuse("no language server on PATH", MAP_HINT.noLsp);
@@ -129,9 +134,8 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
         spawnLsp: options.spawnLsp,
         deadlineMs: options.lspDeadlineMs,
       });
-      if (lspExports) {
+      if (lspExports?.complete) {
         for (const [path, names] of lspExports.exports) exportsByPath.set(path, names);
-        if (!lspExports.complete) backend = "fallback";
       } else {
         backend = "fallback";
       }
@@ -150,15 +154,11 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
     };
   });
 
-  const fingerprints = FingerprintFileSchema.parse({
-    schemaVersion: SCHEMA_VERSION.fingerprint,
-    generatedAt: new Date().toISOString(),
-    backend,
-    rootHash: fingerprintRoot(modules),
-    modules,
-  });
-
-  await writeTextFile(fingerprintsPath, `${JSON.stringify(fingerprints, null, 2)}\n`);
+  const changed = changedPaths(existing, modules);
+  const rootHash = fingerprintRoot(modules);
+  const unchanged = Boolean(
+    existing && existing.backend === backend && existing.rootHash === rootHash && changed.length === 0,
+  );
 
   let existingArch: string | undefined;
   try {
@@ -166,14 +166,30 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-  // `--refresh` and first write both replace only generated markers.
+
+  if (unchanged && existing) {
+    if (options.refresh) {
+      await writeTextFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(existing)));
+    }
+    return {
+      backend: existing.backend,
+      fingerprints: existing,
+      architecturePath,
+      fingerprintsPath,
+      changed: [],
+    };
+  }
+
+  const fingerprints = FingerprintFileSchema.parse({
+    schemaVersion: SCHEMA_VERSION.fingerprint,
+    generatedAt: new Date().toISOString(),
+    backend,
+    rootHash,
+    modules,
+  });
+
+  await writeTextFile(fingerprintsPath, `${JSON.stringify(fingerprints, null, 2)}\n`);
   await writeTextFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(fingerprints)));
 
-  return {
-    backend,
-    fingerprints,
-    architecturePath,
-    fingerprintsPath,
-    changed: changedPaths(existing, modules),
-  };
+  return { backend, fingerprints, architecturePath, fingerprintsPath, changed };
 }

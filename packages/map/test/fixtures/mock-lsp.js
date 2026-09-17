@@ -1,4 +1,5 @@
 /** Stdio LSP 3.17 mock: initialize → documentSymbol (two depth-0 Functions). */
+import { appendFileSync } from "node:fs";
 
 function encode(msg) {
   const json = Buffer.from(JSON.stringify(msg), "utf8");
@@ -40,7 +41,15 @@ function handle(msg) {
     });
     return;
   }
-  if (msg.method === "initialized" || msg.method === "textDocument/didOpen") return;
+  if (msg.method === "initialized") return;
+  if (msg.method === "textDocument/didOpen") {
+    const log = process.env.LEGION_MOCK_LSP_LOG;
+    const doc = msg.params?.textDocument;
+    if (log && doc) {
+      appendFileSync(log, `${JSON.stringify({ uri: doc.uri, languageId: doc.languageId })}\n`);
+    }
+    return;
+  }
   if (msg.method === "exit") {
     process.exit(0);
     return;

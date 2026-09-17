@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -16,6 +16,7 @@ import {
   THREE_TS,
   spawnMockLsp,
   spawnMockLspHangAfter,
+  spawnMockLspWithLog,
   withTempDir,
   writeManyTs,
   writeTree,
@@ -57,6 +58,7 @@ test("fallback parser: three TS files, stable hash; comment-only does not churn;
     assert.equal(second.fingerprints.rootHash, first.fingerprints.rootHash);
     assert.equal(moduleOf(second, "src/auth.ts").hash, auth.hash);
     assert.deepEqual(second.changed, []);
+    assert.equal(second.fingerprints.generatedAt, first.fingerprints.generatedAt);
 
     await writeFile(join(dir, "src", "auth.ts"), `${THREE_TS["src/auth.ts"]}\n// comment only\n`, "utf8");
     const commented = await generateMap(dir);
@@ -262,7 +264,7 @@ test("resolve .cmd path is passed through to spawn", async () => {
   });
 });
 
-test("LSP timeout keeps collected symbols and records backend fallback", async () => {
+test("LSP timeout recomputes fallback consistently; next auto run does not churn hashes", async () => {
   await withTempDir(async (dir) => {
     await writeTree(dir, THREE_TS);
     const result = await generateMap(dir, {
@@ -272,12 +274,89 @@ test("LSP timeout keeps collected symbols and records backend fallback", async (
       lspDeadlineMs: 1500,
     });
     assert.equal(result.backend, "fallback");
-    const withLsp = result.fingerprints.modules.filter((row) => row.exports.includes("alpha"));
-    const withFallback = result.fingerprints.modules.filter((row) => !row.exports.includes("alpha"));
-    assert.equal(withLsp.length, 1);
-    assert.ok(withFallback.length >= 1);
-    assert.deepEqual(withLsp[0].exports, ["alpha", "beta"]);
-    assert.equal(withFallback.some((row) => row.exports.includes("login") || row.exports.includes("connect") || row.exports.includes("main")), true);
+    assert.equal(result.fingerprints.modules.some((row) => row.exports.includes("alpha")), false);
+    assert.deepEqual(moduleOf(result, "src/auth.ts").exports, ["login", "logout"]);
+
+    const again = await generateMap(dir);
+    assert.equal(again.backend, "fallback");
+    assert.equal(again.fingerprints.rootHash, result.fingerprints.rootHash);
+    assert.equal(again.fingerprints.generatedAt, result.fingerprints.generatedAt);
+    assert.deepEqual(again.changed, []);
+  });
+});
+
+test("auto reuses persisted backend lsp (spawn); throwing resolveBinary does not spawn", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const first = await generateMap(dir, lspRequire);
+    assert.equal(first.backend, "lsp");
+
+    let spawns = 0;
+    const reused = await generateMap(dir, {
+      resolveBinary: (name) => (name === "typescript-language-server" ? process.execPath : null),
+      spawnLsp: (command, args, cwd) => {
+        spawns += 1;
+        return spawnMockLsp(command, args, cwd);
+      },
+    });
+    assert.ok(spawns > 0);
+    assert.equal(reused.backend, "lsp");
+    assert.equal(reused.fingerprints.rootHash, first.fingerprints.rootHash);
+    assert.equal(reused.fingerprints.generatedAt, first.fingerprints.generatedAt);
+
+    let spawnedAfterThrow = 0;
+    const kept = await generateMap(dir, {
+      resolveBinary: () => {
+        throw new Error("resolveBinary should not spawn");
+      },
+      spawnLsp: () => {
+        spawnedAfterThrow += 1;
+        throw new Error("should not spawn");
+      },
+    });
+    assert.equal(spawnedAfterThrow, 0);
+    assert.equal(kept.backend, "fallback");
+  });
+});
+
+test("tsx/jsx didOpen uses typescriptreact/javascriptreact", async () => {
+  await withTempDir(async (dir) => {
+    const logPath = join(dir, "didopen.jsonl");
+    await writeTree(dir, {
+      "src/widget.tsx": "export function Widget() { return null; }\n",
+      "src/view.jsx": "export function View() { return null; }\n",
+      "tsconfig.json": `{"compilerOptions":{"strict":true}}\n`,
+    });
+    await generateMap(dir, {
+      lsp: "require",
+      resolveBinary: (name) => (name === "typescript-language-server" ? process.execPath : null),
+      spawnLsp: spawnMockLspWithLog(logPath),
+    });
+    const lines = (await readFile(logPath, "utf8")).trim().split(/\n/);
+    const ids = Object.fromEntries(
+      lines.map((line) => {
+        const row = JSON.parse(line);
+        const name = String(row.uri).replace(/\\/g, "/");
+        return [name.slice(name.lastIndexOf("/") + 1), row.languageId];
+      }),
+    );
+    assert.equal(ids["widget.tsx"], "typescriptreact");
+    assert.equal(ids["view.jsx"], "javascriptreact");
+  });
+});
+
+test("walk skips symlink directory cycles", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    try {
+      await symlink(join(dir, "src"), join(dir, "src", "cycle"), process.platform === "win32" ? "junction" : "dir");
+    } catch (err) {
+      if (err && (err.code === "EPERM" || err.code === "EACCES")) return;
+      throw err;
+    }
+    const result = await generateMap(dir, { roots: [] });
+    const paths = result.fingerprints.modules.map((row) => row.path).sort();
+    assert.deepEqual(paths, ["src/auth.ts", "src/db.ts", "src/index.ts"]);
   });
 });
 
