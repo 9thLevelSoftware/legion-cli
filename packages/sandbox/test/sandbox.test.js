@@ -238,6 +238,10 @@ test("copy-in refuses .git realpath and host symlink write-through", async () =>
       const hostJunc = await trySymlink(leakDir, join(dir, "src", "hostjunc"), juncType);
       assert.equal(gitJunc, true, "could not create .git junction");
       assert.equal(hostJunc, true, "could not create host junction");
+      if (process.platform !== "win32") {
+        assert.equal(gitLink, true, "Linux CI must create gitlink file symlink");
+        assert.equal(hostLink, true, "Linux CI must create hostlink file symlink");
+      }
       const handle = await materializeJail(
         policy(dir, {
           readSet: ["src", "src/read.ts", "src/gitlink.ts", "src/hostlink.ts", "src/insidelink.ts", "src/gitjunc", "src/hostjunc"],
@@ -260,7 +264,15 @@ test("copy-in refuses .git realpath and host symlink write-through", async () =>
         if (hostLink) {
           await writeFile(join(handle.jailRoot, "src", "hostlink.ts"), "jail-host\n", "utf8");
         }
-        await handle.copyOut();
+        const result = await handle.copyOut();
+        if (gitLink) {
+          assert.ok(result.dropped.includes("src/gitlink.ts"));
+          assert.equal(lstatSync(join(dir, "src", "gitlink.ts")).isSymbolicLink(), true);
+        }
+        if (hostLink) {
+          assert.ok(result.dropped.includes("src/hostlink.ts"));
+          assert.equal(lstatSync(join(dir, "src", "hostlink.ts")).isSymbolicLink(), true);
+        }
         assert.equal(await readFile(join(dir, ".git", "hooks", "keep"), "utf8"), "keep\n");
         assert.equal(await readFile(outside, "utf8"), "host-secret\n");
         assert.equal(await readFile(join(leakDir, "secret.txt"), "utf8"), "host-secret\n");
@@ -436,7 +448,62 @@ test("copy-in copies one inode to every dest name", async () => {
     try {
       assert.equal(await readFile(join(handle.jailRoot, "src", "orig", "file.ts"), "utf8"), "shared\n");
       assert.equal(await readFile(join(handle.jailRoot, "src", "alias", "file.ts"), "utf8"), "shared\n");
-      assert.equal(lstatSync(join(handle.jailRoot, "src", "alias")).isSymbolicLink(), false);
+      const origFile = lstatSync(join(handle.jailRoot, "src", "orig", "file.ts"));
+      const aliasFile = lstatSync(join(handle.jailRoot, "src", "alias", "file.ts"));
+      assert.equal(origFile.isFile(), true);
+      assert.equal(origFile.isSymbolicLink(), false);
+      assert.equal(aliasFile.isFile(), true);
+      assert.equal(aliasFile.isSymbolicLink(), false);
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("ancestor-cycle junction does not nest loop/loop", { timeout: 5000 }, async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const linked = await trySymlink(
+      join(dir, "src"),
+      join(dir, "src", "loop"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    assert.equal(linked, true, "could not create ancestor-cycle junction");
+    const handle = await materializeJail(policy(dir, { readSet: ["src"] }));
+    try {
+      assert.equal(await readFile(join(handle.jailRoot, "src", "read.ts"), "utf8"), "export const read = 1;\n");
+      assert.throws(
+        () => lstatSync(join(handle.jailRoot, "src", "loop")),
+        (err) => err && err.code === "ENOENT",
+      );
+      assert.throws(
+        () => lstatSync(join(handle.jailRoot, "src", "loop", "loop")),
+        (err) => err && err.code === "ENOENT",
+      );
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test(".GIT/hooks is refused and does not pollute operator .git", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await assert.rejects(
+      () => materializeJail(policy(dir, { allowedWrites: [".GIT/hooks/evil"] })),
+      PathEscapeError,
+    );
+    const handle = await materializeJail(policy(dir));
+    try {
+      await mkdir(join(handle.jailRoot, ".GIT", "hooks"), { recursive: true });
+      await writeFile(join(handle.jailRoot, ".GIT", "hooks", "evil"), "evil\n", "utf8");
+      const result = await handle.copyOut();
+      assert.ok(
+        result.dropped.some((rel) => rel.split("/").some((part) => part.toLowerCase() === ".git")),
+        `expected .GIT drop, got dropped=${result.dropped.join(",")}`,
+      );
+      assert.equal(existsSync(join(dir, ".git", "hooks", "evil")), false);
+      assert.equal(await readFile(join(dir, ".git", "hooks", "keep"), "utf8"), "keep\n");
     } finally {
       await handle.destroy();
     }

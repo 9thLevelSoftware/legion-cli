@@ -139,7 +139,7 @@ export function assertExecuteSandbox(config: LegionConfig, flags: { allowNoSandb
 }
 
 function assertPolicyPath(posix: string): string {
-  if (!isConcretePosixRepoRelativePath(posix)) {
+  if (!isConcretePosixRepoRelativePath(posix) || isBlockedRel(posix)) {
     throw new PathEscapeError(posix);
   }
   return posix;
@@ -163,8 +163,13 @@ function unique(paths: readonly string[]): string[] {
   return out;
 }
 
+function isBlockedName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === "node_modules" || lower === ".git";
+}
+
 function isBlockedRel(posix: string): boolean {
-  return posix.split("/").some((part) => part === "node_modules" || part === ".git");
+  return posix.split("/").some((part) => isBlockedName(part));
 }
 
 function isJailMeta(rel: string): boolean {
@@ -319,9 +324,11 @@ async function copyTree(
   projectRoot: string,
   depth = 0,
   seenDest?: Set<string>,
+  srcStack?: Set<string>,
 ): Promise<void> {
   if (depth > MAX_COPY_DEPTH) return;
   const visitedDest = seenDest ?? new Set<string>();
+  const walkSrc = srcStack ?? new Set<string>();
   let st;
   try {
     st = await lstat(src);
@@ -332,26 +339,41 @@ async function copyTree(
   if (st.isSymbolicLink()) {
     const real = tryRealpath(src);
     if (!real) return;
+    if (walkSrc.has(resolve(real))) return;
     if (canonicalBlocked(projectRoot, real)) return;
-    await copyTree(real, dest, projectRoot, depth + 1, visitedDest);
+    await copyTree(real, dest, projectRoot, depth + 1, visitedDest, walkSrc);
     return;
   }
   if (canonicalBlocked(projectRoot, src)) return;
+  const srcKey = tryRealpath(src) ?? resolve(src);
+  if (walkSrc.has(srcKey)) return;
   const destKey = resolve(dest);
   if (visitedDest.has(destKey)) return;
   visitedDest.add(destKey);
-  if (st.isDirectory()) {
-    await mkdir(dest, { recursive: true });
-    const entries = await readdir(src, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name === "node_modules" || entry.name === ".git") continue;
-      await copyTree(join(src, entry.name), join(dest, entry.name), projectRoot, depth + 1, visitedDest);
+  walkSrc.add(srcKey);
+  try {
+    if (st.isDirectory()) {
+      await mkdir(dest, { recursive: true });
+      const entries = await readdir(src, { withFileTypes: true });
+      for (const entry of entries) {
+        if (isBlockedName(entry.name)) continue;
+        await copyTree(
+          join(src, entry.name),
+          join(dest, entry.name),
+          projectRoot,
+          depth + 1,
+          visitedDest,
+          walkSrc,
+        );
+      }
+      return;
     }
-    return;
+    if (!st.isFile()) return;
+    await mkdir(dirname(dest), { recursive: true });
+    await copyFile(src, dest);
+  } finally {
+    walkSrc.delete(srcKey);
   }
-  if (!st.isFile()) return;
-  await mkdir(dirname(dest), { recursive: true });
-  await copyFile(src, dest);
 }
 
 async function copySparsePath(
@@ -444,6 +466,10 @@ async function safeCopyOutFile(src: string, dest: string, projectRoot: string): 
   if (await parentIsUnsafe(projectRoot, parent)) return false;
   await mkdir(parent, { recursive: true });
   if (await destIsUnsafe(projectRoot, dest)) return false;
+  const parentReal = tryRealpath(parent);
+  if (parentReal && canonicalBlocked(projectRoot, parentReal)) return false;
+  const destReal = tryRealpath(dest);
+  if (destReal && canonicalBlocked(projectRoot, destReal)) return false;
   const tmp = join(parent, `.legion-copyout-${process.pid}-${randomBytes(8).toString("hex")}`);
   try {
     await copyFile(src, tmp);
