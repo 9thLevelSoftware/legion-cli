@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -264,6 +264,33 @@ test("showPage kind map for architecture markdown", async () => {
     assert.equal(shown.path, ".legion-cli/map/ARCHITECTURE.md");
     assert.equal(shown.title, "Architecture");
     assert.match(shown.body, /backend: fallback/);
+  });
+});
+
+test("showPage refuses a symlink ARCHITECTURE.md and does not follow it", async () => {
+  await withStore(async ({ store, dir }) => {
+    const mapDir = join(dir, ".legion-cli", "map");
+    await mkdir(mapDir, { recursive: true });
+    await mkdir(join(dir, "src"), { recursive: true });
+    const envPath = join(dir, "src", ".env");
+    await writeFile(envPath, "SECRET=do-not-leak\n", "utf8");
+    let linked = false;
+    try {
+      await symlink(envPath, join(mapDir, "ARCHITECTURE.md"));
+      linked = true;
+    } catch (err) {
+      if (err?.code !== "EPERM") throw err;
+    }
+    if (!linked) return;
+    await assert.rejects(
+      () => showPage(store, ".legion-cli/map/ARCHITECTURE.md"),
+      (err) => {
+        assert.match(err.message, /symlink/);
+        assert.doesNotMatch(err.message, /SECRET=do-not-leak/);
+        return true;
+      },
+    );
+    await unlink(join(mapDir, "ARCHITECTURE.md")).catch(() => {});
   });
 });
 

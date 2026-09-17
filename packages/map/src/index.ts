@@ -1,4 +1,4 @@
-export { GENERATED_END, GENERATED_START } from "./architecture.js";
+export { GENERATED_END, GENERATED_START, mergeArchitecture, renderArchitecture } from "./architecture.js";
 export { MapError, MAP_HINT } from "./errors.js";
 export { fingerprintHash } from "./fingerprint.js";
 export { generateMap } from "./generate.js";

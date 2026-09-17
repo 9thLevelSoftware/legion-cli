@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -281,6 +282,7 @@ test("--lsp with no server throws so PR-04 can map Next: legion-cli map --no-lsp
       },
     );
     assert.deepEqual(await mapArtifacts(dir), before);
+    assert.equal(existsSync(join(dir, ".legion-cli", "map")), false);
   });
 });
 

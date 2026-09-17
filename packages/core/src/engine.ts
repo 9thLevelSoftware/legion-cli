@@ -14,8 +14,9 @@ import {
   pickNextTask,
   readyTasks,
 } from "@9thlevelsoftware/legion-cli-graph";
+import { generateMap, MapError, mergeArchitecture, renderArchitecture } from "@9thlevelsoftware/legion-cli-map";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   abandonReceiptBody,
@@ -184,7 +185,6 @@ import type {
 } from "./types.js";
 import { promoteBrownfieldRun, runBrownfield } from "./brownfield.js";
 import {
-  generateEngineMap,
   MAP_ARCHITECTURE_PATH,
   MAP_FINGERPRINTS_PATH,
   MAP_SHOW_NEXT,
@@ -659,14 +659,27 @@ export class LegionEngine {
 
   async map(opts: MapOptions = {}): Promise<MapResult> {
     let started: StartedSkillSpawn | undefined;
-    let generated: Awaited<ReturnType<typeof generateEngineMap>> | undefined;
+    let generated: Awaited<ReturnType<typeof generateMap>> | undefined;
 
     await this.#withLockOrRefuse(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
         refuse("Map needs a Legion CLI project first", HINT.init);
       }
-      generated = await generateEngineMap(this.projectRoot, opts);
+      await this.#assertNoLiveInProgress("map");
+      await refuseIfLiveSkillSpawn(this.projectRoot, "map");
+      try {
+        generated = await generateMap(this.projectRoot, {
+          refresh: opts.refresh,
+          lsp: opts.lsp,
+          resolveBinary: opts.resolveBinary,
+          spawnLsp: opts.spawnLsp,
+          lspDeadlineMs: opts.lspDeadlineMs,
+        });
+      } catch (err) {
+        if (err instanceof MapError) refuse(err.message, err.nextHint);
+        throw err;
+      }
       let config: LegionConfig;
       try {
         config = await this.#readConfig();
@@ -690,6 +703,26 @@ export class LegionEngine {
       }
       if (started?.spawned) {
         const revert = await finishStartedSpawn(started);
+        const fingerprintsPath = join(this.store.paths.mapDir, "fingerprints.json");
+        const architecturePath = join(this.store.paths.mapDir, "ARCHITECTURE.md");
+        let existingArch: string | undefined;
+        try {
+          existingArch = await readFile(architecturePath, "utf8");
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        }
+        for (const [abs, contents] of [
+          [fingerprintsPath, `${JSON.stringify(generated.fingerprints, null, 2)}\n`],
+          [architecturePath, mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints))],
+        ] as const) {
+          try {
+            const st = await lstat(abs);
+            if (st.isSymbolicLink() || !st.isFile()) await rm(abs, { recursive: false, force: true });
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+          }
+          await writeFile(abs, contents, "utf8");
+        }
         if (revert.incident) {
           refuse("inspect .git — spawn touched .git/", HINT.map);
         }

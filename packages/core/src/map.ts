@@ -1,10 +1,4 @@
-import {
-  generateMap,
-  MapError,
-  type MapLspMode,
-  type MapOptions as GenerateMapOptions,
-} from "@9thlevelsoftware/legion-cli-map";
-import { refuse } from "./errors.js";
+import type { MapLspMode, MapOptions as GenerateMapOptions } from "@9thlevelsoftware/legion-cli-map";
 
 export type { MapLspMode };
 
@@ -35,18 +29,3 @@ export const MAP_SPAWN_PROMPT = [
   "Do not remove <!-- legion-cli:generated:start --> or <!-- legion-cli:generated:end --> or rewrite the block between them.",
   "Do not write product code (src/**).",
 ].join("\n");
-
-export async function generateEngineMap(projectRoot: string, options: MapOptions = {}) {
-  try {
-    return await generateMap(projectRoot, {
-      refresh: options.refresh,
-      lsp: options.lsp,
-      resolveBinary: options.resolveBinary,
-      spawnLsp: options.spawnLsp,
-      lspDeadlineMs: options.lspDeadlineMs,
-    });
-  } catch (err) {
-    if (err instanceof MapError) refuse(err.message, err.nextHint);
-    throw err;
-  }
-}

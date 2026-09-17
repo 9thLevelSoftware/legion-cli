@@ -650,7 +650,7 @@ export function createProgram(): Command {
     .option("--no-lsp", "force the fallback parser")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { refresh?: boolean; lsp?: boolean; noLsp?: boolean };
+      const flags = opts as { refresh?: boolean };
       const code = await runMap(resolveOpts(cmd), flags, process.argv);
       process.exitCode = code;
     });

@@ -137,7 +137,6 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   const paths = legionPaths(root);
   const fingerprintsPath = join(paths.mapDir, "fingerprints.json");
   const architecturePath = join(paths.mapDir, "ARCHITECTURE.md");
-  await ensureRealMapDir(root, paths.mapDir);
   const existing = await readExistingFingerprints(fingerprintsPath);
   const lspMode = options.lsp ?? "auto";
   let backend = decideBackend(lspMode, existing);
@@ -205,6 +204,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
 
   if (unchanged && existing) {
     if (options.refresh || existingArch === undefined) {
+      await ensureRealMapDir(root, paths.mapDir);
       await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(existing)));
     }
     return {
@@ -224,6 +224,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
     modules,
   });
 
+  await ensureRealMapDir(root, paths.mapDir);
   await writeMapFile(fingerprintsPath, `${JSON.stringify(fingerprints, null, 2)}\n`);
   await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(fingerprints)));
 

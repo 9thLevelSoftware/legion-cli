@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -86,12 +86,22 @@ test("map --refresh preserves prose outside generated markers", async () => {
     assert.equal(first.status, 0, first.stderr);
     const archPath = join(dir, ".legion-cli", "map", "ARCHITECTURE.md");
     const existing = await readFile(archPath, "utf8");
-    await writeFile(archPath, `${existing}\nHuman note: keep me.\n`, "utf8");
+    const start = "<!-- legion-cli:generated:start -->";
+    const end = "<!-- legion-cli:generated:end -->";
+    const i = existing.indexOf(start);
+    const j = existing.indexOf(end);
+    await writeFile(
+      archPath,
+      `${existing.slice(0, i + start.length)}\nCLOBBERED\n${existing.slice(j)}Human note: keep me.\n`,
+      "utf8",
+    );
     const refreshed = runCli(["map", "--refresh", "--no-lsp", "--project", dir]);
     assert.equal(refreshed.status, 0, refreshed.stderr);
     const after = await readFile(archPath, "utf8");
     assert.match(after, /Human note: keep me/);
     assert.match(after, /<!-- legion-cli:generated:start -->/);
+    assert.match(after, /src\/auth\.ts/);
+    assert.doesNotMatch(after, /CLOBBERED/);
   });
 });
 
@@ -108,6 +118,7 @@ test("map --lsp with no server refuses and leaves fingerprints unwritten", async
     assert.match(err, /Next: legion-cli map --no-lsp/);
     assert.equal(existsSync(join(dir, ".legion-cli", "map", "fingerprints.json")), false);
     assert.equal(existsSync(join(dir, ".legion-cli", "map", "ARCHITECTURE.md")), false);
+    assert.equal(existsSync(join(dir, ".legion-cli", "map")), false);
     assert.equal(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8"), beforeState);
   });
 });
@@ -146,5 +157,51 @@ test("map spawn writing src/main.ts is reverted", async () => {
     assert.equal(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8"), beforeState);
     const engine = createLegionEngine(dir);
     assert.equal((await engine.getState()).phase, "initialized");
+    const fingerprints = JSON.parse(
+      await readFile(join(dir, ".legion-cli", "map", "fingerprints.json"), "utf8"),
+    );
+    assert.equal(fingerprints.schemaVersion, "legion-cli-fingerprint/v1");
+    assert.match(fingerprints.rootHash, /^[a-f0-9]{64}$/);
+  });
+});
+
+test("map --lsp --no-lsp uses fallback; --no-lsp --lsp requires a server", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const fallback = runCli(["map", "--lsp", "--no-lsp", "--project", dir]);
+    assert.equal(fallback.status, 0, fallback.stderr);
+    assert.match(normalize(fallback.stdout), /backend: fallback/);
+    const required = runCli(["map", "--no-lsp", "--lsp", "--project", dir], {
+      env: { PATH: "", Path: "", PATHEXT: process.env.PATHEXT },
+    });
+    assert.equal(required.status, 1, required.stdout);
+    assert.match(normalize(required.stderr), /no language server on PATH/);
+    assert.match(normalize(required.stderr), /Next: legion-cli map --no-lsp/);
+  });
+});
+
+test("show refuses a symlink ARCHITECTURE.md and does not follow it", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const first = runCli(["map", "--no-lsp", "--project", dir]);
+    assert.equal(first.status, 0, first.stderr);
+    const archPath = join(dir, ".legion-cli", "map", "ARCHITECTURE.md");
+    const envPath = join(dir, "src", ".env");
+    await writeFile(envPath, "SECRET=do-not-leak\n", "utf8");
+    await unlink(archPath);
+    let linked = false;
+    try {
+      await symlink(envPath, archPath);
+      linked = true;
+    } catch (err) {
+      if (err?.code !== "EPERM") throw err;
+    }
+    if (!linked) return;
+    const shown = runCli(["show", "--project", dir, ".legion-cli/map/ARCHITECTURE.md"]);
+    assert.equal(shown.status, 1);
+    const err = normalize(shown.stderr);
+    assert.match(err, /symlink/);
+    assert.doesNotMatch(err, /SECRET=do-not-leak/);
+    assert.doesNotMatch(normalize(shown.stdout), /SECRET=do-not-leak/);
   });
 });

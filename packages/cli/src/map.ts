@@ -1,17 +1,10 @@
 import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
-import {
-  createLegionEngine,
-  findSkillsDir,
-  type MapLspMode,
-  type MapOptions,
-} from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 
-export type MapFlags = {
+type MapFlags = {
   refresh?: boolean;
-  lsp?: boolean;
-  noLsp?: boolean;
 };
 
 /** Test seam: fake adapter artifacts when LEGION_CLI_ADAPTER=fake. */
@@ -27,14 +20,10 @@ function mapFakeArtifacts(): FakeArtifact[] | undefined {
   }
 }
 
-export function mapLspMode(flags: MapFlags, argv: readonly string[]): MapLspMode {
+function mapLspMode(argv: readonly string[]): "require" | "off" | "auto" {
   const lastLsp = argv.lastIndexOf("--lsp");
   const lastNo = argv.lastIndexOf("--no-lsp");
-  if (lastLsp === -1 && lastNo === -1) {
-    if (flags.noLsp) return "off";
-    if (flags.lsp) return "require";
-    return "auto";
-  }
+  if (lastLsp === -1 && lastNo === -1) return "auto";
   return lastNo > lastLsp ? "off" : "require";
 }
 
@@ -43,11 +32,10 @@ export async function runMap(opts: CliOpts, flags: MapFlags, argv: readonly stri
     skillsDir: findSkillsDir(),
     fakeArtifacts: mapFakeArtifacts(),
   });
-  const mapOpts: MapOptions = {
+  const result = await engine.map({
     refresh: Boolean(flags.refresh),
-    lsp: mapLspMode(flags, argv),
-  };
-  const result = await engine.map(mapOpts);
+    lsp: mapLspMode(argv),
+  });
   if (opts.json) {
     writeJson({ ok: true, ...result });
     return 0;

@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { LegionReader } from "@9thlevelsoftware/legion-cli-persist";
 import { loadWikiPages, type WikiPageRow } from "./graph.js";
@@ -49,10 +49,21 @@ export async function showPage(
   const mapRef = ref.toLowerCase();
   if (mapRef === ".legion-cli/map/architecture.md" || mapRef === "map/architecture.md") {
     const storePath = ".legion-cli/map/ARCHITECTURE.md";
-    if (!(await store.pathExists(storePath))) {
+    const abs = join(store.paths.mapDir, "ARCHITECTURE.md");
+    let st;
+    try {
+      st = await lstat(abs);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`unknown page ${pageRef}`);
+      throw err;
+    }
+    if (st.isSymbolicLink()) {
+      throw new Error("map ARCHITECTURE.md must not be a symlink");
+    }
+    if (!st.isFile()) {
       throw new Error(`unknown page ${pageRef}`);
     }
-    const body = await readFile(join(store.paths.mapDir, "ARCHITECTURE.md"), "utf8");
+    const body = await readFile(abs, "utf8");
     const heading = /^#\s+(.+)$/m.exec(body);
     return {
       kind: "map",

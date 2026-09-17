@@ -12,7 +12,7 @@ export const SKILL_CONTRACTS: Record<SkillId, readonly string[]> = {
   // tasks/** is for filing new fix tasks; mutating existing TSK-*.md still FAILs review.
   review: [".legion-cli/qa/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
   qa: [".legion-cli/qa/**", ".legion-cli/cache/runs/<id>/**"],
-  map: [".legion-cli/map/**", ".legion-cli/cache/runs/<id>/**"],
+  map: [".legion-cli/map/ARCHITECTURE.md", ".legion-cli/cache/runs/<id>/**"],
   wireframe: [".legion-cli/specs/<activeSpecId>/wireframes/**", ".legion-cli/cache/runs/<id>/**"],
   chat: [".legion-cli/cache/runs/<id>/**"],
 };

@@ -1,7 +1,7 @@
 ---
 name: map
 description: >
-  Optional rewrite of human-editable architecture notes under .legion-cli/map/**.
+  Optional rewrite of human-editable architecture notes in ARCHITECTURE.md.
   Fingerprints and the generated region are in-process. Activated only by
   `legion-cli map` when a spawnable adapter exists. Do not load other skill bodies.
 license: UNLICENSED
@@ -15,7 +15,7 @@ metadata:
 
 # map
 
-Optional notes under `.legion-cli/map/**`.
+Optional notes in `.legion-cli/map/ARCHITECTURE.md`.
 
 `legion-cli map` generates `.legion-cli/map/ARCHITECTURE.md` and `fingerprints.json` in-process. This skill is optional. The engine still writes the map when this skill does not spawn.
 
@@ -23,13 +23,13 @@ Optional notes under `.legion-cli/map/**`.
 
 Allowed roots:
 
-- `.legion-cli/map/**`
+- `.legion-cli/map/ARCHITECTURE.md`
 - `.legion-cli/cache/runs/<id>/**`
 
 Do not write anything else. Do not `git add` or `git commit`.
 Do not write product code (`src/**`). The engine reverts extras vs this SkillContract.
 
-The engine, not this spawn, writes `STATE.md` and fingerprint hashes.
+The engine, not this spawn, writes `STATE.md`, `fingerprints.json`, and the generated ARCHITECTURE region.
 
 Implicit forbidden still applies: `.git/**`, `.env*`, `.legion-cli/config.yaml`, `.legion-cli/index/**`.
 
