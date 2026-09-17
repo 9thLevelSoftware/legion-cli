@@ -191,7 +191,7 @@ import type {
   WireframeOptions,
   WireframeResult,
 } from "./types.js";
-import { finishBrownfieldMap, promoteBrownfieldRun, runBrownfield } from "./brownfield.js";
+import { collectBrownfieldAudit, commitBrownfield, prepareBrownfield, promoteBrownfieldRun } from "./brownfield.js";
 import {
   MAP_ARCHITECTURE_PATH,
   MAP_FINGERPRINTS_PATH,
@@ -1925,17 +1925,41 @@ export class LegionEngine {
   }
 
   async brownfield(opts: BrownfieldOptions = {}): Promise<BrownfieldResult> {
-    const first = await this.#mutate(() => runBrownfield(this.store, opts));
-    // Effort 5 map (optional LSP) must not nest under this lock — map uses wait-outside-mutate.
-    if (first.effort < 5 || first.phase === "complete") return first;
-    const mapResult = await this.map({
-      refresh: true,
-      lsp: opts.lsp ? "require" : "auto",
-      resolveBinary: opts.resolveBinary,
-      spawnLsp: opts.spawnLsp,
-      lspDeadlineMs: opts.lspDeadlineMs,
-    });
-    return this.#mutate(() => finishBrownfieldMap(this.store, first.runId, mapResult));
+    const prepared = await this.#mutate(() => prepareBrownfield(this.store, opts));
+    if (prepared.kind === "done") return prepared.result;
+
+    const effort = prepared.run.effort;
+    // 60s audit and effort-5 generateMap stay outside #mutate (no map skill spawn).
+    const audit = await collectBrownfieldAudit(this.projectRoot, effort);
+    let map: MapResult | undefined;
+    if (effort >= 5) {
+      try {
+        const generated = await generateMap(this.projectRoot, {
+          refresh: true,
+          lsp: opts.lsp ? "require" : "auto",
+        });
+        map = {
+          path: MAP_ARCHITECTURE_PATH,
+          fingerprintsPath: MAP_FINGERPRINTS_PATH,
+          backend: generated.backend,
+          modules: generated.fingerprints.modules.length,
+          changed: generated.changed,
+          next: MAP_SHOW_NEXT,
+        };
+      } catch (err) {
+        if (err instanceof MapError) refuse(err.message, err.nextHint);
+        throw err;
+      }
+    }
+
+    return this.#mutate(() =>
+      commitBrownfield(this.store, prepared.run, {
+        resume: prepared.resume,
+        findings: audit.findings,
+        auditLines: audit.auditLines,
+        map,
+      }),
+    );
   }
 
   async promoteRun(runId: string, opts: PromoteRunOptions = {}): Promise<PromoteRunResult> {

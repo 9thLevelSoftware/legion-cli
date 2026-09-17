@@ -1,12 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   gitWorktreeAdd,
   isGitRepo,
+  PathEscapeError,
   PersistError,
+  redactSecrets,
   runPagePath,
   runResumePath,
   toProjectRelativePosix,
@@ -224,7 +226,7 @@ async function detectTestRunners(projectRoot: string, tests: readonly string[]):
       scripts?: { test?: unknown };
     };
     if (typeof raw.scripts?.test === "string" && raw.scripts.test.trim()) {
-      runners.push(`package.json scripts.test: ${raw.scripts.test.trim()}`);
+      runners.push(`package.json scripts.test: ${redactSecrets(raw.scripts.test.trim())}`);
     }
   } catch {
     // no package.json
@@ -247,13 +249,8 @@ function sourceHasNearbyTest(source: string, tests: readonly string[]): boolean 
   const base = source.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
   return tests.some((path) => {
     const name = path.replace(/^.*\//, "");
-    if (name === `${base}.test.ts` || name === `${base}.test.js`) return true;
-    if (name === `${base}.spec.ts` || name === `${base}.spec.js`) return true;
     if (name === `${base}_test.go`) return true;
-    return (
-      /\.(test|spec)\.[^.]+$/i.test(name) &&
-      name.replace(/\.(test|spec)\.[^.]+$/i, "") === base
-    );
+    return /\.(test|spec)\.[^.]+$/i.test(name) && name.replace(/\.(test|spec)\.[^.]+$/i, "") === base;
   });
 }
 
@@ -301,13 +298,21 @@ async function scanSecretFindings(projectRoot: string): Promise<SecretFinding[]>
       if (entry.name === "." || entry.name === "..") continue;
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       const abs = join(dir, entry.name);
-      if (entry.isDirectory()) {
+      let st;
+      try {
+        st = await lstat(abs);
+      } catch {
+        continue;
+      }
+      // Junctions/symlinks can escape the project; do not follow or record childRel.
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
         if (SKIP_DIR_NAMES.has(entry.name)) continue;
         if (rel === ".legion-cli" && SKIP_LEGION_CHILDREN.has(entry.name)) continue;
         await walk(abs, childRel);
         continue;
       }
-      if (!entry.isFile()) continue;
+      if (!st.isFile()) continue;
       filesSeen += 1;
       let text: string;
       try {
@@ -321,8 +326,9 @@ async function scanSecretFindings(projectRoot: string): Promise<SecretFinding[]>
       let path: string;
       try {
         path = toProjectRelativePosix(projectRoot, abs);
-      } catch {
-        path = childRel;
+      } catch (err) {
+        if (err instanceof PathEscapeError) continue;
+        continue;
       }
       for (const pattern of SECRET_PATTERNS) {
         pattern.re.lastIndex = 0;
@@ -359,6 +365,31 @@ function parseAuditNames(stdout: string): string[] {
   return [...names].sort();
 }
 
+/** Stdout-only JSON parse so stderr warnings cannot hide vulnerability names. */
+export function formatAuditLines(input: {
+  lockfile: string;
+  bin: string;
+  stdout: string;
+  stderr?: string;
+  timedOut?: boolean;
+  error?: string;
+}): string[] {
+  if (input.timedOut) {
+    return [`lockfile: ${input.lockfile}`, "audit timed out (60s)"];
+  }
+  if (input.error) {
+    return [`lockfile: ${input.lockfile}`, `audit skipped: ${input.bin} (${input.error})`];
+  }
+  const names = parseAuditNames(input.stdout);
+  const lines = [`lockfile: ${input.lockfile}`, `command: ${input.bin} audit --json`];
+  if (names.length === 0) {
+    lines.push("packages: (none named)");
+  } else {
+    lines.push(`packages: ${names.join(", ")}`);
+  }
+  return lines;
+}
+
 function runLockfileAudit(projectRoot: string): string[] {
   const pnpmLock = existsSync(join(projectRoot, "pnpm-lock.yaml"));
   const npmLock = existsSync(join(projectRoot, "package-lock.json"));
@@ -366,6 +397,7 @@ function runLockfileAudit(projectRoot: string): string[] {
     return ["no audit (no lockfile)"];
   }
   const bin = pnpmLock ? "pnpm" : "npm";
+  const lockfile = pnpmLock ? "pnpm-lock.yaml" : "package-lock.json";
   const argv = ["audit", "--json"];
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
@@ -388,22 +420,17 @@ function runLockfileAudit(projectRoot: string): string[] {
     (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ||
     (result.signal === "SIGKILL" && result.status === null);
   if (timedOut) {
-    return [`lockfile: ${pnpmLock ? "pnpm-lock.yaml" : "package-lock.json"}`, "audit timed out (60s)"];
+    return formatAuditLines({ lockfile, bin, stdout: "", timedOut: true });
   }
   if (result.error) {
-    return [
-      `lockfile: ${pnpmLock ? "pnpm-lock.yaml" : "package-lock.json"}`,
-      `audit skipped: ${bin} (${(result.error as NodeJS.ErrnoException).code ?? result.error.message})`,
-    ];
+    return formatAuditLines({
+      lockfile,
+      bin,
+      stdout: "",
+      error: (result.error as NodeJS.ErrnoException).code ?? result.error.message,
+    });
   }
-  const names = parseAuditNames(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
-  const lines = [`lockfile: ${pnpmLock ? "pnpm-lock.yaml" : "package-lock.json"}`, `command: ${bin} audit --json`];
-  if (names.length === 0) {
-    lines.push("packages: (none named)");
-  } else {
-    lines.push(`packages: ${names.join(", ")}`);
-  }
-  return lines;
+  return formatAuditLines({ lockfile, bin, stdout: result.stdout ?? "", stderr: result.stderr ?? "" });
 }
 
 function renderSecurityMd(findings: SecretFinding[], auditLines: string[]): string {
@@ -663,29 +690,7 @@ async function ensureWorktree(store: LegionStore, run: BrownfieldRun): Promise<B
   };
 }
 
-async function writeLadderExtras(
-  store: LegionStore,
-  runId: string,
-  effort: BrownfieldEffort,
-  evidence: Evidence,
-): Promise<void> {
-  if (effort < 2) return;
-  const runners = await detectTestRunners(store.projectRoot, evidence.tests);
-  const gaps = evidence.sources.filter((source) => !sourceHasNearbyTest(source, evidence.tests)).slice(0, 20);
-  await writeRunFile(store.projectRoot, runPagePath(runId, "tests.md"), renderTestsMd({
-    runners,
-    tests: evidence.tests,
-    gaps,
-  }));
-  if (effort < 3) return;
-  const findings = await scanSecretFindings(store.projectRoot);
-  const auditLines = runLockfileAudit(store.projectRoot);
-  await writeRunFile(
-    store.projectRoot,
-    runPagePath(runId, "security.md"),
-    renderSecurityMd(findings, auditLines),
-  );
-  if (effort < 4) return;
+async function writeDocsMd(store: LegionStore, runId: string, evidence: Evidence): Promise<void> {
   const fingerprints = await readFingerprints(store.projectRoot);
   const mdSet = new Set(evidence.markdown);
   const undocumented: string[] = [];
@@ -714,6 +719,31 @@ async function writeLadderExtras(
       undocumented,
     }),
   );
+}
+
+async function writeLadderExtras(
+  store: LegionStore,
+  runId: string,
+  effort: BrownfieldEffort,
+  evidence: Evidence,
+  extras: { findings: SecretFinding[]; auditLines: string[] },
+): Promise<void> {
+  if (effort < 2) return;
+  const runners = await detectTestRunners(store.projectRoot, evidence.tests);
+  const gaps = evidence.sources.filter((source) => !sourceHasNearbyTest(source, evidence.tests)).slice(0, 20);
+  await writeRunFile(store.projectRoot, runPagePath(runId, "tests.md"), renderTestsMd({
+    runners,
+    tests: evidence.tests,
+    gaps,
+  }));
+  if (effort < 3) return;
+  await writeRunFile(
+    store.projectRoot,
+    runPagePath(runId, "security.md"),
+    renderSecurityMd(extras.findings, extras.auditLines),
+  );
+  if (effort < 4) return;
+  await writeDocsMd(store, runId, evidence);
 }
 
 function extractUserGoal(intentBody: string): string {
@@ -775,7 +805,12 @@ function renderEffort5Architecture(map: MapResult, fingerprints: FingerprintFile
   ].join("\n");
 }
 
-export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions): Promise<BrownfieldResult> {
+export type PreparedBrownfield =
+  | { kind: "done"; result: BrownfieldResult }
+  | { kind: "pending"; run: BrownfieldRun; resume: boolean };
+
+/** Lock-held: validate and build the in-memory run. Does not persist a new run (map/audit stay outside #mutate). */
+export async function prepareBrownfield(store: LegionStore, opts: BrownfieldOptions): Promise<PreparedBrownfield> {
   const stateExists = await store.pathExists(".legion-cli/STATE.md");
   if (!stateExists) {
     refuse("brownfield is refused until init", HINT.init);
@@ -784,14 +819,12 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
     refuse("brownfield requires a git repository", HINT.gitRepo);
   }
 
-  const project = (await store.readProject()).data;
   const executeRequested = Boolean(opts.execute);
   const context = (opts.context ?? "").trim();
 
-  let run: BrownfieldRun;
   if (opts.resume) {
     const runId = parseRunId(opts.resume);
-    run = await readRunResume(store, runId);
+    let run = await readRunResume(store, runId);
     if (opts.effort !== undefined) {
       const requested = parseEffort(opts.effort);
       if (requested !== asEffort(run.effort)) {
@@ -805,20 +838,28 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
     if (run.phase === "complete" && wantExecute) {
       run = await ensureWorktree(store, { ...run, execute: true });
       await writeRunResume(store.projectRoot, run);
-      return toResult(run);
+      return { kind: "done", result: toResult(run) };
     }
-    run = {
-      ...run,
-      execute: wantExecute,
-      context: run.context || context,
+    return {
+      kind: "pending",
+      resume: true,
+      run: {
+        ...run,
+        execute: wantExecute,
+        context: run.context || context,
+      },
     };
-  } else {
-    const effort = parseEffort(opts.effort);
-    const runId = opts.runId ? parseRunId(opts.runId) : newRunId();
-    if (await store.pathExists(runResumePath(runId))) {
-      refuse(`brownfield run ${runId} already exists`, HINT.brownfieldResume);
-    }
-    run = {
+  }
+
+  const effort = parseEffort(opts.effort);
+  const runId = opts.runId ? parseRunId(opts.runId) : newRunId();
+  if (await store.pathExists(runResumePath(runId))) {
+    refuse(`brownfield run ${runId} already exists`, HINT.brownfieldResume);
+  }
+  return {
+    kind: "pending",
+    resume: false,
+    run: {
       schemaVersion: SCHEMA_VERSION.run,
       runId,
       effort,
@@ -830,61 +871,28 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
       promoted: false,
       pages: ladderPages(effort, false),
       context,
-    };
-  }
-
-  const effort = asEffort(run.effort);
-  await mkdir(join(store.projectRoot, ".legion-cli", "runs", run.runId), { recursive: true });
-  await writeRunResume(store.projectRoot, run);
-
-  const evidence = await collectEvidence(store.projectRoot);
-  const pages = renderPages({
-    runId: run.runId,
-    name: project.name,
-    effort,
-    context: run.context,
-    execute: run.execute,
-    packageHint: await readPackageHint(store.projectRoot),
-    layout: evidence.layout,
-    sources: evidence.sources,
-  });
-  await writeNamedPages(store.projectRoot, run.runId, pages);
-  await writeLadderExtras(store, run.runId, effort, evidence);
-
-  if (effort >= 5) {
-    // Map runs outside #mutate (engine.brownfield); leave phase analysis until finishBrownfieldMap.
-    run = { ...run, pages: ladderPages(effort, false), phase: "analysis" };
-    await writeRunResume(store.projectRoot, run);
-    return toResult(run);
-  }
-
-  run = { ...run, pages: ladderPages(effort, false), phase: run.execute ? "execute" : "complete" };
-  await writeRunResume(store.projectRoot, run);
-
-  if (run.execute) {
-    run = await ensureWorktree(store, run);
-    await writeRunResume(store.projectRoot, run);
-  }
-
-  return toResult(run);
+    },
+  };
 }
 
-export async function finishBrownfieldMap(
-  store: LegionStore,
-  runId: string,
-  map: MapResult,
-): Promise<BrownfieldResult> {
-  const run = await readRunResume(store, runId);
-  const effort = asEffort(run.effort);
-  if (effort < 5) return toResult(run);
+/** Secrets walk + 60s audit — call outside #mutate. */
+export async function collectBrownfieldAudit(
+  projectRoot: string,
+  effort: number,
+): Promise<{ findings: Array<{ path: string; kind: string }>; auditLines: string[] }> {
+  if (effort < 3) return { findings: [], auditLines: [] };
+  const findings = await scanSecretFindings(projectRoot);
+  const auditLines = runLockfileAudit(projectRoot);
+  return { findings, auditLines };
+}
 
+async function applyEffort5Map(store: LegionStore, run: BrownfieldRun, map: MapResult): Promise<void> {
   const fingerprints = await readFingerprints(store.projectRoot);
   await writeRunFile(
     store.projectRoot,
     runPagePath(run.runId, "architecture.md"),
     renderEffort5Architecture(map, fingerprints),
   );
-
   let intentBody = "";
   let analysisBody = "";
   try {
@@ -908,12 +916,58 @@ export async function finishBrownfieldMap(
       mustBeTrue: extractAnalysisHeadings(analysisBody),
     }),
   );
+}
+
+/** Lock-held write of run pages after outside-lock audit/map. */
+export async function commitBrownfield(
+  store: LegionStore,
+  run: BrownfieldRun,
+  extras: {
+    resume: boolean;
+    findings: SecretFinding[];
+    auditLines: string[];
+    map?: MapResult;
+  },
+): Promise<BrownfieldResult> {
+  const existed = await store.pathExists(runResumePath(run.runId));
+  if (existed && !extras.resume) {
+    refuse(`brownfield run ${run.runId} already exists`, HINT.brownfieldResume);
+  }
+
+  const effort = asEffort(run.effort);
+  const project = (await store.readProject()).data;
+  await mkdir(join(store.projectRoot, ".legion-cli", "runs", run.runId), { recursive: true });
+
+  const evidence = await collectEvidence(store.projectRoot);
+  const pages = renderPages({
+    runId: run.runId,
+    name: project.name,
+    effort,
+    context: run.context,
+    execute: run.execute,
+    packageHint: await readPackageHint(store.projectRoot),
+    layout: evidence.layout,
+    sources: evidence.sources,
+  });
+  await writeNamedPages(store.projectRoot, run.runId, pages);
+  await writeLadderExtras(store, run.runId, effort, evidence, {
+    findings: extras.findings,
+    auditLines: extras.auditLines,
+  });
 
   let next: BrownfieldRun = {
     ...run,
-    pages: ladderPages(5, true),
+    pages: ladderPages(effort, Boolean(extras.map)),
     phase: run.execute ? "execute" : "complete",
   };
+
+  if (effort >= 5 && extras.map) {
+    await applyEffort5Map(store, next, extras.map);
+    // docs.md after map so fingerprint exports are present on the first run
+    if (effort >= 4) await writeDocsMd(store, next.runId, evidence);
+    next = { ...next, pages: ladderPages(5, true) };
+  }
+
   await writeRunResume(store.projectRoot, next);
   if (next.execute) {
     next = await ensureWorktree(store, next);

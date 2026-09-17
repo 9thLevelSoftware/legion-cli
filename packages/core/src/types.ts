@@ -1,6 +1,5 @@
 import type { FakeArtifact, FakeHoldWait } from "@9thlevelsoftware/legion-cli-agents";
 import type { GardenReport, SearchHit } from "@9thlevelsoftware/legion-cli-wiki";
-import type { MapOptions } from "./map.js";
 import type {
   AdapterId,
   AdapterResolutionSource,
@@ -70,11 +69,8 @@ export type BrownfieldOptions = {
   resume?: string;
   context?: string;
   runId?: string;
-  /** Effort 5 pass-through to `engine.map({ lsp: "require" })`. Ignored on 1–4. */
+  /** Effort 5 pass-through to in-process map `{ lsp: "require" }`. Ignored on 1–4. */
   lsp?: boolean;
-  resolveBinary?: MapOptions["resolveBinary"];
-  spawnLsp?: MapOptions["spawnLsp"];
-  lspDeadlineMs?: MapOptions["lspDeadlineMs"];
 };
 
 export type BrownfieldResult = {
