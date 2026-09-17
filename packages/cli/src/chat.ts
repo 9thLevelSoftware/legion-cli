@@ -12,9 +12,8 @@ import {
 import type { AdapterId, ChatAction, ChatSessionFile, ControlMode } from "@9thlevelsoftware/legion-cli-schema";
 import { parseAdapterFlag } from "./adapter-route.js";
 import { runBrief } from "./brief.js";
-import { formatHelpLayer1 } from "./help-all.js";
 import type { CliOpts } from "./io.js";
-import { writeErr, writeJson, writeOut } from "./io.js";
+import { writeErr, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 import { closePrompt, isYes, readLine } from "./prompt.js";
 import { runSearch } from "./search.js";
@@ -83,7 +82,11 @@ async function printRead(
     return;
   }
   if (turn.kind === "dropped") {
-    writeOut(turn.output.split("\n").find((line) => line.startsWith("Next:")) ?? turn.output);
+    const line =
+      turn.output.split("\n").find((row) => row.startsWith("Dropped.")) ??
+      turn.output.split("\n")[0] ??
+      turn.output;
+    writeOut(line);
     return;
   }
   if (action.type === "next_verb") {
@@ -134,7 +137,7 @@ async function handleTurn(
 
 export async function runChat(opts: CliOpts, flags: ChatFlags): Promise<number> {
   const once = flags.once;
-  if (!once && !isTty()) {
+  if (once === undefined && !isTty()) {
     refuse("chat requires a TTY or --once", HINT.chat);
   }
   const adapter = parseAdapterFlag(flags.adapter);
@@ -149,32 +152,6 @@ export async function runChat(opts: CliOpts, flags: ChatFlags): Promise<number> 
   try {
     let session = await resumeOrCreateChatSession(engine);
     if (once !== undefined) {
-      if (opts.json) {
-        const turn = await routeChatTurn(engine, session, once, {
-          cliAdapter: adapter,
-          fixtureAction: fixtureFromEnv(),
-        });
-        if (turn.kind === "proposal" && isChatProposalAction(turn.action)) {
-          if (opts.yes && turn.action.type === "discuss_decide") {
-            refuse("discuss --yes cannot skip product decisions", HINT.discuss);
-          }
-          writeJson({
-            ok: false,
-            action: turn.action,
-            proposed: turn.proposal,
-            next: turn.nextHint,
-          });
-          return 1;
-        }
-        writeJson({
-          ok: true,
-          action: turn.action,
-          next: turn.nextHint,
-          paused: turn.paused,
-          dropped: turn.kind === "dropped",
-        });
-        return 0;
-      }
       const result = await handleTurn(opts, engine, session, once, { once: true, adapter });
       return result.code;
     }
@@ -184,11 +161,6 @@ export async function runChat(opts: CliOpts, flags: ChatFlags): Promise<number> 
       const line = await readLine("> ");
       if (!line) continue;
       if (/^(exit|quit)$/i.test(line)) return 0;
-      if (/^\/help$/i.test(line)) {
-        writeOut("Chat routes into engine verbs. Read commands auto-apply; mutating actions print Proposed: … [Y/n].");
-        writeOut(formatHelpLayer1().trimEnd());
-        continue;
-      }
       const result = await handleTurn(opts, engine, session, line, { once: false, adapter });
       session = result.session;
       if (result.stop) return result.code;

@@ -21,7 +21,7 @@ import { HINT, refuse } from "./errors.js";
 import type { LegionEngine } from "./engine.js";
 import type { DecisionInput, NewTicket } from "./types.js";
 
-export const CHAT_IDLE_LIMIT = 4;
+const CHAT_IDLE_LIMIT = 4;
 
 const ILLEGAL_MODEL_TYPES = new Set([
   "execute",
@@ -78,7 +78,7 @@ export function isChatProposalAction(action: ChatAction): action is ChatProposal
   return ChatProposalActionSchema.safeParse(action).success;
 }
 
-export function nextVerbForPhase(phase: Phase): string {
+function nextVerbForPhase(phase: Phase): string {
   switch (phase) {
     case "uninitialized":
       return "init";
@@ -107,7 +107,7 @@ export function nextVerbForPhase(phase: Phase): string {
   }
 }
 
-export function nextHintForAction(action: ChatAction, phase: Phase): string {
+function nextHintForAction(action: ChatAction, phase: Phase): string {
   switch (action.type) {
     case "intent_answer":
       return HINT.intent;
@@ -126,7 +126,7 @@ export function nextHintForAction(action: ChatAction, phase: Phase): string {
   }
 }
 
-export function formatChatProposal(action: ChatProposalAction): string {
+function formatChatProposal(action: ChatProposalAction): string {
   switch (action.type) {
     case "intent_answer":
       return `Proposed: intent answers: ${action.answers.map((item) => JSON.stringify(item)).join("; ")} [Y/n]`;
@@ -170,7 +170,7 @@ function parseNaturalRead(utterance: string): ChatReadAction | null {
   const trimmed = utterance.trim();
   if (/^(where am i\??|status)$/i.test(trimmed)) return { type: "status" };
   if (/^(what(?:'s| is) next\??|next(?: command)?\??)$/i.test(trimmed)) return { type: "next_verb" };
-  const search = /^(?:search|find)\s+(.+)$/i.exec(trimmed);
+  const search = /^search\s+(.+)$/i.exec(trimmed);
   if (search) {
     const q = search[1].trim();
     if (q) return { type: "search", q };
@@ -290,11 +290,13 @@ function idleTurnsFromSession(session: ChatSessionFile): number {
       }
     }
     if (userText !== undefined && isRequestedRead(userText)) break;
-    if (turn.action?.type !== "next_verb") break;
+    if (turn.action?.type !== "next_verb" && turn.action?.type !== "search") break;
     count += 1;
   }
   return count;
 }
+
+const ENGINE_SESSION_FILE = /^chat-[0-9a-z]+-[0-9a-f]{8}\.json$/;
 
 function chatSessionPath(id: string): string {
   const safe = id.trim();
@@ -365,16 +367,20 @@ export async function resumeOrCreateChatSession(engine: LegionEngine): Promise<C
     await mkdir(dir, { recursive: true });
     let names: string[] = [];
     try {
-      names = (await readdir(dir)).filter((name) => name.toLowerCase().endsWith(".json"));
+      names = (await readdir(dir)).filter((name) => ENGINE_SESSION_FILE.test(name));
     } catch {
       names = [];
     }
     let latest: ChatSessionFile | null = null;
     for (const name of names) {
+      const abs = join(dir, name);
       try {
-        const raw = await readFile(join(dir, name), "utf8");
+        const st = await lstat(abs);
+        if (st.isSymbolicLink()) continue;
+        const raw = await readFile(abs, "utf8");
         const parsed = ChatSessionFileSchema.safeParse(JSON.parse(raw));
         if (!parsed.success) continue;
+        if (parsed.data.id !== name.slice(0, -".json".length)) continue;
         if (!latest || parsed.data.startedAt > latest.startedAt) latest = parsed.data;
       } catch {
         // skip unreadable session files
@@ -528,7 +534,7 @@ export async function routeChatTurn(
     kind === "proposal"
       ? (proposal ?? "")
       : kind === "dropped"
-        ? `Next: ${nextHint}`
+        ? `Dropped. Next: ${nextHint}`
         : local === "help"
           ? "Chat routes into engine verbs. /status /next /brief /help /search, or type freely."
           : local === "brief"
@@ -548,7 +554,8 @@ export async function routeChatTurn(
     ],
   };
 
-  const idleEligible = !requestedRead && action.type === "next_verb" && kind !== "proposal";
+  const idleEligible =
+    !requestedRead && (action.type === "next_verb" || action.type === "search") && kind !== "proposal";
   const paused = idleEligible && idleTurnsFromSession(nextSession) >= CHAT_IDLE_LIMIT;
 
   await saveChatSession(engine, nextSession);

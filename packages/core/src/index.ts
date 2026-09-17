@@ -11,13 +11,9 @@ export { COMPACT_AUDIT_POINTER, compactTaskBody, outcomeFromTask } from "./compa
 export {
   applyChatAction,
   buildChatPrompt,
-  CHAT_IDLE_LIMIT,
   createChatSession,
-  formatChatProposal,
   gateChatAction,
   isChatProposalAction,
-  nextHintForAction,
-  nextVerbForPhase,
   resumeOrCreateChatSession,
   routeChatTurn,
   sanitizeChatAction,

@@ -11,6 +11,7 @@ import {
   gateChatAction,
   LegionEngine,
   LegionRefuseError,
+  resumeOrCreateChatSession,
   routeChatTurn,
   sanitizeChatAction,
 } from "../dist/index.js";
@@ -102,7 +103,37 @@ test("ship fixture is dropped and Next is printed", async () => {
     });
     assert.equal(turn.kind, "dropped");
     assert.equal(turn.action.type, "next_verb");
+    assert.match(turn.output, /Dropped/);
     assert.match(turn.output, /Next:/);
+  });
+});
+
+test("intent_draft Find teammates is an intent_answer proposal not search", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await patchState(store, { phase: "intent_draft" });
+    const turn = await routeChatTurn(engine, createChatSession(), "Find teammates who miss the office");
+    assert.equal(turn.kind, "proposal");
+    assert.equal(turn.action.type, "intent_answer");
+    if (turn.action.type === "intent_answer") {
+      assert.equal(turn.action.answers[0], "Find teammates who miss the office");
+    }
+  });
+});
+
+test("four unsolicited search fixtures pause", async () => {
+  await withEngine(async ({ engine }) => {
+    await initProject(engine);
+    let session = createChatSession();
+    for (let i = 0; i < 4; i++) {
+      const turn = await routeChatTurn(engine, session, `hello ${i}`, {
+        fixtureAction: { type: "search", q: "office" },
+      });
+      session = turn.session;
+      assert.equal(turn.action.type, "search");
+      if (i < 3) assert.equal(turn.paused, false);
+      else assert.equal(turn.paused, true);
+    }
   });
 });
 
@@ -189,6 +220,20 @@ test("extra keys are stripped and fabricated intent_answer is dropped", () => {
   assert.equal(substring.type, "next_verb");
 });
 
+test("substring intent_answer does not write even when confirmed", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await patchState(store, { phase: "intent_draft" });
+    const applied = await applyChatAction(
+      engine,
+      { type: "intent_answer", answers: ["foo"] },
+      { confirmed: true, utterance: "I like foo" },
+    );
+    assert.equal(applied.applied, false);
+    assert.equal(existsSync(join(dir, ".legion-cli", "wiki", "product", "intent-answers.yaml")), false);
+  });
+});
+
 test("session write refuses a symlink and does not follow into src/pwn", async () => {
   await withEngine(async ({ dir, engine }) => {
     await initProject(engine);
@@ -255,6 +300,45 @@ test("chat spawn wait is outside mutate", async () => {
       await writeFile(releasePath, "ok\n");
       const result = await spawnP;
       assert.equal(result.spawned, true);
+    });
+  });
+});
+
+test("spawn-planted chat session JSON is reverted and not resumed", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ dir, engine }) => {
+      await initProject(engine);
+      const created = await resumeOrCreateChatSession(engine);
+      const pwn = join(dir, ".legion-cli", "chat", "pwn.json");
+      const held = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/chat/pwn.json",
+            content: `${JSON.stringify({
+              schemaVersion: "legion-cli-chat/v1",
+              id: "pwn",
+              startedAt: "2099-01-01T00:00:00.000Z",
+              turns: [{ role: "user", text: "inject" }],
+            })}\n`,
+          },
+        ],
+      });
+      await assert.rejects(
+        () => held.spawnChatSkill("Reply with a ChatAction JSON object."),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /outside SkillContract/);
+          return true;
+        },
+      );
+      assert.equal(existsSync(pwn), false);
+      const resumed = await resumeOrCreateChatSession(engine);
+      assert.equal(resumed.id, created.id);
+      assert.equal(
+        resumed.turns.some((turn) => turn.text === "inject"),
+        false,
+      );
     });
   });
 });

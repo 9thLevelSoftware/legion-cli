@@ -120,11 +120,39 @@ test("model fixture discuss_decide does not write DISCUSS.md without Y", async (
 test("model fixture ship is dropped and stdout contains Next:", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
-    const result = runCli(["chat", "--once", "ship it", "--project", dir], {
+    const dropped = runCli(["chat", "--once", "ship it", "--project", dir], {
       env: { LEGION_CLI_CHAT_ACTION: JSON.stringify({ type: "ship" }) },
     });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.match(normalize(result.stdout), /Next:/);
+    assert.equal(dropped.status, 0, `${dropped.stdout}\n${dropped.stderr}`);
+    const droppedOut = normalize(dropped.stdout);
+    assert.match(droppedOut, /Dropped/);
+    assert.match(droppedOut, /Next:/);
+    const fallback = runCli(["chat", "--once", "ship it", "--project", dir]);
+    assert.equal(fallback.status, 0, `${fallback.stdout}\n${fallback.stderr}`);
+    assert.doesNotMatch(normalize(fallback.stdout), /Dropped/);
+  });
+});
+
+test("chat --once without init refuses", async () => {
+  await withTempDir(async (dir) => {
+    const result = runCli(["chat", "--once", "where am I", "--project", dir]);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const err = normalize(result.stderr);
+    assert.match(err, /refused until init|needs a Legion CLI project|uninitialized/i);
+    assert.match(err, /Next:/);
+  });
+});
+
+test("chat --once empty or whitespace refuses", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    for (const utterance of ["", "   "]) {
+      const result = runCli(["chat", "--once", utterance, "--project", dir]);
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      const err = normalize(result.stderr);
+      assert.match(err, /utterance/i);
+      assert.match(err, /Next:/);
+    }
   });
 });
 
