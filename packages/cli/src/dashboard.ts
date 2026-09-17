@@ -47,11 +47,14 @@ export async function runDashboard(opts: CliOpts, flags: DashboardFlags): Promis
       url: handle.url,
       bind: handle.host,
       port: handle.port,
+      token: handle.token,
       sourceOfTruth: "cli",
     });
   } else {
     writeOut(`Viewer: ${handle.url}`);
-    writeOut("View-only. Writes are CLI or token POST. CLI remains the source of truth.");
+    writeOut(
+      "Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist). CLI remains the source of truth.",
+    );
   }
 
   await waitForSignal();

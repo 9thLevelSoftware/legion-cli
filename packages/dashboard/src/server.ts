@@ -69,6 +69,7 @@ export type DashboardHandle = {
   url: string;
   host: string;
   port: number;
+  token: string;
   close(): Promise<void>;
 };
 
@@ -157,11 +158,10 @@ async function serveWireframe(
   res: ServerResponse,
   headOnly: boolean,
   origin: string | undefined,
-  token: string,
 ): Promise<void> {
   const base = basename(fileName);
   if (base !== fileName || fileName.includes("\\") || fileName.includes("\0")) {
-    send(res, 404, renderNotFound("unknown wireframe", token), "text/html; charset=utf-8", headOnly, origin);
+    send(res, 404, renderNotFound("unknown wireframe"), "text/html; charset=utf-8", headOnly, origin);
     return;
   }
   const storePath = `.legion-cli/specs/${specId}/wireframes/${base}`;
@@ -171,7 +171,7 @@ async function serveWireframe(
     send(res, 200, body, contentTypeFor(base), headOnly, origin);
   } catch (err) {
     if (err instanceof PathEscapeError || (err as NodeJS.ErrnoException).code === "ENOENT") {
-      send(res, 404, renderNotFound("unknown wireframe", token), "text/html; charset=utf-8", headOnly, origin);
+      send(res, 404, renderNotFound("unknown wireframe"), "text/html; charset=utf-8", headOnly, origin);
       return;
     }
     throw err;
@@ -183,10 +183,6 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
   const port = opts.port ?? DEFAULT_DASHBOARD_PORT;
   const pollMs = opts.pollMs ?? 1000;
   const warn = opts.warn ?? ((message: string) => process.stderr.write(`${message}\n`));
-  if (host === EXPOSE_BIND) {
-    warn("WARNING: --expose binds 0.0.0.0 (all interfaces)");
-  }
-
   const token = mintWriteToken();
   const engine = createDashboardEngine(opts.projectRoot);
   const config = await readOptionalConfig(createLegionStore(opts.projectRoot));
@@ -326,19 +322,19 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     const snapshot = await loadSnapshot(opts.projectRoot);
 
     if (pathname === "/") {
-      send(res, 200, renderKanban(snapshot, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
+      send(res, 200, renderKanban(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors);
       return;
     }
     if (pathname === "/spec") {
-      send(res, 200, renderSpec(snapshot, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
+      send(res, 200, renderSpec(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors);
       return;
     }
     if (pathname === "/graph") {
-      send(res, 200, renderGraph(snapshot, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
+      send(res, 200, renderGraph(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors);
       return;
     }
     if (pathname === "/audit") {
-      send(res, 200, renderAudit(snapshot, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
+      send(res, 200, renderAudit(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors);
       return;
     }
     if (pathname === "/api/state") {
@@ -349,10 +345,10 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       const fileName = pathname.slice("/spec/wireframes/".length);
       const specId = snapshot.activeSpecId;
       if (!specId || !fileName) {
-        send(res, 404, renderNotFound("unknown wireframe", token), "text/html; charset=utf-8", headOnly, cors);
+        send(res, 404, renderNotFound("unknown wireframe"), "text/html; charset=utf-8", headOnly, cors);
         return;
       }
-      await serveWireframe(opts.projectRoot, specId, fileName, res, headOnly, cors, token);
+      await serveWireframe(opts.projectRoot, specId, fileName, res, headOnly, cors);
       return;
     }
     if (pathname === "/wiki" || pathname === "/wiki/") {
@@ -367,13 +363,13 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       } catch {
         pages = [];
       }
-      send(res, 200, renderWikiIndex(pages, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
+      send(res, 200, renderWikiIndex(pages, webmcp), "text/html; charset=utf-8", headOnly, cors);
       return;
     }
     if (pathname.startsWith("/wiki/")) {
       const pageRef = pathname.slice("/wiki/".length);
       if (!pageRef || pageRef.includes("\0")) {
-        send(res, 404, renderNotFound("unknown page", token), "text/html; charset=utf-8", headOnly, cors);
+        send(res, 404, renderNotFound("unknown page"), "text/html; charset=utf-8", headOnly, cors);
         return;
       }
       const store = createLegionStore(opts.projectRoot);
@@ -389,19 +385,19 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
         } catch {
           links = [];
         }
-        send(res, 200, renderWikiPage(shown, links, token, webmcp), "text/html; charset=utf-8", headOnly, cors);
+        send(res, 200, renderWikiPage(shown, links, webmcp), "text/html; charset=utf-8", headOnly, cors);
       } catch (err) {
         if (err instanceof PathEscapeError) {
-          send(res, 404, renderNotFound("unknown page", token), "text/html; charset=utf-8", headOnly, cors);
+          send(res, 404, renderNotFound("unknown page"), "text/html; charset=utf-8", headOnly, cors);
           return;
         }
         const message = err instanceof Error ? err.message : String(err);
-        send(res, 404, renderNotFound(message, token), "text/html; charset=utf-8", headOnly, cors);
+        send(res, 404, renderNotFound(message), "text/html; charset=utf-8", headOnly, cors);
       }
       return;
     }
 
-    send(res, 404, renderNotFound("unknown route", token), "text/html; charset=utf-8", headOnly, cors);
+    send(res, 404, renderNotFound("unknown route"), "text/html; charset=utf-8", headOnly, cors);
   };
 
   const server: Server = createServer((req, res) => {
@@ -448,6 +444,13 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
   }, pollMs);
   timer.unref?.();
 
+  if (host === EXPOSE_BIND) {
+    warn(
+      "WARNING: --expose binds 0.0.0.0 (all interfaces). Write token is not in GET HTML; printed on stderr.",
+    );
+  }
+  warn(`Write token: ${token}`);
+
   if (opts.open) {
     (opts.openBrowser ?? openBrowser)(url);
   }
@@ -456,6 +459,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     url,
     host: boundHost === "::" ? host : boundHost,
     port: boundPort,
+    token,
     close: async () => {
       closed = true;
       clearInterval(timer);

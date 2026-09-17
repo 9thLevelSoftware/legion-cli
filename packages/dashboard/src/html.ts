@@ -33,11 +33,18 @@ iframe.wireframes { width:100%; min-height:24rem; border:1px solid var(--ink); b
 .edges { list-style:none; padding:0; }
 `.trim();
 
+export const VIEWER_COPY =
+  "Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist). CLI remains the source of truth.";
+
 export type DashboardHtmlOpts = {
-  token: string;
   alert?: string;
   webmcp?: boolean;
 };
+
+/** Empty sandbox applies every restriction. Never pair allow-same-origin with allow-scripts. */
+function sandboxedWireframeIframe(src: string): string {
+  return `<iframe class="wireframes" title="wireframes" src="${escapeHtml(src)}" sandbox></iframe>`;
+}
 
 function layout(title: string, body: string, opts: DashboardHtmlOpts): string {
   const banner = opts.alert ? `<div class="banner">${escapeHtml(opts.alert)}</div>` : "";
@@ -47,7 +54,6 @@ function layout(title: string, body: string, opts: DashboardHtmlOpts): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="legion-cli-token" content="${escapeHtml(opts.token)}">
   <title>${escapeHtml(title)}</title>
   <style>
 ${CSS}
@@ -63,7 +69,7 @@ ${CSS}
       <a href="/audit">Audit</a>
       <a href="/wiki">Wiki</a>
     </nav>
-    <p class="readonly muted">Viewer with optional writes. CLI remains the source of truth.</p>
+    <p class="readonly muted">${VIEWER_COPY}</p>
   </header>
   ${banner}
   <main>
@@ -115,7 +121,7 @@ function alertFor(snapshot: DashboardSnapshot): string | undefined {
   return undefined;
 }
 
-export function renderKanban(snapshot: DashboardSnapshot, token = "", webmcp = false): string {
+export function renderKanban(snapshot: DashboardSnapshot, webmcp = false): string {
   const name = snapshot.project?.name ?? "(uninitialized)";
   const current = snapshot.currentTask
     ? `${snapshot.currentTask.id} ${snapshot.currentTask.title}`
@@ -161,17 +167,17 @@ ${cols}
     <h2>Timeline</h2>
     ${timeline}
 `;
-  return layout(`${name} · board`, body, { token, alert: alertFor(snapshot), webmcp });
+  return layout(`${name} · board`, body, { alert: alertFor(snapshot), webmcp });
 }
 
-export function renderSpec(snapshot: DashboardSnapshot, token = "", webmcp = false): string {
+export function renderSpec(snapshot: DashboardSnapshot, webmcp = false): string {
   if (!snapshot.spec) {
-    return layout("Spec", `<h1>Spec</h1><p class="muted">No active spec yet.</p>`, { token, webmcp });
+    return layout("Spec", `<h1>Spec</h1><p class="muted">No active spec yet.</p>`, { webmcp });
   }
   const iframe =
     snapshot.wireframesIndex ?
       `<h2>Wireframes</h2>
-    <iframe class="wireframes" title="wireframes" src="/spec/wireframes/INDEX.html"></iframe>`
+    ${sandboxedWireframeIframe("/spec/wireframes/INDEX.html")}`
     : `<p class="muted">No wireframes index.</p>`;
   const prd =
     snapshot.prd ?
@@ -185,10 +191,10 @@ export function renderSpec(snapshot: DashboardSnapshot, token = "", webmcp = fal
     ${prd}
     ${iframe}
 `;
-  return layout(`Spec · ${snapshot.spec.title}`, body, { token, webmcp });
+  return layout(`Spec · ${snapshot.spec.title}`, body, { webmcp });
 }
 
-export function renderGraph(snapshot: DashboardSnapshot, token: string = "", webmcp = false): string {
+export function renderGraph(snapshot: DashboardSnapshot, webmcp = false): string {
   const nodes =
     snapshot.graph.nodes.length === 0 ?
       `<p class="muted">No tasks yet. Kanban still works once tasks exist (including todo).</p>`
@@ -215,10 +221,10 @@ export function renderGraph(snapshot: DashboardSnapshot, token: string = "", web
     <h2>Dependencies</h2>
     ${edges}
 `;
-  return layout("Task graph", body, { token, webmcp });
+  return layout("Task graph", body, { webmcp });
 }
 
-export function renderAudit(snapshot: DashboardSnapshot, token = "", webmcp = false): string {
+export function renderAudit(snapshot: DashboardSnapshot, webmcp = false): string {
   const rows =
     snapshot.audit.length === 0 ?
       `<p class="muted">No audit events yet. Ship will write events.jsonl; ingest receipts appear here when present.</p>`
@@ -230,12 +236,11 @@ export function renderAudit(snapshot: DashboardSnapshot, token = "", webmcp = fa
           return `<li><span class="muted">${escapeHtml(event.ts)}</span> ${escapeHtml(event.type)} · ${escapeHtml(event.phase)}${task} · ${escapeHtml(event.actor)}</li>`;
         })
         .join("")}</ol>`;
-  return layout("Audit", `<h1>Audit trail</h1>\n    ${rows}`, { token, webmcp });
+  return layout("Audit", `<h1>Audit trail</h1>\n    ${rows}`, { webmcp });
 }
 
 export function renderWikiIndex(
   pages: Array<{ id: string; title: string; path: string; trust: string }>,
-  token: string,
   webmcp = false,
 ): string {
   const list =
@@ -247,10 +252,10 @@ export function renderWikiIndex(
             `<li><a href="/wiki/${encodeURI(page.id)}">${escapeHtml(page.title)}</a> <span class="muted">${escapeHtml(page.id)} · ${escapeHtml(page.trust)}</span></li>`,
         )
         .join("")}</ul>`;
-  return layout("Wiki", `<h1>Wiki</h1>\n    ${list}`, { token, webmcp });
+  return layout("Wiki", `<h1>Wiki</h1>\n    ${list}`, { webmcp });
 }
 
-export function renderWikiPage(page: ShownPage, backlinks: string[], token: string, webmcp = false): string {
+export function renderWikiPage(page: ShownPage, backlinks: string[], webmcp = false): string {
   const trust = page.trust ? `<p class="muted">trust: ${escapeHtml(page.trust)}</p>` : "";
   const links =
     backlinks.length === 0 ?
@@ -266,9 +271,9 @@ export function renderWikiPage(page: ShownPage, backlinks: string[], token: stri
     <h2>Backlinks</h2>
     ${links}
 `;
-  return layout(page.title, body, { token, webmcp });
+  return layout(page.title, body, { webmcp });
 }
 
-export function renderNotFound(message: string, token: string, webmcp = false): string {
-  return layout("Not found", `<h1>Not found</h1><p>${escapeHtml(message)}</p>`, { token, webmcp });
+export function renderNotFound(message: string, webmcp = false): string {
+  return layout("Not found", `<h1>Not found</h1><p>${escapeHtml(message)}</p>`, { webmcp });
 }

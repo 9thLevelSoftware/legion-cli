@@ -1,4 +1,5 @@
 export {
+  VIEWER_COPY,
   renderAudit,
   renderGraph,
   renderKanban,

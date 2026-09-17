@@ -492,6 +492,8 @@ test("redactSecrets covers the documented secret patterns", () => {
   const leaked = [
     "AKIAIOSFODNN7EXAMPLE",
     "sk-abcdefghijklmnopqrstuvwxyz",
+    "sk-proj-testfixture000000000000000000",
+    "sk-ant-testfixture000000000000000000",
     "xai-abcdefghijklmnopqrstuvwxyz",
     "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----",
     "ghp_abcdefghijklmnopqrstuvwxyzABCD",
@@ -500,12 +502,16 @@ test("redactSecrets covers the documented secret patterns", () => {
   const redacted = redactSecrets(leaked);
   assert.match(redacted, /\[REDACTED:aws-access-key\]/);
   assert.match(redacted, /\[REDACTED:sk\]/);
+  assert.match(redacted, /\[REDACTED:sk-proj\]/);
+  assert.match(redacted, /\[REDACTED:sk-ant\]/);
   assert.match(redacted, /\[REDACTED:xai\]/);
   assert.match(redacted, /\[REDACTED:private-key\]/);
   assert.match(redacted, /\[REDACTED:ghp\]/);
   assert.match(redacted, /\[REDACTED:github_pat\]/);
   assert.doesNotMatch(redacted, /AKIAIOSFODNN7EXAMPLE/);
   assert.doesNotMatch(redacted, /sk-abcdefghijklmnopqrstuvwxyz/);
+  assert.doesNotMatch(redacted, /sk-proj-testfixture/);
+  assert.doesNotMatch(redacted, /sk-ant-testfixture/);
   assert.doesNotMatch(redacted, /xai-abcdefghijklmnopqrstuvwxyz/);
   assert.doesNotMatch(redacted, /BEGIN RSA PRIVATE KEY/);
   assert.doesNotMatch(redacted, /ghp_abcdefghijklmnopqrstuvwxyzABCD/);
@@ -524,6 +530,7 @@ test("ingest redacts secrets before wiki write", async () => {
         "# Leaked",
         "",
         "AKIAIOSFODNN7EXAMPLE key sk-abcdefghijklmnopqrstuvwxyz ghp_abcdefghijklmnopqrstuvwxyz",
+        "sk-proj-testfixture000000000000000000 sk-ant-testfixture000000000000000000",
         "xai-abcdefghijklmnopqrstuvwxyz",
         "github_pat_11AAAAAAA0123456789_abcdefghijklmnopqrstuvwxyz",
         "-----BEGIN OPENSSH PRIVATE KEY-----",
@@ -538,11 +545,15 @@ test("ingest redacts secrets before wiki write", async () => {
     const page = await store.readWikiPage(receipt.pagesCreated[0]);
     assert.match(page.body, /\[REDACTED:aws-access-key\]/);
     assert.match(page.body, /\[REDACTED:sk\]/);
+    assert.match(page.body, /\[REDACTED:sk-proj\]/);
+    assert.match(page.body, /\[REDACTED:sk-ant\]/);
     assert.match(page.body, /\[REDACTED:ghp\]/);
     assert.match(page.body, /\[REDACTED:xai\]/);
     assert.match(page.body, /\[REDACTED:github_pat\]/);
     assert.match(page.body, /\[REDACTED:private-key\]/);
     assert.doesNotMatch(page.body, /AKIAIOSFODNN7EXAMPLE/);
+    assert.doesNotMatch(page.body, /sk-proj-testfixture/);
+    assert.doesNotMatch(page.body, /sk-ant-testfixture/);
     assert.doesNotMatch(page.body, /secret-material/);
     assert.equal(redactSecrets("xai-abcdefghijklmnopqrstuvwxyz").includes("xai-"), false);
   });

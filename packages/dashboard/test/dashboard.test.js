@@ -32,10 +32,30 @@ function originFor(handle) {
   return `http://127.0.0.1:${handle.port}`;
 }
 
-function tokenFromHtml(html) {
-  const match = /<meta name="legion-cli-token" content="([^"]+)">/.exec(html);
-  assert.ok(match, "expected legion-cli-token meta");
+function tokenFromWarns(warns) {
+  const match = /Write token: ([0-9a-f]{64})/.exec(warns.join("\n"));
+  assert.ok(match, "expected write token on stderr");
   return match[1];
+}
+
+function assertHtmlOmitsToken(html, token) {
+  assert.doesNotMatch(html, /legion-cli-token/);
+  assert.doesNotMatch(html, /<meta name="legion-cli-token"/);
+  assert.equal(html.includes(token), false);
+}
+
+function assertSandboxedIframe(html) {
+  const iframe = /<iframe\b[^>]*>/.exec(html);
+  assert.ok(iframe, "expected wireframe iframe");
+  const tag = iframe[0];
+  assert.match(tag, /\bsandbox\b/);
+  const quoted = /\bsandbox="([^"]*)"/.exec(tag);
+  const tokens = quoted ? quoted[1].trim().split(/\s+/).filter(Boolean) : [];
+  assert.equal(
+    tokens.includes("allow-same-origin") && tokens.includes("allow-scripts"),
+    false,
+    "sandbox must not combine allow-same-origin and allow-scripts",
+  );
 }
 
 async function enginePost(handle, path, body, extra = {}) {
@@ -81,13 +101,15 @@ test("ENGINE_WRITE_METHODS is exactly ticket, wikiTrust, qaChecklist", () => {
   assert.equal(ENGINE_WRITE_METHODS.has("intent"), false);
 });
 
-test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, origin allowlist, token meta", async () => {
+test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, origin allowlist, no token in HTML", async () => {
   await withStore(async ({ dir, store }) => {
     await store.writeTask(todoTask(), "Show on the board before execute.\n");
-    await withServer(dir, async ({ handle, opened }) => {
+    await withServer(dir, async ({ handle, opened, warns }) => {
       assert.equal(handle.host, "127.0.0.1");
       assert.equal(opened.length, 0);
       assert.match(handle.url, /^http:\/\/127\.0\.0\.1:\d+$/);
+      assert.match(handle.token, /^[0-9a-f]{64}$/);
+      assert.equal(tokenFromWarns(warns), handle.token);
 
       const board = await fetch(handle.url);
       assert.equal(board.status, 200);
@@ -101,10 +123,16 @@ test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, origin allowlist, 
       assert.match(html, /phase:/);
       assert.match(html, /current task:/);
       assert.match(html, /source of truth/);
-      assert.match(html, /<meta name="legion-cli-token" content="[0-9a-f]{64}">/);
+      assert.match(html, /Read-only viewer/);
+      assert.match(html, /ticket\|wikiTrust\|qaChecklist/);
+      assertHtmlOmitsToken(html, handle.token);
       assert.equal(board.headers.get("access-control-allow-origin"), null);
       assert.equal(board.headers.get("set-cookie"), null);
       assert.equal(board.headers.get("content-security-policy")?.includes("connect-src 'self'"), true);
+
+      const missing = await fetch(`${handle.url}/nope`);
+      assert.equal(missing.status, 404);
+      assertHtmlOmitsToken(await missing.text(), handle.token);
 
       const allowedOrigin = originFor(handle);
       const allowed = await fetch(handle.url, { headers: { Origin: allowedOrigin } });
@@ -179,9 +207,11 @@ test("POST /engine/* requires token and origin; ticket/wikiTrust/qaChecklist mut
       "A durable fact from notes.\n",
     );
     await store.rebuild();
-    await withServer(dir, async ({ handle }) => {
+    await withServer(dir, async ({ handle, warns }) => {
       const html = await (await fetch(handle.url)).text();
-      const token = tokenFromHtml(html);
+      const token = handle.token;
+      assert.equal(tokenFromWarns(warns), token);
+      assertHtmlOmitsToken(html, token);
       const origin = originFor(handle);
 
       const noToken = await enginePost(handle, "/engine/ticket", { title: "park extra" });
@@ -321,16 +351,21 @@ test("SSE streams state; audit events appear on GET /audit", async () => {
   });
 });
 
-test("--expose binds 0.0.0.0 and warns", async () => {
+test("--expose binds 0.0.0.0, warns, and omits token from GET HTML", async () => {
   await withTempDir(async (dir) => {
     await withServer(
       dir,
       async ({ handle, warns }) => {
         assert.equal(handle.host, "0.0.0.0");
-        assert.match(warns.join("\n"), /0\.0\.0\.0/);
+        const warning = warns.join("\n");
+        assert.match(warning, /0\.0\.0\.0/);
+        assert.match(warning, /not in GET HTML/);
+        assert.equal(tokenFromWarns(warns), handle.token);
         const res = await fetch(`http://127.0.0.1:${handle.port}/`);
         assert.equal(res.status, 200);
-        assert.match(await res.text(), /uninitialized/);
+        const html = await res.text();
+        assert.match(html, /uninitialized/);
+        assertHtmlOmitsToken(html, handle.token);
       },
       { host: "0.0.0.0" },
     );
@@ -434,6 +469,23 @@ test("empty or missing activeSpecId is []; other-spec task never appears", async
         state.tasks.some((task) => task.id === "TSK-0002" || task.specId === "spec-checkin"),
         false,
       );
+    });
+  });
+});
+
+test("wireframe iframe is sandboxed without allow-same-origin+allow-scripts", async () => {
+  await withStore(async ({ dir, store }) => {
+    const spec = await store.readSpec("spec-checkin");
+    await store.writeSpec({ ...spec.data, wireframesIndex: "wireframes/INDEX.html" }, spec.body);
+    const wfDir = join(dir, ".legion-cli", "specs", "spec-checkin", "wireframes");
+    await mkdir(wfDir, { recursive: true });
+    await writeFile(join(wfDir, "INDEX.html"), "<html><body>wireframe</body></html>\n");
+    await withServer(dir, async ({ handle }) => {
+      const res = await fetch(`${handle.url}/spec`);
+      assert.equal(res.status, 200);
+      const html = await res.text();
+      assertHtmlOmitsToken(html, handle.token);
+      assertSandboxedIframe(html);
     });
   });
 });

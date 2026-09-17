@@ -36,6 +36,8 @@ function isPrivateIPv4(octets: number[]): boolean {
   if (a === 169 && b === 254) return true;
   if (a === 172 && b !== undefined && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
+  // RFC 6598 shared address space (CGNAT), including Alibaba 100.100.100.200 IMDS
+  if (a === 100 && b !== undefined && b >= 64 && b <= 127) return true;
   return false;
 }
 

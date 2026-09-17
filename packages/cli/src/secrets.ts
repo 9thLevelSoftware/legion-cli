@@ -3,6 +3,8 @@ import { join } from "node:path";
 
 const SECRET_PATTERNS: { name: string; re: RegExp }[] = [
   { name: "aws-access-key", re: /AKIA[0-9A-Z]{16}/g },
+  { name: "sk-proj", re: /\bsk-proj-[A-Za-z0-9_-]{8,}/g },
+  { name: "sk-ant", re: /\bsk-ant-[A-Za-z0-9_-]{8,}/g },
   { name: "sk", re: /\bsk-[A-Za-z0-9]{20,}/g },
   { name: "xai", re: /\bxai-[A-Za-z0-9]{20,}/g },
   { name: "private-key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },

@@ -85,7 +85,7 @@ test("doctor scans wiki for leftover secret patterns", async () => {
     await mkdir(join(dir, ".legion-cli", "wiki", "ingested"), { recursive: true });
     await writeFile(
       join(dir, ".legion-cli", "wiki", "ingested", "leaked.md"),
-      "---\nschemaVersion: legion-cli-wiki-page/v1\ntitle: Leaked\ntrust: untrusted\n---\n\nAKIAIOSFODNN7EXAMPLE\n",
+      "---\nschemaVersion: legion-cli-wiki-page/v1\ntitle: Leaked\ntrust: untrusted\n---\n\nAKIAIOSFODNN7EXAMPLE\nsk-proj-testfixture000000000000000000\nsk-ant-testfixture000000000000000000\n",
       "utf8",
     );
     const result = runCli(["doctor", "--project", dir, "--json"], {
@@ -98,9 +98,11 @@ test("doctor scans wiki for leftover secret patterns", async () => {
       `expected secret-scan warning, got ${JSON.stringify(body.warnings)}`,
     );
     assert.ok(body.secrets.some((hit) => hit.name === "aws-access-key"));
+    assert.ok(body.secrets.some((hit) => hit.name === "sk-proj"));
+    assert.ok(body.secrets.some((hit) => hit.name === "sk-ant"));
     const text = runCli(["doctor", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
-    assert.match(normalize(text.stdout), /Secrets\s+1 hit/);
+    assert.match(normalize(text.stdout), /Secrets\s+3 hit/);
   });
 });

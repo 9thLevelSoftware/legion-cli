@@ -1,5 +1,7 @@
 const SECRET_PATTERNS: { name: string; re: RegExp; replacement: string }[] = [
   { name: "aws-access-key", re: /AKIA[0-9A-Z]{16}/g, replacement: "[REDACTED:aws-access-key]" },
+  { name: "sk-proj", re: /\bsk-proj-[A-Za-z0-9_-]{8,}/g, replacement: "[REDACTED:sk-proj]" },
+  { name: "sk-ant", re: /\bsk-ant-[A-Za-z0-9_-]{8,}/g, replacement: "[REDACTED:sk-ant]" },
   { name: "sk", re: /\bsk-[A-Za-z0-9]{20,}/g, replacement: "[REDACTED:sk]" },
   { name: "xai", re: /\bxai-[A-Za-z0-9]{20,}/g, replacement: "[REDACTED:xai]" },
   {
