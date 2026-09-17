@@ -5,7 +5,14 @@ import test from "node:test";
 
 import { INDEX_DB_BASENAME, LOCK_BASENAME } from "@9thlevelsoftware/legion-cli-persist";
 import { MCP_TOOLS } from "../dist/index.js";
-import { copyFixtureProject, parseTool, withClient, withStore, withTempDir } from "./helpers.js";
+import {
+  copyFixtureProject,
+  otherSpecTask,
+  parseTool,
+  withClient,
+  withStore,
+  withTempDir,
+} from "./helpers.js";
 
 async function missing(path) {
   try {
@@ -213,6 +220,53 @@ test("missing wiki index is not rebuilt and does not take engine.lock", async ()
     assert.equal(await missing(lockPath), true);
     assert.equal(await readFile(statePath, "utf8"), beforeState);
     assert.equal(await readFile(wikiPath, "utf8"), beforeWiki);
+  });
+});
+
+test("task graph empty-slices: other-spec never appears; missing/empty activeSpecId is []", async () => {
+  await withStore(async ({ dir, store }) => {
+    await store.writeTask(otherSpecTask(), "Belongs to another spec.\n");
+
+    await withClient(dir, async (client) => {
+      const graph = parseTool(await client.callTool({ name: "legion_cli_task_graph", arguments: {} }));
+      assert.equal(graph.isError, false, graph.text);
+      assert.equal(graph.json.specId, "spec-checkin");
+      assert.deepEqual(
+        graph.json.tasks.map((task) => task.id),
+        ["TSK-0002"],
+      );
+      assert.equal(
+        graph.json.tasks.some((task) => task.id === "TSK-9999"),
+        false,
+      );
+
+      const other = parseTool(
+        await client.callTool({ name: "legion_cli_task_graph", arguments: { specId: "spec-other" } }),
+      );
+      assert.equal(other.isError, false, other.text);
+      assert.equal(other.json.specId, "spec-other");
+      assert.deepEqual(
+        other.json.tasks.map((task) => task.id),
+        ["TSK-9999"],
+      );
+    });
+
+    const seeded = await store.readState();
+    await store.writeState({ ...seeded.data, activeSpecId: null }, seeded.body);
+    await withClient(dir, async (client) => {
+      const graph = parseTool(await client.callTool({ name: "legion_cli_task_graph", arguments: {} }));
+      assert.equal(graph.isError, false, graph.text);
+      assert.equal(graph.json.specId, null);
+      assert.deepEqual(graph.json.tasks, []);
+    });
+
+    await store.writeState({ ...seeded.data, activeSpecId: "spec-empty" }, seeded.body);
+    await withClient(dir, async (client) => {
+      const graph = parseTool(await client.callTool({ name: "legion_cli_task_graph", arguments: {} }));
+      assert.equal(graph.isError, false, graph.text);
+      assert.equal(graph.json.specId, "spec-empty");
+      assert.deepEqual(graph.json.tasks, []);
+    });
   });
 });
 

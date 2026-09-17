@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { ENGINE_WRITE_METHODS, startDashboard } from "../dist/index.js";
-import { todoTask, withStore, withTempDir } from "./helpers.js";
+import { otherSpecTask, todoTask, withStore, withTempDir } from "./helpers.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -357,6 +357,83 @@ test("board shows raw Task.adapter when set and omits it when unset", async () =
       assert.equal(routed?.adapter, "grok");
       assert.equal(unset?.adapter, undefined);
       assert.equal("adapter" in unset, false);
+    });
+  });
+});
+
+test("snapshot imports core sliceTasks and never falls back to all tasks", async () => {
+  const src = await readFile(join(pkgRoot, "src", "snapshot.ts"), "utf8");
+  assert.match(src, /import \{ sliceTasks \} from "@9thlevelsoftware\/legion-cli-core"/);
+  assert.doesNotMatch(src, /function sliceTasks/);
+  assert.doesNotMatch(src, /if \(!activeSpecId\) return \[\.\.\.tasks\]/);
+  assert.doesNotMatch(src, /slice\.length > 0 \? slice : \[\.\.\.tasks\]/);
+});
+
+test("empty or missing activeSpecId is []; other-spec task never appears", async () => {
+  await withStore(async ({ dir, store }) => {
+    await store.writeTask(todoTask(), "Show on the board before execute.\n");
+    await store.writeTask(otherSpecTask(), "Belongs to another spec.\n");
+
+    await withServer(dir, async ({ handle }) => {
+      const stateRes = await fetch(`${handle.url}/api/state`);
+      assert.equal(stateRes.status, 200);
+      const state = await stateRes.json();
+      assert.equal(state.activeSpecId, "spec-checkin");
+      assert.deepEqual(
+        state.tasks.map((task) => task.id).sort(),
+        ["TSK-0002", "TSK-0003"],
+      );
+      assert.equal(
+        state.tasks.some((task) => task.id === "TSK-9999" || task.specId === "spec-other"),
+        false,
+      );
+      const board = await (await fetch(handle.url)).text();
+      assert.match(board, /TSK-0002/);
+      assert.match(board, /TSK-0003/);
+      assert.doesNotMatch(board, /TSK-9999/);
+    });
+
+    const seeded = await store.readState();
+    await store.writeState({ ...seeded.data, activeSpecId: null }, seeded.body);
+    await withServer(dir, async ({ handle }) => {
+      const state = await (await fetch(`${handle.url}/api/state`)).json();
+      assert.equal(state.activeSpecId, null);
+      assert.deepEqual(state.tasks, []);
+      assert.equal(state.currentTask, null);
+      assert.deepEqual(state.graph.nodes, []);
+      assert.deepEqual(state.graph.edges, []);
+      const board = await (await fetch(handle.url)).text();
+      assert.doesNotMatch(board, /TSK-0002/);
+      assert.doesNotMatch(board, /TSK-0003/);
+      assert.doesNotMatch(board, /TSK-9999/);
+    });
+
+    await store.writeState({ ...seeded.data, activeSpecId: "spec-empty" }, seeded.body);
+    await withServer(dir, async ({ handle }) => {
+      const state = await (await fetch(`${handle.url}/api/state`)).json();
+      assert.equal(state.activeSpecId, "spec-empty");
+      assert.deepEqual(state.tasks, []);
+      assert.equal(state.currentTask, null);
+      assert.deepEqual(state.graph.nodes, []);
+      assert.deepEqual(state.graph.edges, []);
+      const board = await (await fetch(handle.url)).text();
+      assert.doesNotMatch(board, /TSK-0002/);
+      assert.doesNotMatch(board, /TSK-9999/);
+    });
+
+    await store.writeState({ ...seeded.data, activeSpecId: "spec-other" }, seeded.body);
+    await withServer(dir, async ({ handle }) => {
+      const state = await (await fetch(`${handle.url}/api/state`)).json();
+      assert.equal(state.activeSpecId, "spec-other");
+      assert.deepEqual(
+        state.tasks.map((task) => task.id),
+        ["TSK-9999"],
+      );
+      assert.equal(state.tasks[0].specId, "spec-other");
+      assert.equal(
+        state.tasks.some((task) => task.id === "TSK-0002" || task.specId === "spec-checkin"),
+        false,
+      );
     });
   });
 });

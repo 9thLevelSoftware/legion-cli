@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { sliceTasks } from "@9thlevelsoftware/legion-cli-core";
 import { unresolvedBlockers } from "@9thlevelsoftware/legion-cli-graph";
 import {
   createLegionStore,
@@ -145,12 +146,6 @@ function toDashboardTask(task: Task, all: readonly Task[]): DashboardTask {
     unresolved: unresolvedBlockers(task, all),
     ...(task.adapter ? { adapter: task.adapter } : {}),
   };
-}
-
-function sliceTasks(tasks: readonly Task[], activeSpecId: string | null | undefined): Task[] {
-  if (!activeSpecId) return [...tasks];
-  const slice = tasks.filter((task) => task.specId === activeSpecId);
-  return slice.length > 0 ? slice : [...tasks];
 }
 
 function collectBlockers(

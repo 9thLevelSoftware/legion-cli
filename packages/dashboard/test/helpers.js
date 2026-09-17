@@ -61,3 +61,29 @@ export function todoTask(overrides = {}) {
     },
   };
 }
+
+export function otherSpecTask(overrides = {}) {
+  const { contract, ...rest } = overrides;
+  return {
+    schemaVersion: "legion-cli-task/v1",
+    id: "TSK-9999",
+    title: "other spec work",
+    status: "ready",
+    type: "feature",
+    priority: "P1",
+    specId: "spec-other",
+    blockedBy: [],
+    blocks: [],
+    assignee: "agent",
+    notes: "",
+    ...rest,
+    contract: {
+      filesAllowed: ["src/other.ts"],
+      filesForbidden: [".git/**"],
+      expectedArtifacts: ["src/other.ts"],
+      verificationCommands: ["pnpm test"],
+      maxFilesTouched: 20,
+      ...contract,
+    },
+  };
+}
