@@ -78,9 +78,12 @@ test("control-mode autonomous and unknown modes refuse", async () => {
 
 test("execute in advisory refuses with Next control-mode guarded", async () => {
   await withTempDir(async (dir) => {
-    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const engine = createLegionEngine(dir);
+    await engine.init({ name: "Checkin", adapter: "fake" });
     const set = runCli(["control-mode", "advisory", "--project", dir]);
     assert.equal(set.status, 0, set.stderr);
+    const state = await engine.store.readState();
+    await engine.store.writeState({ ...state.data, phase: "plan_ready" }, state.body);
 
     const result = runCli(["execute", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     assert.equal(result.status, 1);

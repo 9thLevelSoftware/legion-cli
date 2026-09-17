@@ -116,6 +116,27 @@ test("spec --skip-wireframes does not write INDEX.html", async () => {
   });
 });
 
+test("intent --yes does not confirm", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const result = runCli(["intent", "--project", dir, "--done", "--yes"], {
+      input:
+        [
+          "Teammates who keep missing who's in the office.",
+          "They ping five chat apps every morning.",
+          "People can tap in or out on their phone in under five seconds.",
+          "No payroll, no badges, no calendar sync in v0.",
+          "n",
+        ].join("\n") + "\n",
+    });
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.doesNotMatch(normalize(result.stdout), /Next: legion-cli discuss/);
+    const state = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
+    assert.match(state, /phase: intent_draft/);
+    assert.doesNotMatch(state, /intent_ready/);
+  });
+});
+
 test("discuss --yes cannot skip product decisions", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);

@@ -158,6 +158,36 @@ test("ship n cancels without shipping", async () => {
   });
 });
 
+test("ship --yes still requires Y/n", async () => {
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    initGitRepo(dir);
+    const cancelled = runCli(["ship", "--project", dir, "--yes"], { input: "n\n" });
+    assert.equal(cancelled.status, 1, `${cancelled.stdout}\n${cancelled.stderr}`);
+    assert.match(normalize(`${cancelled.stdout}\n${cancelled.stderr}`), /cancelled/);
+    const state = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
+    assert.match(state, /phase: ready_to_ship/);
+  });
+
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    initGitRepo(dir);
+    const refused = runCli(["ship", "--project", dir, "--yes"], { input: "maybe\n" });
+    assert.equal(refused.status, 1, `${refused.stdout}\n${refused.stderr}`);
+    assert.match(normalize(`${refused.stdout}\n${refused.stderr}`), /ship needs Y or n/);
+    const state = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
+    assert.match(state, /phase: ready_to_ship/);
+  });
+
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    initGitRepo(dir);
+    const shipped = runCli(["ship", "--project", dir, "--yes"], { input: "y\n" });
+    assert.equal(shipped.status, 0, `${shipped.stdout}\n${shipped.stderr}`);
+    assert.match(normalize(shipped.stdout), /Ship receipt written/);
+  });
+});
+
 test("ship --commit after Y creates a commit", async () => {
   await withTempDir(async (dir) => {
     await seedReadyToShip(dir);

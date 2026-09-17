@@ -21,6 +21,8 @@ test("package does not depend on core or execute", async () => {
     ...pkg.peerDependencies,
   };
   assert.equal(deps["@9thlevelsoftware/legion-cli-core"], undefined);
+  // Documented layering leak (parked): MCP → dashboard → core. Isolation is the
+  // read-only tool surface, not the dependency cone. Do not fail CI on dashboard.
   assert.ok(deps["@9thlevelsoftware/legion-cli-agents"]);
   assert.ok(deps["@9thlevelsoftware/legion-cli-persist"]);
   assert.ok(deps["@9thlevelsoftware/legion-cli-schema"]);

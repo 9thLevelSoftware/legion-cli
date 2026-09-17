@@ -382,14 +382,22 @@ test("SSE streams state; audit events appear on GET /audit", async () => {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let chunk = "";
-      while (!chunk.includes("event: state")) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        chunk += decoder.decode(value, { stream: true });
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("SSE timed out after 5s")), 5000);
+      });
+      try {
+        while (!chunk.includes("event: state")) {
+          const { value, done } = await Promise.race([reader.read(), timeout]);
+          if (done) break;
+          chunk += decoder.decode(value, { stream: true });
+        }
+      } finally {
+        clearTimeout(timer);
+        await reader.cancel();
       }
       assert.match(chunk, /event: state/);
       assert.match(chunk, /"readOnly":true/);
-      await reader.cancel();
     });
   });
 });
