@@ -25,3 +25,10 @@ export class PersistValidationError extends PersistError {
     this.name = "PersistValidationError";
   }
 }
+
+export class MinisignError extends PersistError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "MinisignError";
+  }
+}

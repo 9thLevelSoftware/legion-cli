@@ -19,7 +19,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node ./scripts/copy-trust-roots.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm run build && node --test test/*.test.js",
     "prepublishOnly": "pnpm run build"
@@ -45,11 +45,15 @@
   ],
   "dependencies": {
     "@9thlevelsoftware/legion-cli-schema": "workspace:*",
+    "@noble/ed25519": "^3.2.0",
+    "@noble/hashes": "^2.4.0",
     "better-sqlite3": "^12.4.1",
     "yaml": "^2.9.0",
+    "yauzl": "^2.10.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13"
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/yauzl": "^3.4.0"
   }
 }
