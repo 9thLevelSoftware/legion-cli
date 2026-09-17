@@ -106,4 +106,6 @@ export type AdapterCreateOptions = {
   timedOut?: boolean;
   holdWait?: FakeHoldWait;
   onWait?: () => Promise<void>;
+  /** Fixture: AgentHandle.pid (default process.pid). Use an exited child to prove post-wait recovery. */
+  handlePid?: number;
 };

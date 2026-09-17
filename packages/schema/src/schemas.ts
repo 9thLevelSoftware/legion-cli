@@ -335,6 +335,8 @@ export const ResumeFileSchema = z.object({
   preSpawnRef: z.string().min(1),
   startedAt: z.string().min(1),
   pid: z.number().int().positive().nullable().optional(),
+  /** Legion CLI process that owns the run. Live after wait() while post-wait still runs. */
+  enginePid: z.number().int().positive().optional(),
   adapterId: AdapterIdSchema.optional(),
   binary: z.string().min(1).optional(),
   argvSummary: z.string().optional(),

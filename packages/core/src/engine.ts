@@ -123,7 +123,7 @@ import {
   findSkillsDir,
   finishStartedSpawn,
   optionalSkillSpawn,
-  resumePidIsLive,
+  resumeRunIsLive,
   spawnableAdapterRefuseMessage,
   startSkillSpawn,
   waitStartedSpawn,
@@ -274,6 +274,7 @@ export class LegionEngine {
   readonly #fakeTimedOut: boolean;
   readonly #fakeHoldWait?: LegionEngineOptions["fakeHoldWait"];
   readonly #fakeOnWait?: () => Promise<void>;
+  readonly #fakeHandlePid?: number;
   readonly #verificationTimeoutMs: number;
   #lastPlanReport: ReadinessReport | null = null;
 
@@ -285,6 +286,7 @@ export class LegionEngine {
     this.#fakeTimedOut = Boolean(options?.fakeTimedOut);
     this.#fakeHoldWait = options?.fakeHoldWait;
     this.#fakeOnWait = options?.fakeOnWait;
+    this.#fakeHandlePid = options?.fakeHandlePid;
     this.#verificationTimeoutMs = options?.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   }
 
@@ -1683,7 +1685,7 @@ export class LegionEngine {
       const task = (await this.store.readTask(state.currentTaskId)).data;
       if (task.status !== "in_progress") return null;
       const resume = await findLatestTaskResume(this.projectRoot, task.id);
-      if (resume && resumePidIsLive(resume)) return { taskId: task.id };
+      if (resume && resumeRunIsLive(resume)) return { taskId: task.id };
       return null;
     } catch {
       return null;
@@ -2852,6 +2854,7 @@ export class LegionEngine {
       timedOut: this.#fakeTimedOut,
       holdWait: this.#fakeHoldWait,
       onWait: this.#fakeOnWait,
+      handlePid: this.#fakeHandlePid,
     };
   }
 
@@ -2867,11 +2870,12 @@ export class LegionEngine {
     }
   }
 
+  /** KD-21 is the execute `currentTaskId` + `in_progress` window. Plan/review wait is execute-only. */
   async #assertNoLiveInProgress(action: string): Promise<void> {
     const task = await this.#liveInProgressTask();
     if (!task) return;
     const resume = await findLatestTaskResume(this.projectRoot, task.id);
-    if (resume && resumePidIsLive(resume)) {
+    if (resume && resumeRunIsLive(resume)) {
       refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
     }
     if (!resume) {
@@ -2883,7 +2887,7 @@ export class LegionEngine {
     const live = await this.#liveInProgressTask();
     if (!live) return;
     const resume = await findLatestTaskResume(this.projectRoot, live.id);
-    const isLive = resume ? resumePidIsLive(resume) : true;
+    const isLive = resume ? resumeRunIsLive(resume) : true;
     if (!isLive) return;
     const specId = live.specId;
     const probe = ticketFromInput("TSK-probe", specId, input);
@@ -2902,7 +2906,8 @@ export class LegionEngine {
     for (const task of tasks) {
       if (task.status !== "in_progress") continue;
       const resume = await findLatestTaskResume(this.projectRoot, task.id);
-      if (resume && resumePidIsLive(resume)) continue;
+      // Child pid is dead after wait(); enginePid live means this process is still finishing.
+      if (resume && resumeRunIsLive(resume)) continue;
       const isCurrent = current === task.id;
       if (!resume && !isCurrent) continue;
       await this.#transitionTaskTo(task.id, "blocked");

@@ -32,6 +32,7 @@ export type LegionEngineOptions = {
   fakeTimedOut?: boolean;
   fakeHoldWait?: FakeHoldWait;
   fakeOnWait?: () => Promise<void>;
+  fakeHandlePid?: number;
   verificationTimeoutMs?: number;
 };
 

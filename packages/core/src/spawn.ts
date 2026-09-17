@@ -104,6 +104,7 @@ export type SkillSpawnOpts = {
   store?: LegionReader;
   holdWait?: FakeHoldWait;
   onWait?: () => Promise<void>;
+  handlePid?: number;
 };
 
 type SpawnRevertCtx = {
@@ -275,6 +276,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     timedOut: opts.timedOut,
     holdWait: opts.holdWait,
     onWait: opts.onWait,
+    handlePid: opts.handlePid,
   });
   const tmpl = templateArgv(resolution.id, opts.config);
   const argvSummary = argvSummarySafe(tmpl.argv);
@@ -333,6 +335,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
           preSpawnRef: preSpawnRef ?? "UNBORN",
           startedAt: new Date().toISOString(),
           pid,
+          enginePid: process.pid,
           adapterId: resolution.id,
           binary: tmpl.binary,
           argvSummary,
@@ -419,6 +422,23 @@ export async function optionalSkillSpawn(opts: SkillSpawnOpts): Promise<Optional
 export function resumePidIsLive(resume: Pick<ResumeFile, "pid">): boolean {
   if (typeof resume.pid !== "number" || !Number.isInteger(resume.pid) || resume.pid <= 0) return false;
   return isPidAlive(resume.pid);
+}
+
+/** Orchestrator process still running this run (healthy wait or post-wait). */
+export function resumeEngineIsLive(resume: Pick<ResumeFile, "enginePid" | "startedAt">): boolean {
+  const enginePid = resume.enginePid;
+  if (typeof enginePid !== "number" || !Number.isInteger(enginePid) || enginePid <= 0) return false;
+  if (!isPidAlive(enginePid)) return false;
+  if (enginePid !== process.pid) return true;
+  const started = Date.parse(resume.startedAt);
+  if (!Number.isFinite(started)) return true;
+  const processStartMs = Date.now() - process.uptime() * 1000;
+  return started + 1000 >= processStartMs;
+}
+
+/** Child still running, or this engine has not crashed after wait(). */
+export function resumeRunIsLive(resume: Pick<ResumeFile, "pid" | "enginePid" | "startedAt">): boolean {
+  return resumePidIsLive(resume) || resumeEngineIsLive(resume);
 }
 
 export async function listCacheResumes(projectRoot: string): Promise<ResumeFile[]> {

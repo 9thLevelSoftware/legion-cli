@@ -76,12 +76,13 @@ function gitCommitPaths(cwd: string, paths: string[]): void {
 }
 
 class FakeHandle implements AgentHandle {
-  readonly pid = process.pid;
+  readonly pid: number;
   readonly #run: () => Promise<AgentResult>;
   #result: Promise<AgentResult> | undefined;
 
-  constructor(run: () => Promise<AgentResult>) {
+  constructor(run: () => Promise<AgentResult>, pid = process.pid) {
     this.#run = run;
+    this.pid = pid;
   }
 
   wait(): Promise<AgentResult> {
@@ -102,18 +103,20 @@ export class FakeAdapter implements AgentAdapter {
   readonly #timedOut: boolean;
   readonly #holdWait?: FakeHoldWait;
   readonly #onWait?: () => Promise<void>;
+  readonly #handlePid: number;
 
   constructor(
     artifacts: FakeArtifact[] = [],
     throwAfterWrite = false,
     timedOut = false,
-    hold?: { holdWait?: FakeHoldWait; onWait?: () => Promise<void> },
+    hold?: { holdWait?: FakeHoldWait; onWait?: () => Promise<void>; handlePid?: number },
   ) {
     this.#artifacts = artifacts;
     this.#throwAfterWrite = throwAfterWrite;
     this.#timedOut = timedOut;
     this.#holdWait = hold?.holdWait ?? holdWaitFromEnv();
     this.#onWait = hold?.onWait;
+    this.#handlePid = hold?.handlePid ?? process.pid;
   }
 
   async detect(): Promise<DetectResult> {
@@ -124,7 +127,7 @@ export class FakeAdapter implements AgentAdapter {
   }
 
   async spawn(job: AgentJob): Promise<AgentHandle> {
-    return new FakeHandle(() => this.#run(job));
+    return new FakeHandle(() => this.#run(job), this.#handlePid);
   }
 
   async #run(job: AgentJob): Promise<AgentResult> {

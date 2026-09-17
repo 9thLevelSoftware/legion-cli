@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { createLegionStore } from "@9thlevelsoftware/legion-cli-persist";
+import { createLegionStore, isPidAlive } from "@9thlevelsoftware/legion-cli-persist";
 import { HINT, LegionEngine, LegionRefuseError } from "../dist/index.js";
 import {
   initGitRepo,
@@ -78,6 +78,22 @@ async function writeResume(dir, taskId, pid) {
 
 function hangingVerificationCommand() {
   return `${quoteArg(process.execPath)} -e ${quoteArg("setTimeout(() => {}, 60_000)")}`;
+}
+
+function exitedChildPid() {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    const pid = child.pid;
+    if (!pid) {
+      reject(new Error("spawned child has no pid"));
+      return;
+    }
+    child.once("exit", () => resolve(pid));
+    child.once("error", reject);
+  });
 }
 
 test("during a fake long spawn, status is in_progress and engine.lock is absent", async () => {
@@ -178,6 +194,22 @@ test("live resume pid is not demoted by recovery", async () => {
       await writeFile(releasePath, "go\n");
       const result = await pending;
       assert.equal(result.status, "done");
+    });
+  });
+});
+
+test("execute reaches done when the spawn handle pid is already dead", async () => {
+  const deadPid = await exitedChildPid();
+  assert.equal(isPidAlive(deadPid), false);
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ store, dir }) => {
+      const engine = new LegionEngine(dir, undefined, { skillsDir, fakeHandlePid: deadPid });
+      await initProject(engine);
+      await seedExecute(store);
+      initGitRepo(dir);
+      const result = await engine.execute("auto");
+      assert.equal(result.status, "done");
+      assert.equal((await store.readTask("TSK-0001")).data.status, "done");
     });
   });
 });

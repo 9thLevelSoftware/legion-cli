@@ -43,6 +43,7 @@ export function createAdapter(id: AgentAdapterId, options: AdapterCreateOptions 
       return new FakeAdapter(options.artifacts ?? [], options.throwAfterWrite ?? false, options.timedOut ?? false, {
         holdWait: options.holdWait,
         onWait: options.onWait,
+        handlePid: options.handlePid,
       });
     case "claude":
       return new ClaudeAdapter(options.extraArgs ?? []);
@@ -83,6 +84,7 @@ export function resolveAdapter(
     timedOut: options.timedOut,
     holdWait: options.holdWait,
     onWait: options.onWait,
+    handlePid: options.handlePid,
   });
 }
 
