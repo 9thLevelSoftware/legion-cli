@@ -38,6 +38,9 @@ importers:
       '@9thlevelsoftware/legion-cli-qa':
         specifier: workspace:*
         version: link:packages/qa
+      '@9thlevelsoftware/legion-cli-sandbox':
+        specifier: workspace:*
+        version: link:packages/sandbox
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:packages/schema
@@ -222,6 +225,15 @@ importers:
 
   packages/qa:
     dependencies:
+      '@9thlevelsoftware/legion-cli-schema':
+        specifier: workspace:*
+        version: link:../schema
+
+  packages/sandbox:
+    dependencies:
+      '@9thlevelsoftware/legion-cli-persist':
+        specifier: workspace:*
+        version: link:../persist
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:../schema
