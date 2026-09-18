@@ -3,6 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { hashSkillTree, overlaySkillDir } from "@9thlevelsoftware/legion-cli-agents";
 import { INDEX_DB_BASENAME, LOCK_BASENAME } from "@9thlevelsoftware/legion-cli-persist";
 import { MCP_TOOLS } from "../dist/index.js";
 import {
@@ -103,6 +104,47 @@ test("status, current task, task graph, brief, show, search, backlinks", async (
       );
       assert.equal(backlinks.isError, false, backlinks.text);
       assert.ok(backlinks.json.backlinks.some((link) => link.id === "README"));
+    });
+  });
+});
+
+test("brief uses overlay skill description over packaged", async () => {
+  await withStore(async ({ dir }) => {
+    const overlay = overlaySkillDir(dir, "execute");
+    await mkdir(overlay, { recursive: true });
+    const body = [
+      "---",
+      "name: execute",
+      'description: "OVERLAY_EXECUTE_MCP_BRIEF_TOKEN"',
+      "license: UNLICENSED",
+      'compatibility: "Legion CLI staging; not vendor auto-discovery"',
+      "metadata:",
+      "  legion:",
+      "    skillId: execute",
+      "    required: true",
+      "    allowedRootsRef: SKILL_CONTRACTS.execute",
+      "---",
+      "",
+      "# execute\n",
+    ].join("\n");
+    await writeFile(join(overlay, "SKILL.md"), body, "utf8");
+    const sha256 = await hashSkillTree(overlay);
+    await writeFile(
+      join(overlay, "overlay.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-skill-overlay/v1",
+        skillId: "execute",
+        source: { type: "local", origin: overlay },
+        integrity: { sha256 },
+        installedAt: "2026-09-17T00:00:00Z",
+      })}\n`,
+      "utf8",
+    );
+    await withClient(dir, async (client) => {
+      const brief = parseTool(await client.callTool({ name: "legion_cli_brief", arguments: {} }));
+      assert.equal(brief.isError, false, brief.text);
+      const execute = brief.json.skills.find((skill) => skill.skillId === "execute");
+      assert.equal(execute.description, "OVERLAY_EXECUTE_MCP_BRIEF_TOKEN");
     });
   });
 });

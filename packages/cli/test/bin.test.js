@@ -93,6 +93,10 @@ test("help --all lists the grouped command surface", () => {
   assert.match(board, /assume list/);
   assert.match(board, /assume answer/);
   assert.doesNotMatch(board, /index rebuild/);
+  const adjacent = helpSection(out, "Shipped adjacent", "Later, not this series:");
+  assert.match(adjacent, /skills list/);
+  assert.match(adjacent, /skills show <id>/);
+  assert.match(adjacent, /skills install <dir\|github:owner\/repo@tag>/);
 });
 
 test("help --all lists dashboard as shipped adjacent", () => {
@@ -114,7 +118,7 @@ test("help --all lists serve as shipped adjacent and not later", () => {
   assert.match(adjacent, /^ {2}serve$/m);
   assert.match(adjacent, /--mcp-http\/--no-mcp-http/);
   assert.doesNotMatch(later, /\bserve\b/);
-  assert.match(later, /skills list\|install/);
+  assert.doesNotMatch(later, /skills list\|install/);
 });
 
 test("mcp is a read-only stdio command", () => {
@@ -145,7 +149,7 @@ test("help --all does not call control-mode later", () => {
   assert.doesNotMatch(later, /\bmap\b/);
   assert.doesNotMatch(later, /wireframe/);
   assert.doesNotMatch(later, /\bserve\b/);
-  assert.match(later, /skills list\|install/);
+  assert.doesNotMatch(later, /skills list/);
   const adjacent = helpSection(out, "Shipped adjacent (not the default window):", "Later, not this series:");
   assert.match(adjacent, /^ {2}map$/m);
   assert.match(adjacent, /--refresh, --lsp, --no-lsp/);
@@ -211,6 +215,7 @@ test("parent verbs require a subcommand and print Next", () => {
     ["task", /task requires amend/, /Next: legion-cli task amend <id>/],
     ["context", /context requires compact/, /Next: legion-cli context compact/],
     ["run", /run requires promote/, /Next: legion-cli run promote <id>/],
+    ["skills", /skills requires list, install, or show/, /Next: legion-cli skills list/],
   ];
   for (const [verb, requires, next] of cases) {
     const result = runCli([verb]);

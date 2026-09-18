@@ -24,7 +24,7 @@ test("help --all lists map in shipped adjacent, not later", () => {
   assert.match(out, /Shipped adjacent[\s\S]*^ {2}map$/m);
   assert.match(out, /--refresh, --lsp, --no-lsp/);
   assert.doesNotMatch(out, /Later, not this series:[\s\S]*\bmap\b/);
-  assert.match(out, /Later, not this series:\n {2}skills list\|install/);
+  assert.doesNotMatch(out, /Later, not this series:\n {2}skills list\|install/);
 });
 
 test("map --help lists --refresh --lsp --no-lsp", () => {

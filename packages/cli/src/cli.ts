@@ -49,6 +49,7 @@ import { runVerify } from "./verify.js";
 import { runContextCompact } from "./context.js";
 import { runGarden } from "./garden.js";
 import { runWikiTrust } from "./wiki.js";
+import { runSkillsInstall, runSkillsList, runSkillsShow } from "./skills.js";
 import { runWireframe } from "./wireframe.js";
 
 const pkg = JSON.parse(
@@ -652,6 +653,39 @@ export function createProgram(): Command {
     .action(async (opts, cmd: Command) => {
       const flags = opts as { refresh?: boolean };
       const code = await runMap(resolveOpts(cmd), flags, process.argv);
+      process.exitCode = code;
+    });
+
+  const skills = addGlobalOptions(program.command("skills").description("Pinned skill overlays"));
+  skills
+    .allowExcessArguments(false)
+    .action(requireSub("skills", "list, install, or show", "legion-cli skills list"));
+  addGlobalOptions(skills.command("list").description("List packaged and overlay skills"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runSkillsList(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+  addGlobalOptions(skills.command("show").description("Show one packaged or overlay skill"))
+    .argument("<id>", "skill id")
+    .allowExcessArguments(false)
+    .action(async (id: string, _opts, cmd: Command) => {
+      const code = await runSkillsShow(resolveOpts(cmd), id);
+      process.exitCode = code;
+    });
+  addGlobalOptions(skills.command("install").description("Install a pinned skill overlay"))
+    .argument("<source>", "local directory or github:owner/repo@tag")
+    .option("--unsigned", "allow a local overlay with no minisign signature (TTY warn)")
+    .option("--skill <id>", "skill id when the bundle contains more than one")
+    .option("--integrity <sha256>", "sha256:<hex> expected tree digest")
+    .allowExcessArguments(false)
+    .action(async (source: string, opts, cmd: Command) => {
+      const flags = opts as { unsigned?: boolean; skill?: string; integrity?: string };
+      const code = await runSkillsInstall(resolveOpts(cmd), source, {
+        unsigned: Boolean(flags.unsigned),
+        skill: flags.skill,
+        integrity: flags.integrity,
+      });
       process.exitCode = code;
     });
 

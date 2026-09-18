@@ -35,8 +35,26 @@ export {
   listSkillCatalog,
   parseSkillFrontmatter,
   renderSkillCatalog,
+  skillCatalogPath,
 } from "./catalog.js";
 export type { ParsedSkill, SkillResourceKind } from "./catalog.js";
+export {
+  OVERLAY_PIN_FILENAME,
+  hashSkillTree,
+  installSkillOverlay,
+  listResolvedSkillCatalog,
+  listSkillTreeFiles,
+  overlaySkillDir,
+  parseIntegritySha256,
+  resolveSkillDir,
+} from "./overlay.js";
+export type {
+  InstallSkillOverlayOpts,
+  InstalledSkillOverlay,
+  OverlayReport,
+  ResolvedSkillDir,
+  SkillDirSource,
+} from "./overlay.js";
 export { buildPointerPrompt } from "./pointer.js";
 export { runCachePaths, writeRunPrompt } from "./paths.js";
 export { stageSkill } from "./stage.js";
