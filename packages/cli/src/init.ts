@@ -1,5 +1,10 @@
 import { createLegionEngine, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
-import { ADAPTER_ID_HELP, AdapterIdSchema, type AdapterId } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  ADAPTER_ID_HELP,
+  AdapterIdSchema,
+  HttpAdapterConfigSchema,
+  type AdapterId,
+} from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { promptIfTty } from "./prompt.js";
@@ -87,12 +92,17 @@ export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> 
       "adapter.http.apiKeyEnv is required when adapter.default is http",
       hint,
     );
-    http = {
+    const parsedHttp = HttpAdapterConfigSchema.safeParse({
       baseUrl,
       model,
       apiKeyEnv,
       ...(flags.httpAllowLoopback ? { allowLoopback: true } : {}),
-    };
+    });
+    if (!parsedHttp.success) {
+      const issue = parsedHttp.error.issues[0];
+      refuse(issue?.message ?? "adapter.http is invalid", hint);
+    }
+    http = parsedHttp.data;
   }
 
   const engine = createLegionEngine(opts.project);

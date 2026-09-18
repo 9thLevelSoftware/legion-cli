@@ -14,7 +14,6 @@ import {
   hashSkillTree,
   listResolvedSkillCatalog,
 } from "@9thlevelsoftware/legion-cli-agents";
-import { isHttpAdapterReady } from "@9thlevelsoftware/legion-cli-http";
 import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
 import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
@@ -132,7 +131,7 @@ function isConfiguredSpawnable(config: LegionConfig, id: AdapterId): boolean {
     if (!spec?.binary) return false;
     return argsIncludePointer(genericArgsOrDefault(spec.args ?? [])) && isSpawnableBinary(spec.binary);
   }
-  if (id === "http") return isHttpAdapterReady(config.adapter.http);
+  if (id === "http") return false;
   return extraOnPath(id, config) && extraArgvOk(id, config);
 }
 
@@ -587,11 +586,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       : "(unset)",
     fake: fakeSpawnable() ? "spawnable (LEGION_CLI_ADAPTER=fake)" : "not spawnable (set LEGION_CLI_ADAPTER=fake)",
     ...extraLabels,
-    http: !config?.adapter.http
-      ? "not configured"
-      : isHttpAdapterReady(config.adapter.http)
-        ? `spawnable (${config.adapter.http.apiKeyEnv})`
-        : "not spawnable",
+    http: !config?.adapter.http ? "not configured" : "not spawnable (detect-only)",
   };
 
   const ok = checks.every((check) => check.ok);

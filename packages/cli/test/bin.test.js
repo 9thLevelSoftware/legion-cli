@@ -557,6 +557,45 @@ test("init --adapter http requires http flags", () => {
   assert.match(err, /--http-api-key-env/);
 });
 
+test("init --adapter http validates flags before writing the workspace", async () => {
+  await withTempDir(async (dir) => {
+    const badKey = runCli([
+      "init",
+      "--project",
+      dir,
+      "--name",
+      "Checkin",
+      "--adapter",
+      "http",
+      "--http-base-url",
+      "https://api.openai.com/v1",
+      "--http-model",
+      "gpt-4",
+      "--http-api-key-env",
+      "foo",
+    ]);
+    assert.equal(badKey.status, 1);
+    assert.match(normalize(badKey.stderr), /must match pattern|apiKeyEnv|adapter\.http/);
+    const badUrl = runCli([
+      "init",
+      "--project",
+      dir,
+      "--name",
+      "Checkin",
+      "--adapter",
+      "http",
+      "--http-base-url",
+      "http://example.com/v1",
+      "--http-model",
+      "gpt-4",
+      "--http-api-key-env",
+      "OPENAI_API_KEY",
+    ]);
+    assert.equal(badUrl.status, 1);
+    assert.match(normalize(badUrl.stderr), /https:|allowLoopback|adapter\.http/);
+  });
+});
+
 test("help --all drops HTTP model router and lists http init flags", () => {
   const result = runCli(["help", "--all"]);
   assert.equal(result.status, 0, result.stderr);

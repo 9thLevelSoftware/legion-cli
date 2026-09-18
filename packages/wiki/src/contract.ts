@@ -19,8 +19,10 @@ function looksLikeGitPath(posix: string): boolean {
 }
 
 function looksLikeEnv(posix: string): boolean {
-  const base = (posix.split("/").pop() ?? posix).toLowerCase();
-  return base === ".env" || base.startsWith(".env.");
+  return posix.split("/").some((part) => {
+    const lower = part.toLowerCase();
+    return lower === ".env" || lower.startsWith(".env.");
+  });
 }
 
 function looksLikeIndexOrConfig(posix: string): boolean {

@@ -52,6 +52,9 @@ export async function postJsonPinned(opts: {
   }
   const timeoutMs = opts.timeoutMs ?? HTTP_CALL_TIMEOUT_MS;
   const pinned = await resolveHttpConnectTarget(opts.url, opts.allowLoopback, opts.lookup);
+  if (opts.signal?.aborted) {
+    throw new HttpAdapterError("adapter.http request aborted");
+  }
   const payload = Buffer.from(JSON.stringify(opts.body), "utf8");
   const headers: Record<string, string> = {
     Host: opts.url.host,
