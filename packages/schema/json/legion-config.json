@@ -1190,7 +1190,7 @@
                 "properties": {
                   "baseUrl": {
                     "type": "string",
-                    "pattern": "^(https://[^/@]+|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:\\d+)?)([/?#].*)?$"
+                    "pattern": "^(https://[^/?#@\\s]+|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:\\d+)?)([/?#].*)?$"
                   }
                 }
               }
@@ -1209,7 +1209,7 @@
                 "properties": {
                   "baseUrl": {
                     "type": "string",
-                    "pattern": "^https://[^/@]+([/?#].*)?$"
+                    "pattern": "^https://[^/?#@\\s]+([/?#].*)?$"
                   }
                 }
               }

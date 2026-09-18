@@ -48,7 +48,8 @@ test("fake detect is ok only when LEGION_CLI_ADAPTER=fake", async () => {
 });
 
 test("extra adapters detect assumed PATH binaries and are no longer detect-only", async () => {
-  assert.deepEqual([...DETECT_ONLY_ADAPTER_IDS], []);
+  assert.deepEqual([...DETECT_ONLY_ADAPTER_IDS], ["http"]);
+  assert.equal(isDetectOnly("http"), true);
   for (const id of EXTRA_ADAPTER_IDS) {
     const adapter = createAdapter(id);
     assert.equal(adapter.id, id);
