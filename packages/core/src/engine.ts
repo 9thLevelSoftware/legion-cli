@@ -14,7 +14,13 @@ import {
   pickNextTask,
   readyTasks,
 } from "@9thlevelsoftware/legion-cli-graph";
-import { generateMap, MapError, mergeArchitecture, renderArchitecture } from "@9thlevelsoftware/legion-cli-map";
+import {
+  ensureRealMapDir,
+  generateMap,
+  MapError,
+  mergeArchitecture,
+  renderArchitecture,
+} from "@9thlevelsoftware/legion-cli-map";
 import { existsSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -703,15 +709,20 @@ export class LegionEngine {
       }
       if (started?.spawned) {
         const revert = await finishStartedSpawn(started);
+        await ensureRealMapDir(this.projectRoot, this.store.paths.mapDir);
         const fingerprintsPath = join(this.store.paths.mapDir, "fingerprints.json");
         const architecturePath = join(this.store.paths.mapDir, "ARCHITECTURE.md");
         let existingArch: string | undefined;
         try {
           const st = await lstat(architecturePath);
-          if (st.isSymbolicLink() || !st.isFile()) {
-            await rm(architecturePath, { recursive: false, force: true });
-          } else {
+          if (st.isSymbolicLink()) {
+            await rm(architecturePath, { force: true });
+          } else if (st.isDirectory()) {
+            await rm(architecturePath, { recursive: true, force: true });
+          } else if (st.isFile()) {
             existingArch = await readFile(architecturePath, "utf8");
+          } else {
+            await rm(architecturePath, { force: true });
           }
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
@@ -722,7 +733,9 @@ export class LegionEngine {
         ] as const) {
           try {
             const st = await lstat(abs);
-            if (st.isSymbolicLink() || !st.isFile()) await rm(abs, { recursive: false, force: true });
+            if (st.isSymbolicLink()) await rm(abs, { force: true });
+            else if (st.isDirectory()) await rm(abs, { recursive: true, force: true });
+            else if (!st.isFile()) await rm(abs, { force: true });
           } catch (err) {
             if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
           }
@@ -3105,14 +3118,16 @@ export class LegionEngine {
   /** KD-21 is the execute `currentTaskId` + `in_progress` window. Plan/review wait is execute-only. */
   async #assertNoLiveInProgress(action: string): Promise<void> {
     const task = await this.#liveInProgressTask();
-    if (!task) return;
-    const resume = await findLatestTaskResume(this.projectRoot, task.id);
-    if (resume && resumeRunIsLive(resume)) {
-      refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
+    if (task) {
+      const resume = await findLatestTaskResume(this.projectRoot, task.id);
+      if (resume && resumeRunIsLive(resume)) {
+        refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
+      }
+      if (!resume) {
+        refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
+      }
     }
-    if (!resume) {
-      refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
-    }
+    await refuseIfLiveSkillSpawn(this.projectRoot, action);
   }
 
   async #assertTicketAgainstLiveSpawn(_input: NewTicket): Promise<void> {

@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   extractWikiLinks,
@@ -8,6 +8,7 @@ import {
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   AssumptionSchema,
+  FingerprintFileSchema,
   QAScoreSchema,
   SCHEMA_VERSION,
   SessionBriefSchema,
@@ -265,6 +266,23 @@ export async function ensureWikiIndex(
   await writable.rebuild();
 }
 
+async function readMapRootHash(store: LegionReader): Promise<string | undefined> {
+  try {
+    const dirSt = await lstat(store.paths.mapDir);
+    if (dirSt.isSymbolicLink() || !dirSt.isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+  try {
+    const parsed = FingerprintFileSchema.safeParse(
+      JSON.parse(await readFile(join(store.paths.mapDir, "fingerprints.json"), "utf8")),
+    );
+    return parsed.success ? parsed.data.rootHash : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function buildSessionBrief(
   store: LegionReader,
   opts?: { rebuild?: boolean; skills?: SessionBrief["skills"]; mapRootHash?: string },
@@ -324,6 +342,6 @@ export async function buildSessionBrief(
     contract,
     lastQa,
     skills: opts?.skills,
-    mapRootHash: opts?.mapRootHash,
+    mapRootHash: opts?.mapRootHash ?? (await readMapRootHash(store)),
   });
 }

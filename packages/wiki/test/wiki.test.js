@@ -181,6 +181,27 @@ test("buildSessionBrief copies raw Task.adapter onto currentTask", async () => {
   });
 });
 
+test("buildSessionBrief loads mapRootHash from fingerprints.json", async () => {
+  await withStore(async ({ store, dir }) => {
+    const hash = "b".repeat(64);
+    const mapDir = join(dir, ".legion-cli", "map");
+    await mkdir(mapDir, { recursive: true });
+    await writeFile(
+      join(mapDir, "fingerprints.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-fingerprint/v1",
+        generatedAt: new Date().toISOString(),
+        backend: "fallback",
+        rootHash: hash,
+        modules: [],
+      })}\n`,
+      "utf8",
+    );
+    const brief = await buildSessionBrief(store);
+    assert.equal(brief.mapRootHash, hash);
+  });
+});
+
 test("buildSessionBrief omits currentTask.adapter when Task.adapter is unset", async () => {
   await withStore(async ({ store }) => {
     const brief = await buildSessionBrief(store);
@@ -291,6 +312,32 @@ test("showPage refuses a symlink ARCHITECTURE.md and does not follow it", async 
       },
     );
     await unlink(join(mapDir, "ARCHITECTURE.md")).catch(() => {});
+  });
+});
+
+test("showPage refuses a symlink map directory and does not follow it", async () => {
+  await withStore(async ({ store, dir }) => {
+    const outside = join(dir, "outside-map");
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, "ARCHITECTURE.md"), "# Leaked\nSECRET=do-not-leak\n", "utf8");
+    await mkdir(join(dir, ".legion-cli"), { recursive: true });
+    let linked = false;
+    try {
+      await symlink(outside, join(dir, ".legion-cli", "map"), process.platform === "win32" ? "junction" : "dir");
+      linked = true;
+    } catch (err) {
+      if (err?.code !== "EPERM") throw err;
+    }
+    if (!linked) return;
+    await assert.rejects(
+      () => showPage(store, ".legion-cli/map/ARCHITECTURE.md"),
+      (err) => {
+        assert.match(err.message, /symlink/);
+        assert.doesNotMatch(err.message, /SECRET=do-not-leak/);
+        return true;
+      },
+    );
+    assert.equal(await readFile(join(outside, "ARCHITECTURE.md"), "utf8"), "# Leaked\nSECRET=do-not-leak\n");
   });
 });
 

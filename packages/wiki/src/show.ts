@@ -49,6 +49,16 @@ export async function showPage(
   const mapRef = ref.toLowerCase();
   if (mapRef === ".legion-cli/map/architecture.md" || mapRef === "map/architecture.md") {
     const storePath = ".legion-cli/map/ARCHITECTURE.md";
+    try {
+      const mapDirSt = await lstat(store.paths.mapDir);
+      if (mapDirSt.isSymbolicLink()) {
+        throw new Error("map directory must not be a symlink");
+      }
+      if (!mapDirSt.isDirectory()) throw new Error(`unknown page ${pageRef}`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`unknown page ${pageRef}`);
+      throw err;
+    }
     const abs = join(store.paths.mapDir, "ARCHITECTURE.md");
     let st;
     try {

@@ -537,3 +537,18 @@ test("map dir junction is replaced; files are not written outside the project", 
     assert.equal(arch.isFile() && !arch.isSymbolicLink(), true);
   });
 });
+
+test("generateMap replaces ARCHITECTURE.md directory collision", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const archPath = join(dir, ".legion-cli", "map", "ARCHITECTURE.md");
+    await mkdir(join(archPath, "nested"), { recursive: true });
+    await writeFile(join(archPath, "nested", "keep.txt"), "nope\n", "utf8");
+    const result = await generateMap(dir);
+    const st = await lstat(archPath);
+    assert.equal(st.isFile(), true);
+    assert.equal(st.isDirectory(), false);
+    assert.match(await readFile(archPath, "utf8"), GENERATED_START_RE);
+    assert.equal(result.backend, "fallback");
+  });
+});

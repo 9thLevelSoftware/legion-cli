@@ -87,16 +87,19 @@ async function lstatOrNull(absPath: string) {
   }
 }
 
-/** Drop map-dir junctions so writeFile cannot land fingerprints outside the project. */
-async function ensureRealMapDir(projectRoot: string, mapDir: string): Promise<void> {
-  const legionDir = dirname(mapDir);
-  await mkdir(legionDir, { recursive: true });
+async function dropUnsafeMapDir(mapDir: string): Promise<void> {
   const mapStat = await lstatOrNull(mapDir);
-  if (mapStat?.isSymbolicLink()) {
-    await rm(mapDir, { recursive: false, force: true });
-  } else if (mapStat && !mapStat.isDirectory()) {
+  if (!mapStat) return;
+  if (mapStat.isSymbolicLink() || !mapStat.isDirectory()) {
     await rm(mapDir, { recursive: false, force: true });
   }
+}
+
+/** Drop map-dir junctions so writeFile cannot land fingerprints outside the project. */
+export async function ensureRealMapDir(projectRoot: string, mapDir: string): Promise<void> {
+  const legionDir = dirname(mapDir);
+  await mkdir(legionDir, { recursive: true });
+  await dropUnsafeMapDir(mapDir);
   await mkdir(mapDir, { recursive: true });
   const expected = resolve(await realpath(projectRoot), ".legion-cli", "map");
   const actual = await realpath(mapDir);
@@ -107,9 +110,9 @@ async function ensureRealMapDir(projectRoot: string, mapDir: string): Promise<vo
 
 async function writeMapFile(absPath: string, contents: string): Promise<void> {
   const st = await lstatOrNull(absPath);
-  if (st && (st.isSymbolicLink() || !st.isFile())) {
-    await rm(absPath, { recursive: false, force: true });
-  }
+  if (st?.isSymbolicLink()) await rm(absPath, { force: true });
+  else if (st?.isDirectory()) await rm(absPath, { recursive: true, force: true });
+  else if (st && !st.isFile()) await rm(absPath, { force: true });
   await writeFile(absPath, contents, "utf8");
 }
 
@@ -137,6 +140,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   const paths = legionPaths(root);
   const fingerprintsPath = join(paths.mapDir, "fingerprints.json");
   const architecturePath = join(paths.mapDir, "ARCHITECTURE.md");
+  await dropUnsafeMapDir(paths.mapDir);
   const existing = await readExistingFingerprints(fingerprintsPath);
   const lspMode = options.lsp ?? "auto";
   let backend = decideBackend(lspMode, existing);
@@ -197,8 +201,12 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
 
   let existingArch: string | undefined;
   const archStat = await lstatOrNull(architecturePath);
-  if (archStat?.isSymbolicLink() || (archStat && !archStat.isFile())) {
-    await rm(architecturePath, { recursive: false, force: true });
+  if (archStat?.isSymbolicLink()) {
+    await rm(architecturePath, { force: true });
+  } else if (archStat?.isDirectory()) {
+    await rm(architecturePath, { recursive: true, force: true });
+  } else if (archStat && !archStat.isFile()) {
+    await rm(architecturePath, { force: true });
   } else if (archStat) {
     existingArch = await readFile(architecturePath, "utf8");
   }
