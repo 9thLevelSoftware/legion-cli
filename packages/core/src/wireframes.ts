@@ -219,7 +219,9 @@ function decodeHtmlEntities(value: string): string {
 }
 
 function compactUrl(value: string): string {
-  return decodeHtmlEntities(value).replace(/[\s\u00a0\u200b\u200c\u200d\ufeff]+/g, "");
+  return decodeHtmlEntities(value)
+    .replace(/[\u0000-\u001f\u007f]+/g, "")
+    .replace(/[\s\u00a0\u200b\u200c\u200d\ufeff]+/g, "");
 }
 
 const DATA_IMAGE_ALLOW = /^data:image\/(?:png|jpeg|jpg|gif|webp)(?:[;,]|$)/i;

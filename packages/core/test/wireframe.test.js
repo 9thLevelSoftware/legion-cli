@@ -13,6 +13,7 @@ import {
   LegionRefuseError,
   palettePresent,
   SKIP_WIREFRAMES_NOTE,
+  uniqueScreenPages,
   WIREFRAME_PALETTE,
 } from "../dist/index.js";
 import { initGitRepo, initProject, withEngine } from "./helpers.js";
@@ -56,6 +57,10 @@ function isRefuse(err, message, hint) {
 }
 
 test("assertWireframeHtml allows meta content=continue and denies on*/javascript:/script", () => {
+  assert.deepEqual(
+    uniqueScreenPages(["Home", "Home"]).map((page) => page.slug),
+    ["home", "home-2"],
+  );
   assert.doesNotThrow(() =>
     assertWireframeHtml('<meta name="description" content="continue">'),
   );
@@ -70,6 +75,7 @@ test("assertWireframeHtml allows meta content=continue and denies on*/javascript
   assert.throws(() => assertWireframeHtml("<img/onclick=alert(1)>"), /onclick/);
   assert.throws(() => assertWireframeHtml('<a href="javascript&#58;alert(1)">x</a>'), /javascript:/);
   assert.throws(() => assertWireframeHtml('<a href="javascript&colon;alert(1)">x</a>'), /javascript:/);
+  assert.throws(() => assertWireframeHtml('<a href="&#1;javascript:alert(1)">x</a>'), /javascript:/);
   assert.throws(() => assertWireframeHtml('<a href="&#106;avascript:alert(1)">x</a>'), /javascript:/);
   assert.throws(() => assertWireframeHtml('<form action="javascript:alert(1)"></form>'), /javascript:/);
   assert.throws(
