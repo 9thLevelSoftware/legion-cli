@@ -523,15 +523,15 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       return;
     }
     if (pathname === "/spec") {
-      send(res, 200, renderSpec(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors, webmcp);
+      send(res, 200, renderSpec(snapshot, false), "text/html; charset=utf-8", headOnly, cors, false);
       return;
     }
     if (pathname === "/graph") {
-      send(res, 200, renderGraph(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors, webmcp);
+      send(res, 200, renderGraph(snapshot, false), "text/html; charset=utf-8", headOnly, cors, false);
       return;
     }
     if (pathname === "/audit") {
-      send(res, 200, renderAudit(snapshot, webmcp), "text/html; charset=utf-8", headOnly, cors, webmcp);
+      send(res, 200, renderAudit(snapshot, false), "text/html; charset=utf-8", headOnly, cors, false);
       return;
     }
     if (pathname === "/api/state") {
@@ -553,15 +553,15 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
         send(
           res,
           404,
-          renderNotFound("unknown wireframe", webmcp),
+          renderNotFound("unknown wireframe", false),
           "text/html; charset=utf-8",
           headOnly,
           cors,
-          webmcp,
+          false,
         );
         return;
       }
-      await serveWireframe(opts.projectRoot, specId, fileName, res, headOnly, cors, webmcp);
+      await serveWireframe(opts.projectRoot, specId, fileName, res, headOnly, cors, false);
       return;
     }
     if (pathname === "/wiki" || pathname === "/wiki/") {
@@ -576,7 +576,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       } catch {
         pages = [];
       }
-      send(res, 200, renderWikiIndex(pages, webmcp), "text/html; charset=utf-8", headOnly, cors, webmcp);
+      send(res, 200, renderWikiIndex(pages, false), "text/html; charset=utf-8", headOnly, cors, false);
       return;
     }
     if (pathname.startsWith("/wiki/")) {
@@ -585,11 +585,11 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
         send(
           res,
           404,
-          renderNotFound("unknown page", webmcp),
+          renderNotFound("unknown page", false),
           "text/html; charset=utf-8",
           headOnly,
           cors,
-          webmcp,
+          false,
         );
         return;
       }
@@ -609,22 +609,22 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
         send(
           res,
           200,
-          renderWikiPage(shown, links, webmcp),
+          renderWikiPage(shown, links, false),
           "text/html; charset=utf-8",
           headOnly,
           cors,
-          webmcp,
+          false,
         );
       } catch (err) {
         if (err instanceof PathEscapeError) {
           send(
             res,
             404,
-            renderNotFound("unknown page", webmcp),
+            renderNotFound("unknown page", false),
             "text/html; charset=utf-8",
             headOnly,
             cors,
-            webmcp,
+            false,
           );
           return;
         }
@@ -632,11 +632,11 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
         send(
           res,
           404,
-          renderNotFound(message, webmcp),
+          renderNotFound(message, false),
           "text/html; charset=utf-8",
           headOnly,
           cors,
-          webmcp,
+          false,
         );
       }
       return;
@@ -645,11 +645,11 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     send(
       res,
       404,
-      renderNotFound("unknown route", webmcp),
+      renderNotFound("unknown route", false),
       "text/html; charset=utf-8",
       headOnly,
       cors,
-      webmcp,
+      false,
     );
   };
 

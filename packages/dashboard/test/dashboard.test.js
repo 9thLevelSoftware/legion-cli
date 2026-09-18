@@ -902,6 +902,16 @@ test("webmcp on via opts or config: script, CSP script-src, COOP, no fetch, no t
       assert.match(html, /<script src="\/webmcp\.js" defer><\/script>/);
       assert.match(html, /id="timeline"/);
       assert.match(html, /id="blockers"/);
+      const spec = await fetch(`${handle.url}/spec`);
+      assert.doesNotMatch(await spec.text(), /webmcp\.js/);
+      const graph = await fetch(`${handle.url}/graph`);
+      assert.doesNotMatch(await graph.text(), /webmcp\.js/);
+      const audit = await fetch(`${handle.url}/audit`);
+      assert.doesNotMatch(await audit.text(), /webmcp\.js/);
+      const wiki = await fetch(`${handle.url}/wiki`);
+      assert.doesNotMatch(await wiki.text(), /webmcp\.js/);
+      const missing = await fetch(`${handle.url}/no-such-page`);
+      assert.doesNotMatch(await missing.text(), /webmcp\.js/);
       assertHtmlOmitsToken(html, handle.token);
       assertWebmcpHeaders(board.headers);
 
