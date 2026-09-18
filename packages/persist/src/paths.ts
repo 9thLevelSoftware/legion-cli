@@ -42,7 +42,8 @@ export function toFsPath(projectRoot: string, storePath: string): string {
   }
   const parts = posix.split("/").filter((part) => part !== "");
   // `nested/D:file` is not absolute, but Windows resolve() treats `D:` as a drive.
-  if (parts.some((part) => part === "." || part === ".." || part.includes(":"))) {
+  // POSIX names like `docs/api:v2.md` are valid; only reject drive-relative segments.
+  if (parts.some((part) => part === "." || part === ".." || /^[A-Za-z]:/.test(part))) {
     throw new PathEscapeError(storePath);
   }
   return assertResolvedInside(projectRoot, resolve(projectRoot, ...parts), storePath);

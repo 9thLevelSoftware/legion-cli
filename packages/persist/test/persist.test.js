@@ -89,6 +89,8 @@ test("toFsPath refuses nested drive-relative segments", () => {
   assert.throws(() => toFsPath(dest, "nested/D:payload"), PathEscapeError);
   assert.throws(() => toFsPath(dest, "nested/C:../Windows/win.ini"), PathEscapeError);
   assert.throws(() => toFsPath(dest, "D:payload"), PathEscapeError);
+  const colonName = toFsPath(dest, "docs/api:v2.md");
+  assert.equal(colonName, resolve(dest, "docs", "api:v2.md"));
 });
 
 test("gitignore template covers index, cache, engine.lock, worktrees, sandbox, chat, serve", () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -184,6 +184,37 @@ test("unzipZipball refuses compressed size, uncompressed size, and entry caps", 
         return true;
       },
     );
+  });
+});
+
+test("unzipZipball refuses a destDir or child directory that is a symlink", async () => {
+  await withTempDir(async (dir) => {
+    const leak = join(dir, "leak");
+    await mkdir(leak, { recursive: true });
+    const dest = join(dir, "out");
+    try {
+      await symlink(leak, dest, process.platform === "win32" ? "junction" : "dir");
+    } catch {
+      return;
+    }
+    const zip = makeZip([{ name: "README.md", data: "pwned\n" }]);
+    await assert.rejects(() => unzipZipball(zip, dest), PathEscapeError);
+    assert.equal(existsSync(join(leak, "README.md")), false);
+
+    const dest2 = join(dir, "out2");
+    await mkdir(dest2, { recursive: true });
+    const child = join(dest2, "src");
+    try {
+      await symlink(leak, child, process.platform === "win32" ? "junction" : "dir");
+    } catch {
+      return;
+    }
+    const nested = makeZip([
+      { name: "pkg/README.md", data: "ok\n" },
+      { name: "pkg/src/payload.ts", data: "pwned\n" },
+    ]);
+    await assert.rejects(() => unzipZipball(nested, dest2), PathEscapeError);
+    assert.equal(existsSync(join(leak, "payload.ts")), false);
   });
 });
 

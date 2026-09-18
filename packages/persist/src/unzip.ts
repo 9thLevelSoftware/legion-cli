@@ -1,9 +1,9 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { PathEscapeError, PersistError } from "./errors.js";
 import { MAX_ZIPBALL_BYTES, MAX_ZIPBALL_ENTRIES } from "./layout.js";
-import { assertResolvedInside, toFsPath } from "./paths.js";
+import { assertResolvedInside, canonicalizePath, toFsPath } from "./paths.js";
 
 const require = createRequire(import.meta.url);
 const yauzl = require("yauzl") as typeof import("yauzl");
@@ -162,6 +162,32 @@ export type UnzipZipballOpts = {
   maxEntries?: number;
 };
 
+function samePath(a: string, b: string): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+async function assertNoSymlinkAncestors(root: string, abs: string): Promise<void> {
+  const stop = resolve(root);
+  let current = resolve(abs);
+  for (;;) {
+    try {
+      const st = await lstat(current);
+      if (st.isSymbolicLink()) throw new PathEscapeError(abs);
+      const real = canonicalizePath(current);
+      if (!samePath(real, current)) throw new PathEscapeError(abs);
+    } catch (err) {
+      if (err instanceof PathEscapeError) throw err;
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    if (samePath(current, stop)) return;
+    const parent = dirname(current);
+    if (samePath(parent, current)) return;
+    current = parent;
+  }
+}
+
 export async function unzipZipball(zip: Buffer, destDir: string, opts?: UnzipZipballOpts): Promise<string[]> {
   const maxBytes = Math.min(opts?.maxBytes ?? MAX_ZIPBALL_BYTES, MAX_ZIPBALL_BYTES);
   const maxUncompressed = Math.min(opts?.maxUncompressedBytes ?? MAX_ZIPBALL_BYTES, MAX_ZIPBALL_BYTES);
@@ -185,6 +211,7 @@ export async function unzipZipball(zip: Buffer, destDir: string, opts?: UnzipZip
   const prefix = singleTopLevelPrefix(entries.map((entry) => entry.fileName));
   const written: string[] = [];
   await mkdir(destDir, { recursive: true });
+  await assertNoSymlinkAncestors(destDir, destDir);
 
   for (const entry of entries) {
     let rel = entry.fileName;
@@ -194,11 +221,14 @@ export async function unzipZipball(zip: Buffer, destDir: string, opts?: UnzipZip
       throw new PathEscapeError(rel);
     }
     const abs = assertResolvedInside(destDir, toFsPath(destDir, rel), rel);
+    await assertNoSymlinkAncestors(destDir, abs);
     if (entry.isDir) {
       await mkdir(abs, { recursive: true });
+      await assertNoSymlinkAncestors(destDir, abs);
       continue;
     }
     await mkdir(dirname(abs), { recursive: true });
+    await assertNoSymlinkAncestors(destDir, abs);
     await writeFile(abs, entry.data);
     written.push(rel);
   }
