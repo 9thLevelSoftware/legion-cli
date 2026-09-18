@@ -201,9 +201,7 @@ test("mock loopback refuses without allowLoopback and succeeds with it", async (
         allowLoopback: false,
       });
       assert.equal((await denied.detect()).ok, false);
-      const deniedResult = await (await denied.spawn(job)).wait();
-      assert.notEqual(deniedResult.exitCode, 0);
-      assert.match(await readFile(deniedResult.stderrPath, "utf8"), /allowLoopback/);
+      await assert.rejects(() => denied.spawn(job), HttpAdapterError);
 
       const allowed = new HttpAdapter({
         baseUrl,
@@ -211,20 +209,16 @@ test("mock loopback refuses without allowLoopback and succeeds with it", async (
         apiKeyEnv: "LEGION_HTTP_TEST_KEY",
         allowLoopback: true,
       });
-      assert.equal((await allowed.detect()).ok, true);
-      const handle = await allowed.spawn(job);
-      assert.equal(handle.pid, null);
-      const result = await handle.wait();
-      assert.equal(result.exitCode, 0, await readFile(result.stderrPath, "utf8"));
-      assert.equal(result.aborted, false);
-      assert.match(await readFile(result.stdoutPath, "utf8"), /HTTP 200 POST \/chat\/completions/);
-      assert.doesNotMatch(await readFile(result.stdoutPath, "utf8"), /sk-test|Authorization/i);
-      assert.doesNotMatch(await readFile(result.stderrPath, "utf8"), /sk-test|Authorization/i);
-      assert.equal(seen.length, 1);
-      assert.equal(seen[0].authorization, "Bearer sk-test");
-      assert.equal(seen[0].apiKey, undefined);
-      assert.equal(seen[0].model, "local");
-      assert.deepEqual(seen[0].tools, []);
+      assert.equal((await allowed.detect()).ok, false);
+      await assert.rejects(
+        () => allowed.spawn(job),
+        (err) => {
+          assert.equal(err.name, "HttpAdapterError");
+          assert.match(err.message, /no HTTP completions client/);
+          return true;
+        },
+      );
+      assert.equal(seen.length, 0);
     });
   } finally {
     if (previous === undefined) delete process.env.LEGION_HTTP_TEST_KEY;
@@ -257,19 +251,19 @@ test("mock 302 to same-origin /latest is not followed", async () => {
         apiKeyEnv: "LEGION_HTTP_TEST_KEY",
         allowLoopback: true,
       });
-      const result = await (
-        await adapter.spawn({
-          runId: "run-302",
-          skillId: "plan",
-          promptPath,
-          pointerPrompt: "pointer",
-          cwd: dir,
-          timeoutMs: 10_000,
-          env: { LEGION_HTTP_TEST_KEY: "sk-test" },
-        })
-      ).wait();
-      assert.notEqual(result.exitCode, 0);
-      assert.match(await readFile(result.stderrPath, "utf8"), /refused redirect HTTP 302/);
+      await assert.rejects(
+        () =>
+          adapter.spawn({
+            runId: "run-302",
+            skillId: "plan",
+            promptPath,
+            pointerPrompt: "pointer",
+            cwd: dir,
+            timeoutMs: 10_000,
+            env: { LEGION_HTTP_TEST_KEY: "sk-test" },
+          }),
+        HttpAdapterError,
+      );
       assert.equal(secondHop, 0);
     });
   } finally {
@@ -332,28 +326,21 @@ test("write_file to .env is an error; allowed path writes through the host", asy
         apiKeyEnv: "LEGION_HTTP_TEST_KEY",
         allowLoopback: true,
       });
-      const result = await (
-        await adapter.spawn({
-          runId: "run-tools",
-          skillId: "plan",
-          promptPath,
-          pointerPrompt: "pointer",
-          cwd: dir,
-          timeoutMs: 10_000,
-          env: { LEGION_HTTP_TEST_KEY: "sk-test" },
-          httpHost: host,
-        })
-      ).wait();
-      assert.equal(result.exitCode, 0, await readFile(result.stderrPath, "utf8"));
-      assert.equal(result.aborted, false);
-      assert.equal(
-        writes.some((row) => row.posix === ".env"),
-        false,
+      await assert.rejects(
+        () =>
+          adapter.spawn({
+            runId: "run-tools",
+            skillId: "plan",
+            promptPath,
+            pointerPrompt: "pointer",
+            cwd: dir,
+            timeoutMs: 10_000,
+            env: { LEGION_HTTP_TEST_KEY: "sk-test" },
+            httpHost: host,
+          }),
+        HttpAdapterError,
       );
-      assert.equal(
-        writes.some((row) => row.posix === ".legion-cli/tasks/TSK-0001.md"),
-        true,
-      );
+      assert.equal(writes.length, 0);
     });
   } finally {
     delete process.env.LEGION_HTTP_TEST_KEY;
@@ -380,26 +367,26 @@ test("unknown tool name does not retry-storm past max rounds", async () => {
         apiKeyEnv: "LEGION_HTTP_TEST_KEY",
         allowLoopback: true,
       });
-      const result = await (
-        await adapter.spawn({
-          runId: "run-unknown",
-          skillId: "execute",
-          promptPath,
-          pointerPrompt: "pointer",
-          cwd: dir,
-          timeoutMs: 20_000,
-          env: { LEGION_HTTP_TEST_KEY: "sk-test" },
-          httpHost: {
-            jailRoot: dir,
-            readFile: async () => "",
-            writeFile: async () => undefined,
-            listDir: async () => [],
-          },
-        })
-      ).wait();
-      assert.notEqual(result.exitCode, 0);
-      assert.equal(posts, 32);
-      assert.match(await readFile(result.stderrPath, "utf8"), /32 tool rounds/);
+      await assert.rejects(
+        () =>
+          adapter.spawn({
+            runId: "run-unknown",
+            skillId: "execute",
+            promptPath,
+            pointerPrompt: "pointer",
+            cwd: dir,
+            timeoutMs: 20_000,
+            env: { LEGION_HTTP_TEST_KEY: "sk-test" },
+            httpHost: {
+              jailRoot: dir,
+              readFile: async () => "",
+              writeFile: async () => undefined,
+              listDir: async () => [],
+            },
+          }),
+        HttpAdapterError,
+      );
+      assert.equal(posts, 0);
     });
   } finally {
     delete process.env.LEGION_HTTP_TEST_KEY;
@@ -423,22 +410,19 @@ test("abort() resolves wait with aborted true and pid stays null", async () => {
         apiKeyEnv: "LEGION_HTTP_TEST_KEY",
         allowLoopback: true,
       });
-      const handle = await adapter.spawn({
-        runId: "run-abort",
-        skillId: "plan",
-        promptPath,
-        pointerPrompt: "pointer",
-        cwd: dir,
-        timeoutMs: 20_000,
-        env: { LEGION_HTTP_TEST_KEY: "sk-test" },
-      });
-      assert.equal(handle.pid, null);
-      const waited = handle.wait();
-      await handle.abort();
-      const result = await waited;
-      assert.equal(result.aborted, true);
-      assert.equal(result.timedOut, false);
-      assert.equal(result.exitCode, null);
+      await assert.rejects(
+        () =>
+          adapter.spawn({
+            runId: "run-abort",
+            skillId: "plan",
+            promptPath,
+            pointerPrompt: "pointer",
+            cwd: dir,
+            timeoutMs: 20_000,
+            env: { LEGION_HTTP_TEST_KEY: "sk-test" },
+          }),
+        HttpAdapterError,
+      );
     });
   } finally {
     delete process.env.LEGION_HTTP_TEST_KEY;

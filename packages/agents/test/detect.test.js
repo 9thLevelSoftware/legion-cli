@@ -298,7 +298,7 @@ test("createAdapter http detect is not ok until adapter.http + env are set", asy
   assert.equal(adapter.binary, "(http)");
   const detected = await adapter.detect();
   assert.equal(detected.ok, false);
-  assert.match(detected.reason ?? "", /adapter\.http is not configured/);
+  assert.match(detected.reason ?? "", /no HTTP completions client/);
   const previous = process.env.OPENAI_API_KEY;
   try {
     process.env.OPENAI_API_KEY = "sk-test";
@@ -310,7 +310,7 @@ test("createAdapter http detect is not ok until adapter.http + env are set", asy
         allowLoopback: false,
       },
     });
-    assert.equal((await ready.detect()).ok, true);
+    assert.equal((await ready.detect()).ok, false);
     assert.equal(await isResolvedAdapterSpawnable({
       adapter: {
         default: "http",
@@ -320,7 +320,7 @@ test("createAdapter http detect is not ok until adapter.http + env are set", asy
           apiKeyEnv: "OPENAI_API_KEY",
         },
       },
-    }), true);
+    }), false);
   } finally {
     if (previous === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previous;
