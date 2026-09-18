@@ -16,7 +16,7 @@ function isOverlayMetadataName(name: string): boolean {
 /** Overlay pin/signature files live only at the skill root, not under L3 dirs. */
 function isOverlayRootMetadata(skillDir: string, src: string): boolean {
   const rel = relative(resolve(skillDir), resolve(src)).replaceAll("\\", "/");
-  if (!rel || rel === "." || rel.startsWith("../") || rel === ".." || rel.includes("/")) return false;
+  if (!rel || rel === "." || rel === ".." || rel.includes("/")) return false;
   return isOverlayMetadataName(rel);
 }
 

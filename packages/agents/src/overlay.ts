@@ -686,12 +686,10 @@ async function materializeOverlay(opts: {
       installedAt: new Date().toISOString(),
     };
     const checked = SkillOverlayPinSchema.parse(pin);
-    await mkdir(staging, { recursive: true });
     await writeFile(join(staging, OVERLAY_PIN_FILENAME), `${JSON.stringify(checked, null, 2)}\n`, "utf8");
     await assertSafeOverlayDest(opts.projectRoot, dest);
     await rm(dest, { recursive: true, force: true });
     await mkdir(dirname(dest), { recursive: true });
-    await assertSafeOverlayDest(opts.projectRoot, dest);
     await rename(staging, dest);
     return { skillId, dest, pin: checked };
   } catch (err) {
