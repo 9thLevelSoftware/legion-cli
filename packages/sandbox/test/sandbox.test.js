@@ -161,6 +161,83 @@ test("copy-out includes an allowed write that did not exist yet", async () => {
   });
 });
 
+test("copy-out deletes children missing from an allowed directory", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await mkdir(join(dir, "out", "nested"), { recursive: true });
+    await writeFile(join(dir, "out", "keep.txt"), "keep\n", "utf8");
+    await writeFile(join(dir, "out", "gone.txt"), "gone\n", "utf8");
+    await writeFile(join(dir, "out", "nested", "child.txt"), "child\n", "utf8");
+    await writeFile(join(dir, "src", "untouched.ts"), "leave\n", "utf8");
+    const handle = await materializeJail(policy(dir, { allowedWrites: ["out"] }));
+    try {
+      await rm(join(handle.jailRoot, "out", "gone.txt"));
+      await rm(join(handle.jailRoot, "out", "nested", "child.txt"));
+      const result = await handle.copyOut();
+      assert.ok(result.copied.includes("out/gone.txt"));
+      assert.ok(result.copied.includes("out/nested/child.txt"));
+      assert.equal(existsSync(join(dir, "out", "gone.txt")), false);
+      assert.equal(existsSync(join(dir, "out", "nested", "child.txt")), false);
+      assert.equal(await readFile(join(dir, "out", "keep.txt"), "utf8"), "keep\n");
+      assert.equal(await readFile(join(dir, "src", "untouched.ts"), "utf8"), "leave\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("copy-out does not delete symlink children of an allowed directory", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await mkdir(join(dir, "out"), { recursive: true });
+    await writeFile(join(dir, "out", "keep.txt"), "keep\n", "utf8");
+    const outside = join(tmpdir(), `legion-dir-del-link-${process.pid}-${Date.now()}.txt`);
+    await writeFile(outside, "host-secret\n", "utf8");
+    try {
+      const linked = await trySymlink(outside, join(dir, "out", "link.txt"));
+      const handle = await materializeJail(policy(dir, { allowedWrites: ["out"] }));
+      try {
+        if (linked) {
+          assert.equal(existsSync(join(handle.jailRoot, "out", "link.txt")), false);
+        }
+        await handle.copyOut();
+        if (linked) {
+          assert.equal(lstatSync(join(dir, "out", "link.txt")).isSymbolicLink(), true);
+          assert.equal(await readFile(outside, "utf8"), "host-secret\n");
+        }
+        assert.equal(await readFile(join(dir, "out", "keep.txt"), "utf8"), "keep\n");
+      } finally {
+        await handle.destroy();
+      }
+    } finally {
+      await rm(outside, { force: true });
+    }
+  });
+});
+
+test("materializeJail refuses leftover jail path that is a symlink", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const leak = await mkdtemp(join(tmpdir(), "legion-jail-symlink-"));
+    await writeFile(join(leak, "keep.txt"), "outside\n", "utf8");
+    await mkdir(join(dir, ".legion-cli", "sandbox"), { recursive: true });
+    const jailPath = join(dir, ".legion-cli", "sandbox", "run-1");
+    const linked = await trySymlink(leak, jailPath, process.platform === "win32" ? "junction" : "dir");
+    assert.equal(linked, true, "could not create leftover jail symlink");
+    try {
+      await assert.rejects(() => materializeJail(policy(dir)), (err) => {
+        assert.equal(err instanceof SandboxError, true);
+        assert.match(err.message, /symlink/);
+        return true;
+      });
+      assert.equal(await readFile(join(leak, "keep.txt"), "utf8"), "outside\n");
+    } finally {
+      await rm(jailPath, { force: true });
+      await rm(leak, { recursive: true, force: true });
+    }
+  });
+});
+
 test(".git/hooks write in jail does not appear in operator .git/hooks", async () => {
   await withTempDir(async (dir) => {
     await seedProject(dir);

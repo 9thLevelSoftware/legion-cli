@@ -528,6 +528,77 @@ async function safeCopyOutFile(src: string, dest: string, projectRoot: string): 
   }
 }
 
+async function listHostFilesUnder(projectRoot: string, allowedDir: string): Promise<string[]> {
+  const out: string[] = [];
+  let start: string;
+  try {
+    start = toFsPath(projectRoot, allowedDir);
+  } catch {
+    return out;
+  }
+  let startSt;
+  try {
+    startSt = await lstat(start);
+  } catch {
+    return out;
+  }
+  if (startSt.isSymbolicLink() || !startSt.isDirectory()) return out;
+  if (await destIsUnsafe(projectRoot, start)) return out;
+
+  const stack: { abs: string; rel: string; depth: number }[] = [
+    { abs: start, rel: allowedDir, depth: 0 },
+  ];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (!cur) continue;
+    if (cur.depth > MAX_COPY_DEPTH) continue;
+    let entries;
+    try {
+      entries = await readdir(cur.abs, { withFileTypes: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw err;
+    }
+    for (const entry of entries) {
+      const abs = join(cur.abs, entry.name);
+      const rel = `${cur.rel}/${entry.name}`;
+      if (isBlockedRel(rel) || !isConcretePosixRepoRelativePath(rel)) continue;
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        stack.push({ abs, rel, depth: cur.depth + 1 });
+        continue;
+      }
+      if (entry.isFile()) out.push(rel);
+    }
+  }
+  return out;
+}
+
+async function unlinkAllowedIfGone(
+  projectRoot: string,
+  rel: string,
+  copied: string[],
+): Promise<boolean> {
+  if (isBlockedRel(rel) || !isConcretePosixRepoRelativePath(rel)) return false;
+  let dest: string;
+  try {
+    dest = toFsPath(projectRoot, rel);
+  } catch {
+    return false;
+  }
+  try {
+    const destSt = await lstat(dest);
+    if (!destSt.isFile() || destSt.isSymbolicLink()) return false;
+    if (await destIsUnsafe(projectRoot, dest)) return false;
+    await rm(dest, { force: true });
+    copied.push(rel);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    return false;
+  }
+}
+
 async function copyOutWrites(
   projectRoot: string,
   jailRoot: string,
@@ -569,22 +640,16 @@ async function copyOutWrites(
     copied.push(rel);
   }
   const jailSet = new Set(files);
+  const removed = new Set<string>();
   for (const allowed of allowedWrites) {
     if (jailSet.has(allowed) || isBlockedRel(allowed)) continue;
-    let dest: string;
-    try {
-      dest = toFsPath(projectRoot, allowed);
-    } catch {
-      continue;
-    }
-    try {
-      const destSt = await lstat(dest);
-      if (!destSt.isFile() || destSt.isSymbolicLink()) continue;
-      if (await destIsUnsafe(projectRoot, dest)) continue;
-      await rm(dest, { force: true });
-      copied.push(allowed);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    if (await unlinkAllowedIfGone(projectRoot, allowed, copied)) removed.add(allowed);
+  }
+  for (const allowed of allowedWrites) {
+    if (isBlockedRel(allowed)) continue;
+    for (const rel of await listHostFilesUnder(projectRoot, allowed)) {
+      if (jailSet.has(rel) || removed.has(rel)) continue;
+      if (await unlinkAllowedIfGone(projectRoot, rel, copied)) removed.add(rel);
     }
   }
   return { copied, dropped };
@@ -598,8 +663,16 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
 
   const jailRoot = toFsPath(projectRoot, `.legion-cli/sandbox/${runId}`);
   const sandboxDir = legionPaths(projectRoot).sandboxDir;
-  if (await pathHasSymlinkAncestor(sandboxDir, projectRoot) || await pathHasSymlinkAncestor(jailRoot, projectRoot)) {
+  if (await pathHasSymlinkAncestor(sandboxDir, projectRoot)) {
     throw new SandboxError("sandbox directory is a symlink");
+  }
+  try {
+    const leftover = await lstat(jailRoot);
+    if (leftover.isSymbolicLink()) {
+      throw new SandboxError("sandbox directory is a symlink");
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
   await rm(jailRoot, { recursive: true, force: true });
   await mkdir(jailRoot, { recursive: true });
@@ -658,8 +731,7 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
           }
           await rm(profilePath);
         } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== "ENOENT" && !(err instanceof SandboxError)) throw err;
-          if (err instanceof SandboxError) throw err;
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
         }
         await writeFile(profilePath, seatbeltProfile(jailRoot), { encoding: "utf8", flag: "wx" });
         extraFiles.push(profilePath);
