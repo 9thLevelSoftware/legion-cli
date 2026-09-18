@@ -167,9 +167,8 @@ async function assertSafePackageDest(projectRoot: string, dest: string): Promise
 }
 
 async function hashGithubPackage(dir: string, files: string[], manifest: DesignSystemPackage): Promise<string> {
-  const content = files.filter((file) => file !== "manifest.json");
   const records = await Promise.all(
-    content.map(async (path) => {
+    files.map(async (path) => {
       const abs = toFsPath(dir, path);
       const st = await lstat(abs);
       if (st.isSymbolicLink() || !st.isFile()) throw new PathEscapeError(path);
