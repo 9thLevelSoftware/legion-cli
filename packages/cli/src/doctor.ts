@@ -36,7 +36,7 @@ import {
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { scanWikiSecrets, type SecretHit } from "./secrets.js";
-import { isSpawnableBinary, listOnPath, runBounded, runTool } from "./which.js";
+import { isSpawnableBinary, listOnPath, pathLegionIsLegionCli, runBounded, runTool } from "./which.js";
 
 export type DoctorCheck = {
   ok: boolean;
@@ -368,6 +368,9 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   }
   const installerWarn = await installerFingerprintWarning(legionPaths);
   if (installerWarn) warnings.push(installerWarn);
+  if (!installerWarn && pathLegionIsLegionCli(legionPaths) === false) {
+    warnings.push("PATH legion is another program; run npm link --force in packages/cli to make legion run Legion CLI");
+  }
 
   const playwright = runTool("pnpm", ["exec", "playwright", "--version"], opts.project);
   const playwrightDetail =
