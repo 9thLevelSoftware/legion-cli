@@ -647,9 +647,9 @@ export interface AgentResult {
 | `verify` | Optional walkthrough notes + fix-plan tasks | No for ship; notes only | `.legion-cli/qa/**`, `.legion-cli/tasks/**`, `.legion-cli/cache/runs/<id>/**` |
 | `review` | Spec-level review loop | **Yes** | `.legion-cli/qa/**`, `.legion-cli/tasks/**`, `.legion-cli/cache/runs/<id>/**` |
 | `qa` | Optional extra findings | No — scorer is in-process (Playwright JSON) | `.legion-cli/qa/**`, `.legion-cli/cache/runs/<id>/**` |
-| `map` | Optional architecture/fingerprint spawn after fallback walk | No — fallback parser always writes the map | `.legion-cli/map/**`, `.legion-cli/cache/runs/<id>/**` |
+| `map` | Optional architecture/fingerprint spawn after fallback walk | No — fallback parser always writes the map | `.legion-cli/map/ARCHITECTURE.md`, `.legion-cli/cache/runs/<id>/**` |
 | `wireframe` | Optional HTML regenerate/restyle spawn | No — templates write INDEX.html; `--spawn` is extra | `.legion-cli/specs/<activeSpecId>/wireframes/**`, `.legion-cli/cache/runs/<id>/**` |
-| `chat` | Unclear REPL turns may spawn for a proposal | No — local routing covers status/next/brief/search | `.legion-cli/chat/**`, `.legion-cli/cache/runs/<id>/**` |
+| `chat` | Some REPL turns may spawn for a proposal | No — local routing covers status/next/brief/search | `.legion-cli/cache/runs/<id>/**` |
 
 The engine, not the spawn, writes `STATE.md`, task `status`, `lastReadiness`, and `lastReview`. Implicit forbidden (`.git/**`, `.env*`, `.legion-cli/config.yaml`, `.legion-cli/index/**`) still applies to every skill.
 
