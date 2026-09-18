@@ -168,15 +168,12 @@ test("listSkillCatalog of the repo skills tree has ten valid entries", () => {
     skipped.filter((row) => row.required),
     [],
   );
-  assert.equal(catalog.skills.length, 11);
+  assert.equal(catalog.skills.length, 12);
   assert.ok(catalog.skills.some((skill) => skill.skillId === "wireframe"));
   assert.ok(catalog.skills.some((skill) => skill.skillId === "chat"));
+  assert.ok(catalog.skills.some((skill) => skill.skillId === "map"));
   const missingOptional = skipped.filter((row) => row.reason === "missing SKILL.md");
-  assert.equal(missingOptional.length, 1);
-  assert.deepEqual(
-    missingOptional.map((row) => row.path).sort(),
-    ["skills/map/SKILL.md"],
-  );
+  assert.equal(missingOptional.length, 0);
   assert.ok(missingOptional.every((row) => row.required === false));
   for (const skill of catalog.skills) {
     assert.deepEqual(skill.resources, { scripts: [], references: [], assets: [] }, skill.skillId);

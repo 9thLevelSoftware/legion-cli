@@ -20,6 +20,7 @@ export {
 } from "./chat.js";
 export type { ChatApplyResult, ChatRouteOpts, ChatTurnKind, ChatTurnResult } from "./chat.js";
 export { createLegionEngine, DISTILL_SOURCE_MAX_CHARS, LegionEngine } from "./engine.js";
+export type { MapLspMode, MapOptions, MapResult } from "./map.js";
 export {
   assertIngestSourceAllowed,
   isGithubSource,

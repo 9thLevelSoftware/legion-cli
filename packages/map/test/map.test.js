@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -281,6 +282,7 @@ test("--lsp with no server throws so PR-04 can map Next: legion-cli map --no-lsp
       },
     );
     assert.deepEqual(await mapArtifacts(dir), before);
+    assert.equal(existsSync(join(dir, ".legion-cli", "map")), false);
   });
 });
 
@@ -484,6 +486,31 @@ test("map refuses when walk exceeds 10000 modules", { timeout: 60_000 }, async (
   });
 });
 
+test("generateMap replaces a symlink ARCHITECTURE.md without reading the target", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const envPath = join(dir, "src", ".env");
+    await writeFile(envPath, "SECRET=do-not-leak\n", "utf8");
+    await mkdir(join(dir, ".legion-cli", "map"), { recursive: true });
+    const archPath = join(dir, ".legion-cli", "map", "ARCHITECTURE.md");
+    try {
+      await symlink(envPath, archPath);
+    } catch (err) {
+      if (err && (err.code === "EPERM" || err.code === "EACCES")) return;
+      throw err;
+    }
+    await generateMap(dir);
+    const st = await lstat(archPath);
+    assert.equal(st.isSymbolicLink(), false);
+    assert.equal(st.isFile(), true);
+    const body = await readFile(archPath, "utf8");
+    assert.match(body, GENERATED_START_RE);
+    assert.match(body, /src\/auth\.ts/);
+    assert.doesNotMatch(body, /SECRET=do-not-leak/);
+    assert.equal(await readFile(envPath, "utf8"), "SECRET=do-not-leak\n");
+  });
+});
+
 test("map dir junction is replaced; files are not written outside the project", async () => {
   await withTempDir(async (dir) => {
     await writeTree(dir, THREE_TS);
@@ -508,5 +535,20 @@ test("map dir junction is replaced; files are not written outside the project", 
     const arch = await lstat(join(mapDir, "ARCHITECTURE.md"));
     assert.equal(fp.isFile() && !fp.isSymbolicLink(), true);
     assert.equal(arch.isFile() && !arch.isSymbolicLink(), true);
+  });
+});
+
+test("generateMap replaces ARCHITECTURE.md directory collision", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const archPath = join(dir, ".legion-cli", "map", "ARCHITECTURE.md");
+    await mkdir(join(archPath, "nested"), { recursive: true });
+    await writeFile(join(archPath, "nested", "keep.txt"), "nope\n", "utf8");
+    const result = await generateMap(dir);
+    const st = await lstat(archPath);
+    assert.equal(st.isFile(), true);
+    assert.equal(st.isDirectory(), false);
+    assert.match(await readFile(archPath, "utf8"), GENERATED_START_RE);
+    assert.equal(result.backend, "fallback");
   });
 });

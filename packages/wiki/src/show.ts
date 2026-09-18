@@ -1,11 +1,11 @@
-import { readdir } from "node:fs/promises";
-import { basename } from "node:path";
+import { lstat, readFile, readdir } from "node:fs/promises";
+import { basename, join } from "node:path";
 import type { LegionReader } from "@9thlevelsoftware/legion-cli-persist";
 import { loadWikiPages, type WikiPageRow } from "./graph.js";
 import { ensureWikiIndex } from "./brief.js";
 
 export type ShownPage = {
-  kind: "wiki" | "spec" | "task" | "decision" | "assumption";
+  kind: "wiki" | "spec" | "task" | "decision" | "assumption" | "map";
   path: string;
   title: string;
   trust?: "untrusted" | "reviewed";
@@ -45,6 +45,43 @@ export async function showPage(
 ): Promise<ShownPage> {
   const ref = normalizeRef(pageRef);
   await ensureWikiIndex(store, opts);
+
+  const mapRef = ref.toLowerCase();
+  if (mapRef === ".legion-cli/map/architecture.md" || mapRef === "map/architecture.md") {
+    const storePath = ".legion-cli/map/ARCHITECTURE.md";
+    try {
+      const mapDirSt = await lstat(store.paths.mapDir);
+      if (mapDirSt.isSymbolicLink()) {
+        throw new Error("map directory must not be a symlink");
+      }
+      if (!mapDirSt.isDirectory()) throw new Error(`unknown page ${pageRef}`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`unknown page ${pageRef}`);
+      throw err;
+    }
+    const abs = join(store.paths.mapDir, "ARCHITECTURE.md");
+    let st;
+    try {
+      st = await lstat(abs);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`unknown page ${pageRef}`);
+      throw err;
+    }
+    if (st.isSymbolicLink()) {
+      throw new Error("map ARCHITECTURE.md must not be a symlink");
+    }
+    if (!st.isFile()) {
+      throw new Error(`unknown page ${pageRef}`);
+    }
+    const body = await readFile(abs, "utf8");
+    const heading = /^#\s+(.+)$/m.exec(body);
+    return {
+      kind: "map",
+      path: storePath,
+      title: heading?.[1]?.trim() || "Architecture",
+      body,
+    };
+  }
 
   if (/^TSK-/i.test(ref) || ref.startsWith(".legion-cli/tasks/")) {
     const id = basename(ref).replace(/\.md$/i, "");

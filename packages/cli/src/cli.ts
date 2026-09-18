@@ -21,6 +21,7 @@ import { runFix } from "./fix.js";
 import { formatHelpLayer1, printHelpAll, printHelpLayer1 } from "./help-all.js";
 import { runIndexRebuild } from "./index-rebuild.js";
 import { runIngest } from "./ingest.js";
+import { runMap } from "./map.js";
 import { runInit } from "./init.js";
 import { runIntent } from "./intent.js";
 import { printRefuse, resolveOpts, writeErr } from "./io.js";
@@ -190,8 +191,8 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("show").description("Open one wiki/spec/task page"))
-    .argument("<page>", "wiki page, spec, or task")
+  addGlobalOptions(program.command("show").description("Open one wiki/spec/task/map page"))
+    .argument("<page>", "wiki page, spec, task, or map")
     .action(async (page: string, _opts, cmd: Command) => {
       const code = await runShow(resolveOpts(cmd), page);
       process.exitCode = code;
@@ -640,6 +641,17 @@ export function createProgram(): Command {
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
       const code = await runGarden(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("map").description("Generate architecture markdown and fingerprints"))
+    .option("--refresh", "recompute fingerprints; update generated region")
+    .option("--lsp", "require a language server on PATH")
+    .option("--no-lsp", "force the fallback parser")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { refresh?: boolean };
+      const code = await runMap(resolveOpts(cmd), flags, process.argv);
       process.exitCode = code;
     });
 

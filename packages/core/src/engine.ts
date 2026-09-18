@@ -14,8 +14,15 @@ import {
   pickNextTask,
   readyTasks,
 } from "@9thlevelsoftware/legion-cli-graph";
+import {
+  ensureRealMapDir,
+  generateMap,
+  MapError,
+  mergeArchitecture,
+  renderArchitecture,
+} from "@9thlevelsoftware/legion-cli-map";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   abandonReceiptBody,
@@ -182,6 +189,14 @@ import type {
   WireframeResult,
 } from "./types.js";
 import { promoteBrownfieldRun, runBrownfield } from "./brownfield.js";
+import {
+  MAP_ARCHITECTURE_PATH,
+  MAP_FINGERPRINTS_PATH,
+  MAP_SHOW_NEXT,
+  MAP_SPAWN_PROMPT,
+  type MapOptions,
+  type MapResult,
+} from "./map.js";
 import { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands } from "./verify.js";
 import { palettePresent } from "./wireframes.js";
 import { finishWireframe, prepareWireframe, screenPagesFor, writeWireframeFiles } from "./wireframe-run.js";
@@ -634,6 +649,115 @@ export class LegionEngine {
       }
       await ensureWikiIndex(this.store);
       return gardenReport(this.projectRoot);
+    });
+  }
+
+  async map(opts: MapOptions = {}): Promise<MapResult> {
+    let started: StartedSkillSpawn | undefined;
+    let generated: Awaited<ReturnType<typeof generateMap>> | undefined;
+
+    await this.#withLockOrRefuse(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("Map needs a Legion CLI project first", HINT.init);
+      }
+      await this.#assertNoLiveInProgress("map");
+      try {
+        generated = await generateMap(this.projectRoot, {
+          refresh: opts.refresh,
+          lsp: opts.lsp,
+          resolveBinary: opts.resolveBinary,
+          spawnLsp: opts.spawnLsp,
+          lspDeadlineMs: opts.lspDeadlineMs,
+        });
+      } catch (err) {
+        if (err instanceof MapError) refuse(err.message, err.nextHint);
+        throw err;
+      }
+      let config: LegionConfig;
+      try {
+        config = await this.#readConfig();
+      } catch {
+        return;
+      }
+      started = await startSkillSpawn({
+        ...this.#skillSpawnFields(),
+        config,
+        skillId: "map",
+        promptBody: MAP_SPAWN_PROMPT,
+        required: false,
+      });
+    });
+
+    const waited = started?.spawned ? await waitStartedSpawn(started) : undefined;
+
+    return this.#withLockOrRefuse(async () => {
+      if (!generated) {
+        refuse("Map needs a Legion CLI project first", HINT.init);
+      }
+      if (started?.spawned) {
+        const revert = await finishStartedSpawn(started);
+        await ensureRealMapDir(this.projectRoot, this.store.paths.mapDir);
+        const fingerprintsPath = join(this.store.paths.mapDir, "fingerprints.json");
+        const architecturePath = join(this.store.paths.mapDir, "ARCHITECTURE.md");
+        let existingArch: string | undefined;
+        try {
+          const st = await lstat(architecturePath);
+          if (st.isSymbolicLink()) {
+            await rm(architecturePath, { force: true });
+          } else if (st.isDirectory()) {
+            await rm(architecturePath, { recursive: true, force: true });
+          } else if (st.isFile()) {
+            existingArch = await readFile(architecturePath, "utf8");
+          } else {
+            await rm(architecturePath, { force: true });
+          }
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        }
+        for (const [abs, contents] of [
+          [fingerprintsPath, `${JSON.stringify(generated.fingerprints, null, 2)}\n`],
+          [architecturePath, mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints))],
+        ] as const) {
+          try {
+            const st = await lstat(abs);
+            if (st.isSymbolicLink()) await rm(abs, { force: true });
+            else if (st.isDirectory()) await rm(abs, { recursive: true, force: true });
+            else if (!st.isFile()) await rm(abs, { force: true });
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+          }
+          await writeFile(abs, contents, "utf8");
+        }
+        if (revert.incident) {
+          refuse("inspect .git — spawn touched .git/", HINT.map);
+        }
+        if (revert.extrasReverted.length > 0) {
+          refuse(
+            `spawn wrote files outside SkillContract; reverted: ${revert.extrasReverted.join(", ")}`,
+            HINT.map,
+          );
+        }
+        if (waited?.error) {
+          const message = waited.error instanceof Error ? waited.error.message : String(waited.error);
+          refuse(`map skill spawn failed: ${message}`, HINT.map);
+        }
+      }
+      const state = await this.#readState();
+      await this.#audit(opts.refresh ? "map_refresh" : "map", state.phase, "user", {
+        backend: generated.backend,
+        modules: generated.fingerprints.modules.length,
+        changedCount: generated.changed.length,
+        rootHash: generated.fingerprints.rootHash,
+      });
+      return {
+        path: MAP_ARCHITECTURE_PATH,
+        fingerprintsPath: MAP_FINGERPRINTS_PATH,
+        backend: generated.backend,
+        modules: generated.fingerprints.modules.length,
+        changed: generated.changed,
+        next: MAP_SHOW_NEXT,
+      };
     });
   }
 
@@ -2982,14 +3106,16 @@ export class LegionEngine {
   /** KD-21 is the execute `currentTaskId` + `in_progress` window. Plan/review wait is execute-only. */
   async #assertNoLiveInProgress(action: string): Promise<void> {
     const task = await this.#liveInProgressTask();
-    if (!task) return;
-    const resume = await findLatestTaskResume(this.projectRoot, task.id);
-    if (resume && resumeRunIsLive(resume)) {
-      refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
+    if (task) {
+      const resume = await findLatestTaskResume(this.projectRoot, task.id);
+      if (resume && resumeRunIsLive(resume)) {
+        refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
+      }
+      if (!resume) {
+        refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
+      }
     }
-    if (!resume) {
-      refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
-    }
+    await refuseIfLiveSkillSpawn(this.projectRoot, action);
   }
 
   async #assertTicketAgainstLiveSpawn(_input: NewTicket): Promise<void> {

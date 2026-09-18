@@ -114,7 +114,7 @@ test("help --all lists serve as shipped adjacent and not later", () => {
   assert.match(adjacent, /^ {2}serve$/m);
   assert.match(adjacent, /--mcp-http\/--no-mcp-http/);
   assert.doesNotMatch(later, /\bserve\b/);
-  assert.match(later, /map, skills list\|install/);
+  assert.match(later, /skills list\|install/);
 });
 
 test("mcp is a read-only stdio command", () => {
@@ -142,9 +142,13 @@ test("help --all does not call control-mode later", () => {
   const later = helpSection(out, "Later, not this series:", "Not in this product:");
   assert.doesNotMatch(later, /control-mode/);
   assert.doesNotMatch(later, /vendor extra-adapter argv/);
-  assert.match(later, /map, skills list\|install/);
+  assert.doesNotMatch(later, /\bmap\b/);
   assert.doesNotMatch(later, /wireframe/);
   assert.doesNotMatch(later, /\bserve\b/);
+  assert.match(later, /skills list\|install/);
+  const adjacent = helpSection(out, "Shipped adjacent (not the default window):", "Later, not this series:");
+  assert.match(adjacent, /^ {2}map$/m);
+  assert.match(adjacent, /--refresh, --lsp, --no-lsp/);
   assert.doesNotMatch(out, /v0 gap; follow-up PRs in this series/);
   assert.doesNotMatch(out, /v0 gap/);
   const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");

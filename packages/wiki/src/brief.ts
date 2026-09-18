@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   extractWikiLinks,
@@ -8,6 +8,7 @@ import {
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   AssumptionSchema,
+  FingerprintFileSchema,
   QAScoreSchema,
   SCHEMA_VERSION,
   SessionBriefSchema,
@@ -116,6 +117,9 @@ export function renderSessionBrief(brief: SessionBrief): string {
     const adapterBit = brief.currentTask.adapter ? ` (${brief.currentTask.adapter})` : "";
     lines.push(`Current task: ${brief.currentTask.id} ${brief.currentTask.title}${adapterBit}`);
   }
+  if (brief.mapRootHash) {
+    lines.push(`Map rootHash: ${brief.mapRootHash}`);
+  }
   lines.push("");
   lines.push("Blocking assumptions:");
   if (brief.blockers.length === 0) {
@@ -190,6 +194,7 @@ export function assembleSessionBrief(input: {
   contract?: FileContract | null;
   lastQa?: SessionBrief["lastQa"];
   skills?: SessionBrief["skills"];
+  mapRootHash?: string;
 }): SessionBrief {
   const base = {
     schemaVersion: SCHEMA_VERSION.brief,
@@ -200,6 +205,7 @@ export function assembleSessionBrief(input: {
     decisions: input.decisions.slice(0, 10),
     contract: input.contract ?? null,
     lastQa: input.lastQa ?? null,
+    ...(input.mapRootHash ? { mapRootHash: input.mapRootHash } : {}),
   };
   let wiki = input.wiki;
   let skills = input.skills;
@@ -260,9 +266,26 @@ export async function ensureWikiIndex(
   await writable.rebuild();
 }
 
+async function readMapRootHash(store: LegionReader): Promise<string | undefined> {
+  try {
+    const dirSt = await lstat(store.paths.mapDir);
+    if (dirSt.isSymbolicLink() || !dirSt.isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+  try {
+    const parsed = FingerprintFileSchema.safeParse(
+      JSON.parse(await readFile(join(store.paths.mapDir, "fingerprints.json"), "utf8")),
+    );
+    return parsed.success ? parsed.data.rootHash : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function buildSessionBrief(
   store: LegionReader,
-  opts?: { rebuild?: boolean; skills?: SessionBrief["skills"] },
+  opts?: { rebuild?: boolean; skills?: SessionBrief["skills"]; mapRootHash?: string },
 ): Promise<SessionBrief> {
   await ensureWikiIndex(store, opts);
   const project = (await store.readProject()).data;
@@ -319,5 +342,6 @@ export async function buildSessionBrief(
     contract,
     lastQa,
     skills: opts?.skills,
+    mapRootHash: opts?.mapRootHash ?? (await readMapRootHash(store)),
   });
 }

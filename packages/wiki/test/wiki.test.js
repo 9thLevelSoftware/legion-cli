@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -181,6 +181,54 @@ test("buildSessionBrief copies raw Task.adapter onto currentTask", async () => {
   });
 });
 
+test("buildSessionBrief loads mapRootHash from fingerprints.json", async () => {
+  await withStore(async ({ store, dir }) => {
+    const hash = "b".repeat(64);
+    const mapDir = join(dir, ".legion-cli", "map");
+    await mkdir(mapDir, { recursive: true });
+    await writeFile(
+      join(mapDir, "fingerprints.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-fingerprint/v1",
+        generatedAt: new Date().toISOString(),
+        backend: "fallback",
+        rootHash: hash,
+        modules: [],
+      })}\n`,
+      "utf8",
+    );
+    const brief = await buildSessionBrief(store);
+    assert.equal(brief.mapRootHash, hash);
+  });
+});
+
+test("buildSessionBrief omits mapRootHash when map dir is a symlink", async () => {
+  await withStore(async ({ store, dir }) => {
+    const hash = "b".repeat(64);
+    const outside = join(dir, "outside-map");
+    await mkdir(outside, { recursive: true });
+    await writeFile(
+      join(outside, "fingerprints.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-fingerprint/v1",
+        generatedAt: new Date().toISOString(),
+        backend: "fallback",
+        rootHash: hash,
+        modules: [],
+      })}\n`,
+      "utf8",
+    );
+    try {
+      await symlink(outside, join(dir, ".legion-cli", "map"), process.platform === "win32" ? "junction" : "dir");
+    } catch (err) {
+      if (err?.code === "EPERM" || err?.code === "EACCES") return;
+      throw err;
+    }
+    const brief = await buildSessionBrief(store);
+    assert.equal(brief.mapRootHash, undefined);
+  });
+});
+
 test("buildSessionBrief omits currentTask.adapter when Task.adapter is unset", async () => {
   await withStore(async ({ store }) => {
     const brief = await buildSessionBrief(store);
@@ -223,11 +271,101 @@ function overflowSkills(activeId) {
   }));
 }
 
-test("wiki source does not import agents", async () => {
+test("wiki source does not import agents or map", async () => {
   const srcDir = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
-  const text = await readFile(join(srcDir, "brief.ts"), "utf8");
-  assert.doesNotMatch(text, /legion-cli-agents/);
-  assert.doesNotMatch(text, /rendered\.slice/);
+  const brief = await readFile(join(srcDir, "brief.ts"), "utf8");
+  const show = await readFile(join(srcDir, "show.ts"), "utf8");
+  assert.doesNotMatch(brief, /legion-cli-agents/);
+  assert.doesNotMatch(brief, /rendered\.slice/);
+  assert.doesNotMatch(brief, /legion-cli-map/);
+  assert.doesNotMatch(show, /legion-cli-map/);
+});
+
+test("assembleSessionBrief copies caller mapRootHash", () => {
+  const hash = "a".repeat(64);
+  const brief = assembleSessionBrief({
+    project: { name: "Checkin", mode: "greenfield", controlMode: "guarded" },
+    phase: "initialized",
+    blockers: [],
+    decisions: [],
+    wiki: [],
+    mapRootHash: hash,
+  });
+  assert.equal(brief.mapRootHash, hash);
+  assert.match(renderSessionBrief(brief), new RegExp(`Map rootHash: ${hash}`));
+});
+
+test("showPage kind map for architecture markdown", async () => {
+  await withStore(async ({ store, dir }) => {
+    const mapDir = join(dir, ".legion-cli", "map");
+    await mkdir(mapDir, { recursive: true });
+    const body = [
+      "<!-- legion-cli:generated:start -->",
+      "# Architecture",
+      "backend: fallback",
+      "<!-- legion-cli:generated:end -->",
+      "",
+    ].join("\n");
+    await writeFile(join(mapDir, "ARCHITECTURE.md"), body, "utf8");
+    const shown = await showPage(store, ".legion-cli/map/ARCHITECTURE.md");
+    assert.equal(shown.kind, "map");
+    assert.equal(shown.path, ".legion-cli/map/ARCHITECTURE.md");
+    assert.equal(shown.title, "Architecture");
+    assert.match(shown.body, /backend: fallback/);
+  });
+});
+
+test("showPage refuses a symlink ARCHITECTURE.md and does not follow it", async () => {
+  await withStore(async ({ store, dir }) => {
+    const mapDir = join(dir, ".legion-cli", "map");
+    await mkdir(mapDir, { recursive: true });
+    await mkdir(join(dir, "src"), { recursive: true });
+    const envPath = join(dir, "src", ".env");
+    await writeFile(envPath, "SECRET=do-not-leak\n", "utf8");
+    let linked = false;
+    try {
+      await symlink(envPath, join(mapDir, "ARCHITECTURE.md"));
+      linked = true;
+    } catch (err) {
+      if (err?.code !== "EPERM") throw err;
+    }
+    if (!linked) return;
+    await assert.rejects(
+      () => showPage(store, ".legion-cli/map/ARCHITECTURE.md"),
+      (err) => {
+        assert.match(err.message, /symlink/);
+        assert.doesNotMatch(err.message, /SECRET=do-not-leak/);
+        return true;
+      },
+    );
+    await unlink(join(mapDir, "ARCHITECTURE.md")).catch(() => {});
+  });
+});
+
+test("showPage refuses a symlink map directory and does not follow it", async () => {
+  await withStore(async ({ store, dir }) => {
+    const outside = join(dir, "outside-map");
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, "ARCHITECTURE.md"), "# Leaked\nSECRET=do-not-leak\n", "utf8");
+    await mkdir(join(dir, ".legion-cli"), { recursive: true });
+    let linked = false;
+    try {
+      await symlink(outside, join(dir, ".legion-cli", "map"), process.platform === "win32" ? "junction" : "dir");
+      linked = true;
+    } catch (err) {
+      if (err?.code !== "EPERM") throw err;
+    }
+    if (!linked) return;
+    await assert.rejects(
+      () => showPage(store, ".legion-cli/map/ARCHITECTURE.md"),
+      (err) => {
+        assert.match(err.message, /symlink/);
+        assert.doesNotMatch(err.message, /SECRET=do-not-leak/);
+        return true;
+      },
+    );
+    assert.equal(await readFile(join(outside, "ARCHITECTURE.md"), "utf8"), "# Leaked\nSECRET=do-not-leak\n");
+  });
 });
 
 test("renderSessionBrief emits Skills with the active skill flagged", () => {
