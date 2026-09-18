@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { githubZipballUrl } from "@9thlevelsoftware/legion-cli-persist";
 
 import {
   COMPOSE_ORDER,
@@ -21,7 +22,18 @@ import {
   showDesignSystem,
   threeLensReview,
 } from "../dist/index.js";
-import { initStub, legionFixture, odFixture, withTempDir } from "./helpers.js";
+import {
+  hashPackageRecords,
+  hashTreePackageRecords,
+  initStub,
+  legionFixture,
+  makeDesignZip,
+  makeMinisignPair,
+  makeZip,
+  odFixture,
+  signMinisign,
+  withTempDir,
+} from "./helpers.js";
 
 function isRefuse(err, message, hint) {
   assert.equal(err instanceof DesignSystemError, true, `expected DesignSystemError, got ${err?.name}: ${err?.message}`);
@@ -58,7 +70,7 @@ test("copyShippedCraft writes the five craft files", async () => {
   });
 });
 
-test("github: sources are rejected", () => {
+test("github: sources are detected", () => {
   assert.equal(isGithubInstallSource("github:acme/brand"), true);
   assert.equal(isGithubInstallSource("https://github.com/acme/brand"), true);
   assert.equal(isGithubInstallSource("//github.com/acme/brand"), true);
@@ -84,12 +96,16 @@ test("protocol-relative, UNC, and URL schemes are remote", () => {
   assert.equal(isRemoteInstallSource("./brand"), false);
 });
 
-test("install rejects github:", async () => {
+test("github: without tag refuses", async () => {
   await withTempDir(async (dir) => {
     await initStub(dir);
     await assert.rejects(
       () => installLocalDir({ projectRoot: dir, source: "github:acme/brand" }),
-      (err) => isRefuse(err, /github:/, /local directory/),
+      (err) => isRefuse(err, /@tag/, /design-system install/),
+    );
+    await assert.rejects(
+      () => installLocalDir({ projectRoot: dir, source: "github:owner/repo" }),
+      (err) => isRefuse(err, /@tag/, /design-system install/),
     );
   });
 });
@@ -102,11 +118,11 @@ test("install, import-od, and generate refuse UNC and protocol-relative paths be
     for (const source of githubPaths) {
       await assert.rejects(
         () => installLocalDir({ projectRoot: dir, source }),
-        (err) => isRefuse(err, /github:/, /local directory/),
+        (err) => isRefuse(err, /github:/, /design-system install/),
       );
       await assert.rejects(
         () => importOpenDesign({ projectRoot: dir, source }),
-        (err) => isRefuse(err, /github:/, /local directory/),
+        (err) => isRefuse(err, /github:/, /design-system install/),
       );
       await assert.rejects(
         () =>
@@ -125,11 +141,11 @@ test("install, import-od, and generate refuse UNC and protocol-relative paths be
     }
     await assert.rejects(
       () => installLocalDir({ projectRoot: dir, source: other }),
-      (err) => isRefuse(err, /local directory copy only/, /local directory/),
+      (err) => isRefuse(err, /local directory copy only/, /design-system install/),
     );
     await assert.rejects(
       () => importOpenDesign({ projectRoot: dir, source: other }),
-      (err) => isRefuse(err, /local directory copy only/, /local directory/),
+      (err) => isRefuse(err, /local directory copy only/, /design-system install/),
     );
     await assert.rejects(
       () =>
@@ -189,6 +205,406 @@ test("install copies a local Legion package and activates it", async () => {
     const shown = await showDesignSystem(dir);
     assert.equal(shown.packageId, "fixture-neutral");
     assert.equal(shown.source.type, "local");
+  });
+});
+
+test("github zip with ../../etc/passwd refuses", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const zip = makeZip([{ name: "../../etc/passwd", data: "root:x:0:0:root:/root:/bin/sh\n" }]);
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          fetchZipball: async () => ({ body: zip }),
+        }),
+      (err) => isRefuse(err, /path is outside/, /design-system install/),
+    );
+    // unzip dest is .legion-cli/cache/design-system/zip-*; ../../etc/passwd would be cache/etc/passwd
+    const escaped = join(dir, ".legion-cli", "cache", "etc", "passwd");
+    assert.equal(existsSync(escaped), false, escaped);
+    assert.equal(existsSync(join(dir, ".legion-cli", "design", "packages", "acme")), false);
+  });
+});
+
+test("github sha256 mismatch refuses", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const files = [
+      { name: "DESIGN.md", data: "# Acme\n" },
+      { name: "tokens.css", data: ":root { --legion-ink: #111111; }\n" },
+    ];
+    const actual = hashTreePackageRecords(files);
+    const wrong = "a".repeat(64);
+    const { zip } = makeDesignZip({
+      files,
+      sha256: wrong,
+      minisign: signMinisign(wrong, pair),
+      pair,
+    });
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          fetchZipball: async () => ({ body: zip }),
+          trustKeys: [pair.publicKey],
+        }),
+      (err) => isRefuse(err, /integrity\.sha256 mismatch/, /design-system install/),
+    );
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          integrity: `sha256:${wrong}`,
+          fetchZipball: async () => ({ body: makeDesignZip({ files, sha256: actual, pair }).zip }),
+          trustKeys: [pair.publicKey],
+        }),
+      (err) => isRefuse(err, /integrity\.sha256 mismatch/, /design-system install/),
+    );
+  });
+});
+
+test("github mock lookup 127.0.0.1 refuses", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          lookup: async () => ({ address: "127.0.0.1", family: 4 }),
+        }),
+      (err) => isRefuse(err, /private-network/, /design-system install/),
+    );
+  });
+});
+
+test("github fake fetch persists source.type github and sets active packageId", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const { zip, sha, manifest } = makeDesignZip({ pair, sign: true });
+    const result = await installLocalDir({
+      projectRoot: dir,
+      source: "github:acme/brand@v1.2.0",
+      integrity: `sha256:${sha}`,
+      fetchZipball: async () => ({ body: zip }),
+      trustKeys: [pair.publicKey],
+    });
+    assert.equal(result.id, "acme");
+    assert.equal(result.manifest.source.type, "github");
+    assert.equal(result.manifest.source.origin, "github:acme/brand@v1.2.0");
+    assert.doesNotMatch(result.manifest.source.origin, /zip-|cache|tmp/i);
+    assert.equal(result.manifest.integrity.sha256, sha);
+    assert.match(await readFile(join(result.dest, "tokens.css"), "utf8"), /#111111/);
+    const cache = join(dir, ".legion-cli", "cache", "design-system");
+    if (existsSync(cache)) {
+      const leftover = await readdir(cache);
+      assert.deepEqual(leftover.filter((name) => name.startsWith("zip-")), []);
+    }
+    const shown = await showDesignSystem(dir);
+    assert.equal(shown.packageId, "acme");
+    assert.equal(shown.source.type, "github");
+    assert.equal(shown.source.origin, "github:acme/brand@v1.2.0");
+    assert.equal(manifest.id, "acme");
+  });
+});
+
+test("github remote without minisign refuses", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const files = [
+      { name: "DESIGN.md", data: "# Acme\n" },
+      { name: "tokens.css", data: ":root { --legion-ink: #111111; }\n" },
+    ];
+    const { zip, sha } = makeDesignZip({ files });
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          integrity: `sha256:${sha}`,
+          fetchZipball: async () => ({ body: zip }),
+        }),
+      (err) => isRefuse(err, /integrity\.minisign/, /design-system install/),
+    );
+  });
+});
+
+test("github extra unsigned components.html is in the tree hash", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const declared = [
+      { name: "DESIGN.md", data: "# Acme\n" },
+      { name: "tokens.css", data: ":root { --legion-ink: #111111; }\n" },
+    ];
+    const withExtra = [...declared, { name: "components.html", data: "<div></div>\n" }];
+    const unsigned = makeDesignZip({
+      files: withExtra,
+      sha256: hashTreePackageRecords(declared),
+      pair,
+    });
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          fetchZipball: async () => ({ body: unsigned.zip }),
+          trustKeys: [pair.publicKey],
+        }),
+      (err) => isRefuse(err, /integrity\.sha256 mismatch/, /design-system install/),
+    );
+    const signed = makeDesignZip({ files: withExtra, pair });
+    const result = await installLocalDir({
+      projectRoot: dir,
+      source: "github:acme/brand@v1.2.0",
+      fetchZipball: async () => ({ body: signed.zip }),
+      trustKeys: [pair.publicKey],
+    });
+    assert.equal(existsSync(join(result.dest, "components.html")), true);
+  });
+});
+
+test("github reinstall replaces dest leftovers", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const first = makeDesignZip({
+      files: [
+        { name: "DESIGN.md", data: "# One\n" },
+        { name: "tokens.css", data: ":root { --legion-ink: #111111; }\n" },
+        { name: "USAGE.md", data: "old\n" },
+      ],
+      pair,
+    });
+    const installed = await installLocalDir({
+      projectRoot: dir,
+      source: "github:acme/brand@v1.2.0",
+      fetchZipball: async () => ({ body: first.zip }),
+      trustKeys: [pair.publicKey],
+    });
+    await writeFile(join(installed.dest, "leftover.txt"), "stale\n", "utf8");
+    const second = makeDesignZip({
+      files: [
+        { name: "DESIGN.md", data: "# Two\n" },
+        { name: "tokens.css", data: ":root { --legion-ink: #222222; }\n" },
+      ],
+      pair,
+    });
+    await installLocalDir({
+      projectRoot: dir,
+      source: "github:acme/brand@v1.2.0",
+      fetchZipball: async () => ({ body: second.zip }),
+      trustKeys: [pair.publicKey],
+    });
+    assert.equal(existsSync(join(installed.dest, "leftover.txt")), false);
+    assert.equal(existsSync(join(installed.dest, "USAGE.md")), false);
+    assert.match(await readFile(join(installed.dest, "DESIGN.md"), "utf8"), /Two/);
+  });
+});
+
+test("github minisign of hashPackageFiles does not verify hashTreeFiles", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const files = [
+      { name: "DESIGN.md", data: "# Acme\n" },
+      { name: "tokens.css", data: ":root { --legion-ink: #111111; }\n" },
+    ];
+    const tree = hashTreePackageRecords(files);
+    const pkg = hashPackageRecords(files);
+    assert.notEqual(tree, pkg);
+    const githubSha = makeDesignZip({ files }).sha;
+    assert.notEqual(githubSha, pkg);
+    const { zip } = makeDesignZip({
+      files,
+      sha256: githubSha,
+      minisign: signMinisign(pkg, pair),
+      pair,
+    });
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          fetchZipball: async () => ({ body: zip }),
+          trustKeys: [pair.publicKey],
+        }),
+      (err) => isRefuse(err, /minisign/, /design-system install/),
+    );
+  });
+});
+
+test("github --allow-branch fetches refs/heads", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const { zip } = makeDesignZip({ pair, sign: true });
+    let url;
+    await installLocalDir({
+      projectRoot: dir,
+      source: "github:acme/brand@main",
+      allowBranch: true,
+      fetchZipball: async (source, opts) => {
+        url = githubZipballUrl(source, { allowBranch: opts?.allowBranch });
+        return { body: zip };
+      },
+      trustKeys: [pair.publicKey],
+    });
+    assert.equal(url, "https://github.com/acme/brand/archive/refs/heads/main.zip");
+  });
+});
+
+test("github integrity covers canonical manifest metadata", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const good = makeDesignZip({ pair, sign: true });
+    const tampered = { ...good.manifest, id: "pwned" };
+    const zip = makeZip([
+      { name: "acme-brand-v1.2.0/manifest.json", data: `${JSON.stringify(tampered, null, 2)}\n` },
+      { name: "acme-brand-v1.2.0/DESIGN.md", data: "# Acme\n" },
+      { name: "acme-brand-v1.2.0/tokens.css", data: ":root { --legion-ink: #111111; }\n" },
+    ]);
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          fetchZipball: async () => ({ body: zip }),
+          trustKeys: [pair.publicKey],
+        }),
+      (err) => isRefuse(err, /integrity\.sha256 mismatch/, /design-system install/),
+    );
+  });
+});
+
+test("config trustKeys resolve against the project not cwd", async () => {
+  await withTempDir(async (dir) => {
+    await withTempDir(async (cwd) => {
+      await initStub(dir);
+      const pair = makeMinisignPair();
+      const decoy = makeMinisignPair();
+      await writeFile(
+        join(dir, ".legion-cli", "config.yaml"),
+        [
+          "schemaVersion: legion-cli-config/v1",
+          "adapter:",
+          "  default: fake",
+          "skills:",
+          "  trustKeys:",
+          "    - trust.pub",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await writeFile(join(dir, "trust.pub"), pair.publicKey, "utf8");
+      await writeFile(join(cwd, "trust.pub"), decoy.publicKey, "utf8");
+      const { zip } = makeDesignZip({ pair, sign: true });
+      const prev = process.cwd();
+      process.chdir(cwd);
+      try {
+        const result = await installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          fetchZipball: async () => ({ body: zip }),
+        });
+        assert.equal(result.id, "acme");
+      } finally {
+        process.chdir(prev);
+      }
+    });
+  });
+});
+
+test("nested local source under dest is staged before replacement", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const dest = join(dir, ".legion-cli", "design", "packages", "acme");
+    const nested = join(dest, "staging");
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(nested, "DESIGN.md"), "# Nested\n", "utf8");
+    await writeFile(join(nested, "tokens.css"), ":root { --legion-ink: #111111; }\n", "utf8");
+    await writeFile(
+      join(nested, "manifest.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-design-system/v1",
+        id: "acme",
+        name: "Acme",
+        description: "Brand",
+        source: { type: "local", origin: nested },
+        files: { design: "DESIGN.md", tokens: "tokens.css" },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const result = await installLocalDir({ projectRoot: dir, source: nested });
+    assert.equal(result.id, "acme");
+    assert.match(await readFile(join(result.dest, "DESIGN.md"), "utf8"), /Nested/);
+  });
+});
+
+test("declared design assets must be regular files", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const src = join(dir, "pkg");
+    await mkdir(join(src, "DESIGN.md"), { recursive: true });
+    await writeFile(join(src, "tokens.css"), ":root { --legion-ink: #111111; }\n", "utf8");
+    await writeFile(
+      join(src, "manifest.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-design-system/v1",
+        id: "acme",
+        name: "Acme",
+        description: "Brand",
+        source: { type: "local", origin: src },
+        files: { design: "DESIGN.md", tokens: "tokens.css" },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    await assert.rejects(
+      () => installLocalDir({ projectRoot: dir, source: src }),
+      (err) => isRefuse(err, /regular file/, /design-system install/),
+    );
+  });
+});
+
+test("package dest refuses symlink ancestors", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    await mkdir(join(dir, ".legion-cli", "design"), { recursive: true });
+    await symlink(outside, join(dir, ".legion-cli", "design", "packages"), process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(
+      () => installLocalDir({ projectRoot: dir, source: legionFixture }),
+      (err) => isRefuse(err, /symlink/, /design-system install/),
+    );
+    assert.equal(existsSync(join(outside, "fixture-neutral")), false);
+  });
+});
+
+test("reinstalling a github dest as local recomputes local integrity", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const { zip } = makeDesignZip({ pair, sign: true });
+    const installed = await installLocalDir({
+      projectRoot: dir,
+      source: "github:acme/brand@v1.2.0",
+      fetchZipball: async () => ({ body: zip }),
+      trustKeys: [pair.publicKey],
+    });
+    const local = await installLocalDir({ projectRoot: dir, source: installed.dest });
+    assert.equal(local.manifest.source.type, "local");
+    assert.equal(local.manifest.integrity.minisign, undefined);
+    const again = await installLocalDir({ projectRoot: dir, source: local.dest });
+    assert.equal(again.id, "acme");
+    assert.equal(again.manifest.integrity.sha256, local.manifest.integrity.sha256);
   });
 });
 

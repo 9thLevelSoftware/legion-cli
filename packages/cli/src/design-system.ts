@@ -1,9 +1,10 @@
 import {
   DesignSystemError,
+  DS_HINT,
   GENERATE_Q,
   generateFromBrief,
   importOpenDesign,
-  installLocalDir,
+  install,
   parseWcag,
   showDesignSystem,
   splitWorkAndPlatforms,
@@ -11,7 +12,7 @@ import {
 } from "@9thlevelsoftware/legion-cli-design-system";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
-import { readLine, slurpStdin } from "./prompt.js";
+import { isYes, readLine, slurpStdin } from "./prompt.js";
 
 export type DesignSystemFlags = {
   name?: string;
@@ -47,13 +48,42 @@ export async function runDesignSystemShow(opts: CliOpts): Promise<number> {
   return 0;
 }
 
-export async function runDesignSystemInstall(opts: CliOpts, dir: string): Promise<number> {
-  const result = await installLocalDir({ projectRoot: opts.project, source: dir, cwd: process.cwd() });
+export type DesignSystemInstallFlags = {
+  integrity?: string;
+  allowBranch?: boolean;
+};
+
+function isTty(): boolean {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+export async function runDesignSystemInstall(
+  opts: CliOpts,
+  source: string,
+  flags: DesignSystemInstallFlags = {},
+): Promise<number> {
+  if (flags.allowBranch) {
+    if (!isTty()) {
+      throw new DesignSystemError("github: --allow-branch requires a TTY", DS_HINT.localOnly);
+    }
+    const answer = await readLine("Install from a GitHub branch (not a pinned tag)? [y/N] ");
+    if (!isYes(answer)) {
+      throw new DesignSystemError("github: branch install cancelled", DS_HINT.localOnly);
+    }
+  }
+  const result = await install({
+    projectRoot: opts.project,
+    source,
+    cwd: process.cwd(),
+    integrity: flags.integrity,
+    allowBranch: flags.allowBranch,
+  });
   if (opts.json) {
     writeJson({ ok: true, id: result.id, dest: result.dest, source: result.manifest.source });
     return 0;
   }
-  writeOut(`Installed ${result.id} from local dir.\nBrand tokens win over craft.\nNext: legion-cli design-system show`);
+  const from = result.manifest.source.type === "github" ? result.manifest.source.origin : "local dir";
+  writeOut(`Installed ${result.id} from ${from}.\nBrand tokens win over craft.\nNext: legion-cli design-system show`);
   return 0;
 }
 

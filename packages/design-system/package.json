@@ -44,6 +44,7 @@
     "design-system"
   ],
   "dependencies": {
+    "@9thlevelsoftware/legion-cli-persist": "workspace:*",
     "@9thlevelsoftware/legion-cli-schema": "workspace:*",
     "yaml": "^2.9.0",
     "zod": "^4.5.4"

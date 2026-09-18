@@ -75,7 +75,7 @@ const SHIPPED_ADJACENT = [
   ],
   ["mcp", "Read-only stdio MCP server", ""],
   ["design-system show", "Show the active design-system package", ""],
-  ["design-system install <dir>", "Copy a local design-system directory", "github: rejected"],
+  ["design-system install <dir|github:owner/repo@tag>", "Install a design-system package", "--integrity, --allow-branch"],
   ["design-system import-od <dir>", "One-way OpenDesign importer", ""],
   ["design-system generate", "Generate a design system from a brief", "--name, --work-type, --platforms, --wcag, --brand"],
   ["skills list", "List packaged and overlay skills", ""],
