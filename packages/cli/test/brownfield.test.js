@@ -90,6 +90,9 @@ test("legion-cli brownfield starts a run under .legion-cli/runs and not the wiki
     assert.match(body.runId, /^[0-9a-f]{8}$/);
     assert.equal(body.paths.intent, `.legion-cli/runs/${body.runId}/intent.md`);
     assert.match(body.next, /roster/);
+    assert.equal(body.map.path, ".legion-cli/map/ARCHITECTURE.md");
+    assert.ok(body.map.modules >= 1);
+    assert.equal(await exists(join(dir, ".legion-cli", "map", "fingerprints.json")), true);
     const resume = JSON.parse(await readFile(join(dir, ".legion-cli", "runs", body.runId, "resume.json"), "utf8"));
     assert.equal(resume.schemaVersion, "legion-cli-run/v1");
     assert.equal(resume.context, "focus on checkout");
@@ -105,6 +108,7 @@ test("brownfield text output ends with Next and --resume reports state", async (
     assert.equal(text.status, 0, text.stderr);
     assert.match(text.stdout, /Brownfield run aaaaaaaa, effort 3/);
     assert.match(text.stdout, /execute: yes/);
+    assert.match(text.stdout, /^Map: \d+ modules \(fallback\) at \.legion-cli\/map\/ARCHITECTURE\.md$/m);
     assert.match(text.stdout, /^Next: /m);
     assert.equal(await exists(join(dir, ".legion-cli", "worktrees", "aaaaaaaa")), false);
 

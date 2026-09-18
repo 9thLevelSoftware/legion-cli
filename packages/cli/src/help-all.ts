@@ -71,7 +71,7 @@ const SHIPPED_ADJACENT = [
   ["context compact", "Manual compaction of done tasks", ""],
   ["map", "Generate architecture markdown and fingerprints", "--refresh, --lsp, --no-lsp"],
   ["garden", "Stale wiki, orphans, duplicates", ""],
-  ["brownfield [context]", "Audit an existing app: init a run, then roster|evidence|merge|review-status|pr-plan|dag|worktree|state|patterns", "--effort 1–5, --execute, --resume"],
+  ["brownfield [context]", "Audit an existing app: init a run, then roster|evidence|merge|review-status|pr-plan|dag|worktree|state|patterns", "--effort 1–5, --execute, --resume, --lsp"],
   [
     "run promote",
     "Copy brownfield run pages into the wiki (untrusted until wiki trust; re-promote overwrites; Next is first page)",

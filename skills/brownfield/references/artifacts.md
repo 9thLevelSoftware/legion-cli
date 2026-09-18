@@ -38,6 +38,7 @@ prompt placeholders rather than building paths by hand.
 | `<design_path>` `<summary_path>` `<review_path>` | `paths.design` `paths.summary` `paths.designReview` |
 | `<output_path>` for a specialist | `roster.outputs[<specialist>]` |
 | `<max_prs>` `<lines>` `<tier>` | `size.maxPrs` `size.lines` `size.tier` |
+| `<map_path>` `<map_fingerprints_path>` | `map.path` `map.fingerprintsPath` (init JSON; `state.meta.map` on resume) |
 
 Paths are repo-relative with forward slashes; agents resolve them against the repo root.
 

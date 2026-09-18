@@ -15,7 +15,7 @@ description: >-
   remediation plan for code that already exists, or is inheriting a project and wants to know where
   the bodies are buried — even if they never use the word "brownfield". Not for greenfield design
   of new systems or for reviewing a single small diff/PR.
-argument-hint: "<project path and/or description> [--effort 1-5] [--execute] [--push] [--concurrency N] [--resume <run-id>]"
+argument-hint: "<project path and/or description> [--effort 1-5] [--execute] [--lsp] [--push] [--concurrency N] [--resume <run-id>]"
 compatibility: "Claude Code skill; drives legion-cli brownfield. Not an engine spawn skill (not in SkillIdSchema)."
 ---
 
@@ -52,7 +52,7 @@ with `{"error", "next"}` and exit 1 when a precondition fails — read `next`, d
 
 | Phase | Command |
 |---|---|
-| 1 setup | `legion-cli brownfield init "<user's words>" --effort N [--execute] --json` |
+| 1 setup | `legion-cli brownfield init "<user's words>" --effort N [--execute] [--lsp] --json` (also refreshes the codebase map) |
 | 1 setup | `legion-cli brownfield patterns --json` (past lessons) |
 | 3 plan | `legion-cli brownfield roster <id> --json` |
 | 4 analysis | `legion-cli brownfield evidence <id> --json` (optional pre-collected evidence) |
@@ -85,6 +85,7 @@ Wait for all of a step's agents to finish before merging their outputs.
 |---|---|---|
 | `<path/description>` | cwd | Repo path and/or natural-language focus ("worried about checkout") |
 | `--effort 1-5` | 2 | Breadth and rigor (table below) |
+| `--lsp` | off | Require a language server for the codebase map init builds (default: auto, fallback parser) |
 | `--execute` | off | After the plan passes review, implement it as local branches (phase 8) |
 | `--push` | off | With `--execute`: push branches and open draft PRs via `gh` without asking first |
 | `--concurrency N` | 3 | Max parallel PR implementers during `--execute` |
@@ -120,10 +121,12 @@ others yourself with `legion-cli brownfield state <id> phase=<phase>`.
 - `--resume`: run `legion-cli brownfield --resume <id> --json` (add `--execute` to switch on
   execution for a finished plan). Read `references/artifacts.md` § Resuming and continue from
   `state.phase`; the JSON's `next` says exactly where.
-- Otherwise run `legion-cli brownfield init "<user's words>" --effort N [--execute] --json`. It
-  creates `.legion-cli/runs/<id>/` (gitignored), measures the repo, and returns `paths` (every
-  artifact location — use these, never hardcode paths), `size` (lines, tier, `maxPrs`,
-  `suggestedEffortMax`), `warnings`, and `next`.
+- Otherwise run `legion-cli brownfield init "<user's words>" --effort N [--execute] [--lsp] --json`.
+  It refreshes the codebase map (`.legion-cli/map/ARCHITECTURE.md` and `fingerprints.json`, the
+  same output as `legion-cli map`), creates `.legion-cli/runs/<id>/` (gitignored), measures the
+  repo, and returns `map`, `paths` (every artifact location — use these, never hardcode paths),
+  `size` (lines, tier, `maxPrs`, `suggestedEffortMax`), `warnings`, and `next`. With `--lsp` it
+  refuses if no language server is on PATH; tell the user, and rerun without `--lsp` if they agree.
 - If it refuses with "until init", the repo isn't a Legion project. Tell the user to run
   `legion-cli init --mode brownfield --adapter <id>` first (any configured adapter; the audit itself
   never spawns it) and stop. If it refuses for "git repository", the repo needs `git init` and a
@@ -162,8 +165,7 @@ Read `references/specialists.md` now.
 - Optionally run `legion-cli brownfield evidence <id> --json` first. It writes
   `evidence/tests.md` (runners, test files, sources with no nearby test), `evidence/security.md`
   (secret-pattern hits, redacted; lockfile audit), and `evidence/docs.md` (README, wiki orphans,
-  exports without nearby docs). The docs export list needs map fingerprints: run
-  `legion-cli map --json` first on a codebase you want that for. Pass those paths to the tests,
+  exports without nearby docs, from the map init built). Pass those paths to the tests,
   security, code, and documentation specialists as *pre-collected evidence to verify, not
   conclusions*. Use `--skip-audit` offline.
 - Set `legion-cli brownfield state <id> phase=analysis`.

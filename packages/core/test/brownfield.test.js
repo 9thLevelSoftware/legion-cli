@@ -275,6 +275,37 @@ test("brownfield init writes resume.json, subdirs, gitignore, and no wiki or wor
   });
 });
 
+test("brownfield init always refreshes the codebase map", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    for (const effort of [1, 3]) {
+      const runId = effort === 1 ? "a1a1a1a1" : "a3a3a3a3";
+      const result = await engine.brownfield({ effort, runId });
+      assert.equal(result.map.path, ".legion-cli/map/ARCHITECTURE.md");
+      assert.equal(result.map.fingerprintsPath, ".legion-cli/map/fingerprints.json");
+      assert.equal(result.map.backend, "fallback");
+      assert.ok(result.map.modules >= 1, `effort ${effort}`);
+      const fingerprints = await readJson(join(dir, ".legion-cli", "map", "fingerprints.json"));
+      assert.ok(fingerprints.modules.some((m) => m.path === "src/main.ts"), `effort ${effort}`);
+      const resume = await readJson(join(runDir(dir, runId), "resume.json"));
+      assert.deepEqual(resume.meta.map, { backend: "fallback", modules: result.map.modules, path: result.map.path });
+    }
+  });
+});
+
+test("brownfield --lsp with no language server refuses and creates no run", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    await assertRefuses(
+      engine.brownfield({ runId: "b1b1b1b1", lsp: true, resolveBinary: () => null }),
+      /no language server on PATH/,
+    );
+    assert.equal(existsSync(runDir(dir, "b1b1b1b1")), false);
+  });
+});
+
 test("brownfield defaults to effort 2 and refuses bad input", async () => {
   await withEngine(async ({ engine }) => {
     await assertRefuses(engine.brownfield({}), /until init/);
@@ -317,7 +348,9 @@ test("state get/set, whitelist, meta bag, and resume with execute", async () => 
     ]);
     assert.equal(set.state.phase, "design");
     assert.equal(set.state.designReviewRounds, 2);
-    assert.deepEqual(set.state.meta, { writer: "agent-1", notes: "plain text" });
+    assert.equal(set.state.meta.writer, "agent-1");
+    assert.equal(set.state.meta.notes, "plain text");
+    assert.equal(set.state.meta.map.backend, "fallback");
     assert.match(set.next, /design writer/);
     await assertRefuses(engine.brownfieldState("dddddddd", ["runId=eeeeeeee"]), /not settable/);
     await assertRefuses(engine.brownfieldState("dddddddd", ["phase=nope"]), /phase must be one of/);
@@ -623,6 +656,12 @@ test("evidence docs.md uses map fingerprints when present and says so when absen
     await writeFile(join(dir, "src", "documented.md"), "# documented\n", "utf8");
     await engine.brownfield({ runId: "22222222" });
 
+    // Init just mapped the repo, so docs evidence has fingerprints straight away.
+    const fromInit = await engine.brownfieldEvidence("22222222", { skipAudit: true });
+    assert.equal(fromInit.mapFingerprints, true);
+    assert.match(await readFile(join(runDir(dir, "22222222"), "evidence", "docs.md"), "utf8"), /`src\/main\.ts` export `n`/);
+
+    await rm(join(dir, ".legion-cli", "map", "fingerprints.json"));
     const before = await engine.brownfieldEvidence("22222222", { skipAudit: true });
     assert.equal(before.files.docs, ".legion-cli/runs/22222222/evidence/docs.md");
     assert.equal(before.mapFingerprints, false);

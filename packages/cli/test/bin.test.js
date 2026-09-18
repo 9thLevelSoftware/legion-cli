@@ -170,7 +170,7 @@ test("help --all lists the grouped command surface", () => {
   assert.match(adjacent, /skills install <dir\|github:owner\/repo@tag>/);
   assert.match(adjacent, /^ {2}brownfield \[context\]$/m);
   assert.match(adjacent, /--effort 1–5, --execute, --resume/);
-  assert.doesNotMatch(adjacent, /brownfield \[context\]\n.*--lsp/);
+  assert.match(adjacent, /brownfield \[context\]\n.*--effort 1–5, --execute, --resume, --lsp/);
   assert.doesNotMatch(out, /Later, not this series/);
   assert.doesNotMatch(out, /Not in this product/);
 });
