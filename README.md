@@ -2,11 +2,11 @@
 
 Local-first CLI that turns product knowledge into shipped, verified software.
 
-- **bin:** `legion-cli` only
+- **bin:** `legion-cli` (and `legion` as an alias of the same engine binary)
 - **package (first `v*` tag):** `@9thlevelsoftware/legion-cli`
 - Workspace root npm name is the historical `product-engineer-helper` (`"private": true`). Do not publish the root. Do not rename it.
 
-This engine does **not** take bin `legion`. That belongs to the sibling `@9thlevelsoftware/legion` plugin installer (`npx @9thlevelsoftware/legion --claude`).
+`@9thlevelsoftware/legion-cli` registers bin `legion` as an **alias** of `legion-cli`. Install refuses if that would shadow the sibling `@9thlevelsoftware/legion` plugin installer (`npx @9thlevelsoftware/legion --claude`).
 
 v0 bar is **workspace correctness**. Packages are `0.0.0` until the first `v*` tag. This README does **not** claim the CLI is already on npm.
 
