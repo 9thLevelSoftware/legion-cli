@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32 } from "node:zlib";
 import { hashTreeRecords } from "@9thlevelsoftware/legion-cli-persist";
+import { canonicalManifestJson } from "../dist/index.js";
 
 export const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const odFixture = join(pkgRoot, "test", "fixtures", "od-acme");
@@ -134,16 +135,27 @@ export function makeDesignZip(opts = {}) {
     { name: "DESIGN.md", data: "# Acme\n" },
     { name: "tokens.css", data: ":root { --legion-ink: #111111; }\n" },
   ];
-  const sha = opts.sha256 ?? hashTreePackageRecords(files);
-  const pair = opts.pair ?? (opts.minisign || opts.sign ? makeMinisignPair() : undefined);
-  const minisign = opts.minisign ?? (pair ? signMinisign(sha, pair) : undefined);
-  const manifest = {
+  const manifestBase = {
     schemaVersion: "legion-cli-design-system/v1",
     id: opts.id ?? "acme",
     name: opts.name ?? "Acme",
     description: opts.description ?? "Brand",
     source: opts.source ?? { type: "github", origin: "github:acme/brand@v1.2.0" },
     files: { design: "DESIGN.md", tokens: "tokens.css", ...(opts.usage ? { usage: "USAGE.md" } : {}) },
+  };
+  const sha =
+    opts.sha256 ??
+    hashTreeRecords([
+      ...files.map((file) => ({
+        path: file.name,
+        bytes: Buffer.isBuffer(file.data) ? file.data : Buffer.from(file.data),
+      })),
+      { path: "manifest.json", bytes: Buffer.from(canonicalManifestJson(manifestBase)) },
+    ]);
+  const pair = opts.pair ?? (opts.minisign || opts.sign ? makeMinisignPair() : undefined);
+  const minisign = opts.minisign ?? (pair ? signMinisign(sha, pair) : undefined);
+  const manifest = {
+    ...manifestBase,
     integrity: {
       sha256: sha,
       ...(minisign ? { minisign } : {}),

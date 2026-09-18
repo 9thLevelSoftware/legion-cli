@@ -1,7 +1,24 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { DesignSystemPackage } from "@9thlevelsoftware/legion-cli-schema";
 import { DS_HINT, refuse } from "./errors.js";
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj)
+    .filter((key) => obj[key] !== undefined)
+    .sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(",")}}`;
+}
+
+/** Manifest bytes mixed into the GitHub tree digest; integrity fields are recursive. */
+export function canonicalManifestJson(manifest: DesignSystemPackage | Record<string, unknown>): string {
+  const { integrity: _integrity, ...rest } = manifest as DesignSystemPackage & { integrity?: unknown };
+  return stableStringify(rest);
+}
 
 export function sha256Hex(contents: string | Buffer): string {
   return createHash("sha256").update(contents).digest("hex");

@@ -5,6 +5,7 @@ export { composeDesignContext, COMPOSE_ORDER } from "./compose.js";
 export type { ComposeResult, ComposeSection } from "./compose.js";
 export { install, installLocalDir } from "./install.js";
 export type { InstallOpts, InstallResult } from "./install.js";
+export { canonicalManifestJson, hashPackageFiles, parseIntegrityPin } from "./integrity.js";
 export { importOpenDesign } from "./import-od.js";
 export type { ImportOdResult } from "./import-od.js";
 export {

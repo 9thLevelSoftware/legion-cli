@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { githubZipballUrl } from "@9thlevelsoftware/legion-cli-persist";
@@ -419,9 +419,11 @@ test("github minisign of hashPackageFiles does not verify hashTreeFiles", async 
     const tree = hashTreePackageRecords(files);
     const pkg = hashPackageRecords(files);
     assert.notEqual(tree, pkg);
+    const githubSha = makeDesignZip({ files }).sha;
+    assert.notEqual(githubSha, pkg);
     const { zip } = makeDesignZip({
       files,
-      sha256: tree,
+      sha256: githubSha,
       minisign: signMinisign(pkg, pair),
       pair,
     });
@@ -455,6 +457,154 @@ test("github --allow-branch fetches refs/heads", async () => {
       trustKeys: [pair.publicKey],
     });
     assert.equal(url, "https://github.com/acme/brand/archive/refs/heads/main.zip");
+  });
+});
+
+test("github integrity covers canonical manifest metadata", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const good = makeDesignZip({ pair, sign: true });
+    const tampered = { ...good.manifest, id: "pwned" };
+    const zip = makeZip([
+      { name: "acme-brand-v1.2.0/manifest.json", data: `${JSON.stringify(tampered, null, 2)}\n` },
+      { name: "acme-brand-v1.2.0/DESIGN.md", data: "# Acme\n" },
+      { name: "acme-brand-v1.2.0/tokens.css", data: ":root { --legion-ink: #111111; }\n" },
+    ]);
+    await assert.rejects(
+      () =>
+        installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          fetchZipball: async () => ({ body: zip }),
+          trustKeys: [pair.publicKey],
+        }),
+      (err) => isRefuse(err, /integrity\.sha256 mismatch/, /design-system install/),
+    );
+  });
+});
+
+test("config trustKeys resolve against the project not cwd", async () => {
+  await withTempDir(async (dir) => {
+    await withTempDir(async (cwd) => {
+      await initStub(dir);
+      const pair = makeMinisignPair();
+      const decoy = makeMinisignPair();
+      await writeFile(
+        join(dir, ".legion-cli", "config.yaml"),
+        [
+          "schemaVersion: legion-cli-config/v1",
+          "adapter:",
+          "  default: fake",
+          "skills:",
+          "  trustKeys:",
+          "    - trust.pub",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await writeFile(join(dir, "trust.pub"), pair.publicKey, "utf8");
+      await writeFile(join(cwd, "trust.pub"), decoy.publicKey, "utf8");
+      const { zip } = makeDesignZip({ pair, sign: true });
+      const prev = process.cwd();
+      process.chdir(cwd);
+      try {
+        const result = await installLocalDir({
+          projectRoot: dir,
+          source: "github:acme/brand@v1.2.0",
+          fetchZipball: async () => ({ body: zip }),
+        });
+        assert.equal(result.id, "acme");
+      } finally {
+        process.chdir(prev);
+      }
+    });
+  });
+});
+
+test("nested local source under dest is staged before replacement", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const dest = join(dir, ".legion-cli", "design", "packages", "acme");
+    const nested = join(dest, "staging");
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(nested, "DESIGN.md"), "# Nested\n", "utf8");
+    await writeFile(join(nested, "tokens.css"), ":root { --legion-ink: #111111; }\n", "utf8");
+    await writeFile(
+      join(nested, "manifest.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-design-system/v1",
+        id: "acme",
+        name: "Acme",
+        description: "Brand",
+        source: { type: "local", origin: nested },
+        files: { design: "DESIGN.md", tokens: "tokens.css" },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const result = await installLocalDir({ projectRoot: dir, source: nested });
+    assert.equal(result.id, "acme");
+    assert.match(await readFile(join(result.dest, "DESIGN.md"), "utf8"), /Nested/);
+  });
+});
+
+test("declared design assets must be regular files", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const src = join(dir, "pkg");
+    await mkdir(join(src, "DESIGN.md"), { recursive: true });
+    await writeFile(join(src, "tokens.css"), ":root { --legion-ink: #111111; }\n", "utf8");
+    await writeFile(
+      join(src, "manifest.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-design-system/v1",
+        id: "acme",
+        name: "Acme",
+        description: "Brand",
+        source: { type: "local", origin: src },
+        files: { design: "DESIGN.md", tokens: "tokens.css" },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    await assert.rejects(
+      () => installLocalDir({ projectRoot: dir, source: src }),
+      (err) => isRefuse(err, /regular file/, /design-system install/),
+    );
+  });
+});
+
+test("package dest refuses symlink ancestors", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    await mkdir(join(dir, ".legion-cli", "design"), { recursive: true });
+    await symlink(outside, join(dir, ".legion-cli", "design", "packages"), process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(
+      () => installLocalDir({ projectRoot: dir, source: legionFixture }),
+      (err) => isRefuse(err, /symlink/, /design-system install/),
+    );
+    assert.equal(existsSync(join(outside, "fixture-neutral")), false);
+  });
+});
+
+test("reinstalling a github dest as local recomputes local integrity", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const pair = makeMinisignPair();
+    const { zip } = makeDesignZip({ pair, sign: true });
+    const installed = await installLocalDir({
+      projectRoot: dir,
+      source: "github:acme/brand@v1.2.0",
+      fetchZipball: async () => ({ body: zip }),
+      trustKeys: [pair.publicKey],
+    });
+    const local = await installLocalDir({ projectRoot: dir, source: installed.dest });
+    assert.equal(local.manifest.source.type, "local");
+    assert.equal(local.manifest.integrity.minisign, undefined);
+    const again = await installLocalDir({ projectRoot: dir, source: local.dest });
+    assert.equal(again.id, "acme");
+    assert.equal(again.manifest.integrity.sha256, local.manifest.integrity.sha256);
   });
 });
 
