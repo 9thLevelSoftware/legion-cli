@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -231,6 +231,23 @@ test("unzipZipball allows POSIX colon names", { skip: process.platform === "win3
   });
 });
 
+test("unzipZipball refuses hard-linked extraction targets", async () => {
+  await withTempDir(async (dir) => {
+    const dest = join(dir, "out");
+    const leak = join(dir, "outside.txt");
+    await mkdir(dest, { recursive: true });
+    await writeFile(leak, "secret\n", "utf8");
+    try {
+      await link(leak, join(dest, "README.md"));
+    } catch {
+      return;
+    }
+    const zip = makeZip([{ name: "brand-v1/README.md", data: "pwned\n" }]);
+    await assert.rejects(() => unzipZipball(zip, dest), PathEscapeError);
+    assert.equal(await readFile(leak, "utf8"), "secret\n");
+  });
+});
+
 test("unzipZipball refuses nested Windows drive-relative zip-slip", async () => {
   await withTempDir(async (dir) => {
     const dest = join(dir, "out");
@@ -256,6 +273,21 @@ test("hashTreeFiles is canonical sorted path+bytes", async () => {
     assert.equal(again, hex);
     const swapped = await hashTreeFiles(dir, ["README.md", "src/a.ts"]);
     assert.equal(swapped, hex);
+  });
+});
+
+test("hashTreeFiles refuses listed symlinks", async () => {
+  await withTempDir(async (dir) => {
+    const leak = join(dir, "outside.txt");
+    await writeFile(leak, "secret\n", "utf8");
+    const tree = join(dir, "tree");
+    await mkdir(tree, { recursive: true });
+    try {
+      await symlink(leak, join(tree, "README.md"));
+    } catch {
+      return;
+    }
+    await assert.rejects(() => hashTreeFiles(tree, ["README.md"]), PathEscapeError);
   });
 });
 

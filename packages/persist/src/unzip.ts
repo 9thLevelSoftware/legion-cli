@@ -235,6 +235,13 @@ export async function unzipZipball(zip: Buffer, destDir: string, opts?: UnzipZip
     }
     await mkdir(dirname(abs), { recursive: true });
     await assertNoSymlinkAncestors(destDir, abs);
+    try {
+      const st = await lstat(abs);
+      if (!st.isFile() || st.nlink > 1) throw new PathEscapeError(rel);
+    } catch (err) {
+      if (err instanceof PathEscapeError) throw err;
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
     await writeFile(abs, entry.data);
     written.push(rel);
   }

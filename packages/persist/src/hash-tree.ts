@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { PathEscapeError } from "./errors.js";
 import { toFsPath, toPosixPath } from "./paths.js";
 
@@ -46,7 +46,12 @@ export function hashTreeRecords(files: ReadonlyArray<{ path: string; bytes: Buff
 export async function hashTreeFiles(dir: string, files?: readonly string[]): Promise<string> {
   const list = files ? [...files].map(toPosixPath).sort() : await listTreeFiles(dir);
   const records = await Promise.all(
-    list.map(async (path) => ({ path, bytes: await readFile(toFsPath(dir, path)) })),
+    list.map(async (path) => {
+      const abs = toFsPath(dir, path);
+      const st = await lstat(abs);
+      if (st.isSymbolicLink() || !st.isFile()) throw new PathEscapeError(path);
+      return { path, bytes: await readFile(abs) };
+    }),
   );
   return hashTreeRecords(records);
 }
