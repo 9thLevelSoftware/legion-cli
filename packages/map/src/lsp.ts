@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseSource } from "./parse.js";
@@ -126,7 +126,27 @@ function uniqueDirs(projectRoot: string, roots: readonly string[] | null): strin
   if (roots) {
     for (const root of roots) dirs.push(join(projectRoot, ...root.split("/")));
   }
-  return dirs;
+  const extra: string[] = [];
+  const queue = [...dirs];
+  for (let depth = 0; depth < 2 && queue.length > 0; depth += 1) {
+    const layer = queue.splice(0, queue.length);
+    for (const dir of layer) {
+      let ents;
+      try {
+        ents = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const ent of ents) {
+        if (!ent.isDirectory()) continue;
+        if (ent.name.startsWith(".") || ent.name === "node_modules" || ent.name === "dist") continue;
+        const child = join(dir, ent.name);
+        extra.push(child);
+        queue.push(child);
+      }
+    }
+  }
+  return [...dirs, ...extra];
 }
 
 function markerPresent(dirs: readonly string[], markers: readonly string[]): boolean {
@@ -280,7 +300,7 @@ export function exportsFromDocumentSymbols(result: unknown, source?: string, pos
   }
   if (!source || !posixPath) return names;
   const declared = new Set(parseSource(posixPath, source).exports);
-  if (declared.size === 0) return names;
+  if (declared.size === 0) return [];
   const exported = names.filter((name) => declared.has(name));
   return exported.length > 0 ? exported : names;
 }
@@ -304,7 +324,7 @@ class LspClient {
       for (const msg of framer.push(chunk)) this.#onMessage(msg);
     });
     child.stderr?.on("data", () => {
-      // drain so a piped chatty server cannot deadlock
+      // drain when spawnLsp pipes stderr; defaultSpawn uses stdio ignore
     });
     child.stderr?.resume?.();
     const fail = (err: Error) => {
@@ -382,7 +402,7 @@ class LspClient {
     this.send({ jsonrpc: "2.0", method, params });
   }
 
-  kill(): void {
+  kill(signal?: NodeJS.Signals): void {
     this.#dead = true;
     for (const pending of this.#pending.values()) pending.reject(new Error("LSP client closed"));
     this.#pending.clear();
@@ -392,10 +412,14 @@ class LspClient {
       // ignore
     }
     try {
-      this.#child.kill();
+      this.#child.kill(signal);
     } catch {
       // ignore
     }
+  }
+
+  stillRunning(): boolean {
+    return this.#child.exitCode === null && this.#child.signalCode === null;
   }
 
   waitExit(ms: number): Promise<void> {
@@ -504,5 +528,9 @@ export async function collectLspExports(opts: {
   } finally {
     client.kill();
     await client.waitExit(1000);
+    if (client.stillRunning()) {
+      client.kill("SIGKILL");
+      await client.waitExit(1000);
+    }
   }
 }

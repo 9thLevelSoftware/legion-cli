@@ -185,6 +185,7 @@ export async function walkSources(opts: {
       if (isIgnored(posix, rules)) continue;
       const language = languageFromPath(posix);
       if (language === "other") continue;
+      if (seenFiles.has(posix)) continue;
       let meta;
       try {
         meta = await lstat(abs);
@@ -200,7 +201,6 @@ export async function walkSources(opts: {
         continue;
       }
       if (buf.byteLength > MAX_FILE_BYTES || looksBinary(buf)) continue;
-      if (seenFiles.has(posix)) continue;
       if (out.length >= MAX_MODULES) {
         refuse("map exceeds 10000 modules", MAP_HINT.noLsp);
       }

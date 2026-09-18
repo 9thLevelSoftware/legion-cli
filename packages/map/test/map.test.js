@@ -192,6 +192,29 @@ test("default map with typescript-language-server on PATH still uses fallback (n
   });
 });
 
+test("LSP does not restore unfiltered symbols when parseSource finds no exports", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, {
+      "tsconfig.json": `{"compilerOptions":{"strict":true}}\n`,
+      "src/helper.ts": "function helper() {}\n",
+    });
+    const result = await generateMap(dir, lspRequire);
+    assert.equal(result.backend, "lsp");
+    assert.deepEqual(moduleOf(result, "src/helper.ts").exports, []);
+  });
+});
+
+test("detects typescript-language-server from nested package tsconfig", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, {
+      "packages/cli/tsconfig.json": `{"compilerOptions":{"strict":true}}\n`,
+      "packages/cli/src/index.ts": "export function main() {}\n",
+    });
+    const result = await generateMap(dir, lspRequire);
+    assert.equal(result.backend, "lsp");
+  });
+});
+
 test("--lsp mock server: two depth-0 Function symbols become exports; hash stable; stderr flood does not deadlock", async () => {
   await withTempDir(async (dir) => {
     await writeTree(dir, THREE_TS);
@@ -286,15 +309,33 @@ test("parseSource covers python/go/rust fallback regexes", () => {
   assert.deepEqual(py.exports.sort(), ["App", "run"]);
   assert.deepEqual(py.imports.sort(), ["os", "sys"]);
 
-  const go = parseSource("main.go", 'package main\nimport "fmt"\nfunc Hello() {}\ntype Box struct {}\n');
+  const go = parseSource(
+    "main.go",
+    'package main\nimport "fmt"\nfunc Hello() {}\ntype Box struct {}\nconst Public = 1\nvar Exported int\n',
+  );
   assert.equal(go.language, "go");
-  assert.deepEqual(go.exports.sort(), ["Box", "Hello"]);
+  assert.deepEqual(go.exports.sort(), ["Box", "Exported", "Hello", "Public"]);
   assert.deepEqual(go.imports, ["fmt"]);
 
-  const rs = parseSource("lib.rs", "pub fn open() {}\npub struct Thing {}\nfn hidden() {}\n");
+  const rs = parseSource(
+    "lib.rs",
+    "use crate::old::Thing;\npub fn open() {}\npub struct Thing {}\nfn hidden() {}\n",
+  );
   assert.equal(rs.language, "rs");
   assert.deepEqual(rs.exports.sort(), ["Thing", "open"]);
-  assert.deepEqual(rs.imports, []);
+  assert.deepEqual(rs.imports, ["crate::old::Thing"]);
+});
+
+test("parseSource captures JS side-effect imports, CJS object keys, and multi-binding exports", () => {
+  const js = parseSource(
+    "mod.js",
+    'import "./polyfill.js";\nimport("./feature.js");\nexport const first = 1, second = 2;\nmodule.exports = { foo, bar: 1 };\n',
+  );
+  assert.deepEqual(js.imports.sort(), ["./feature.js", "./polyfill.js"]);
+  assert.equal(js.exports.includes("first"), true);
+  assert.equal(js.exports.includes("second"), true);
+  assert.equal(js.exports.includes("foo"), true);
+  assert.equal(js.exports.includes("bar"), true);
 });
 
 test("LSP spawn env drops SSH_AUTH_SOCK and API keys", () => {

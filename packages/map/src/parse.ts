@@ -69,21 +69,60 @@ function exportListNames(source: string): string[] {
   return names;
 }
 
+function exportBindingNames(text: string): string[] {
+  const names: string[] = [];
+  for (const block of capture(text, /\bexport\s+(?:const|let|var)\s+([^;]+)/g)) {
+    let depth = 0;
+    let ident = "";
+    let sawEq = false;
+    for (const ch of `${block},`) {
+      if (ch === "{" || ch === "(" || ch === "[") depth += 1;
+      else if (ch === "}" || ch === ")" || ch === "]") depth = Math.max(0, depth - 1);
+      else if (depth === 0 && ch === "=") sawEq = true;
+      else if (depth === 0 && ch === ",") {
+        if (ident) names.push(ident);
+        ident = "";
+        sawEq = false;
+      } else if (depth === 0 && !sawEq && /[A-Za-z0-9_$]/.test(ch)) ident += ch;
+    }
+  }
+  return names;
+}
+
+function cjsObjectExportNames(text: string): string[] {
+  const names: string[] = [];
+  for (const block of capture(text, /\bmodule\.exports\s*=\s*\{([^}]+)\}/g)) {
+    for (const part of block.split(",")) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      const named = trimmed.match(/^([A-Za-z_$][\w$]*)\s*:/);
+      const shorthand = trimmed.match(/^([A-Za-z_$][\w$]*)\s*$/);
+      if (named?.[1]) names.push(named[1]);
+      else if (shorthand?.[1]) names.push(shorthand[1]);
+    }
+  }
+  return names;
+}
+
 function parseTsJs(source: string): { exports: string[]; imports: string[] } {
   const text = stripJsComments(source);
   const exports = [
     ...capture(text, /\bexport\s+(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g),
     ...capture(text, /\bexport\s+(?:default\s+)?class\s+([A-Za-z_$][\w$]*)/g),
-    ...capture(text, /\bexport\s+(?:type|interface|const|let|var|enum)\s+([A-Za-z_$][\w$]*)/g),
+    ...capture(text, /\bexport\s+(?:type|interface|enum)\s+([A-Za-z_$][\w$]*)/g),
+    ...exportBindingNames(text),
     ...exportListNames(text),
     ...capture(text, /\bmodule\.exports\.([A-Za-z_$][\w$]*)/g),
     ...capture(text, /\bexports\.([A-Za-z_$][\w$]*)/g),
+    ...cjsObjectExportNames(text),
   ];
   if (/\bexport\s+default\b/.test(text)) exports.push("default");
   if (/\bmodule\.exports\b/.test(text)) exports.push("module.exports");
   const imports = [
     ...capture(text, /\bfrom\s+['"]([^'"]+)['"]/g),
     ...capture(text, /\brequire\(\s*['"]([^'"]+)['"]\s*\)/g),
+    ...capture(text, /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g),
+    ...capture(text, /(^|[\s;])import\s+['"]([^'"]+)['"]/gm, 2),
   ];
   return { exports: unique(exports), imports: unique(imports) };
 }
@@ -109,19 +148,21 @@ function parseGo(source: string): { exports: string[]; imports: string[] } {
   for (const block of source.matchAll(/^import\s*\(([\s\S]*?)\)/gm)) {
     imports.push(...capture(block[1] ?? "", /"([^"]+)"/g));
   }
-  return {
-    exports: unique([
-      ...capture(source, /^func\s+(?:\([^)]*\)\s+)?([A-Za-z_][\w]*)/gm),
-      ...capture(source, /^type\s+([A-Za-z_][\w]*)/gm),
-    ]),
-    imports: unique(imports),
-  };
+  const exports = [
+    ...capture(source, /^func\s+(?:\([^)]*\)\s+)?([A-Za-z_][\w]*)/gm),
+    ...capture(source, /^type\s+([A-Za-z_][\w]*)/gm),
+    ...capture(source, /^(?:var|const)\s+([A-Z][\w]*)/gm),
+  ];
+  for (const block of source.matchAll(/^(?:var|const)\s*\(([\s\S]*?)\)/gm)) {
+    exports.push(...capture(block[1] ?? "", /^\s*([A-Z][\w]*)/gm));
+  }
+  return { exports: unique(exports), imports: unique(imports) };
 }
 
 function parseRust(source: string): { exports: string[]; imports: string[] } {
   return {
     exports: unique(capture(source, /^pub\s+(?:fn|struct|enum|trait|mod)\s+([A-Za-z_][\w]*)/gm)),
-    imports: [],
+    imports: unique(capture(source, /^use\s+([^;]+);/gm)),
   };
 }
 
