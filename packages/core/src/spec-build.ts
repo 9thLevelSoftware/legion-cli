@@ -47,8 +47,15 @@ export function buildSpecFromIntent(opts: {
   };
 }
 
+export const SKIP_WIREFRAMES_NOTE =
+  "Wireframes skipped (--skip-wireframes). Run `legion-cli wireframe` to generate them.";
+
 export function specMarkdownBody(spec: Spec): string {
   const ac = spec.acceptance.map((item) => `- ${item.id} (${item.priority}): ${item.statement}`).join("\n");
+  const skip =
+    spec.wireframesIndex == null
+      ? ["", "## Wireframes", "", SKIP_WIREFRAMES_NOTE, ""]
+      : [""];
   return [
     `# ${spec.title}`,
     ``,
@@ -68,6 +75,14 @@ export function specMarkdownBody(spec: Spec): string {
     ``,
     `## Acceptance`,
     ac,
-    ``,
+    ...skip,
   ].join("\n");
+}
+
+export function clearSkipWireframesNote(body: string): string {
+  if (!body.includes(SKIP_WIREFRAMES_NOTE)) return body;
+  let next = body.replaceAll(SKIP_WIREFRAMES_NOTE, "");
+  next = next.replace(/\n## Wireframes[ \t]*\n+(?=\n## |\s*$)/g, "\n");
+  next = next.replace(/\n{3,}/g, "\n\n");
+  return next.endsWith("\n") ? next : `${next}\n`;
 }

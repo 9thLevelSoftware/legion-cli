@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, CommanderError, Help } from "commander";
-import { HINT, LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
+import { HINT, LegionRefuseError, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { DesignSystemError } from "@9thlevelsoftware/legion-cli-design-system";
 import { EngineLockedError } from "@9thlevelsoftware/legion-cli-persist";
 import { ADAPTER_ID_HELP } from "@9thlevelsoftware/legion-cli-schema";
@@ -46,6 +46,7 @@ import { runVerify } from "./verify.js";
 import { runContextCompact } from "./context.js";
 import { runGarden } from "./garden.js";
 import { runWikiTrust } from "./wiki.js";
+import { runWireframe } from "./wireframe.js";
 
 const pkg = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
@@ -267,6 +268,21 @@ export function createProgram(): Command {
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
       const code = await runSpecNew(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("wireframe").description("Re-generate HTML wireframes after spec edits"))
+    .option("--restyle", "frozen spec: CSS only")
+    .option("--spawn", "optional SkillId wireframe rewrite of inner markup")
+    .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--skip-palette-check", "refused: palettePresent stays hard")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { restyle?: boolean; spawn?: boolean; adapter?: string; skipPaletteCheck?: boolean };
+      if (flags.skipPaletteCheck) {
+        refuse("palettePresent stays hard until --restyle with an active package", HINT.wireframe);
+      }
+      const code = await runWireframe(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
 

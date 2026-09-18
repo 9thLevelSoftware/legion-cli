@@ -67,6 +67,7 @@ test("help --all lists the grouped command surface", () => {
   assert.match(out, /ticket create/);
   assert.match(out, /task amend/);
   assert.match(out, /^ {2}dashboard$/m);
+  assert.match(out, /^ {2}wireframe$/m);
   assert.match(out, /packet new/);
   assert.match(out, /packet respond/);
   assert.match(out, /verify/);
@@ -127,7 +128,8 @@ test("help --all does not call control-mode later", () => {
   const later = helpSection(out, "Later, not this series:", "Not in this product:");
   assert.doesNotMatch(later, /control-mode/);
   assert.doesNotMatch(later, /vendor extra-adapter argv/);
-  assert.match(later, /map, wireframe, skills list\|install, serve/);
+  assert.match(later, /map, skills list\|install, serve/);
+  assert.doesNotMatch(later, /wireframe/);
   assert.doesNotMatch(out, /v0 gap; follow-up PRs in this series/);
   assert.doesNotMatch(out, /v0 gap/);
   const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");

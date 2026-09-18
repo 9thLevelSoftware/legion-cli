@@ -248,6 +248,20 @@ export type CompactOptions = {
   timeoutMs?: number;
 };
 
+export type WireframeOptions = {
+  restyle?: boolean;
+  spawn?: boolean;
+  adapter?: AdapterId;
+};
+
+export type WireframeResult = {
+  specId: string;
+  status: "draft" | "frozen";
+  index: string;
+  pages: string[];
+  restyled: boolean;
+};
+
 export type {
   Assumption,
   FileContract,

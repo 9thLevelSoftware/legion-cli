@@ -75,6 +75,7 @@ const SHIPPED_ADJACENT = [
   ["design-system install <dir>", "Copy a local design-system directory", "github: rejected"],
   ["design-system import-od <dir>", "One-way OpenDesign importer", ""],
   ["design-system generate", "Generate a design system from a brief", "--name, --work-type, --platforms, --wcag, --brand"],
+  ["wireframe", "Re-generate HTML wireframes after spec edits", "--restyle, --spawn, --adapter"],
 ] as const;
 
 function row(cols: readonly string[]): string {
@@ -120,7 +121,7 @@ export function printHelpAll(): void {
       ...SHIPPED_ADJACENT.map(row),
       "",
       "Later, not this series:",
-      "  map, wireframe, skills list|install, serve",
+      "  map, skills list|install, serve",
       "",
       "Not in this product:",
       "  chat, HTTP model router, bin legion",
