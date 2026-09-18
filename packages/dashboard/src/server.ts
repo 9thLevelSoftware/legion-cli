@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFile, unlink } from "node:fs/promises";
-import { basename, extname } from "node:path";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, extname } from "node:path";
 import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
 import {
   createLegionStore,
@@ -219,22 +219,13 @@ export async function readLiveServe(projectRoot: string): Promise<ServeFile | nu
   return file;
 }
 
-async function assertServeSlotFree(projectRoot: string): Promise<void> {
-  const live = await readLiveServe(projectRoot);
-  if (!live) return;
-  throw new LegionRefuseError(
-    `serve is already running on ${live.bind}:${live.port} (pid ${live.pid})`,
-    "legion-cli status",
-  );
-}
-
-async function writeServeFile(input: {
+function serveFileBody(input: {
   projectRoot: string;
   port: number;
   bind: string;
   mcpHttp: boolean;
   token: string;
-}): Promise<void> {
+}): string {
   const file = ServeFileSchema.parse({
     schemaVersion: SCHEMA_VERSION.serve,
     port: input.port,
@@ -245,7 +236,51 @@ async function writeServeFile(input: {
     startedAt: new Date().toISOString(),
     pid: process.pid,
   });
-  await writeTextFile(toFsPath(input.projectRoot, serveJsonPath()), `${JSON.stringify(file, null, 2)}\n`);
+  return `${JSON.stringify(file, null, 2)}\n`;
+}
+
+async function writeServeFile(input: {
+  projectRoot: string;
+  port: number;
+  bind: string;
+  mcpHttp: boolean;
+  token: string;
+}): Promise<void> {
+  await writeTextFile(toFsPath(input.projectRoot, serveJsonPath()), serveFileBody(input));
+}
+
+async function claimServeSlot(input: {
+  projectRoot: string;
+  port: number;
+  bind: string;
+  mcpHttp: boolean;
+  token: string;
+}): Promise<void> {
+  const path = toFsPath(input.projectRoot, serveJsonPath());
+  await mkdir(dirname(path), { recursive: true });
+  const body = serveFileBody(input);
+  try {
+    await writeFile(path, body, { encoding: "utf8", flag: "wx" });
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+  const live = await readLiveServe(input.projectRoot);
+  if (live) {
+    throw new LegionRefuseError(
+      `serve is already running on ${live.bind}:${live.port} (pid ${live.pid})`,
+      "legion-cli status",
+    );
+  }
+  await unlink(path).catch(() => undefined);
+  try {
+    await writeFile(path, body, { encoding: "utf8", flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new LegionRefuseError("serve is already running", "legion-cli status");
+    }
+    throw err;
+  }
 }
 
 async function removeOwnServeFile(projectRoot: string, pid: number): Promise<void> {
@@ -275,7 +310,6 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       "legion-cli serve --no-mcp-http --expose",
     );
   }
-  if (occupy) await assertServeSlotFree(opts.projectRoot);
   const engine = createDashboardEngine(opts.projectRoot);
   const config = await readOptionalConfig(createLegionStore(opts.projectRoot));
   const webmcp = opts.webmcp === true || config?.flags.webmcp === true;
@@ -576,13 +610,21 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
   warn(`Write token: ${token}`);
 
   if (occupy) {
-    await writeServeFile({
-      projectRoot: opts.projectRoot,
-      port: boundPort,
-      bind: host,
-      mcpHttp,
-      token,
-    });
+    try {
+      await claimServeSlot({
+        projectRoot: opts.projectRoot,
+        port: boundPort,
+        bind: host,
+        mcpHttp,
+        token,
+      });
+    } catch (err) {
+      server.closeAllConnections?.();
+      await new Promise<void>((resolve, reject) => {
+        server.close((closeErr) => (closeErr ? reject(closeErr) : resolve()));
+      });
+      throw err;
+    }
   }
 
   if (opts.open) {

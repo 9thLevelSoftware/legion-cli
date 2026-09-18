@@ -41,7 +41,7 @@ test("help --all lists wireframe in shipped adjacent, not later", () => {
   assert.match(out, /Shipped adjacent[\s\S]*\bwireframe\b/);
   assert.match(out, /--restyle, --spawn, --adapter/);
   assert.doesNotMatch(out, /Later, not this series:\n {2}.*wireframe/);
-  assert.match(out, /Later, not this series:\n {2}map, skills list\|install, serve/);
+  assert.match(out, /Later, not this series:\n {2}map, skills list\|install/);
   assert.match(out, /Not in this product:\n {2}chat, HTTP model router, bin legion/);
 });
 

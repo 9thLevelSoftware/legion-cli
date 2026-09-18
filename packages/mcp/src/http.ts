@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Socket } from "node:net";
+import { resolve } from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10,6 +11,7 @@ export const MCP_HTTP_PATH = "/mcp";
 export const MCP_HTTP_MAX_BODY_BYTES = 1024 * 1024;
 export const MCP_HTTP_RATE_PER_SEC = 30;
 export const MCP_HTTP_MAX_SESSIONS = 32;
+export const MCP_HTTP_IDLE_MS = 10 * 60 * 1000;
 
 export type HandleMcpHttpOpts = {
   req: IncomingMessage;
@@ -20,6 +22,8 @@ export type HandleMcpHttpOpts = {
 type McpSession = {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
+  projectRoot: string;
+  lastSeen: number;
 };
 
 const sessions = new Map<string, McpSession>();
@@ -144,26 +148,54 @@ function writeStandaloneSse(res: ServerResponse, headOnly: boolean): void {
   res.end("retry: 15000\n: connected\n\n");
 }
 
+async function closeSession(id: string, session: McpSession): Promise<void> {
+  sessions.delete(id);
+  try {
+    await session.transport.close();
+  } catch {
+    // already closed
+  }
+  try {
+    await session.server.close();
+  } catch {
+    // already closed
+  }
+}
+
+async function reapIdleSessions(now = Date.now()): Promise<void> {
+  const stale = [...sessions.entries()].filter(([, session]) => now - session.lastSeen > MCP_HTTP_IDLE_MS);
+  await Promise.all(stale.map(([id, session]) => closeSession(id, session)));
+}
+
+function lookupSession(projectRoot: string, sessionId: string | undefined): McpSession | undefined {
+  if (!sessionId) return undefined;
+  const session = sessions.get(sessionId);
+  if (!session) return undefined;
+  if (session.projectRoot !== resolve(projectRoot)) return undefined;
+  return session;
+}
+
 async function createSession(projectRoot: string): Promise<McpSession> {
+  const root = resolve(projectRoot);
   let server!: McpServer;
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
     enableJsonResponse: true,
     onsessioninitialized: (id) => {
-      sessions.set(id, { transport, server });
+      sessions.set(id, { transport, server, projectRoot: root, lastSeen: Date.now() });
     },
     onsessionclosed: (id) => {
       sessions.delete(id);
     },
   });
-  server = await createLegionMcpServer({ projectRoot });
+  server = await createLegionMcpServer({ projectRoot: root });
   transport.onclose = () => {
     const id = transport.sessionId;
     if (id) sessions.delete(id);
     void server.close();
   };
   await server.connect(transport);
-  return { transport, server };
+  return { transport, server, projectRoot: root, lastSeen: Date.now() };
 }
 
 /**
@@ -174,6 +206,7 @@ async function createSession(projectRoot: string): Promise<McpSession> {
 export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
   const { req, res, projectRoot } = opts;
   const method = (req.method ?? "GET").toUpperCase();
+  await reapIdleSessions();
 
   if (!rateLimitOk(req.socket)) {
     if (!res.headersSent) {
@@ -234,12 +267,13 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
   }
 
   const sessionId = sessionHeader(req);
-  const existing = sessionId ? sessions.get(sessionId) : undefined;
+  const existing = lookupSession(projectRoot, sessionId);
 
   if (sessionId && !existing) {
     jsonRpcError(res, 404, -32001, "Session not found");
     return;
   }
+  if (existing) existing.lastSeen = Date.now();
 
   if (method === "GET") {
     if (!acceptHeader(req).includes("text/event-stream")) {
