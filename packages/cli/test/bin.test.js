@@ -32,6 +32,7 @@ function assertLayer1(out) {
   }
   assert.doesNotMatch(out, /\bsearch\b/);
   assert.doesNotMatch(out, /\bbrief\b/);
+  assert.doesNotMatch(out, /^chat {2}/m);
   assert.doesNotMatch(out, /wiki trust/);
   assert.doesNotMatch(out, /\bshow\b/);
   assert.doesNotMatch(out, /assume list/);
@@ -85,6 +86,7 @@ test("help --all lists the grouped command surface", () => {
   assert.match(out, /qa checklist/);
   const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");
   assert.match(alwaysOn, /index rebuild/);
+  assert.match(alwaysOn, /^ {2}chat$/m);
   assert.doesNotMatch(alwaysOn, /assume list/);
   assert.doesNotMatch(alwaysOn, /assume answer/);
   const board = helpSection(out, "Board extras:", "Shipped adjacent");
@@ -147,6 +149,9 @@ test("help --all does not call control-mode later", () => {
   assert.doesNotMatch(out, /v0 gap/);
   const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");
   assert.match(alwaysOn, /control-mode \[mode\]/);
+  const notIn = helpSection(out, "Not in this product:", "");
+  assert.doesNotMatch(notIn, /\bchat\b/);
+  assert.match(notIn, /HTTP model router, bin legion/);
 });
 
 test("help --all init lists --mode; intent drops --resume; dashboard is view-only", () => {

@@ -57,6 +57,7 @@ export const HINT = {
   assumeList: "legion-cli assume list",
   assumeAnswer: "legion-cli assume answer <id> --status confirmed|rejected",
   indexRebuild: "legion-cli index rebuild",
+  chat: "legion-cli chat --once or legion-cli status",
 } as const;
 
 export function refuseKind(nextHint: string): string {

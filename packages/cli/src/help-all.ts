@@ -44,6 +44,7 @@ const ALWAYS_ON = [
   ["search <q>", "Search the wiki", "--mentions, --include-untrusted"],
   ["show <page>", "Open one wiki/spec/task page", ""],
   ["brief", "Print what the next agent will see", ""],
+  ["chat", "REPL that routes into engine verbs", "--once, --adapter"],
   ["index rebuild", "Repair search", ""],
   ["help", "Commands", "--all"],
 ] as const;
@@ -125,7 +126,7 @@ export function printHelpAll(): void {
       "  map, skills list|install",
       "",
       "Not in this product:",
-      "  chat, HTTP model router, bin legion",
+      "  HTTP model router, bin legion",
     ].join("\n"),
   );
 }

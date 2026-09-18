@@ -28,5 +28,5 @@ test("SKILL_CONTRACTS covers every SkillId including map, wireframe, chat", () =
     ".legion-cli/cache/runs/abc/**",
   ]);
   assert.equal(isEngineOwned(".legion-cli/sandbox/run-1/src/main.ts"), true);
-  assert.equal(isEngineOwned(".legion-cli/chat/session.json"), true);
+  assert.equal(isEngineOwned(".legion-cli/chat/session.json"), false);
 });

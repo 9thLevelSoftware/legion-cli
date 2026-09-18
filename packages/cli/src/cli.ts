@@ -10,6 +10,7 @@ import { runAbandon } from "./abandon.js";
 import { runAssumeAnswer, runAssumeList } from "./assume.js";
 import { runBrief } from "./brief.js";
 import { runBrownfield } from "./brownfield.js";
+import { runChat } from "./chat.js";
 import { runDashboard } from "./dashboard.js";
 import { runServe } from "./serve.js";
 import { runDiscuss } from "./discuss.js";
@@ -202,6 +203,16 @@ export function createProgram(): Command {
       process.exitCode = code;
     },
   );
+
+  addGlobalOptions(program.command("chat").description("REPL that routes into engine verbs"))
+    .option("--once <utterance>", "one turn, then exit")
+    .option("--adapter <id>", ADAPTER_ID_HELP)
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { once?: string; adapter?: string };
+      const code = await runChat(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
 
   const index = addGlobalOptions(program.command("index").description("Repair search"));
   index.allowExcessArguments(false).action(requireSub("index", "rebuild", "legion-cli index rebuild"));

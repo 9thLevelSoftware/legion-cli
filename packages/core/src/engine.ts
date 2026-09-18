@@ -1731,6 +1731,50 @@ export class LegionEngine {
     return this.#readState();
   }
 
+  async spawnChatSkill(
+    promptBody: string,
+    cliAdapter?: AdapterId,
+  ): Promise<{ spawned: boolean; runId: string }> {
+    let started: StartedSkillSpawn | undefined;
+    await this.#withLockOrRefuse(async () => {
+      await refuseIfLiveSkillSpawn(this.projectRoot, "chat");
+      let config: LegionConfig;
+      try {
+        config = await this.#readConfig();
+      } catch {
+        return;
+      }
+      started = await startSkillSpawn({
+        ...this.#skillSpawnFields(),
+        config,
+        skillId: "chat",
+        promptBody,
+        cliAdapter,
+      });
+    });
+    if (!started?.spawned) {
+      return { spawned: false, runId: started?.runId ?? "" };
+    }
+    const live = started;
+    const waited = await waitStartedSpawn(live);
+    return this.#withLockOrRefuse(async () => {
+      const revert = await finishStartedSpawn(live);
+      if (revert.incident) {
+        refuse("inspect .git — spawn touched .git/", HINT.status);
+      }
+      if (revert.extrasReverted.length > 0) {
+        refuse(
+          `spawn wrote files outside SkillContract; reverted: ${revert.extrasReverted.join(", ")}`,
+          HINT.status,
+        );
+      }
+      if (waited.error) {
+        return { spawned: false, runId: live.runId };
+      }
+      return { spawned: true, runId: live.runId };
+    });
+  }
+
   async recoverStaleInProgress(): Promise<void> {
     await this.#withLockOrRefuse(async () => {
       await this.#recoverDeadInProgressLocked();
