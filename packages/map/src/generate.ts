@@ -108,11 +108,27 @@ export async function ensureRealMapDir(projectRoot: string, mapDir: string): Pro
   if (escaped) refuse("map output escaped the project workspace", MAP_HINT.concretePaths);
 }
 
-async function writeMapFile(absPath: string, contents: string): Promise<void> {
+/** Drop a symlink/dir/non-file map entry. Returns existing regular-file contents. */
+export async function readExistingMapFile(absPath: string): Promise<string | undefined> {
   const st = await lstatOrNull(absPath);
-  if (st?.isSymbolicLink()) await rm(absPath, { force: true });
-  else if (st?.isDirectory()) await rm(absPath, { recursive: true, force: true });
-  else if (st && !st.isFile()) await rm(absPath, { force: true });
+  if (!st) return undefined;
+  if (st.isSymbolicLink()) {
+    await rm(absPath, { force: true });
+    return undefined;
+  }
+  if (st.isDirectory()) {
+    await rm(absPath, { recursive: true, force: true });
+    return undefined;
+  }
+  if (!st.isFile()) {
+    await rm(absPath, { force: true });
+    return undefined;
+  }
+  return readFile(absPath, "utf8");
+}
+
+export async function writeMapFile(absPath: string, contents: string): Promise<void> {
+  await readExistingMapFile(absPath);
   await writeFile(absPath, contents, "utf8");
 }
 
@@ -199,17 +215,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
     existing && existing.backend === backend && existing.rootHash === rootHash && changed.length === 0,
   );
 
-  let existingArch: string | undefined;
-  const archStat = await lstatOrNull(architecturePath);
-  if (archStat?.isSymbolicLink()) {
-    await rm(architecturePath, { force: true });
-  } else if (archStat?.isDirectory()) {
-    await rm(architecturePath, { recursive: true, force: true });
-  } else if (archStat && !archStat.isFile()) {
-    await rm(architecturePath, { force: true });
-  } else if (archStat) {
-    existingArch = await readFile(architecturePath, "utf8");
-  }
+  const existingArch = await readExistingMapFile(architecturePath);
 
   if (unchanged && existing) {
     if (options.refresh || existingArch === undefined) {

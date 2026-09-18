@@ -77,7 +77,7 @@ async function printRead(
     return 0;
   }
   if (action.type === "status") {
-    return runStatus(opts, turn.paused ? { paused: true } : undefined);
+    return runStatus(opts, turn.paused ? { paused: true, next: turn.nextHint } : undefined);
   }
   if (action.type === "search") {
     await runSearch(
