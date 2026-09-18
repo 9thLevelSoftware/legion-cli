@@ -184,10 +184,13 @@ function adapterTargetIfThen(id: string, requiredKey: string): Record<string, un
   };
 }
 
-const HTTPS_HOST = "[^/?#@\\s]+";
-const HTTPS_BASE_URL = `^https://${HTTPS_HOST}([/?#].*)?$`;
+const HTTPS_HOST =
+  "(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*|\\d{1,3}(?:\\.\\d{1,3}){3}|\\[[0-9A-Fa-f:]*[0-9A-Fa-f][0-9A-Fa-f:]*\\])";
+const HTTPS_PORT =
+  "(?::(?:0|[1-9]\\d{0,3}|[1-5]\\d{4}|6[0-4]\\d{3}|65[0-4]\\d{2}|655[0-2]\\d|6553[0-5]))?";
+const HTTPS_BASE_URL = `^https://${HTTPS_HOST}${HTTPS_PORT}([/?#].*)?$`;
 const LOOPBACK_OR_HTTPS_BASE_URL =
-  `^(https://${HTTPS_HOST}|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:\\d+)?)([/?#].*)?$`;
+  `^(https://${HTTPS_HOST}${HTTPS_PORT}|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])${HTTPS_PORT})([/?#].*)?$`;
 
 /** Overlay Zod refinements that `toJSONSchema` cannot represent. */
 function overlayJsonSchema(

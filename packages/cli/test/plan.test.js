@@ -295,6 +295,52 @@ test("task amend --route constructor refuses inherited prototype keys", async ()
   });
 });
 
+function withNamedHttp(config, name) {
+  const next = withNamedAdapter(config, name, "http");
+  return {
+    ...next,
+    adapter: {
+      ...next.adapter,
+      http: {
+        baseUrl: "https://api.x.ai/v1",
+        model: "grok-4",
+        apiKeyEnv: "XAI_API_KEY",
+      },
+    },
+  };
+}
+
+test("task amend --route http named adapter refuses", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedFrozen(dir);
+    await engine.store.writeConfig(withNamedHttp(await engine.store.readConfig(), "remote"));
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["task", "amend", "TSK-0001", "--route", "remote", "--project", dir]);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(normalize(result.stderr), /adapter http is not selectable yet/);
+  });
+});
+
+test("ticket create --route http named adapter refuses", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedFrozen(dir);
+    await engine.store.writeConfig(withNamedHttp(await engine.store.readConfig(), "remote"));
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli([
+      "ticket",
+      "create",
+      "--project",
+      dir,
+      "--title",
+      "parked extra",
+      "--route",
+      "remote",
+    ]);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(normalize(result.stderr), /adapter http is not selectable yet/);
+  });
+});
+
 test("task amend --route unknown refuses before write", async () => {
   await withTempDir(async (dir) => {
     await seedFrozen(dir);

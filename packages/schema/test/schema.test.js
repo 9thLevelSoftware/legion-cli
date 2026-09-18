@@ -1039,7 +1039,15 @@ test("JSON Schema overlays reject .git paths, no-browser pass, and generic witho
       `Ajv baseUrl ${baseUrl} without allowLoopback must fail`,
     );
   }
-  for (const baseUrl of ["https://?", "https://#", "https:// ", "https://?q=1"]) {
+  for (const baseUrl of [
+    "https://?",
+    "https://#",
+    "https:// ",
+    "https://?q=1",
+    "https://:",
+    "https://[]",
+    "https://example.com:99999/v1",
+  ]) {
     assert.equal(
       validateConfig({
         schemaVersion: "legion-cli-config/v1",
@@ -1049,7 +1057,7 @@ test("JSON Schema overlays reject .git paths, no-browser pass, and generic witho
         },
       }),
       false,
-      `Ajv baseUrl ${JSON.stringify(baseUrl)} must fail without a host`,
+      `Ajv baseUrl ${JSON.stringify(baseUrl)} must fail without a valid authority`,
     );
   }
 });
