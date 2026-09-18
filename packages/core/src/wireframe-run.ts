@@ -363,6 +363,19 @@ export async function prepareWireframe(input: WireframePrepareInput): Promise<Wi
   }
 
   const restyleCss = input.opts.restyle ? await loadRestyleCss(input.projectRoot) : null;
+  if (input.opts.restyle && !restyleCss) {
+    refuse("wireframe --restyle needs an active design-system package", HINT.designGenerate);
+  }
+  if (frozen && input.opts.restyle) {
+    try {
+      await readFile(join(dir, INDEX_NAME));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        refuse("wireframe --restyle needs existing INDEX.html", HINT.wireframeRestyle);
+      }
+      throw err;
+    }
+  }
   if (restyleCss) {
     await mkdir(dir, { recursive: true });
     await restyleExisting(dir, restyleCss);
