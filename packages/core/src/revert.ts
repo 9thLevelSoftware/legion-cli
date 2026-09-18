@@ -10,6 +10,7 @@ import {
   toPosixPath,
   tryGitHead,
 } from "@9thlevelsoftware/legion-cli-persist";
+import { atomicWriteFile } from "./atomic-write.js";
 import { isAllowedPath, isEngineOwned, matchesGlob } from "./contracts.js";
 
 export const HEAD_MOVED_WARNING =
@@ -254,7 +255,7 @@ async function restoreOne(
 ): Promise<void> {
   const abs = toFsPath(projectRoot, posix);
   if (chatBody !== undefined) {
-    await writeFile(abs, chatBody, "utf8");
+    await atomicWriteFile(abs, chatBody, { symlinkMessage: "chat session path is a symlink" });
     return;
   }
   if (preSpawnRef && gitPathExistsAtRef(projectRoot, preSpawnRef, posix)) {

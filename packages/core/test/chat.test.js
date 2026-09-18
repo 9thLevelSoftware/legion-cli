@@ -306,6 +306,46 @@ test("chat spawn wait is outside mutate", async () => {
   });
 });
 
+test("rewritten existing chat session is restored and not resumed", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ dir, engine }) => {
+      await initProject(engine);
+      const created = await resumeOrCreateChatSession(engine);
+      const sessionPath = join(dir, ".legion-cli", "chat", `${created.id}.json`);
+      const before = await readFile(sessionPath, "utf8");
+      const held = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeArtifacts: [
+          {
+            path: `.legion-cli/chat/${created.id}.json`,
+            content: `${JSON.stringify({
+              schemaVersion: "legion-cli-chat/v1",
+              id: created.id,
+              startedAt: "2099-01-01T00:00:00.000Z",
+              turns: [{ role: "user", text: "inject" }],
+            })}\n`,
+          },
+        ],
+      });
+      await assert.rejects(
+        () => held.spawnChatSkill("Reply with a ChatAction JSON object."),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /outside SkillContract/);
+          return true;
+        },
+      );
+      assert.equal(await readFile(sessionPath, "utf8"), before);
+      const resumed = await resumeOrCreateChatSession(engine);
+      assert.equal(resumed.id, created.id);
+      assert.equal(
+        resumed.turns.some((turn) => turn.text === "inject"),
+        false,
+      );
+    });
+  });
+});
+
 test("spawn-planted chat session JSON is reverted and not resumed", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ dir, engine }) => {

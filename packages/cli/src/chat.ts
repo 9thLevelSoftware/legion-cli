@@ -77,10 +77,15 @@ async function printRead(
     return 0;
   }
   if (action.type === "status") {
-    return runStatus(opts);
+    return runStatus(opts, turn.paused ? { paused: true } : undefined);
   }
   if (action.type === "search") {
-    await runSearch(opts, action.q, {});
+    await runSearch(
+      opts,
+      action.q,
+      {},
+      turn.paused ? { paused: true, next: turn.nextHint } : undefined,
+    );
     return 0;
   }
   if (turn.kind === "dropped") {
@@ -141,9 +146,7 @@ async function handleTurn(
 
   const code = await printRead(opts, engine, turn.action, turn);
   if (turn.paused) {
-    if (opts.json) {
-      writeJson({ paused: true, next: turn.nextHint });
-    } else {
+    if (!opts.json) {
       writeOut("Chat paused.");
       if (turn.action.type === "search" || turn.kind === "dropped") {
         writeOut(await formatNextVerb(engine));

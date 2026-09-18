@@ -7,14 +7,19 @@ export type SearchFlags = {
   mentions?: boolean;
 };
 
-export async function runSearch(opts: CliOpts, query: string, flags: SearchFlags): Promise<number> {
+export async function runSearch(
+  opts: CliOpts,
+  query: string,
+  flags: SearchFlags,
+  jsonExtra?: Record<string, unknown>,
+): Promise<number> {
   const engine = createLegionEngine(opts.project);
   const hits = await engine.search(query, {
     includeUntrusted: flags.includeUntrusted,
     mentions: flags.mentions,
   });
   if (opts.json) {
-    writeJson({ query, hits });
+    writeJson({ query, hits, ...jsonExtra });
     return 0;
   }
   if (hits.length === 0) {

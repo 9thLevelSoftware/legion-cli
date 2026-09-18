@@ -156,6 +156,46 @@ test("chat --once empty or whitespace refuses", async () => {
   });
 });
 
+test("chat --once --json pause emits one JSON object", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    let last;
+    for (let i = 0; i < 4; i++) {
+      last = runCli(["chat", "--once", `hello ${i}`, "--json", "--project", dir]);
+      assert.equal(last.status, 0, `${last.stdout}\n${last.stderr}`);
+      const body = JSON.parse(last.stdout);
+      assert.equal(body.kind, "next");
+      assert.equal(body.next, "legion-cli intent");
+      if (i < 3) assert.equal(body.paused, false);
+      else {
+        assert.equal(body.paused, true);
+        assert.doesNotMatch(last.stdout, /\}\s*\{/);
+      }
+    }
+  });
+});
+
+test("paused search --json folds paused into one object", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    let last;
+    for (let i = 0; i < 4; i++) {
+      last = runCli(["chat", "--once", `hello ${i}`, "--json", "--project", dir], {
+        env: { LEGION_CLI_CHAT_ACTION: JSON.stringify({ type: "search", q: "office" }) },
+      });
+      assert.equal(last.status, 0, `${last.stdout}\n${last.stderr}`);
+      const body = JSON.parse(last.stdout);
+      assert.ok("hits" in body);
+      assert.equal(body.query, "office");
+      if (i < 3) assert.equal("paused" in body, false);
+      else {
+        assert.equal(body.paused, true);
+        assert.match(body.next, /legion-cli intent/);
+      }
+    }
+  });
+});
+
 test("four idle --once turns print the read then one pause Next", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);

@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { lstat, mkdir, readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { runCachePaths } from "@9thlevelsoftware/legion-cli-agents";
 import { ensureGitignore, redactSecrets, toFsPath } from "@9thlevelsoftware/legion-cli-persist";
 import {
@@ -17,6 +16,7 @@ import {
   type Phase,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
+import { atomicWriteFile } from "./atomic-write.js";
 import { HINT, refuse } from "./errors.js";
 import type { LegionEngine } from "./engine.js";
 import { isSliceTerminal } from "./slice.js";
@@ -328,54 +328,11 @@ function chatSessionPath(id: string): string {
   return `.legion-cli/chat/${safe}.json`;
 }
 
-async function assertNotSymlink(abs: string): Promise<void> {
-  try {
-    const st = await lstat(abs);
-    if (st.isSymbolicLink()) {
-      refuse("chat session path is a symlink", HINT.chat);
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-}
-
 async function writeSessionFile(engine: LegionEngine, session: ChatSessionFile): Promise<void> {
   const parsed = ChatSessionFileSchema.parse(session);
   const abs = toFsPath(engine.projectRoot, chatSessionPath(parsed.id));
-  const dir = dirname(abs);
-  await mkdir(dir, { recursive: true });
-  await assertNotSymlink(dir);
-  await assertNotSymlink(abs);
   const body = redactSecrets(`${JSON.stringify(parsed, null, 2)}\n`);
-  const tmp = join(dir, `.${parsed.id}.${randomBytes(8).toString("hex")}.tmp`);
-  const flags =
-    fsConstants.O_WRONLY |
-    fsConstants.O_CREAT |
-    fsConstants.O_EXCL |
-    (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0);
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(tmp, flags);
-    await handle.writeFile(body, "utf8");
-    await handle.close();
-    handle = undefined;
-    await assertNotSymlink(abs);
-    await rename(tmp, abs);
-  } catch (err) {
-    if (handle) {
-      try {
-        await handle.close();
-      } catch {
-        // already closed
-      }
-    }
-    try {
-      await unlink(tmp);
-    } catch {
-      // tmp may not exist
-    }
-    throw err;
-  }
+  await atomicWriteFile(abs, body, { symlinkMessage: "chat session path is a symlink" });
 }
 
 export async function saveChatSession(engine: LegionEngine, session: ChatSessionFile): Promise<void> {

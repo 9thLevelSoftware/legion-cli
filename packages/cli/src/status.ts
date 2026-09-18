@@ -111,7 +111,7 @@ function formatPlain(input: {
   return lines.join("\n");
 }
 
-export async function runStatus(opts: CliOpts): Promise<number> {
+export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknown>): Promise<number> {
   const engine = createLegionEngine(opts.project);
   const state = await engine.getState();
   const project = state.phase === "uninitialized" ? null : await readOptionalProject(engine);
@@ -137,6 +137,7 @@ export async function runStatus(opts: CliOpts): Promise<number> {
       blockers,
       viewer,
       viewerLive,
+      ...jsonExtra,
     });
     return code;
   }
