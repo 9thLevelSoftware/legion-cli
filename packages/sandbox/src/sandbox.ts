@@ -97,6 +97,33 @@ function findOnPath(name: string, rejectStubs = false): string | undefined {
   return undefined;
 }
 
+function probeBwrapUserns(bin: string): boolean {
+  // Ubuntu 24.04 / GitHub Actions AppArmor can leave bwrap on PATH while
+  // --unshare-user fails with "setting up uid map: Permission denied".
+  const args = [
+    "--die-with-parent",
+    "--unshare-user",
+    "--unshare-pid",
+    "--unshare-uts",
+    "--unshare-ipc",
+    "--dev",
+    "/dev",
+  ];
+  if (existsSync("/proc")) args.push("--proc", "/proc");
+  for (const path of SYSTEM_RO_BINDS) {
+    if (existsSync(path)) args.push("--ro-bind", path, path);
+  }
+  const trueBin = existsSync("/usr/bin/true") ? "/usr/bin/true" : existsSync("/bin/true") ? "/bin/true" : "true";
+  args.push("--", trueBin);
+  const probe = spawnSync(bin, args, {
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+    timeout: 8000,
+  });
+  return !probe.error && probe.status === 0;
+}
+
 function findRunnableBwrap(): string | undefined {
   const bin = findOnPath("bwrap", true);
   if (!bin) return undefined;
@@ -109,6 +136,7 @@ function findRunnableBwrap(): string | undefined {
   if (probe.error || probe.status !== 0) return undefined;
   const text = `${probe.stdout}\n${probe.stderr}`;
   if (!/bwrap|bubblewrap/i.test(text)) return undefined;
+  if (!probeBwrapUserns(bin)) return undefined;
   return bin;
 }
 

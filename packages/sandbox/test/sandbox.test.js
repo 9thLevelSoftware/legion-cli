@@ -345,6 +345,27 @@ test("Windows bwrap.cmd stub is not a hardened backend", async () => {
   });
 });
 
+test("bwrap that cannot set up a uid map is not a hardened backend", async () => {
+  await withTempDir(async (dir) => {
+    const script = [
+      "#!/bin/sh",
+      'if [ "$1" = "--version" ]; then',
+      "  echo 'bwrap 0.9.0'",
+      "  exit 0",
+      "fi",
+      "echo 'bwrap: setting up uid map: Permission denied' >&2",
+      "exit 1",
+      "",
+    ].join("\n");
+    await writeFile(join(dir, "bwrap"), script, { encoding: "utf8", mode: 0o755 });
+    withPath(dir, () => {
+      const detected = detectSandbox();
+      assert.equal(detected.backend, "copy");
+      assert.equal(detected.hardened, false);
+    });
+  });
+});
+
 test("sandbox env allowlist is exact jail paths; extras and SSH_AUTH_SOCK absent", async () => {
   await withTempDir(async (dir) => {
     await seedProject(dir);
