@@ -503,6 +503,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   await writeResume(null);
 
   let sandbox: SandboxHandle | undefined;
+  let allowedWrites: string[] = [];
   const jailed =
     opts.skillId === "execute" ||
     opts.config.sandbox.skills.includes(opts.skillId) ||
@@ -515,16 +516,17 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       throw err;
     }
     const filtered = filterSpawnEnv(process.env, adapter.id, adapter.binary);
+    allowedWrites = await sandboxAllowedWrites({
+      projectRoot: opts.projectRoot,
+      runId,
+      skillId: opts.skillId,
+      specId: opts.specId,
+      contract: opts.fileContract,
+    });
     sandbox = await materializeJail({
       projectRoot: opts.projectRoot,
       runId,
-      allowedWrites: await sandboxAllowedWrites({
-        projectRoot: opts.projectRoot,
-        runId,
-        skillId: opts.skillId,
-        specId: opts.specId,
-        contract: opts.fileContract,
-      }),
+      allowedWrites,
       readSet: sandboxReadSet({
         projectRoot: opts.projectRoot,
         runId,
@@ -561,7 +563,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         ? {
             httpHost: createHttpToolHost({
               jailRoot: sandbox.jailRoot,
-              allowedWrites: sandboxAllowedWrites(runId, opts.skillId, opts.specId, opts.fileContract),
+              allowedWrites,
               filesForbidden,
               hardened: sandbox.hardened,
               spawnOpts: spawnOpts ?? { cwd: sandbox.jailRoot, env },
