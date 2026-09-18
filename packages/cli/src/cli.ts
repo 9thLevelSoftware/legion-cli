@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Command, CommanderError, Help } from "commander";
+import { Command, CommanderError, Help, Option } from "commander";
 import { HINT, LegionRefuseError, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { DesignSystemError } from "@9thlevelsoftware/legion-cli-design-system";
 import { EngineLockedError } from "@9thlevelsoftware/legion-cli-persist";
@@ -9,7 +9,19 @@ import { ADAPTER_ID_HELP } from "@9thlevelsoftware/legion-cli-schema";
 import { runAbandon } from "./abandon.js";
 import { runAssumeAnswer, runAssumeList } from "./assume.js";
 import { runBrief } from "./brief.js";
-import { runBrownfield } from "./brownfield.js";
+import {
+  runBrownfield,
+  runBrownfieldDag,
+  runBrownfieldEvidence,
+  runBrownfieldMerge,
+  runBrownfieldPatterns,
+  runBrownfieldPrPlan,
+  runBrownfieldReviewStatus,
+  runBrownfieldRoster,
+  runBrownfieldState,
+  runBrownfieldWorktree,
+  type ReviewStatusFlags,
+} from "./brownfield.js";
 import { runChat } from "./chat.js";
 import { runDashboard } from "./dashboard.js";
 import { runServe } from "./serve.js";
@@ -561,25 +573,111 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(
-    program.command("brownfield").description("Audit an existing app (effort 1–5: architecture through improvement SPEC)"),
+  const brownfieldInitAction = async (context: string[], _opts: unknown, cmd: Command) => {
+    // The parent `brownfield` also declares these flags, and commander lets it consume them
+    // even after the `init` subcommand name, so read them merged.
+    const flags = cmd.optsWithGlobals() as { effort?: string; execute?: boolean; resume?: string; runId?: string };
+    const code = await runBrownfield(resolveOpts(cmd), {
+      effort: flags.effort,
+      execute: Boolean(flags.execute),
+      resume: flags.resume,
+      runId: flags.runId,
+      context,
+    });
+    process.exitCode = code;
+  };
+  const brownfield = addGlobalOptions(
+    program
+      .command("brownfield")
+      .description(
+        "Audit an existing app (effort 1–5). The orchestrating agent does judgment; these subcommands keep the books",
+      ),
   )
-    .argument("[context...]", "scope notes")
-    .option("--effort <n>", "analysis rigor 1–5")
-    .option("--execute", "isolate product writes in a git worktree")
-    .option("--resume <id>", "resume a brownfield run")
-    .option("--lsp", "effort 5: pass-through to map --lsp (ignored on 1–4)")
+    .argument("[context...]", "scope notes (quote them, or use `brownfield init`, if they start with a subcommand name)")
+    .option("--effort <n>", "analysis rigor 1–5 (default 2)")
+    .option("--execute", "plan to implement the reviewed PR plan as per-PR git worktrees")
+    .option("--resume <id>", "show a run's state and where to continue")
+    .addOption(new Option("--run-id <id>", "fixed 8-hex run id").hideHelp())
     .allowExcessArguments(false)
-    .action(async (context: string[], opts, cmd: Command) => {
-      const flags = opts as { effort?: string; execute?: boolean; resume?: string; lsp?: boolean };
-      const code = await runBrownfield(resolveOpts(cmd), {
-        effort: flags.effort,
-        execute: Boolean(flags.execute),
-        resume: flags.resume,
-        context,
-        lsp: Boolean(flags.lsp),
-      });
-      process.exitCode = code;
+    .action(brownfieldInitAction);
+  addGlobalOptions(brownfield.command("init").description("Start a brownfield run (same as bare brownfield)"))
+    .argument("[context...]", "scope notes")
+    .option("--effort <n>", "analysis rigor 1–5 (default 2)")
+    .option("--execute", "plan to implement the reviewed PR plan as per-PR git worktrees")
+    .addOption(new Option("--run-id <id>", "fixed 8-hex run id").hideHelp())
+    .allowExcessArguments(false)
+    .action(brownfieldInitAction);
+  addGlobalOptions(brownfield.command("state").description("Show or set run state (key=value; meta.<key>=<json>)"))
+    .argument("<id>", "run id")
+    .argument("[pairs...]", "key=value updates")
+    .action(async (id: string, pairs: string[], _opts, cmd: Command) => {
+      process.exitCode = await runBrownfieldState(resolveOpts(cmd), id, pairs);
+    });
+  addGlobalOptions(brownfield.command("roster").description("Compute specialists for this run's effort and signals"))
+    .argument("<id>", "run id")
+    .allowExcessArguments(false)
+    .action(async (id: string, _opts, cmd: Command) => {
+      process.exitCode = await runBrownfieldRoster(resolveOpts(cmd), id);
+    });
+  addGlobalOptions(
+    brownfield.command("evidence").description("Collect deterministic test and secret evidence under evidence/"),
+  )
+    .argument("<id>", "run id")
+    .option("--skip-audit", "do not run pnpm/npm audit")
+    .allowExcessArguments(false)
+    .action(async (id: string, opts, cmd: Command) => {
+      process.exitCode = await runBrownfieldEvidence(resolveOpts(cmd), id, opts as { skipAudit?: boolean });
+    });
+  addGlobalOptions(
+    brownfield.command("merge").description("Merge analysis/*.md into findings.md and assumptions.md"),
+  )
+    .argument("<id>", "run id")
+    .allowExcessArguments(false)
+    .action(async (id: string, _opts, cmd: Command) => {
+      process.exitCode = await runBrownfieldMerge(resolveOpts(cmd), id);
+    });
+  addGlobalOptions(
+    brownfield.command("review-status").description("Verdict for a review file: pass | pass-with-minor | revise | escalate"),
+  )
+    .argument("<id>", "run id")
+    .argument("[file]", "run-relative review file (default reviews/design-review.md)")
+    .option("--previous <file>", "run-relative snapshot to detect reopened wontfix items (default <file>.prev.md)")
+    .option("--strict", "gate on every severity, not just critical/major")
+    .option("--snapshot", "copy the review file to <file>.prev.md after computing the verdict")
+    .allowExcessArguments(false)
+    .action(async (id: string, file: string | undefined, opts, cmd: Command) => {
+      process.exitCode = await runBrownfieldReviewStatus(resolveOpts(cmd), id, file, opts as ReviewStatusFlags);
+    });
+  addGlobalOptions(brownfield.command("pr-plan").description("Parse design.md '## PR Plan' into dag.json"))
+    .argument("<id>", "run id")
+    .allowExcessArguments(false)
+    .action(async (id: string, _opts, cmd: Command) => {
+      process.exitCode = await runBrownfieldPrPlan(resolveOpts(cmd), id);
+    });
+  addGlobalOptions(brownfield.command("dag").description("Show PR DAG progress; update one node with key=value"))
+    .argument("<id>", "run id")
+    .argument("[node]", "node id, e.g. pr-2")
+    .argument("[pairs...]", "status=… commit=… worktree=… agentId=… reviewRounds=… error=…")
+    .action(async (id: string, node: string | undefined, pairs: string[], _opts, cmd: Command) => {
+      process.exitCode = await runBrownfieldDag(resolveOpts(cmd), id, node, pairs);
+    });
+  addGlobalOptions(
+    brownfield.command("worktree").description("Create (or --remove) the isolated worktree for one PR node"),
+  )
+    .argument("<id>", "run id")
+    .argument("<node>", "node id, e.g. pr-1")
+    .option("--remove", "remove the worktree (the branch is kept)")
+    .option("--force", "with --remove: discard uncommitted changes in the worktree")
+    .allowExcessArguments(false)
+    .action(async (id: string, node: string, opts, cmd: Command) => {
+      process.exitCode = await runBrownfieldWorktree(resolveOpts(cmd), id, node, opts as { remove?: boolean; force?: boolean });
+    });
+  addGlobalOptions(brownfield.command("patterns").description("Record or list cross-run lessons for this repo"))
+    .option("--add <lessons...>", "codebase-agnostic lessons to record")
+    .option("--top <n>", "how many to list (default 10)")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      process.exitCode = await runBrownfieldPatterns(resolveOpts(cmd), opts as { add?: string[]; top?: string });
     });
 
   const run = addGlobalOptions(program.command("run").description("Brownfield run artifacts"));

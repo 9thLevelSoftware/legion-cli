@@ -444,11 +444,66 @@ export const ResumeFileSchema = z.object({
 });
 export type ResumeFile = z.infer<typeof ResumeFileSchema>;
 
-/** Brownfield run-scoped resume. Not a wiki page; promote copies markdown into the wiki. */
-export const BrownfieldRunPhaseSchema = z.enum(["analysis", "execute", "complete"]);
+/**
+ * Brownfield run-scoped resume. Not a wiki page; promote copies markdown into the wiki.
+ * The orchestrating agent does judgment; `legion-cli brownfield <sub>` keeps these books.
+ * Legacy 3-phase files (analysis|execute|complete) still parse: every newer field is defaulted.
+ */
+export const BrownfieldRunPhaseSchema = z.enum([
+  "intent",
+  "plan",
+  "analysis",
+  "assumptions",
+  "design",
+  "review",
+  "present",
+  "execute",
+  "verify",
+  "complete",
+]);
 export type BrownfieldRunPhase = z.infer<typeof BrownfieldRunPhaseSchema>;
 
 export const BrownfieldRunIdSchema = z.string().regex(/^[0-9a-f]{8}$/);
+
+export const BrownfieldSizeTierSchema = z.enum(["tiny", "small", "medium", "large"]);
+export type BrownfieldSizeTier = z.infer<typeof BrownfieldSizeTierSchema>;
+
+export const BrownfieldSizeSchema = z
+  .object({
+    files: z.number().int().min(0),
+    lines: z.number().int().min(0),
+    tier: BrownfieldSizeTierSchema,
+    maxPrs: z.number().int().min(1),
+    suggestedEffortMax: z.number().int().min(1).max(5),
+  })
+  .strict();
+export type BrownfieldSize = z.infer<typeof BrownfieldSizeSchema>;
+
+export const BrownfieldSpecialistSchema = z.enum([
+  "architecture",
+  "product-intent",
+  "code",
+  "code-2",
+  "tests",
+  "security",
+  "performance",
+  "documentation",
+]);
+export type BrownfieldSpecialist = z.infer<typeof BrownfieldSpecialistSchema>;
+
+export const BrownfieldRosterSchema = z
+  .object({
+    effort: z.number().int().min(1).max(5),
+    pass1: z.array(BrownfieldSpecialistSchema),
+    pass2: z.array(BrownfieldSpecialistSchema),
+    addedBySignal: z.array(BrownfieldSpecialistSchema),
+    injectDoctrine: z.boolean(),
+    designReviewers: z.number().int().min(1).max(2),
+    executeReviewersDefault: z.array(z.string().min(1)),
+    outputs: z.record(z.string(), z.string().min(1)),
+  })
+  .strict();
+export type BrownfieldRoster = z.infer<typeof BrownfieldRosterSchema>;
 
 export const BrownfieldRunSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.run),
@@ -458,12 +513,86 @@ export const BrownfieldRunSchema = z.object({
   phase: BrownfieldRunPhaseSchema,
   preSpawnRef: z.string().min(1),
   startedAt: z.string().min(1),
+  /** Legacy single-worktree runs only. Per-PR worktrees are recorded on dag.json nodes. */
   worktreePath: z.string().min(1).nullable().optional(),
   promoted: z.boolean().default(false),
-  pages: z.array(z.string().min(1)),
+  /** Legacy page list. Promote now walks the run directory. */
+  pages: z.array(z.string().min(1)).default([]),
   context: z.string().default(""),
+  size: BrownfieldSizeSchema.optional(),
+  roster: BrownfieldRosterSchema.optional(),
+  designReviewRounds: z.number().int().min(0).default(0),
+  assumptionRounds: z.number().int().min(0).default(0),
+  /** Branch the run started on; null when HEAD was detached or unborn. */
+  baseBranch: z.string().min(1).nullable().default(null),
+  updatedAt: z.string().min(1).optional(),
+  /** Free-form orchestrator notes (agent ids, decisions). Set via `state <id> meta.<key>=<json>`. */
+  meta: z.record(z.string(), z.unknown()).default({}),
 });
 export type BrownfieldRun = z.infer<typeof BrownfieldRunSchema>;
+
+export const BrownfieldDagNodeIdSchema = z.string().regex(/^pr-[1-9]\d*$/);
+
+export const BrownfieldDagNodeStatusSchema = z.enum([
+  "pending",
+  "implementing",
+  "reviewing",
+  "completed",
+  "failed",
+  "skipped",
+]);
+export type BrownfieldDagNodeStatus = z.infer<typeof BrownfieldDagNodeStatusSchema>;
+
+export const BrownfieldDagNodeSchema = z
+  .object({
+    id: BrownfieldDagNodeIdSchema,
+    number: z.number().int().min(1),
+    title: z.string().min(1),
+    branch: z.string().min(1),
+    dependsOn: z.array(BrownfieldDagNodeIdSchema),
+    files: z.array(z.string().min(1)),
+    tracesTo: z.string(),
+    risk: z.string(),
+    spec: z.string(),
+    status: BrownfieldDagNodeStatusSchema,
+    level: z.number().int().min(0),
+    /** Branch name (dependents) or commit SHA / branch (roots). */
+    base: z.string().min(1),
+    mergeIn: z.array(z.string().min(1)),
+    commit: z.string().min(1).nullable().default(null),
+    worktree: z.string().min(1).nullable().default(null),
+    agentId: z.string().min(1).nullable().default(null),
+    reviewRounds: z.number().int().min(0).default(0),
+    error: z.string().nullable().default(null),
+  })
+  .strict();
+export type BrownfieldDagNode = z.infer<typeof BrownfieldDagNodeSchema>;
+
+export const BrownfieldDagSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.dag),
+    runId: BrownfieldRunIdSchema,
+    nodes: z.array(BrownfieldDagNodeSchema),
+  })
+  .strict();
+export type BrownfieldDag = z.infer<typeof BrownfieldDagSchema>;
+
+export const BrownfieldPatternsFileSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.brownfieldPatterns),
+    patterns: z.record(
+      z.string().min(1),
+      z
+        .object({
+          count: z.number().int().min(1),
+          firstSeen: z.string().min(1),
+          lastSeen: z.string().min(1),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+export type BrownfieldPatternsFile = z.infer<typeof BrownfieldPatternsFileSchema>;
 
 const QaP0BucketSchema = z.object({
   points: z.number(),

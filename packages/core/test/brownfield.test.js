@@ -1,387 +1,584 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { HINT, LegionRefuseError } from "../dist/index.js";
-import { git, initGitRepo, initProject, withEngine, withFakeAdapter } from "./helpers.js";
+import {
+  BrownfieldDagSchema,
+  BrownfieldRunSchema,
+} from "@9thlevelsoftware/legion-cli-schema";
+import {
+  computeRoster,
+  LegionRefuseError,
+  mergeSpecialists,
+  normSeverity,
+  orderRunPages,
+  parsePrPlan,
+  parseReview,
+  reviewerSlots,
+  reviewStatus,
+  section,
+  signalText,
+  slugify,
+  splitBlocks,
+  titleOf,
+} from "../dist/index.js";
+import { git, initGitRepo, initProject, withEngine } from "./helpers.js";
 
-async function exists(path) {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "brownfield");
+
+function runDir(dir, runId) {
+  return join(dir, ".legion-cli", "runs", runId);
 }
 
-test("init --mode brownfield writes mode brownfield", async () => {
-  await withEngine(async ({ store, engine }) => {
+async function readFixture(rel) {
+  return readFile(join(FIXTURES, ...rel.split("/")), "utf8");
+}
+
+async function seedFile(dir, runId, rel, text) {
+  const abs = join(runDir(dir, runId), ...rel.split("/"));
+  await mkdir(dirname(abs), { recursive: true });
+  await writeFile(abs, text, "utf8");
+}
+
+async function seedFixture(dir, runId, fixtureRel, targetRel = fixtureRel, { crlf = false } = {}) {
+  const text = await readFixture(fixtureRel);
+  await seedFile(dir, runId, targetRel, crlf ? text.replaceAll("\n", "\r\n") : text);
+}
+
+async function readJson(path) {
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
+/** Initialized brownfield project with one commit and one source file. */
+async function setupProject({ dir, engine }) {
+  await initProject(engine, { mode: "brownfield" });
+  await mkdir(join(dir, "src"), { recursive: true });
+  await writeFile(join(dir, "src", "main.ts"), "export const n = 1;\n", "utf8");
+  return initGitRepo(dir);
+}
+
+async function assertRefuses(promise, pattern) {
+  await assert.rejects(promise, (err) => {
+    assert.equal(err instanceof LegionRefuseError, true, String(err));
+    if (pattern) assert.match(`${err.message} | ${err.nextHint}`, pattern);
+    return true;
+  });
+}
+
+// ---------------------------------------------------------------- pure parsers
+
+test("section and splitBlocks tolerate numbering, case, CRLF, and fenced headings", () => {
+  const text = "# T\r\n\r\n## 2. findings\r\n```\r\n### fenced\r\n```\r\n### A\r\n- **Severity**: major\r\n- Evidence: one\r\n  two\r\n## Next\r\n### B\r\n";
+  const body = section(text, "Findings");
+  const blocks = splitBlocks(body);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].heading, "A");
+  assert.equal(blocks[0].fields.severity, "major");
+  assert.equal(blocks[0].fields.evidence, "one two");
+  assert.equal(section(text, "Missing"), "");
+});
+
+test("normSeverity maps legacy words on word boundaries", () => {
+  assert.equal(normSeverity("Critical"), "critical");
+  assert.equal(normSeverity("High"), "major");
+  assert.equal(normSeverity("bug"), "major");
+  assert.equal(normSeverity("blocker"), "critical");
+  assert.equal(normSeverity("medium"), "minor");
+  assert.equal(normSeverity("suggestion"), "minor");
+  assert.equal(normSeverity("info"), "nit");
+  assert.equal(normSeverity("highlight"), "minor");
+  assert.equal(normSeverity(""), "minor");
+});
+
+test("titleOf strips ids and tags", () => {
+  assert.equal(titleOf("F-007: Order lookup"), "Order lookup");
+  assert.equal(titleOf("F-001 [Architecture, Code] Order lookup"), "Order lookup");
+  assert.equal(titleOf("[tests] R-3: Flaky"), "Flaky");
+  assert.equal(titleOf("API: missing auth"), "API: missing auth");
+});
+
+test("computeRoster follows effort and signals", () => {
+  const out = (s) => `analysis/${s}.md`;
+  const e1 = computeRoster(1, "", false, out);
+  assert.deepEqual(e1.pass1, ["architecture"]);
+  assert.deepEqual(e1.pass2, ["code"]);
+  assert.equal(e1.injectDoctrine, false);
+  assert.deepEqual(e1.executeReviewersDefault, []);
+
+  const e2 = computeRoster(2, "worried about the login flow", true, out);
+  assert.deepEqual(e2.pass1, ["architecture", "product-intent"]);
+  assert.deepEqual(e2.pass2, ["code", "tests", "security"]);
+  assert.deepEqual(e2.addedBySignal, ["security"]);
+
+  const e5 = computeRoster(5, "", true, out);
+  assert.deepEqual(e5.pass2, ["code", "code-2", "tests", "security", "performance", "documentation"]);
+  assert.equal(e5.designReviewers, 2);
+  assert.deepEqual(e5.executeReviewersDefault, ["general", "general-2", "security", "tests", "plan-alignment"]);
+  assert.equal(e5.outputs["code-2"], "analysis/code-2.md");
+
+  assert.deepEqual(reviewerSlots(4, "auth"), ["general", "general-2", "security", "tests"]);
+  assert.deepEqual(reviewerSlots(1, "auth tests"), ["general"]);
+});
+
+test("signalText ignores intent template boilerplate", () => {
+  const intent = [
+    "# Intent Brief",
+    "## Goal",
+    "Make checkout trustworthy.",
+    "## Axioms (must be true)",
+    "| FP-1 | tests prove totals | test |",
+    "## Success criteria",
+    "- [ ] coverage of docs and README",
+    "## Symptoms reported",
+    "Totals sometimes off.",
+  ].join("\n");
+  const text = signalText("", intent);
+  assert.match(text, /checkout/);
+  assert.doesNotMatch(text, /README/);
+  const roster = computeRoster(1, text, false, (s) => s);
+  assert.deepEqual(roster.addedBySignal, ["security"]);
+});
+
+test("mergeSpecialists dedupes, sorts, flags blocking, and reports ignored blocks", async () => {
+  const inputs = [];
+  for (const [tag, name] of [
+    ["Architecture", "architecture"],
+    ["Code", "code"],
+    ["Product-Intent", "product-intent"],
+    ["Tests", "tests"],
+  ]) {
+    inputs.push({ tag, text: await readFixture(`analysis/${name}.md`) });
+  }
+  const model = mergeSpecialists(inputs);
+  assert.deepEqual(
+    model.findings.map((f) => [f.id, f.severity, f.title]),
+    [
+      ["F-001", "critical", "Refund path swallows errors"],
+      ["F-002", "major", "Order lookup skips owner check"],
+      ["F-003", "major", "CSV export silently drops rows"],
+      ["F-004", "minor", "Totals rounded per line item"],
+      ["F-005", "nit", "Highlight colour is hard-coded"],
+    ],
+  );
+  assert.deepEqual(model.findings[1].sources, ["Architecture", "Code"]);
+  assert.equal(model.assumptions.length, 2);
+  const deleted = model.assumptions.find((a) => a.statement === "Deleted accounts keep their orders");
+  assert.equal(deleted.confidence, "low");
+  assert.equal(deleted.status, "needs-confirmation");
+  assert.equal(deleted.blocking, true);
+  assert.equal(deleted.question, "Should orders survive account deletion?");
+  assert.equal(model.assumptions.find((a) => a.statement.startsWith("Payments")).blocking, true);
+  assert.deepEqual(
+    model.ignored.map((b) => b.source),
+    ["Architecture", "Code"],
+  );
+  assert.deepEqual(model.perSource.Tests, { findings: 0, assumptions: 0 });
+
+  const crlf = mergeSpecialists(inputs.map((i) => ({ ...i, text: i.text.replaceAll("\n", "\r\n") })));
+  assert.deepEqual(
+    crlf.findings.map((f) => [f.id, f.severity, f.title, f.sources]),
+    model.findings.map((f) => [f.id, f.severity, f.title, f.sources]),
+  );
+});
+
+test("reviewStatus verdict ladder", async () => {
+  const current = parseReview(await readFixture("reviews/design-review.md"));
+  const previous = parseReview(await readFixture("reviews/design-review.prev.md"));
+  assert.equal(current.items.length, 5);
+  assert.equal(current.ignored.length, 1);
+  const escalate = reviewStatus(current.items, previous.items, false);
+  assert.equal(escalate.verdict, "escalate");
+  assert.deepEqual(escalate.stalemates.map((i) => i.id), ["R-3"]);
+  assert.deepEqual(escalate.needsUserInput.map((i) => i.id), ["R-4"]);
+
+  const withoutEscalation = current.items.filter((i) => i.id !== "R-3" && i.id !== "R-4");
+  assert.equal(reviewStatus(withoutEscalation, previous.items, false).verdict, "revise");
+  const minorOnly = withoutEscalation.filter((i) => i.id !== "R-1");
+  assert.equal(reviewStatus(minorOnly, null, false).verdict, "pass-with-minor");
+  assert.equal(reviewStatus(minorOnly, null, true).verdict, "revise");
+  assert.equal(reviewStatus(parseReview("# Design Review — round 3\n\nNo open issues.\n").items, null, true).verdict, "pass");
+});
+
+test("parsePrPlan builds stacked branches and rejects bad plans", async () => {
+  const ok = parsePrPlan(await readFixture("design-ok.md"), "abcdef12", "0123456789abcdef");
+  assert.equal(ok.ok, true);
+  assert.equal(ok.levels, 3);
+  assert.deepEqual(ok.nodes.map((n) => n.id), ["pr-1", "pr-2", "pr-3"]);
+  const [pr1, pr2, pr3] = ok.nodes;
+  assert.equal(pr1.branch, "brownfield/abcdef12/pr-1-add-owner-check-to-order-lookup");
+  assert.equal(pr1.base, "0123456789abcdef");
+  assert.deepEqual(pr1.files, ["src/orders.ts", "test/orders.test.ts"]);
+  assert.equal(pr2.base, pr1.branch);
+  assert.equal(pr3.base, pr1.branch);
+  assert.deepEqual(pr3.mergeIn, [pr2.branch]);
+  assert.deepEqual(pr3.files, []);
+  assert.equal(pr3.branch, "brownfield/abcdef12/pr-3-round-totals-once-at-the-end-of-checkout");
+  assert.equal(BrownfieldDagSchema.safeParse({ schemaVersion: "legion-cli-dag/v1", runId: "abcdef12", nodes: ok.nodes }).success, true);
+
+  for (const [fixture, pattern] of [
+    ["design-cycle.md", /cycle/],
+    ["design-missing-dep.md", /pr-2 depends on missing pr-7/],
+    ["design-dup.md", /duplicate PR 1/],
+    ["design-no-plan.md", /no '## PR Plan'/],
+  ]) {
+    const bad = parsePrPlan(await readFixture(fixture), "abcdef12", "0123456789abcdef");
+    assert.equal(bad.ok, false, fixture);
+    assert.match(bad.error, pattern, fixture);
+  }
+  assert.equal(slugify("!!!"), "unnamed");
+});
+
+test("orderRunPages puts intent first and nested dirs last", () => {
+  assert.deepEqual(
+    orderRunPages(["analysis/code.md", "design.md", "zeta.md", "intent.md", "reviews/design-review.md", "evidence/tests.md"]),
+    ["intent.md", "design.md", "zeta.md", "analysis/code.md", "reviews/design-review.md", "evidence/tests.md"],
+  );
+});
+
+// ------------------------------------------------------------------ engine flow
+
+test("init mode brownfield writes mode brownfield", async () => {
+  await withEngine(async ({ engine, store }) => {
     await engine.init({ name: "LegacyApp", adapter: "fake", mode: "brownfield" });
-    const project = await store.readProject();
-    assert.equal(project.data.mode, "brownfield");
-    assert.equal((await engine.getState()).phase, "initialized");
+    assert.equal((await store.readProject()).data.mode, "brownfield");
   });
 });
 
-test("effort-1 brownfield writes run artifacts, not the wiki", async () => {
-  await withEngine(async ({ dir, engine, store }) => {
-    await initProject(engine, { mode: "brownfield" });
-    await mkdir(join(dir, "src"), { recursive: true });
-    await writeFile(join(dir, "src", "main.ts"), "export {}\n", "utf8");
-    initGitRepo(dir);
-
-    const result = await engine.brownfield({
-      effort: 1,
-      context: "demo the check-in board",
-      runId: "aaaaaaaa",
-    });
+test("brownfield init writes resume.json, subdirs, gitignore, and no wiki or worktree", async () => {
+  await withEngine(async (ctx) => {
+    const { dir, engine, store } = ctx;
+    const head = await setupProject(ctx);
+    const result = await engine.brownfield({ effort: 3, context: "demo the check-in board", runId: "aaaaaaaa" });
+    assert.equal(result.kind, "init");
     assert.equal(result.runId, "aaaaaaaa");
-    assert.equal(result.effort, 1);
-    assert.equal(result.execute, false);
-    assert.equal(result.worktreePath, null);
-    assert.equal(result.phase, "complete");
-    assert.deepEqual(result.pages, [
-      "intent.md",
-      "assumptions.md",
-      "architecture.md",
-      "code.md",
-      "analysis.md",
-      "design.md",
-    ]);
-
-    const resumeRaw = JSON.parse(
-      await readFile(join(dir, ".legion-cli", "runs", "aaaaaaaa", "resume.json"), "utf8"),
-    );
-    assert.equal(resumeRaw.schemaVersion, "legion-cli-run/v1");
-    assert.equal(resumeRaw.runId, "aaaaaaaa");
-    assert.match(resumeRaw.preSpawnRef, /^[0-9a-f]{7,40}$/i);
-
-    const intent = await readFile(join(dir, ".legion-cli", "runs", "aaaaaaaa", "intent.md"), "utf8");
-    assert.match(intent, /demo the check-in board/);
-    assert.match(intent, /evidence, not ground truth/i);
-    const architecture = await readFile(
-      join(dir, ".legion-cli", "runs", "aaaaaaaa", "architecture.md"),
-      "utf8",
-    );
-    assert.match(architecture, /No LSP/);
-    assert.doesNotMatch(architecture, /language server/i);
-
+    assert.equal(result.effort, 3);
+    assert.equal(result.phase, "intent");
+    assert.equal(result.preSpawnRef, head);
+    assert.equal(result.baseBranch, git(dir, ["branch", "--show-current"]));
+    assert.equal(result.size.tier, "tiny");
+    assert.equal(result.paths.findings, ".legion-cli/runs/aaaaaaaa/findings.md");
+    assert.match(result.warnings.join("\n"), /exceeds the suggested max 2/);
+    assert.match(result.next, /intent\.md/);
+    for (const sub of ["analysis", "reviews", "evidence", "exec"]) {
+      assert.equal(existsSync(join(runDir(dir, "aaaaaaaa"), sub)), true, sub);
+    }
+    const resume = BrownfieldRunSchema.parse(await readJson(join(runDir(dir, "aaaaaaaa"), "resume.json")));
+    assert.equal(resume.context, "demo the check-in board");
+    assert.match(await readFile(join(dir, ".gitignore"), "utf8"), /\.legion-cli\/runs\//);
     assert.equal(await store.pathExists(".legion-cli/wiki/runs/aaaaaaaa/intent.md"), false);
-    assert.equal(await exists(join(dir, ".legion-cli", "worktrees", "aaaaaaaa")), false);
+    assert.equal(existsSync(join(dir, ".legion-cli", "worktrees")), false);
+    assert.equal(git(dir, ["status", "--porcelain", "--", ".legion-cli/runs"]), "");
   });
 });
 
-test("run promote copies run pages into the wiki as untrusted", async () => {
-  await withEngine(async ({ dir, engine, store }) => {
-    await initProject(engine, { mode: "brownfield" });
-    initGitRepo(dir);
-    await engine.brownfield({
-      effort: 1,
-      runId: "bbbbbbbb",
-      context: "PROMOTE_UNTRUSTED_BODY_TOKEN unique run evidence",
-    });
-    const promoted = await engine.promoteRun("bbbbbbbb");
-    assert.ok(promoted.pages.includes(".legion-cli/wiki/runs/bbbbbbbb/intent.md"));
-    assert.ok(promoted.pages.includes(".legion-cli/wiki/runs/bbbbbbbb/analysis.md"));
-    assert.equal(promoted.trust, "untrusted");
-    for (const dest of promoted.pages) {
-      const doc = await store.readWikiPage(dest);
-      assert.equal(doc.data.trust, "untrusted", dest);
-    }
-    const page = await store.readWikiPage(".legion-cli/wiki/runs/bbbbbbbb/intent.md");
-    assert.equal(page.data.source, ".legion-cli/runs/bbbbbbbb/intent.md");
-    assert.match(page.body, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
-    const analysis = await store.readWikiPage(".legion-cli/wiki/runs/bbbbbbbb/analysis.md");
-    assert.match(analysis.body, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
-    const resume = JSON.parse(
-      await readFile(join(dir, ".legion-cli", "runs", "bbbbbbbb", "resume.json"), "utf8"),
-    );
-    assert.equal(resume.promoted, true);
-
-    const brief = await engine.brief();
-    const runWiki = brief.wiki.filter((item) => item.path.includes("/runs/bbbbbbbb/"));
-    assert.equal(runWiki.length > 0, true);
-    for (const entry of runWiki) {
-      assert.equal(entry.trust, "untrusted", entry.path);
-      assert.equal(entry.summary ?? null, null, entry.path);
-    }
-    assert.doesNotMatch(JSON.stringify(brief.wiki), /PROMOTE_UNTRUSTED_BODY_TOKEN/);
-
-    const index = await store.readWikiPage(".legion-cli/wiki/index.md");
-    assert.match(index.body, /runs\/bbbbbbbb\/intent/);
-    assert.match(index.body, /runs\/bbbbbbbb\/analysis/);
-    assert.match(index.body, /Untrusted \(titles only; run legion-cli wiki trust\)/);
-    assert.doesNotMatch(index.body, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
-
-    await engine.wikiTrust(".legion-cli/wiki/runs/bbbbbbbb/intent.md");
-    const trustedPage = await store.readWikiPage(".legion-cli/wiki/runs/bbbbbbbb/intent.md");
-    assert.equal(trustedPage.data.trust, "reviewed");
-    const trustedBrief = await engine.brief();
-    const trustedEntry = trustedBrief.wiki.find(
-      (item) => item.path === ".legion-cli/wiki/runs/bbbbbbbb/intent.md",
-    );
-    assert.ok(trustedEntry);
-    assert.equal(trustedEntry.trust, "reviewed");
-    assert.notEqual(trustedEntry.summary ?? null, null);
+test("brownfield defaults to effort 2 and refuses bad input", async () => {
+  await withEngine(async ({ engine }) => {
+    await assertRefuses(engine.brownfield({}), /until init/);
   });
-});
-
-test("run promote re-promote overwrites wiki trust", async () => {
-  await withEngine(async ({ dir, engine, store }) => {
-    await initProject(engine, { mode: "brownfield" });
-    initGitRepo(dir);
-    await engine.brownfield({ effort: 1, runId: "abababab" });
-    const trusted = await engine.promoteRun("abababab", { trust: true });
-    assert.equal(trusted.trust, "reviewed");
-    assert.equal(
-      (await store.readWikiPage(".legion-cli/wiki/runs/abababab/intent.md")).data.trust,
-      "reviewed",
-    );
-    const again = await engine.promoteRun("abababab");
-    assert.equal(again.trust, "untrusted");
-    assert.equal(
-      (await store.readWikiPage(".legion-cli/wiki/runs/abababab/intent.md")).data.trust,
-      "untrusted",
-    );
-  });
-});
-
-test("run promote --trust is the only reviewed path", async () => {
-  await withEngine(async ({ dir, engine, store }) => {
-    await initProject(engine, { mode: "brownfield" });
-    initGitRepo(dir);
-    await engine.brownfield({ effort: 1, runId: "ffffffff" });
-    const promoted = await engine.promoteRun("ffffffff", { trust: true });
-    assert.equal(promoted.trust, "reviewed");
-    const page = await store.readWikiPage(".legion-cli/wiki/runs/ffffffff/intent.md");
-    assert.equal(page.data.trust, "reviewed");
-    const brief = await engine.brief();
-    const entry = brief.wiki.find((item) => item.path === ".legion-cli/wiki/runs/ffffffff/intent.md");
-    assert.ok(entry);
-    assert.equal(entry.trust, "reviewed");
-    assert.notEqual(entry.summary ?? null, null);
-  });
-});
-
-test("brownfield --execute uses a git worktree", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
-    await writeFile(join(dir, "src-app.ts"), "export const n = 1;\n", "utf8");
-    initGitRepo(dir);
-    const result = await engine.brownfield({ effort: 1, execute: true, runId: "cccccccc" });
-    assert.equal(result.worktreePath, ".legion-cli/worktrees/cccccccc");
-    const worktree = join(dir, ".legion-cli", "worktrees", "cccccccc");
-    assert.equal(git(worktree, ["rev-parse", "--is-inside-work-tree"]), "true");
-    assert.match(git(worktree, ["branch", "--show-current"]), /brownfield\/cccccccc/);
-    assert.equal(git(dir, ["branch", "--show-current"]) === "brownfield/cccccccc", false);
-  });
-});
-
-test("brownfield --resume restores resume.json", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
-    initGitRepo(dir);
-    await engine.brownfield({ effort: 1, runId: "dddddddd" });
-    const resumed = await engine.brownfield({ resume: "dddddddd", execute: true });
-    assert.equal(resumed.runId, "dddddddd");
-    assert.equal(resumed.execute, true);
-    assert.equal(resumed.worktreePath, ".legion-cli/worktrees/dddddddd");
-  });
-});
-
-test("brownfield --resume --execute recreates a deleted worktree", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
-    initGitRepo(dir);
-    const created = await engine.brownfield({ effort: 1, execute: true, runId: "eeeeeeee" });
-    assert.equal(created.worktreePath, ".legion-cli/worktrees/eeeeeeee");
-    const worktree = join(dir, ".legion-cli", "worktrees", "eeeeeeee");
-    const mainBranch = git(dir, ["branch", "--show-current"]);
-    await rm(worktree, { recursive: true, force: true });
-    assert.equal(await exists(worktree), false);
-
-    const resumed = await engine.brownfield({ resume: "eeeeeeee", execute: true });
-    assert.equal(resumed.worktreePath, ".legion-cli/worktrees/eeeeeeee");
-    assert.equal(git(worktree, ["rev-parse", "--is-inside-work-tree"]), "true");
-    assert.match(git(worktree, ["branch", "--show-current"]), /brownfield\/eeeeeeee/);
-    assert.equal(git(dir, ["branch", "--show-current"]), mainBranch);
-    assert.notEqual(mainBranch, "brownfield/eeeeeeee");
-  });
-});
-
-test("brownfield --execute without git refuses", async () => {
   await withEngine(async ({ engine }) => {
     await initProject(engine, { mode: "brownfield" });
-    await assert.rejects(() => engine.brownfield({ effort: 1, execute: true }), (err) => {
-      assert.equal(err instanceof LegionRefuseError, true);
-      assert.match(err.nextHint, /git/);
-      return true;
-    });
+    await assertRefuses(engine.brownfield({}), /git repository/);
+  });
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { engine } = ctx;
+    assert.equal((await engine.brownfield({ runId: "bbbbbbbb" })).effort, 2);
+    await assertRefuses(engine.brownfield({ effort: 6 }), /1–5/);
+    await assertRefuses(engine.brownfield({ effort: 2.5 }), /1–5/);
+    await assertRefuses(engine.brownfield({ runId: "bbbbbbbb" }), /already exists/);
+    await assertRefuses(engine.brownfield({ runId: "nothex!!" }), /8 hex/);
+    await assertRefuses(engine.brownfield({ resume: "cccccccc" }), /not found/);
+    await assertRefuses(engine.brownfield({ resume: "bbbbbbbb", effort: 4 }), /cannot change effort/);
   });
 });
 
-test("HINT.brownfield lists efforts 1-5", () => {
-  assert.equal(HINT.brownfield, "legion-cli brownfield --effort 1|2|3|4|5");
-});
-
-test("effort-2 brownfield writes tests.md and resume effort 2", async () => {
+test("brownfield --execute without a commit refuses", async () => {
   await withEngine(async ({ dir, engine }) => {
     await initProject(engine, { mode: "brownfield" });
-    await mkdir(join(dir, "src"), { recursive: true });
-    await writeFile(join(dir, "src", "main.ts"), "export {}\n", "utf8");
-    await mkdir(join(dir, "tests"), { recursive: true });
-    await writeFile(join(dir, "tests", "main.test.ts"), "export {}\n", "utf8");
-    initGitRepo(dir);
+    git(dir, ["init"]);
+    await assertRefuses(engine.brownfield({ execute: true }), /HEAD/);
+  });
+});
 
-    const result = await engine.brownfield({ effort: 2, runId: "22222222" });
-    assert.equal(result.effort, 2);
-    assert.equal(result.phase, "complete");
-    assert.ok(result.pages.includes("intent.md"));
-    assert.ok(result.pages.includes("tests.md"));
-    assert.equal(result.pages.includes("security.md"), false);
-    const resume = JSON.parse(
-      await readFile(join(dir, ".legion-cli", "runs", "22222222", "resume.json"), "utf8"),
+test("state get/set, whitelist, meta bag, and resume with execute", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { engine } = ctx;
+    await engine.brownfield({ runId: "dddddddd" });
+    const set = await engine.brownfieldState("dddddddd", [
+      "phase=design",
+      "designReviewRounds=2",
+      'meta.writer="agent-1"',
+      "meta.notes=plain text",
+    ]);
+    assert.equal(set.state.phase, "design");
+    assert.equal(set.state.designReviewRounds, 2);
+    assert.deepEqual(set.state.meta, { writer: "agent-1", notes: "plain text" });
+    assert.match(set.next, /design writer/);
+    await assertRefuses(engine.brownfieldState("dddddddd", ["runId=eeeeeeee"]), /not settable/);
+    await assertRefuses(engine.brownfieldState("dddddddd", ["phase=nope"]), /phase must be one of/);
+    await assertRefuses(engine.brownfieldState("dddddddd", ["designReviewRounds=-1"]), /invalid designReviewRounds/);
+    await assertRefuses(engine.brownfieldState("dddddddd", ["noequals"]), /key=value/);
+
+    const resumed = await engine.brownfield({ resume: "DDDDDDDD", execute: true });
+    assert.equal(resumed.kind, "state");
+    assert.equal(resumed.state.execute, true);
+    assert.equal(resumed.state.phase, "design");
+  });
+});
+
+test("legacy 3-phase resume.json still resumes and promotes", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine, store } = ctx;
+    await seedFixture(dir, "0a0a0a0a", "resume-legacy.json", "resume.json");
+    await seedFile(dir, "0a0a0a0a", "intent.md", "# Intent brief\n\nlegacy\n");
+    await seedFile(dir, "0a0a0a0a", "architecture.md", "# Architecture (effort 1)\n");
+    const state = await engine.brownfield({ resume: "0a0a0a0a" });
+    assert.equal(state.state.phase, "complete");
+    assert.match(state.next, /run promote 0a0a0a0a/);
+    const promoted = await engine.promoteRun("0a0a0a0a");
+    assert.deepEqual(promoted.pages, [
+      ".legion-cli/wiki/runs/0a0a0a0a/intent.md",
+      ".legion-cli/wiki/runs/0a0a0a0a/architecture.md",
+    ]);
+    assert.equal((await store.readWikiPage(promoted.pages[0])).data.trust, "untrusted");
+    const execState = await engine.brownfield({ resume: "0a0a0a0a", execute: true });
+    assert.match(execState.next, /pr-plan 0a0a0a0a/);
+    await assertRefuses(engine.brownfieldPrPlan("0a0a0a0a"), /design\.md/);
+  });
+});
+
+test("roster persists and advances intent to plan", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    await engine.brownfield({ runId: "12121212", effort: 2, context: "slow checkout" });
+    await seedFile(dir, "12121212", "intent.md", "# Intent\n\n## Goal\nUsers get logged out.\n");
+    const roster = await engine.brownfieldRoster("12121212");
+    assert.deepEqual(roster.pass2, ["code", "tests", "security", "performance"]);
+    assert.equal(roster.outputs.code, ".legion-cli/runs/12121212/analysis/code.md");
+    const state = await engine.brownfieldState("12121212");
+    assert.equal(state.state.phase, "plan");
+    assert.deepEqual(state.state.roster.pass1, ["architecture", "product-intent"]);
+    assert.equal(state.analysisOutputs.architecture, "missing");
+  });
+});
+
+test("merge writes findings.md and assumptions.md and keeps recorded answers", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    await engine.brownfield({ runId: "13131313" });
+    await assertRefuses(engine.brownfieldMerge("13131313"), /no specialist outputs/);
+    for (const name of ["architecture", "code", "product-intent", "tests"]) {
+      await seedFixture(dir, "13131313", `analysis/${name}.md`, `analysis/${name}.md`, { crlf: name === "code" });
+    }
+    await seedFile(dir, "13131313", "evidence/tests.md", "## Findings\n### Should not merge\n- Severity: critical\n");
+    const merged = await engine.brownfieldMerge("13131313");
+    assert.equal(merged.findingsTotal, 5);
+    assert.deepEqual(merged.bySeverity, { critical: 1, major: 2, minor: 1, nit: 1 });
+    assert.deepEqual(merged.emptySources, ["Tests"]);
+    assert.equal(merged.blockingAssumptions.length, 2);
+    assert.equal(merged.ignoredBlocks.length, 2);
+    assert.equal("Evidence" in merged.perSource, false);
+    const findings = await readFile(join(runDir(dir, "13131313"), "findings.md"), "utf8");
+    assert.match(findings, /\| critical \| 1 \|/);
+    assert.match(findings, /### F-002 \[Architecture, Code\] Order lookup skips owner check\n- Severity: major/);
+    assert.doesNotMatch(findings, /\*\*Severity\*\*: High/);
+    const assumptionsPath = join(runDir(dir, "13131313"), "assumptions.md");
+    let assumptions = await readFile(assumptionsPath, "utf8");
+    assert.match(assumptions, /- Blocking: yes/);
+    assert.equal((await engine.brownfieldState("13131313")).state.phase, "assumptions");
+
+    // The user answers A-001; re-merging must keep the answer and unblock it.
+    assumptions = assumptions.replace(
+      /(### A-001: Deleted accounts keep their orders[\s\S]*?- Status: )needs-confirmation/,
+      "$1confirmed",
     );
-    assert.equal(resume.effort, 2);
-    const tests = await readFile(join(dir, ".legion-cli", "runs", "22222222", "tests.md"), "utf8");
-    assert.match(tests, /tests\/main\.test\.ts/);
-    assert.match(tests, /A-T01|Coverage gaps/);
+    assumptions = assumptions.replace("- Sources: Architecture, Code", "- Sources: Architecture, Code\n- Answer: yes, keep them");
+    await writeFile(assumptionsPath, assumptions, "utf8");
+    const again = await engine.brownfieldMerge("13131313");
+    assert.equal(again.blockingAssumptions.length, 1);
+    const rewritten = await readFile(assumptionsPath, "utf8");
+    assert.match(rewritten, /- Status: confirmed/);
+    assert.match(rewritten, /- Answer: yes, keep them/);
   });
 });
 
-test("effort 6 still refuses range", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
-    initGitRepo(dir);
-    await assert.rejects(() => engine.brownfield({ effort: 6 }), (err) => {
-      assert.equal(err instanceof LegionRefuseError, true);
-      assert.match(err.message, /brownfield --effort must be 1–5/);
-      assert.equal(err.nextHint, HINT.brownfield);
-      return true;
-    });
+test("review-status reads run files, snapshots, and refuses escapes", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    await engine.brownfield({ runId: "14141414" });
+    await assertRefuses(engine.brownfieldReviewStatus("14141414"), /not found/);
+    await seedFixture(dir, "14141414", "reviews/design-review.md");
+    const first = await engine.brownfieldReviewStatus("14141414");
+    assert.equal(first.verdict, "escalate");
+    assert.equal(first.previous, null);
+    assert.deepEqual(first.stalemates, []);
+    await seedFixture(dir, "14141414", "reviews/design-review.prev.md");
+    const second = await engine.brownfieldReviewStatus("14141414");
+    assert.equal(second.verdict, "escalate");
+    assert.deepEqual(second.stalemates.map((item) => item.id), ["R-3"]);
+    assert.equal(second.previous, ".legion-cli/runs/14141414/reviews/design-review.prev.md");
+    await seedFile(dir, "14141414", "reviews/pr-1.md", "# PR 1 review\n\n### R-1: nit\n- Severity: nit\n- Status: open\n");
+    const pr = await engine.brownfieldReviewStatus("14141414", { file: "reviews/pr-1.md", snapshot: true });
+    assert.equal(pr.verdict, "pass-with-minor");
+    assert.equal(pr.snapshot, ".legion-cli/runs/14141414/reviews/pr-1.prev.md");
+    assert.equal(existsSync(join(runDir(dir, "14141414"), "reviews", "pr-1.prev.md")), true);
+    assert.equal((await engine.brownfieldReviewStatus("14141414", { file: "reviews/pr-1.md", strict: true })).verdict, "revise");
+    await assertRefuses(engine.brownfieldReviewStatus("14141414", { file: "../../STATE.md" }), /inside the run directory/);
+    await assertRefuses(
+      engine.brownfieldReviewStatus("14141414", { file: "reviews/pr-1.md", previous: "reviews/nope.md" }),
+      /previous review not found/,
+    );
   });
 });
 
-test("resume effort-1 run with --effort 5 refuses", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
-    initGitRepo(dir);
-    await engine.brownfield({ effort: 1, runId: "11111111" });
-    await assert.rejects(() => engine.brownfield({ resume: "11111111", effort: 5 }), (err) => {
-      assert.equal(err instanceof LegionRefuseError, true);
-      assert.match(err.message, /cannot change effort/);
-      assert.equal(err.nextHint, HINT.brownfield);
-      return true;
-    });
+test("pr-plan, dag, and per-PR worktrees stack on the audited commit", async () => {
+  await withEngine(async (ctx) => {
+    const head = await setupProject(ctx);
+    const { dir, engine } = ctx;
+    await engine.brownfield({ runId: "15151515", execute: true });
+    await assertRefuses(engine.brownfieldDag("15151515"), /no dag\.json/);
+    for (const bad of ["design-cycle.md", "design-missing-dep.md", "design-dup.md", "design-no-plan.md"]) {
+      await seedFixture(dir, "15151515", bad, "design.md");
+      await assertRefuses(engine.brownfieldPrPlan("15151515"), /pr-plan/);
+      assert.equal(existsSync(join(runDir(dir, "15151515"), "dag.json")), false, bad);
+    }
+    assert.equal((await engine.brownfieldState("15151515")).state.phase, "intent");
+
+    // Main moves after the audit; roots must still start at the audited commit.
+    await writeFile(join(dir, "src", "main.ts"), "export const n = 2;\n", "utf8");
+    git(dir, ["commit", "-am", "main moved"]);
+
+    await seedFixture(dir, "15151515", "design-ok.md", "design.md");
+    const plan = await engine.brownfieldPrPlan("15151515");
+    assert.equal(plan.count, 3);
+    assert.equal(plan.levels, 3);
+    assert.equal(plan.order[0].base, head);
+    BrownfieldDagSchema.parse(await readJson(join(runDir(dir, "15151515"), "dag.json")));
+    assert.equal((await engine.brownfieldState("15151515")).state.phase, "execute");
+
+    let dag = await engine.brownfieldDag("15151515");
+    assert.deepEqual(dag.ready, ["pr-1"]);
+    assert.equal(dag.done, false);
+
+    await assertRefuses(engine.brownfieldWorktree("15151515", "pr-2"), /does not exist yet/);
+    const wt1 = await engine.brownfieldWorktree("15151515", "pr-1");
+    assert.equal(wt1.created, true);
+    assert.equal(wt1.worktree, ".legion-cli/worktrees/15151515/pr-1");
+    const wt1Abs = join(dir, ".legion-cli", "worktrees", "15151515", "pr-1");
+    assert.equal(git(wt1Abs, ["rev-parse", "HEAD"]), head);
+    assert.equal(git(wt1Abs, ["branch", "--show-current"]), plan.order[0].branch);
+    assert.notEqual(git(dir, ["branch", "--show-current"]), plan.order[0].branch);
+    assert.equal((await engine.brownfieldWorktree("15151515", "pr-1")).created, false);
+
+    await writeFile(join(wt1Abs, "src", "main.ts"), "export const n = 3;\n", "utf8");
+    git(wt1Abs, ["commit", "-am", "pr-1"]);
+    const pr1Tip = git(wt1Abs, ["rev-parse", "HEAD"]);
+    dag = await engine.brownfieldDag("15151515", "pr-1", ["status=implementing", "agentId=a1"]);
+    assert.deepEqual(dag.inFlight, ["pr-1"]);
+    dag = await engine.brownfieldDag("15151515", "pr-1", ["status=completed", `commit=${pr1Tip}`, "reviewRounds=2"]);
+    assert.deepEqual(dag.ready, ["pr-2"]);
+    assert.equal(dag.nodes[0].commit, pr1Tip);
+
+    const wt2 = await engine.brownfieldWorktree("15151515", "pr-2");
+    const wt2Abs = join(dir, ...wt2.worktree.split("/"));
+    assert.equal(git(wt2Abs, ["rev-parse", "HEAD"]), pr1Tip);
+
+    await assertRefuses(engine.brownfieldDag("15151515", "pr-2", ["status=done"]), /status must be one of/);
+    await assertRefuses(engine.brownfieldDag("15151515", "pr-9", ["status=failed"]), /unknown node/);
+    await assertRefuses(engine.brownfieldDag("15151515", "pr-2", ["branch=x"]), /not settable/);
+    dag = await engine.brownfieldDag("15151515", "pr-2", ["status=failed", "error=tests red"]);
+    const pr3 = dag.nodes.find((n) => n.id === "pr-3");
+    assert.equal(pr3.status, "skipped");
+    assert.match(pr3.error, /pr-2/);
+    assert.equal(dag.done, true);
+    assert.deepEqual(dag.counts, { completed: 1, failed: 1, skipped: 1 });
+
+    const removed = await engine.brownfieldWorktree("15151515", "pr-1", { remove: true });
+    assert.equal(removed.removed, true);
+    assert.equal(existsSync(wt1Abs), false);
+    assert.equal(git(dir, ["rev-parse", plan.order[0].branch]), pr1Tip);
+    const after = await engine.brownfieldDag("15151515");
+    assert.equal(after.nodes[0].worktree, null);
+    assert.match((await engine.brownfieldState("15151515")).next, /phase=verify/);
   });
 });
 
-test("effort 3 fixture with AKIA in a wiki page appears redacted in security.md", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
-    await mkdir(join(dir, ".legion-cli", "wiki"), { recursive: true });
+test("worktree refuses to nest inside a legacy single-run worktree", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    await engine.brownfield({ runId: "16161616", execute: true });
+    await seedFixture(dir, "16161616", "design-ok.md", "design.md");
+    await engine.brownfieldPrPlan("16161616");
+    git(dir, ["worktree", "add", "-b", "brownfield/16161616", join(dir, ".legion-cli", "worktrees", "16161616")]);
+    await assertRefuses(engine.brownfieldWorktree("16161616", "pr-1"), /legacy single worktree/);
+  });
+});
+
+test("pr-plan roots use the audited SHA when HEAD was detached", async () => {
+  await withEngine(async (ctx) => {
+    const head = await setupProject(ctx);
+    const { dir, engine } = ctx;
+    git(dir, ["checkout", "--detach", head]);
+    const init = await engine.brownfield({ runId: "17171717", execute: true });
+    assert.equal(init.baseBranch, null);
+    await seedFixture(dir, "17171717", "design-ok.md", "design.md");
+    const plan = await engine.brownfieldPrPlan("17171717");
+    assert.equal(plan.order[0].base, head);
+  });
+});
+
+test("evidence writes tests.md and security.md with redaction and no audit without a lockfile", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    await mkdir(join(dir, "tests"), { recursive: true });
+    await writeFile(join(dir, "tests", "main.test.ts"), "test('x', () => {});\n", "utf8");
+    await writeFile(join(dir, "src", "orphan.ts"), "export {};\n", "utf8");
     await writeFile(
-      join(dir, ".legion-cli", "wiki", "leaked.md"),
-      "token AKIAIOSFODNN7EXAMPLE leaked\n",
+      join(dir, "package.json"),
+      JSON.stringify({ name: "legacy", scripts: { test: "echo AKIAIOSFODNN7EXAMPLE" } }),
       "utf8",
     );
-    initGitRepo(dir);
-    const result = await engine.brownfield({ effort: 3, runId: "33333333" });
-    assert.equal(result.effort, 3);
-    assert.ok(result.pages.includes("security.md"));
-    const security = await readFile(join(dir, ".legion-cli", "runs", "33333333", "security.md"), "utf8");
-    assert.match(security, /leaked\.md/);
-    assert.match(security, /aws-access-key/);
-    assert.match(security, /\[REDACTED:aws-access-key\]/);
+    await mkdir(join(dir, ".legion-cli", "wiki"), { recursive: true });
+    await writeFile(join(dir, ".legion-cli", "wiki", "leaked.md"), "token AKIAIOSFODNN7EXAMPLE leaked\n", "utf8");
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-m", "seed"]);
+    await engine.brownfield({ runId: "18181818" });
+    const result = await engine.brownfieldEvidence("18181818");
+    assert.equal(result.files.tests, ".legion-cli/runs/18181818/evidence/tests.md");
+    assert.equal(result.testFiles, 1);
+    assert.equal(result.coverageGaps, 1);
+    assert.equal(result.auditRan, false);
+    const tests = await readFile(join(runDir(dir, "18181818"), "evidence", "tests.md"), "utf8");
+    assert.match(tests, /tests\/main\.test\.ts/);
+    assert.match(tests, /src\/orphan\.ts/);
+    assert.doesNotMatch(tests, /- src\/main\.ts/);
+    assert.match(tests, /\[REDACTED:aws-access-key\]/);
+    assert.doesNotMatch(tests, /AKIAIOSFODNN7EXAMPLE/);
+    assert.doesNotMatch(tests, /### /);
+    const security = await readFile(join(runDir(dir, "18181818"), "evidence", "security.md"), "utf8");
+    assert.match(security, /leaked\.md` \(aws-access-key\): \[REDACTED:aws-access-key\]/);
     assert.doesNotMatch(security, /AKIAIOSFODNN7EXAMPLE/);
-  });
-});
-
-test("effort 3 with no lockfile writes no audit and still completes", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
-    initGitRepo(dir);
-    const result = await engine.brownfield({ effort: 3, runId: "34343434" });
-    assert.equal(result.phase, "complete");
-    const security = await readFile(join(dir, ".legion-cli", "runs", "34343434", "security.md"), "utf8");
     assert.match(security, /no audit \(no lockfile\)/);
   });
 });
 
-test("effort 5 calls map, writes fingerprints, leaves .legion-cli/specs untouched", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
-    await mkdir(join(dir, "src"), { recursive: true });
-    await writeFile(join(dir, "src", "app.ts"), "export const n = 1;\n", "utf8");
-    initGitRepo(dir);
-    const result = await engine.brownfield({
-      effort: 5,
-      runId: "55555555",
-      context: "demo the check-in board",
-    });
-    assert.equal(result.effort, 5);
-    assert.equal(result.phase, "complete");
-    assert.ok(result.pages.includes("tests.md"));
-    assert.ok(result.pages.includes("security.md"));
-    assert.ok(result.pages.includes("docs.md"));
-    assert.ok(result.pages.includes("improvement-spec.md"));
-    assert.equal(await exists(join(dir, ".legion-cli", "map", "fingerprints.json")), true);
-    const fingerprints = JSON.parse(
-      await readFile(join(dir, ".legion-cli", "map", "fingerprints.json"), "utf8"),
-    );
-    assert.equal(fingerprints.backend, "fallback");
-    const spec = await readFile(join(dir, ".legion-cli", "runs", "55555555", "improvement-spec.md"), "utf8");
-    assert.match(spec, /# Improvement SPEC draft \(not frozen\)/);
-    assert.match(spec, /demo the check-in board/);
-    assert.match(spec, /this file is not SPEC\.md/);
-    assert.equal(await exists(join(dir, ".legion-cli", "specs", "improvement-spec.md")), false);
-    const specDir = join(dir, ".legion-cli", "specs");
-    const listed = await readdir(specDir).catch(() => []);
-    assert.deepEqual(listed, []);
-    const architecture = await readFile(
-      join(dir, ".legion-cli", "runs", "55555555", "architecture.md"),
-      "utf8",
-    );
-    assert.match(architecture, /backend: fallback/);
-    assert.match(architecture, /Durable map/);
-    const docs = await readFile(join(dir, ".legion-cli", "runs", "55555555", "docs.md"), "utf8");
-    assert.match(docs, /Exports without nearby markdown/);
-    assert.match(docs, /src\/app\.ts/);
-    assert.match(docs, /export `n`/);
-  });
-});
-
-test("effort 5 --lsp with no server refuses and does not persist the run", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
-    await mkdir(join(dir, "src"), { recursive: true });
-    await writeFile(join(dir, "src", "app.ts"), "export const n = 1;\n", "utf8");
-    initGitRepo(dir);
-    await assert.rejects(
-      () => engine.brownfield({ effort: 5, lsp: true, runId: "56565656" }),
-      (err) => {
-        assert.equal(err instanceof LegionRefuseError, true);
-        assert.match(err.message, /no language server on PATH/);
-        assert.equal(err.nextHint, "legion-cli map --no-lsp");
-        return true;
-      },
-    );
-    assert.equal(await exists(join(dir, ".legion-cli", "runs", "56565656", "resume.json")), false);
-  });
-});
-
-test("effort 3 security.md names leftpad when audit stderr is noisy", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
+test("evidence audit names packages from stdout and never runs a planted project binary", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
     await writeFile(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
-    await writeFile(
-      join(dir, "pnpm.cmd"),
-      "@echo off\r\necho PWNED> PWNED.txt\r\n",
-      "utf8",
-    );
+    await writeFile(join(dir, "pnpm.cmd"), "@echo off\r\necho PWNED> PWNED.txt\r\n", "utf8");
     const bin = await mkdtemp(join(tmpdir(), "legion-audit-bin-"));
     const script = [
       "const args = process.argv.slice(2);",
@@ -395,24 +592,22 @@ test("effort 3 security.md names leftpad when audit stderr is noisy", async () =
     ].join("\n");
     await writeFile(join(bin, "pnpm.mjs"), script, "utf8");
     if (process.platform === "win32") {
-      await writeFile(
-        join(bin, "pnpm.cmd"),
-        `@echo off\r\n"${process.execPath}" "${join(bin, "pnpm.mjs")}" %*\r\n`,
-        "utf8",
-      );
+      await writeFile(join(bin, "pnpm.cmd"), `@echo off\r\n"${process.execPath}" "${join(bin, "pnpm.mjs")}" %*\r\n`, "utf8");
     } else {
       await writeFile(join(bin, "pnpm"), `#!${process.execPath}\n${script}`, "utf8");
       await chmod(join(bin, "pnpm"), 0o755);
     }
-    initGitRepo(dir);
+    await engine.brownfield({ runId: "19191919" });
     const previous = process.env.PATH;
     process.env.PATH = `${bin}${delimiter}${previous ?? ""}`;
     try {
-      const result = await engine.brownfield({ effort: 3, runId: "3a3a3a3a" });
-      const security = await readFile(join(dir, ".legion-cli", "runs", result.runId, "security.md"), "utf8");
-      assert.equal(await exists(join(dir, "PWNED.txt")), false);
-      assert.match(security, /leftpad/);
-      assert.doesNotMatch(security, /none named/);
+      const result = await engine.brownfieldEvidence("19191919");
+      assert.equal(result.auditRan, true);
+      const security = await readFile(join(runDir(dir, "19191919"), "evidence", "security.md"), "utf8");
+      assert.equal(existsSync(join(dir, "PWNED.txt")), false);
+      assert.match(security, /packages: leftpad/);
+      const skipped = await engine.brownfieldEvidence("19191919", { skipAudit: true });
+      assert.equal(skipped.auditRan, false);
     } finally {
       process.env.PATH = previous;
       await rm(bin, { recursive: true, force: true });
@@ -420,9 +615,52 @@ test("effort 3 security.md names leftpad when audit stderr is noisy", async () =
   });
 });
 
-test("effort 3 skips a junction to an outside .env", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
+test("evidence docs.md uses map fingerprints when present and says so when absent", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    await writeFile(join(dir, "src", "documented.ts"), "export const a = 1;\n", "utf8");
+    await writeFile(join(dir, "src", "documented.md"), "# documented\n", "utf8");
+    await engine.brownfield({ runId: "22222222" });
+
+    const before = await engine.brownfieldEvidence("22222222", { skipAudit: true });
+    assert.equal(before.files.docs, ".legion-cli/runs/22222222/evidence/docs.md");
+    assert.equal(before.mapFingerprints, false);
+    const noMap = await readFile(join(runDir(dir, "22222222"), "evidence", "docs.md"), "utf8");
+    assert.match(noMap, /run `legion-cli map` first/);
+    assert.match(noMap, /## README\n- missing/);
+
+    const sha = "0".repeat(64);
+    await mkdir(join(dir, ".legion-cli", "map"), { recursive: true });
+    await writeFile(
+      join(dir, ".legion-cli", "map", "fingerprints.json"),
+      JSON.stringify({
+        schemaVersion: "legion-cli-fingerprint/v1",
+        generatedAt: "2026-09-18T00:00:00Z",
+        backend: "fallback",
+        rootHash: sha,
+        modules: [
+          { path: "src/main.ts", language: "ts", exports: ["n"], imports: [], hash: sha },
+          { path: "src/documented.ts", language: "ts", exports: ["a"], imports: [], hash: sha },
+          { path: "src/gone.ts", language: "ts", exports: ["g"], imports: [], hash: sha },
+        ],
+      }),
+      "utf8",
+    );
+    const after = await engine.brownfieldEvidence("22222222", { skipAudit: true });
+    assert.equal(after.mapFingerprints, true);
+    assert.equal(after.undocumentedExports, 1);
+    const docs = await readFile(join(runDir(dir, "22222222"), "evidence", "docs.md"), "utf8");
+    assert.match(docs, /`src\/main\.ts` export `n`/);
+    assert.doesNotMatch(docs, /documented\.ts/);
+    assert.doesNotMatch(docs, /gone\.ts/);
+  });
+});
+
+test("evidence skips a junction to an outside .env", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
     const outside = await mkdtemp(join(tmpdir(), "legion-escape-"));
     try {
       await writeFile(join(outside, ".env"), "AKIAIOSFODNN7EXAMPLE\n", "utf8");
@@ -432,9 +670,9 @@ test("effort 3 skips a junction to an outside .env", async () => {
         if (err?.code === "EPERM" || err?.code === "EACCES") return;
         throw err;
       }
-      initGitRepo(dir);
-      const result = await engine.brownfield({ effort: 3, runId: "37373737" });
-      const security = await readFile(join(dir, ".legion-cli", "runs", result.runId, "security.md"), "utf8");
+      await engine.brownfield({ runId: "20202020" });
+      await engine.brownfieldEvidence("20202020", { skipAudit: true });
+      const security = await readFile(join(runDir(dir, "20202020"), "evidence", "security.md"), "utf8");
       assert.doesNotMatch(security, /AKIAIOSFODNN7EXAMPLE/);
       assert.doesNotMatch(security, /escaped/);
     } finally {
@@ -443,41 +681,53 @@ test("effort 3 skips a junction to an outside .env", async () => {
   });
 });
 
-test("effort 5 with spawnable adapter does not spawn map skill", async () => {
-  await withFakeAdapter(async () => {
-    await withEngine(
-      async ({ dir, engine }) => {
-        await initProject(engine, { mode: "brownfield" });
-        await mkdir(join(dir, "src"), { recursive: true });
-        await writeFile(join(dir, "src", "app.ts"), "export const n = 1;\n", "utf8");
-        initGitRepo(dir);
-        const result = await engine.brownfield({ effort: 5, runId: "58585858" });
-        assert.equal(result.phase, "complete");
-        assert.equal(existsSync(join(dir, "src", "leaked.ts")), false);
-        const cacheRuns = await readdir(join(dir, ".legion-cli", "cache", "runs")).catch(() => []);
-        assert.equal(
-          cacheRuns.some((name) => name.startsWith("map-")),
-          false,
-        );
-      },
-      { fakeArtifacts: [{ path: "src/leaked.ts", content: "export const leaked = true;\n" }] },
-    );
+test("patterns count lessons across runs", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    assert.deepEqual((await engine.brownfieldPatterns()).top, []);
+    await engine.brownfieldPatterns({ add: ["missing authz on object access", "  swallowed   errors "] });
+    const again = await engine.brownfieldPatterns({ add: ["missing authz on object access"], top: 1 });
+    assert.deepEqual(again.top, [{ pattern: "missing authz on object access", count: 2 }]);
+    const file = await readJson(join(dir, ".legion-cli", "runs", "patterns.json"));
+    assert.equal(file.patterns["swallowed errors"].count, 1);
+    await assertRefuses(engine.brownfieldPatterns({ top: 0 }), /positive integer/);
   });
 });
 
-test("tests.md redacts secrets in package.json scripts.test", async () => {
-  await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
-    await writeFile(
-      join(dir, "package.json"),
-      JSON.stringify({ name: "legacy", scripts: { test: "echo AKIAIOSFODNN7EXAMPLE" } }),
-      "utf8",
-    );
-    initGitRepo(dir);
-    const result = await engine.brownfield({ effort: 2, runId: "29292929" });
-    const tests = await readFile(join(dir, ".legion-cli", "runs", result.runId, "tests.md"), "utf8");
-    assert.match(tests, /package\.json scripts\.test:/);
-    assert.match(tests, /\[REDACTED:aws-access-key\]/);
-    assert.doesNotMatch(tests, /AKIAIOSFODNN7EXAMPLE/);
+test("run promote copies nested run pages untrusted, intent first, no snapshots", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine, store } = ctx;
+    await engine.brownfield({ runId: "21212121", context: "PROMOTE_UNTRUSTED_BODY_TOKEN" });
+    await assertRefuses(engine.promoteRun("21212121"), /no markdown pages/);
+    await seedFile(dir, "21212121", "design.md", "# Design\n");
+    await seedFile(dir, "21212121", "intent.md", "# Intent\n\nPROMOTE_UNTRUSTED_BODY_TOKEN\n");
+    await seedFixture(dir, "21212121", "analysis/code.md");
+    await seedFixture(dir, "21212121", "reviews/design-review.md");
+    await seedFixture(dir, "21212121", "reviews/design-review.prev.md");
+    const promoted = await engine.promoteRun("21212121");
+    assert.deepEqual(promoted.pages, [
+      ".legion-cli/wiki/runs/21212121/intent.md",
+      ".legion-cli/wiki/runs/21212121/design.md",
+      ".legion-cli/wiki/runs/21212121/analysis/code.md",
+      ".legion-cli/wiki/runs/21212121/reviews/design-review.md",
+    ]);
+    assert.equal(promoted.trust, "untrusted");
+    for (const page of promoted.pages) assert.equal((await store.readWikiPage(page)).data.trust, "untrusted", page);
+    const nested = await store.readWikiPage(".legion-cli/wiki/runs/21212121/analysis/code.md");
+    assert.equal(nested.data.source, ".legion-cli/runs/21212121/analysis/code.md");
+    assert.equal(nested.data.title, "Brownfield 21212121 analysis/code");
+    assert.equal((await readJson(join(runDir(dir, "21212121"), "resume.json"))).promoted, true);
+
+    const brief = await engine.brief();
+    assert.doesNotMatch(JSON.stringify(brief.wiki), /PROMOTE_UNTRUSTED_BODY_TOKEN/);
+    await engine.wikiTrust(".legion-cli/wiki/runs/21212121/intent.md");
+    assert.equal((await store.readWikiPage(promoted.pages[0])).data.trust, "reviewed");
+
+    const trusted = await engine.promoteRun("21212121", { trust: true });
+    assert.equal(trusted.trust, "reviewed");
+    const again = await engine.promoteRun("21212121");
+    assert.equal((await store.readWikiPage(again.pages[0])).data.trust, "untrusted");
   });
 });

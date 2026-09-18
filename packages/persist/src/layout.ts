@@ -147,6 +147,11 @@ export function worktreeStorePath(runId: string): string {
   return `.legion-cli/worktrees/${runId}`;
 }
 
+/** Per-PR worktree for a brownfield DAG node: `.legion-cli/worktrees/<runId>/<nodeId>`. */
+export function worktreeNodeStorePath(runId: string, nodeId: string): string {
+  return `.legion-cli/worktrees/${runId}/${nodeId}`;
+}
+
 export function wikiRunPagePath(runId: string, fileName: string): string {
   return `.legion-cli/wiki/runs/${runId}/${fileName}`;
 }

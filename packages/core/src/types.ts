@@ -5,6 +5,11 @@ import type {
   AdapterId,
   AdapterResolutionSource,
   Assumption,
+  BrownfieldDagNode,
+  BrownfieldRoster,
+  BrownfieldRun,
+  BrownfieldRunPhase,
+  BrownfieldSize,
   ControlMode,
   DiscussDecision,
   FileContract,
@@ -68,6 +73,7 @@ export type BrownfieldEffort = 1 | 2 | 3 | 4 | 5;
 export type BrownfieldOptions = {
   effort?: number;
   execute?: boolean;
+  /** With resume: show state and where to continue (same as `brownfield state <id>`). */
   resume?: string;
   context?: string;
   runId?: string;
@@ -78,15 +84,174 @@ export type BrownfieldOptions = {
   lspDeadlineMs?: number;
 };
 
-export type BrownfieldResult = {
+/** POSIX store paths for every artifact of a run. Authoritative for the orchestrating agent. */
+export type BrownfieldArtifactPaths = {
+  runDir: string;
+  state: string;
+  intent: string;
+  plan: string;
+  analysisDir: string;
+  findings: string;
+  assumptions: string;
+  design: string;
+  summary: string;
+  reviewsDir: string;
+  designReview: string;
+  dag: string;
+  evidenceDir: string;
+  execDir: string;
+  verify: string;
+};
+
+export type BrownfieldInitResult = {
+  kind: "init";
   runId: string;
   effort: BrownfieldEffort;
   execute: boolean;
-  phase: "analysis" | "execute" | "complete";
-  pages: string[];
-  worktreePath: string | null;
-  promoted: boolean;
+  phase: BrownfieldRunPhase;
+  size: BrownfieldSize;
+  baseBranch: string | null;
+  preSpawnRef: string;
+  paths: BrownfieldArtifactPaths;
   resumePath: string;
+  warnings: string[];
+  next: string;
+};
+
+export type BrownfieldAnalysisOutputStatus = "present" | "empty" | "missing";
+
+export type BrownfieldStateResult = {
+  kind: "state";
+  runId: string;
+  state: BrownfieldRun;
+  paths: BrownfieldArtifactPaths;
+  artifacts: Record<string, boolean>;
+  analysisOutputs: Record<string, BrownfieldAnalysisOutputStatus>;
+  dag: { present: boolean; done: boolean; ready: string[] } | null;
+  next: string;
+};
+
+export type BrownfieldResult = BrownfieldInitResult | BrownfieldStateResult;
+
+export type BrownfieldRosterResult = BrownfieldRoster & { runId: string; next: string };
+
+export type BrownfieldSeverity = "critical" | "major" | "minor" | "nit";
+
+export type BrownfieldIgnoredBlock = { source: string; heading: string; reason: string };
+
+export type BrownfieldBlockingAssumption = {
+  id: string;
+  statement: string;
+  evidence: string;
+  question: string;
+  sources: string[];
+};
+
+export type BrownfieldMergeResult = {
+  runId: string;
+  findingsTotal: number;
+  bySeverity: Record<BrownfieldSeverity, number>;
+  perSource: Record<string, { findings: number; assumptions: number }>;
+  assumptionsTotal: number;
+  blockingAssumptions: BrownfieldBlockingAssumption[];
+  emptySources: string[];
+  ignoredBlocks: BrownfieldIgnoredBlock[];
+  files: { findings: string; assumptions: string };
+  next: string;
+};
+
+export type BrownfieldReviewItem = {
+  id: string;
+  title: string;
+  severity: BrownfieldSeverity;
+  status: string;
+};
+
+export type BrownfieldReviewVerdict = "pass" | "pass-with-minor" | "revise" | "escalate";
+
+export type BrownfieldReviewStatusOptions = {
+  file?: string;
+  previous?: string;
+  strict?: boolean;
+  snapshot?: boolean;
+};
+
+export type BrownfieldReviewStatusResult = {
+  runId: string;
+  file: string;
+  previous: string | null;
+  verdict: BrownfieldReviewVerdict;
+  total: number;
+  open: number;
+  openBlocking: number;
+  openBySeverity: Record<BrownfieldSeverity, number>;
+  needsUserInput: BrownfieldReviewItem[];
+  stalemates: BrownfieldReviewItem[];
+  openItems: BrownfieldReviewItem[];
+  ignoredBlocks: BrownfieldIgnoredBlock[];
+  snapshot: string | null;
+};
+
+export type BrownfieldPrPlanResult = {
+  runId: string;
+  count: number;
+  levels: number;
+  order: { id: string; title: string; level: number; base: string; mergeIn: string[]; branch: string }[];
+  dagFile: string;
+  next: string;
+};
+
+export type BrownfieldDagNodeSummary = Pick<
+  BrownfieldDagNode,
+  "id" | "title" | "status" | "branch" | "base" | "mergeIn" | "commit" | "worktree" | "agentId" | "reviewRounds" | "error"
+>;
+
+export type BrownfieldDagResult = {
+  runId: string;
+  counts: Record<string, number>;
+  ready: string[];
+  inFlight: string[];
+  done: boolean;
+  nodes: BrownfieldDagNodeSummary[];
+};
+
+export type BrownfieldWorktreeOptions = { remove?: boolean; force?: boolean };
+
+export type BrownfieldWorktreeResult = {
+  runId: string;
+  nodeId: string;
+  branch: string;
+  base: string;
+  mergeIn: string[];
+  worktree: string | null;
+  created: boolean;
+  removed: boolean;
+  /** Main checkout had uncommitted changes (does not affect the new worktree). */
+  mainCheckoutDirty: boolean;
+};
+
+export type BrownfieldEvidenceOptions = { skipAudit?: boolean };
+
+export type BrownfieldEvidenceResult = {
+  runId: string;
+  files: { tests: string; security: string; docs: string };
+  /** Exports in map-fingerprinted modules with no nearby markdown (0 without `legion-cli map`). */
+  undocumentedExports: number;
+  mapFingerprints: boolean;
+  testFiles: number;
+  sourceFiles: number;
+  coverageGaps: number;
+  runners: string[];
+  secretFindings: number;
+  auditRan: boolean;
+};
+
+export type BrownfieldPatternsOptions = { add?: string[]; top?: number };
+
+export type BrownfieldPatternsResult = {
+  file: string;
+  added: string[];
+  top: { pattern: string; count: number }[];
 };
 
 export type PromoteRunOptions = {

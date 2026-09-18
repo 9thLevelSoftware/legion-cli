@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -54,97 +54,171 @@ async function seedBrownfield(dir) {
   initGitRepo(dir);
 }
 
-test("legion-cli brownfield writes .legion-cli/runs and not wiki", async () => {
+function cliJson(args) {
+  const result = runCli([...args, "--json"]);
+  assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
+async function seedRunFile(dir, runId, rel, text) {
+  const abs = join(dir, ".legion-cli", "runs", runId, ...rel.split("/"));
+  await mkdir(join(abs, ".."), { recursive: true });
+  await writeFile(abs, text, "utf8");
+}
+
+const DESIGN = [
+  "# Plan",
+  "",
+  "## PR Plan",
+  "### PR 1: Add owner check",
+  "- Depends on: none",
+  "- Files: src/app.ts",
+  "",
+  "### PR 2: Pin refund errors",
+  "- Depends on: PR 1",
+  "",
+].join("\n");
+
+test("legion-cli brownfield starts a run under .legion-cli/runs and not the wiki", async () => {
   await withTempDir(async (dir) => {
     await seedBrownfield(dir);
-    const result = runCli(["brownfield", "--project", dir, "--json", "focus on checkout"]);
-    assert.equal(result.status, 0, result.stderr);
-    const body = JSON.parse(result.stdout);
-    assert.equal(body.effort, 1);
+    const body = cliJson(["brownfield", "--project", dir, "focus on checkout"]);
+    assert.equal(body.kind, "init");
+    assert.equal(body.effort, 2);
     assert.equal(body.execute, false);
+    assert.equal(body.phase, "intent");
     assert.match(body.runId, /^[0-9a-f]{8}$/);
-    assert.equal(await exists(join(dir, ".legion-cli", "runs", body.runId, "resume.json")), true);
-    assert.equal(await exists(join(dir, ".legion-cli", "runs", body.runId, "analysis.md")), true);
-    assert.equal(await exists(join(dir, ".legion-cli", "wiki", "runs", body.runId, "analysis.md")), false);
-    const resume = JSON.parse(
-      await readFile(join(dir, ".legion-cli", "runs", body.runId, "resume.json"), "utf8"),
-    );
+    assert.equal(body.paths.intent, `.legion-cli/runs/${body.runId}/intent.md`);
+    assert.match(body.next, /roster/);
+    const resume = JSON.parse(await readFile(join(dir, ".legion-cli", "runs", body.runId, "resume.json"), "utf8"));
     assert.equal(resume.schemaVersion, "legion-cli-run/v1");
-    assert.match(await readFile(join(dir, ".legion-cli", "runs", body.runId, "architecture.md"), "utf8"), /No LSP/);
+    assert.equal(resume.context, "focus on checkout");
+    assert.equal(await exists(join(dir, ".legion-cli", "wiki", "runs", body.runId)), false);
+    assert.equal(await exists(join(dir, ".legion-cli", "worktrees")), false);
+  });
+});
+
+test("brownfield text output ends with Next and --resume reports state", async () => {
+  await withTempDir(async (dir) => {
+    await seedBrownfield(dir);
+    const text = runCli(["brownfield", "init", "--project", dir, "--run-id", "aaaaaaaa", "--effort", "3", "--execute"]);
+    assert.equal(text.status, 0, text.stderr);
+    assert.match(text.stdout, /Brownfield run aaaaaaaa, effort 3/);
+    assert.match(text.stdout, /execute: yes/);
+    assert.match(text.stdout, /^Next: /m);
+    assert.equal(await exists(join(dir, ".legion-cli", "worktrees", "aaaaaaaa")), false);
+
+    const state = cliJson(["brownfield", "--project", dir, "--resume", "aaaaaaaa"]);
+    assert.equal(state.kind, "state");
+    assert.equal(state.state.execute, true);
+    assert.equal(state.artifacts.intent, false);
+
+    const refused = runCli(["brownfield", "--project", dir, "--resume", "aaaaaaaa", "--effort", "1", "--json"]);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stdout + refused.stderr, /cannot change effort/);
+  });
+});
+
+test("brownfield subcommands drive roster → merge → review-status → pr-plan → dag → worktree", async () => {
+  await withTempDir(async (dir) => {
+    await seedBrownfield(dir);
+    cliJson(["brownfield", "init", "--project", dir, "--run-id", "bbbbbbbb", "--execute", "the login is broken"]);
+    const roster = cliJson(["brownfield", "roster", "bbbbbbbb", "--project", dir]);
+    assert.deepEqual(roster.pass2, ["code", "tests", "security"]);
+
+    const merge = runCli(["brownfield", "merge", "bbbbbbbb", "--project", dir, "--json"]);
+    assert.equal(merge.status, 1);
+    assert.match(merge.stdout + merge.stderr, /no specialist outputs/);
+
+    await seedRunFile(
+      dir,
+      "bbbbbbbb",
+      "analysis/code.md",
+      "# Code\n\n## Findings\n### Owner check missing\n- Severity: major\n- Location: src/app.ts:1\n",
+    );
+    const merged = cliJson(["brownfield", "merge", "bbbbbbbb", "--project", dir]);
+    assert.equal(merged.findingsTotal, 1);
+    assert.equal(merged.bySeverity.major, 1);
+
+    await seedRunFile(dir, "bbbbbbbb", "reviews/design-review.md", "# Design Review\n\n### R-1: x\n- Severity: minor\n- Status: open\n");
+    const review = cliJson(["brownfield", "review-status", "bbbbbbbb", "--project", dir, "--snapshot"]);
+    assert.equal(review.verdict, "pass-with-minor");
+    assert.equal(review.snapshot, ".legion-cli/runs/bbbbbbbb/reviews/design-review.prev.md");
+    const strict = cliJson(["brownfield", "review-status", "bbbbbbbb", "reviews/design-review.md", "--project", dir, "--strict"]);
+    assert.equal(strict.verdict, "revise");
+
+    await seedRunFile(dir, "bbbbbbbb", "design.md", DESIGN);
+    const plan = cliJson(["brownfield", "pr-plan", "bbbbbbbb", "--project", dir]);
+    assert.equal(plan.count, 2);
+    assert.equal(plan.order[1].base, plan.order[0].branch);
+
+    const dag = cliJson(["brownfield", "dag", "bbbbbbbb", "--project", dir]);
+    assert.deepEqual(dag.ready, ["pr-1"]);
+    assert.match(dag.next, /worktree bbbbbbbb pr-1/);
+
+    const wt = cliJson(["brownfield", "worktree", "bbbbbbbb", "pr-1", "--project", dir]);
+    assert.equal(wt.worktree, ".legion-cli/worktrees/bbbbbbbb/pr-1");
+    const wtAbs = join(dir, ".legion-cli", "worktrees", "bbbbbbbb", "pr-1");
+    assert.equal(git(wtAbs, ["rev-parse", "--is-inside-work-tree"]), "true");
+    assert.equal(git(wtAbs, ["branch", "--show-current"]), plan.order[0].branch);
+
+    const updated = cliJson(["brownfield", "dag", "bbbbbbbb", "pr-1", "status=failed", "error=tests red", "--project", dir]);
+    assert.equal(updated.done, true);
+    assert.equal(updated.nodes[1].status, "skipped");
+
+    const removed = cliJson(["brownfield", "worktree", "bbbbbbbb", "pr-1", "--remove", "--project", dir]);
+    assert.equal(removed.removed, true);
+    assert.equal(await exists(wtAbs), false);
+
+    const state = cliJson(["brownfield", "state", "bbbbbbbb", "phase=verify", "meta.note=done", "--project", dir]);
+    assert.equal(state.state.phase, "verify");
+    assert.equal(state.state.meta.note, "done");
+  });
+});
+
+test("brownfield evidence and patterns", async () => {
+  await withTempDir(async (dir) => {
+    await seedBrownfield(dir);
+    cliJson(["brownfield", "init", "--project", dir, "--run-id", "cccccccc"]);
+    const evidence = cliJson(["brownfield", "evidence", "cccccccc", "--skip-audit", "--project", dir]);
+    assert.equal(evidence.auditRan, false);
+    assert.equal(await exists(join(dir, ".legion-cli", "runs", "cccccccc", "evidence", "security.md")), true);
+    cliJson(["brownfield", "patterns", "--add", "missing authz on object access", "--project", dir]);
+    const listed = cliJson(["brownfield", "patterns", "--add", "missing authz on object access", "--top", "5", "--project", dir]);
+    assert.deepEqual(listed.top, [{ pattern: "missing authz on object access", count: 2 }]);
   });
 });
 
 test("legion-cli run promote copies run pages untrusted even with --yes", async () => {
   await withTempDir(async (dir) => {
     await seedBrownfield(dir);
-    const created = runCli(["brownfield", "--project", dir, "--json", "PROMOTE_UNTRUSTED_BODY_TOKEN"]);
-    assert.equal(created.status, 0, created.stderr);
-    const runId = JSON.parse(created.stdout).runId;
-    const result = runCli(["run", "promote", runId, "--project", dir, "--yes", "--json"]);
-    assert.equal(result.status, 0, result.stderr);
-    const body = JSON.parse(result.stdout);
-    assert.ok(body.pages.includes(`.legion-cli/wiki/runs/${runId}/intent.md`));
-    assert.ok(body.pages.includes(`.legion-cli/wiki/runs/${runId}/analysis.md`));
+    const runId = cliJson(["brownfield", "--project", dir]).runId;
+    await seedRunFile(dir, runId, "intent.md", "# Intent\n\nPROMOTE_UNTRUSTED_BODY_TOKEN\n");
+    await seedRunFile(dir, runId, "analysis/code.md", "# Code\n\nPROMOTE_UNTRUSTED_BODY_TOKEN\n");
+    const body = cliJson(["run", "promote", runId, "--project", dir, "--yes"]);
+    assert.deepEqual(body.pages, [
+      `.legion-cli/wiki/runs/${runId}/intent.md`,
+      `.legion-cli/wiki/runs/${runId}/analysis/code.md`,
+    ]);
     assert.equal(body.trust, "untrusted");
     assert.equal(body.next, `legion-cli wiki trust runs/${runId}/intent`);
     const page = await readFile(join(dir, ".legion-cli", "wiki", "runs", runId, "intent.md"), "utf8");
     assert.match(page, /trust: untrusted/);
-    assert.match(page, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
-    const analysis = await readFile(join(dir, ".legion-cli", "wiki", "runs", runId, "analysis.md"), "utf8");
-    assert.match(analysis, /trust: untrusted/);
-    assert.match(analysis, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
 
     const brief = runCli(["brief", "--project", dir, "--json"]);
     assert.equal(brief.status, 0, brief.stderr);
-    const briefBody = JSON.parse(brief.stdout);
-    const runWiki = briefBody.wiki.filter((item) => item.path.includes(`/runs/${runId}/`));
-    assert.equal(runWiki.length > 0, true);
-    for (const entry of runWiki) {
-      assert.equal(entry.trust, "untrusted", entry.path);
-      assert.equal(entry.summary ?? null, null, entry.path);
-    }
     assert.doesNotMatch(brief.stdout, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
-
     const search = runCli(["search", "--project", dir, "PROMOTE_UNTRUSTED_BODY_TOKEN"]);
     assert.equal(search.status, 0, search.stderr);
     assert.doesNotMatch(search.stdout, /PROMOTE_UNTRUSTED_BODY_TOKEN/);
+
+    const trusted = cliJson(["run", "promote", runId, "--project", dir, "--trust"]);
+    assert.equal(trusted.trust, "reviewed");
+    assert.match(await readFile(join(dir, ".legion-cli", "wiki", "runs", runId, "intent.md"), "utf8"), /trust: reviewed/);
   });
 });
 
-test("legion-cli run promote --trust is the only reviewed path", async () => {
-  await withTempDir(async (dir) => {
-    await seedBrownfield(dir);
-    const created = runCli(["brownfield", "--project", dir, "--json"]);
-    assert.equal(created.status, 0, created.stderr);
-    const runId = JSON.parse(created.stdout).runId;
-    const withoutFlag = runCli(["run", "promote", runId, "--project", dir, "--json"]);
-    assert.equal(withoutFlag.status, 0, withoutFlag.stderr);
-    assert.equal(JSON.parse(withoutFlag.stdout).trust, "untrusted");
-    const page = await readFile(join(dir, ".legion-cli", "wiki", "runs", runId, "intent.md"), "utf8");
-    assert.match(page, /trust: untrusted/);
-
-    const trusted = runCli(["run", "promote", runId, "--project", dir, "--trust", "--json"]);
-    assert.equal(trusted.status, 0, trusted.stderr);
-    const body = JSON.parse(trusted.stdout);
-    assert.equal(body.trust, "reviewed");
-    const reviewed = await readFile(join(dir, ".legion-cli", "wiki", "runs", runId, "intent.md"), "utf8");
-    assert.match(reviewed, /trust: reviewed/);
-  });
-});
-
-test("legion-cli brownfield --execute uses a git worktree", async () => {
-  await withTempDir(async (dir) => {
-    await seedBrownfield(dir);
-    const result = runCli(["brownfield", "--project", dir, "--execute", "--json"]);
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    const body = JSON.parse(result.stdout);
-    assert.equal(body.worktreePath, `.legion-cli/worktrees/${body.runId}`);
-    const worktree = join(dir, ".legion-cli", "worktrees", body.runId);
-    assert.equal(git(worktree, ["rev-parse", "--is-inside-work-tree"]), "true");
-  });
-});
-
-test("greenfield execute stays in-place (no worktree)", async () => {
+test("greenfield init creates no worktrees dir", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(init.status, 0, init.stderr);
@@ -152,66 +226,20 @@ test("greenfield execute stays in-place (no worktree)", async () => {
   });
 });
 
-test("legion-cli brownfield --effort 2 writes tests.md", async () => {
-  await withTempDir(async (dir) => {
-    await seedBrownfield(dir);
-    const result = runCli(["brownfield", "--project", dir, "--effort", "2", "--json"]);
-    assert.equal(result.status, 0, result.stderr);
-    const body = JSON.parse(result.stdout);
-    assert.equal(body.effort, 2);
-    assert.ok(body.pages.includes("tests.md"));
-    assert.equal(await exists(join(dir, ".legion-cli", "runs", body.runId, "tests.md")), true);
-    const resume = JSON.parse(
-      await readFile(join(dir, ".legion-cli", "runs", body.runId, "resume.json"), "utf8"),
-    );
-    assert.equal(resume.effort, 2);
-  });
-});
-
-test("legion-cli brownfield --effort 6 still refuses range", async () => {
+test("legion-cli brownfield --effort 6 refuses", async () => {
   await withTempDir(async (dir) => {
     await seedBrownfield(dir);
     const result = runCli(["brownfield", "--project", dir, "--effort", "6"]);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /brownfield --effort must be 1–5/);
-    assert.match(result.stderr, /legion-cli brownfield --effort 1\|2\|3\|4\|5/);
+    assert.match(result.stderr, /--effort must be 1–5/);
   });
 });
 
-test("legion-cli brownfield --lsp is ignored on effort 1–4", async () => {
-  await withTempDir(async (dir) => {
-    await seedBrownfield(dir);
-    const result = runCli(["brownfield", "--project", dir, "--effort", "2", "--lsp", "--json"]);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stderr, /--lsp is ignored for effort 1–4/);
-    assert.equal(JSON.parse(result.stdout).effort, 2);
-  });
-});
-
-test("legion-cli brownfield --effort 5 --lsp without a server refuses map --no-lsp", async () => {
-  await withTempDir(async (dir) => {
-    await seedBrownfield(dir);
-    const result = runCli(["brownfield", "--project", dir, "--effort", "5", "--lsp"]);
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /no language server on PATH/);
-    assert.match(result.stderr, /Next: legion-cli map --no-lsp/);
-  });
-});
-
-test("legion-cli brownfield --effort 5 writes map fingerprints and leaves specs untouched", async () => {
-  await withTempDir(async (dir) => {
-    await seedBrownfield(dir);
-    const result = runCli(["brownfield", "--project", dir, "--effort", "5", "--json"]);
-    assert.equal(result.status, 0, result.stderr);
-    const body = JSON.parse(result.stdout);
-    assert.equal(body.effort, 5);
-    assert.ok(body.pages.includes("improvement-spec.md"));
-    assert.equal(await exists(join(dir, ".legion-cli", "map", "fingerprints.json")), true);
-    assert.equal(await exists(join(dir, ".legion-cli", "runs", body.runId, "improvement-spec.md")), true);
-    assert.equal(await exists(join(dir, ".legion-cli", "specs", "improvement-spec.md")), false);
-    const specBody = await readFile(join(dir, ".legion-cli", "runs", body.runId, "improvement-spec.md"), "utf8");
-    assert.match(specBody, /this file is not SPEC\.md/);
-    const listed = await readdir(join(dir, ".legion-cli", "specs")).catch(() => []);
-    assert.deepEqual(listed, []);
-  });
+test("brownfield --help lists the bookkeeping subcommands", () => {
+  const result = runCli(["brownfield", "--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  for (const sub of ["init", "state", "roster", "evidence", "merge", "review-status", "pr-plan", "dag", "worktree", "patterns"]) {
+    assert.match(result.stdout, new RegExp(`^  ${sub} `, "m"), sub);
+  }
+  assert.doesNotMatch(result.stdout, /--run-id/);
 });

@@ -9,10 +9,11 @@ export const GITIGNORE_ENTRIES = [
   ".legion-cli/sandbox/",
   ".legion-cli/chat/",
   ".legion-cli/serve.json",
+  ".legion-cli/runs/",
 ] as const;
 
 export const GITIGNORE_TEMPLATE = [
-  "# Legion CLI derived index, cache, lock, brownfield worktrees, sandbox, chat, serve",
+  "# Legion CLI derived index, cache, lock, brownfield worktrees and run artifacts, sandbox, chat, serve",
   ...GITIGNORE_ENTRIES,
   "",
 ].join("\n");

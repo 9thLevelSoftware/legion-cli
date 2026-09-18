@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import { bin, normalize, runCli, withTempDir } from "./helpers.js";
-import { RUN_BOUNDED_MAX_BUFFER, runBounded } from "../dist/which.js";
+import { looksLikeLegionCliShim, RUN_BOUNDED_MAX_BUFFER, runBounded } from "../dist/which.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8"));
@@ -137,6 +137,9 @@ test("help --all lists the grouped command surface", () => {
   assert.match(out, /packet new/);
   assert.match(out, /packet respond/);
   assert.match(out, /--message, --title, --type, --priority/);
+  assert.match(out, /^ {2}brownfield \[context\]$/m);
+  assert.match(out, /roster\|evidence\|merge\|review-status\|pr-plan\|dag\|worktree\|state\|patterns/);
+  assert.match(out, /--effort 1–5, --execute, --resume/);
   assert.match(out, /verify/);
   assert.match(out, /^ {2}review$/m);
   assert.match(out, /^ {2}qa$/m);
@@ -165,9 +168,9 @@ test("help --all lists the grouped command surface", () => {
   assert.match(adjacent, /skills list/);
   assert.match(adjacent, /skills show <id>/);
   assert.match(adjacent, /skills install <dir\|github:owner\/repo@tag>/);
-  assert.match(adjacent, /^ {2}brownfield$/m);
-  assert.match(adjacent, /effort 1–5/);
-  assert.match(adjacent, /--effort, --execute, --resume, --lsp/);
+  assert.match(adjacent, /^ {2}brownfield \[context\]$/m);
+  assert.match(adjacent, /--effort 1–5, --execute, --resume/);
+  assert.doesNotMatch(adjacent, /brownfield \[context\]\n.*--lsp/);
   assert.doesNotMatch(out, /Later, not this series/);
   assert.doesNotMatch(out, /Not in this product/);
 });
@@ -237,6 +240,26 @@ test("installer flags refuse with exit 2", () => {
     assert.match(err, /npx @9thlevelsoftware\/legion --claude/, flag);
     assert.match(err, /bin legion-plugins/, flag);
   }
+});
+
+test("legion-ascended verbs refuse with exit 2; shared verbs stay Legion CLI's", () => {
+  for (const verb of ["start", "build", "explore", "retro", "portfolio"]) {
+    const result = runCli([verb]);
+    assert.equal(result.status, 2, verb);
+    assert.equal(result.stdout, "", verb);
+    assert.ok(normalize(result.stderr).includes(`"${verb}" belongs to another tool`), verb);
+  }
+  for (const args of [["plan", "--help"], ["review", "--help"], ["ship", "--help"], ["map", "--help"]]) {
+    const result = runCli(args);
+    assert.equal(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
+  }
+});
+
+test("looksLikeLegionCliShim recognizes npm/pnpm shims for this CLI only", () => {
+  assert.equal(looksLikeLegionCliShim(String.raw`"%dp0%\node_modules\@9thlevelsoftware\legion-cli\dist\bin.js" %*`), true);
+  assert.equal(looksLikeLegionCliShim("/home/u/legion-cli/packages/cli/dist/bin.js"), true);
+  assert.equal(looksLikeLegionCliShim(String.raw`"%dp0%\node_modules\legion-ascended\bin\legion.js" %*`), false);
+  assert.equal(looksLikeLegionCliShim(""), false);
 });
 
 test("bare invocation and status are not installer refuses", () => {
