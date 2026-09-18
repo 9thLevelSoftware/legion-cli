@@ -174,15 +174,15 @@ async function loadRestyleCss(projectRoot: string): Promise<string | null> {
   }
 }
 
-async function snapshotTree(dir: string): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+async function snapshotTree(dir: string): Promise<Map<string, Buffer>> {
+  const out = new Map<string, Buffer>();
   for (const rel of await listRelFiles(dir)) {
-    out.set(rel, await readFile(absFromRel(dir, rel), "utf8"));
+    out.set(rel, await readFile(absFromRel(dir, rel)));
   }
   return out;
 }
 
-async function restoreTree(dir: string, snap: ReadonlyMap<string, string>): Promise<void> {
+async function restoreTree(dir: string, snap: ReadonlyMap<string, Buffer>): Promise<void> {
   await mkdir(dir, { recursive: true });
   for (const rel of await listRelFiles(dir)) {
     if (!snap.has(rel)) await removeRel(dir, rel);
@@ -190,7 +190,7 @@ async function restoreTree(dir: string, snap: ReadonlyMap<string, string>): Prom
   for (const [rel, body] of snap) {
     const abs = absFromRel(dir, rel);
     await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, body, "utf8");
+    await writeFile(abs, body);
   }
 }
 
@@ -265,7 +265,7 @@ async function requireExpectedPages(
   dir: string,
   pages: ScreenPage[],
   frozen: boolean,
-  snapshot: ReadonlyMap<string, string>,
+  snapshot: ReadonlyMap<string, Buffer>,
 ): Promise<void> {
   const existing = new Set(await listRelFiles(dir));
   const required = frozen
@@ -277,32 +277,39 @@ async function requireExpectedPages(
   }
 }
 
-async function dropNonHtmlExtras(dir: string, snap: ReadonlyMap<string, string>): Promise<void> {
+async function dropNonHtmlExtras(dir: string, snap: ReadonlyMap<string, Buffer>): Promise<void> {
   for (const rel of await listRelFiles(dir)) {
     if (rel.toLowerCase().endsWith(".html")) continue;
-    if (!snap.has(rel)) await removeRel(dir, rel);
+    const before = snap.get(rel);
+    if (!before) {
+      await removeRel(dir, rel);
+      continue;
+    }
+    await writeFile(absFromRel(dir, rel), before);
   }
 }
 
-async function applyFrozenCssOnly(dir: string, snap: ReadonlyMap<string, string>): Promise<void> {
+async function applyFrozenCssOnly(dir: string, snap: ReadonlyMap<string, Buffer>): Promise<void> {
   for (const rel of await listRelFiles(dir)) {
     if (!snap.has(rel)) await removeRel(dir, rel);
   }
   for (const [rel, before] of snap) {
     const abs = absFromRel(dir, rel);
+    if (!rel.toLowerCase().endsWith(".html")) {
+      await mkdir(dirname(abs), { recursive: true });
+      await writeFile(abs, before);
+      continue;
+    }
+    const beforeHtml = before.toString("utf8");
     let after: string;
     try {
       after = await readFile(abs, "utf8");
     } catch {
       await mkdir(dirname(abs), { recursive: true });
-      await writeFile(abs, before, "utf8");
+      await writeFile(abs, before);
       continue;
     }
-    if (!rel.toLowerCase().endsWith(".html")) {
-      if (after !== before) await writeFile(abs, before, "utf8");
-      continue;
-    }
-    await writeFile(abs, keepStyleOnly(before, after), "utf8");
+    await writeFile(abs, keepStyleOnly(beforeHtml, after), "utf8");
   }
 }
 
@@ -324,7 +331,7 @@ type WireframeSession = {
   skipPalette: boolean;
   pages: ScreenPage[];
   dir: string;
-  snapshot: Map<string, string>;
+  snapshot: Map<string, Buffer>;
   specMdPath: string;
   prdPath: string;
   specSnap: string | null;

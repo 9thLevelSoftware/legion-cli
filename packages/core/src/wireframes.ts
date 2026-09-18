@@ -140,11 +140,15 @@ ${items}
 }
 
 export function palettePresent(html: string): boolean {
+  const styles = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)]
+    .map((match) => match[1] ?? "")
+    .join("\n");
+  const css = styles.length > 0 ? styles : "";
   return (
-    html.includes(WIREFRAME_PALETTE.background) &&
-    html.includes(WIREFRAME_PALETTE.ink) &&
-    html.includes(WIREFRAME_PALETTE.accent) &&
-    html.includes(WIREFRAME_PALETTE.muted)
+    new RegExp(`--bg\\s*:\\s*${WIREFRAME_PALETTE.background}\\b`, "i").test(css) &&
+    new RegExp(`--ink\\s*:\\s*${WIREFRAME_PALETTE.ink}\\b`, "i").test(css) &&
+    new RegExp(`--accent\\s*:\\s*${WIREFRAME_PALETTE.accent}\\b`, "i").test(css) &&
+    new RegExp(`--muted\\s*:\\s*${WIREFRAME_PALETTE.muted}\\b`, "i").test(css)
   );
 }
 
@@ -321,16 +325,34 @@ function forEachOpenTag(html: string, visit: (tag: string, attrSource: string) =
     while (j < html.length && /[A-Za-z0-9:-]/.test(html[j] ?? "")) j += 1;
     const tag = html.slice(tagStart, j);
     let quote: '"' | "'" | null = null;
+    let afterEq = false;
     const attrStart = j;
     while (j < html.length) {
       const ch = html[j] ?? "";
       if (quote) {
-        if (ch === quote) quote = null;
+        if (ch === quote) {
+          quote = null;
+          afterEq = false;
+        }
         j += 1;
         continue;
       }
-      if (ch === '"' || ch === "'") {
-        quote = ch;
+      if (afterEq) {
+        if (ch === '"' || ch === "'") {
+          quote = ch;
+          j += 1;
+          continue;
+        }
+        afterEq = false;
+        if (ch === ">") {
+          j += 1;
+          break;
+        }
+        j += 1;
+        continue;
+      }
+      if (ch === "=") {
+        afterEq = true;
         j += 1;
         continue;
       }

@@ -104,6 +104,10 @@ test("assertWireframeHtml allows meta content=continue and denies on*/javascript
   assert.throws(() => assertWireframeHtml('<img alt="<!--" src=x onerror=alert(1)>'), /onerror/);
   assert.throws(() => assertWireframeHtml('<p title="<!--"></p><script>alert(1)</script>'), /<script>/);
   assert.throws(
+    () => assertWireframeHtml('<img src=x"><script>alert(1)</script>'),
+    /<script>/,
+  );
+  assert.throws(
     () => assertWireframeHtml("<style><!--</style><img src=x onerror=alert(1)>"),
     /onerror/,
   );
@@ -152,6 +156,17 @@ test("assertWireframeHtml allows meta content=continue and denies on*/javascript
   assert.throws(() => assertWireframeHtml("<script>alert(1)</script>"), /<script>/);
   assert.throws(() => assertWireframeHtml('<iframe src="x"></iframe>'), /<iframe>/);
   assert.throws(() => assertWireframeHtml('<link rel="import" href="x.html">'), /rel=import/);
+});
+
+test("palettePresent requires CSS custom-property declarations, not prose hex", () => {
+  const prose = `<p>Palette: background ${WIREFRAME_PALETTE.background}, ink ${WIREFRAME_PALETTE.ink}, accent ${WIREFRAME_PALETTE.accent}, muted ${WIREFRAME_PALETTE.muted}.</p>`;
+  assert.equal(palettePresent(`${prose}<style>:root { --bg: #000; --ink: #111; --accent: #222; --muted: #333; }</style>`), false);
+  assert.equal(
+    palettePresent(
+      `<style>:root { --bg: ${WIREFRAME_PALETTE.background}; --ink: ${WIREFRAME_PALETTE.ink}; --accent: ${WIREFRAME_PALETTE.accent}; --muted: ${WIREFRAME_PALETTE.muted}; }</style>`,
+    ),
+    true,
+  );
 });
 
 test("draft with two screens writes INDEX + pages and palette tokens", async () => {

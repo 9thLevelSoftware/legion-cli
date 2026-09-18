@@ -1647,6 +1647,15 @@ export class LegionEngine {
     const waited = started?.spawned ? await waitStartedSpawn(started) : { error: undefined };
     return this.#mutate(async () => {
       if (!session) refuse("no active spec", HINT.spec);
+      const latest = await this.store.readSpec(session.spec.id);
+      if (latest.data.status !== session.spec.status) {
+        session = {
+          ...session,
+          spec: latest.data,
+          frozen: latest.data.status !== "draft",
+          specSnap: latest.body,
+        };
+      }
       const revert = started?.spawned ? await finishStartedSpawn(started) : null;
       return finishWireframe(session, {
         spawned: Boolean(started?.spawned),
