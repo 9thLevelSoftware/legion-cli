@@ -8,7 +8,8 @@
     "node": ">=22"
   },
   "bin": {
-    "legion-cli": "./dist/bin.js"
+    "legion-cli": "./dist/bin.js",
+    "legion": "./dist/bin.js"
   },
   "files": [
     "dist"

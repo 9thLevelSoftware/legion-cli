@@ -84,6 +84,11 @@ const SHIPPED_ADJACENT = [
   ["wireframe", "Re-generate HTML wireframes after spec edits", "--restyle, --spawn, --adapter"],
 ] as const;
 
+const INVOCATION = [
+  "Supported commands: pnpm exec legion-cli   |   legion (alias)",
+  "Plugin installer: npx @9thlevelsoftware/legion --claude   (bin legion-plugins)",
+] as const;
+
 function row(cols: readonly string[]): string {
   const [cmd, what, flags] = cols;
   return flags ? `  ${cmd}\n      ${what}  ${flags}` : `  ${cmd}\n      ${what}`;
@@ -93,8 +98,7 @@ export function formatHelpLayer1(): string {
   const width = Math.max(...LAYER_1.map(([cmd]) => cmd.length));
   const text = [
     "Legion CLI — Product Engineering lifecycle engine",
-    "Supported command: pnpm exec legion-cli",
-    "Does not register bin legion.",
+    ...INVOCATION,
     "",
     ...LAYER_1.map(([cmd, what]) => `${cmd.padEnd(width)}  ${what}`),
   ].join("\n");
@@ -109,8 +113,7 @@ export function printHelpAll(): void {
   writeOut(
     [
       "Legion CLI — Product Engineering lifecycle engine",
-      "Supported command: pnpm exec legion-cli",
-      "This engine does not register the legion bin (that is @9thlevelsoftware/legion).",
+      ...INVOCATION,
       "",
       "Global flags: --project <dir>, --json, --yes (ignored by intent confirm and ship; discuss refuses), --verbose",
       "",
@@ -129,7 +132,7 @@ export function printHelpAll(): void {
       "Later, not this series:",
       "",
       "Not in this product:",
-      "  HTTP model router, bin legion",
+      "  HTTP model router",
     ].join("\n"),
   );
 }

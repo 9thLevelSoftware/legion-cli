@@ -36,7 +36,7 @@ import {
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { scanWikiSecrets, type SecretHit } from "./secrets.js";
-import { isSpawnableBinary, listOnPath, runTool } from "./which.js";
+import { isSpawnableBinary, listOnPath, runBounded, runTool } from "./which.js";
 
 export type DoctorCheck = {
   ok: boolean;
@@ -61,6 +61,10 @@ function toolVersion(name: string, args: string[]): { ok: boolean; detail: strin
   return { ok: true, detail: line || "ok" };
 }
 
+const PE_HELP_FINGERPRINT = "Product Engineering lifecycle engine";
+const INSTALLER_PATH_WARNING =
+  "PATH legion is the plugin installer; upgrade it to bin legion-plugins or put Legion CLI first";
+
 function formatPathGroup(name: string, paths: string[]): string[] {
   const lines = [`  ${name}`];
   if (paths.length === 0) {
@@ -69,6 +73,33 @@ function formatPathGroup(name: string, paths: string[]): string[] {
   }
   for (const abs of paths) lines.push(`    - ${abs}`);
   return lines;
+}
+
+function looksLikeInstallerHelp(text: string): boolean {
+  // Real `@9thlevelsoftware/legion` printHelp() tokens: package name + `--uninstall`.
+  // PE help also mentions the package; it never prints `--uninstall`.
+  return (
+    text.includes("@9thlevelsoftware/legion") &&
+    /--uninstall\b/.test(text) &&
+    !text.includes(PE_HELP_FINGERPRINT)
+  );
+}
+
+function pickLegionProbe(legionPaths: string[]): string | undefined {
+  if (process.platform === "win32") {
+    const winBin = legionPaths.find((abs) => /\.(cmd|bat|exe)$/i.test(abs));
+    if (winBin) return winBin;
+  }
+  return legionPaths[0];
+}
+
+async function installerFingerprintWarning(legionPaths: string[]): Promise<string | undefined> {
+  const probe = pickLegionProbe(legionPaths);
+  if (!probe) return undefined;
+  const result = await runBounded(probe, ["--help"], 5_000);
+  if (result.timedOut || result.truncated) return undefined;
+  const text = `${result.stdout}\n${result.stderr}`;
+  return looksLikeInstallerHelp(text) ? INSTALLER_PATH_WARNING : undefined;
 }
 
 function fakeSpawnable(): boolean {
@@ -335,6 +366,8 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   if (legionCliPaths.length > 1) {
     warnings.push("multiple legion-cli binaries on PATH (collision check)");
   }
+  const installerWarn = await installerFingerprintWarning(legionPaths);
+  if (installerWarn) warnings.push(installerWarn);
 
   const playwright = runTool("pnpm", ["exec", "playwright", "--version"], opts.project);
   const playwrightDetail =
