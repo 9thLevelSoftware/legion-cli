@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -59,6 +59,29 @@ test("map writes ARCHITECTURE.md markers and does not change phase", async () =>
     const brief = await engine.brief();
     assert.equal(typeof brief.mapRootHash, "string");
     assert.match(brief.mapRootHash, /^[a-f0-9]{64}$/);
+  });
+});
+
+test("brief omits mapRootHash when .legion-cli/map is a symlink", async () => {
+  await withEngine(async ({ engine, dir }) => {
+    await initProject(engine);
+    await seedSources(dir);
+    await engine.map({ lsp: "off" });
+    const hash = (await engine.brief()).mapRootHash;
+    assert.equal(typeof hash, "string");
+    const mapDir = join(dir, ".legion-cli", "map");
+    const outside = join(dir, "outside-map");
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, "fingerprints.json"), await readFile(join(mapDir, "fingerprints.json")));
+    await rm(mapDir, { recursive: true, force: true });
+    try {
+      await symlink(outside, mapDir, process.platform === "win32" ? "junction" : "dir");
+    } catch (err) {
+      if (err?.code === "EPERM" || err?.code === "EACCES") return;
+      throw err;
+    }
+    const brief = await engine.brief();
+    assert.equal(brief.mapRootHash, undefined);
   });
 });
 

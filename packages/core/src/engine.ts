@@ -82,7 +82,6 @@ import {
 import {
   ADAPTER_ID_HELP,
   ControlModeSchema,
-  FingerprintFileSchema,
   QAScoreSchema,
   SCHEMA_VERSION,
   type AdapterId,
@@ -621,22 +620,12 @@ export class LegionEngine {
       const { catalog } = skillsDir
         ? listSkillCatalog(skillsDir)
         : { catalog: { schemaVersion: SCHEMA_VERSION.skillCatalog, skills: [] } };
-      let mapRootHash: string | undefined;
-      try {
-        const parsed = FingerprintFileSchema.safeParse(
-          JSON.parse(await readFile(join(this.store.paths.mapDir, "fingerprints.json"), "utf8")),
-        );
-        if (parsed.success) mapRootHash = parsed.data.rootHash;
-      } catch {
-        // map not generated yet
-      }
       return buildSessionBrief(this.store, {
         skills: catalog.skills.map((skill) => ({
           skillId: skill.skillId,
           name: skill.name,
           description: skill.description,
         })),
-        mapRootHash,
       });
     });
   }
@@ -673,7 +662,6 @@ export class LegionEngine {
         refuse("Map needs a Legion CLI project first", HINT.init);
       }
       await this.#assertNoLiveInProgress("map");
-      await refuseIfLiveSkillSpawn(this.projectRoot, "map");
       try {
         generated = await generateMap(this.projectRoot, {
           refresh: opts.refresh,

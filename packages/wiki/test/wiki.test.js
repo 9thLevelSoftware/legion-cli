@@ -202,6 +202,33 @@ test("buildSessionBrief loads mapRootHash from fingerprints.json", async () => {
   });
 });
 
+test("buildSessionBrief omits mapRootHash when map dir is a symlink", async () => {
+  await withStore(async ({ store, dir }) => {
+    const hash = "b".repeat(64);
+    const outside = join(dir, "outside-map");
+    await mkdir(outside, { recursive: true });
+    await writeFile(
+      join(outside, "fingerprints.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-fingerprint/v1",
+        generatedAt: new Date().toISOString(),
+        backend: "fallback",
+        rootHash: hash,
+        modules: [],
+      })}\n`,
+      "utf8",
+    );
+    try {
+      await symlink(outside, join(dir, ".legion-cli", "map"), process.platform === "win32" ? "junction" : "dir");
+    } catch (err) {
+      if (err?.code === "EPERM" || err?.code === "EACCES") return;
+      throw err;
+    }
+    const brief = await buildSessionBrief(store);
+    assert.equal(brief.mapRootHash, undefined);
+  });
+});
+
 test("buildSessionBrief omits currentTask.adapter when Task.adapter is unset", async () => {
   await withStore(async ({ store }) => {
     const brief = await buildSessionBrief(store);
