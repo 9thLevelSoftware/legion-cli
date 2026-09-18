@@ -394,6 +394,42 @@ test("task amend --clear-adapter is exclusive with --adapter", async () => {
   });
 });
 
+test("ticket create --type and --priority persist; invalid values refuse", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const created = runCli([
+      "ticket",
+      "create",
+      "--project",
+      dir,
+      "--title",
+      "parked extra",
+      "--type",
+      "bug",
+      "--priority",
+      "P0",
+    ]);
+    assert.equal(created.status, 0, `${created.stdout}\n${created.stderr}`);
+    const engine = createLegionEngine(dir);
+    const ticket = (await engine.store.readTask("TSK-0002")).data;
+    assert.equal(ticket.type, "bug");
+    assert.equal(ticket.priority, "P0");
+
+    const badType = runCli(["ticket", "create", "--project", dir, "--title", "nope", "--type", "nope"]);
+    assert.equal(badType.status, 1);
+    assert.match(normalize(badType.stderr), /type must be feature \| fix \| bug/);
+    await assert.rejects(() => engine.store.readTask("TSK-0003"));
+    assert.equal((await engine.store.readTask("TSK-0002")).data.type, "bug");
+
+    const badPriority = runCli(["ticket", "create", "--project", dir, "--title", "nope", "--priority", "P9"]);
+    assert.equal(badPriority.status, 1);
+    assert.match(normalize(badPriority.stderr), /priority must be P0 \| P1 \| P2/);
+    await assert.rejects(() => engine.store.readTask("TSK-0003"));
+    assert.equal((await engine.store.readTask("TSK-0002")).data.priority, "P0");
+  });
+});
+
 test("ticket create --adapter persists on the new ticket", async () => {
   await withTempDir(async (dir) => {
     await seedFrozen(dir);

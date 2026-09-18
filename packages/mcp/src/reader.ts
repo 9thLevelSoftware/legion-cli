@@ -10,6 +10,7 @@ import {
   AuditEventSchema,
   ADAPTER_ID_HELP,
   SCHEMA_VERSION,
+  type Assumption,
   type AuditEvent,
   type ControlMode,
   type LegionConfig,
@@ -152,14 +153,44 @@ function viewerUrl(config: LegionConfig | null): string {
   return `http://${bind}:${port}`;
 }
 
-function nextCommand(state: StateFile, slice: readonly Task[]): { run: string; hint: string } {
+function nextCommand(
+  state: StateFile,
+  slice: readonly Task[],
+  mode?: ProjectFile["mode"],
+  controlMode?: ControlMode,
+): { run: string; hint: string } {
+  if (state.phase === "initialized" && mode === "brownfield") {
+    return { run: "legion-cli brownfield", hint: "audit this running app (code is evidence)." };
+  }
   if (state.phase === "executing" && isSliceTerminal(slice)) {
     if (state.lastReview === "PASS") {
       return { run: "legion-cli qa", hint: "score the product (the slice is done)." };
     }
     return { run: "legion-cli review", hint: "spec-level review; fix tasks or in-place rewrites mean FAIL and re-review." };
   }
+  const wouldExecute =
+    state.phase === "plan_ready" || (state.phase === "executing" && !isSliceTerminal(slice));
+  if (controlMode === "advisory" && wouldExecute) {
+    return {
+      run: "legion-cli control-mode guarded",
+      hint: "advisory blocks execute; set guarded to run tasks.",
+    };
+  }
   return NEXT_BY_PHASE[state.phase];
+}
+
+async function listAssumptions(store: LegionReader): Promise<Assumption[]> {
+  const files = await listMarkdown(store.paths.assumptionsDir);
+  const out: Assumption[] = [];
+  for (const file of files) {
+    const id = file.replace(/\.md$/i, "");
+    try {
+      out.push((await store.readAssumption(id)).data);
+    } catch {
+      continue;
+    }
+  }
+  return out;
 }
 
 export async function readStatus(store: LegionReader) {
@@ -184,7 +215,7 @@ export async function readStatus(store: LegionReader) {
     lastReadiness: state.lastReadiness ?? null,
     lastReview: state.lastReview ?? null,
     lastQaId: state.lastQaId ?? null,
-    next: nextCommand(state, slice),
+    next: nextCommand(state, slice, project?.mode, config?.control_mode),
     blockers,
     viewer: viewerUrl(config),
   };
@@ -238,7 +269,12 @@ export async function readTaskGraph(store: LegionReader, specId?: string) {
   const slice = sliceTasks(tasks, active);
   const config = await readOptionalConfig(store);
   const controlMode: ControlMode = config?.control_mode ?? "guarded";
-  const readyCtx = { phase: state.phase, controlMode, tasks: slice };
+  const readyCtx = {
+    phase: state.phase,
+    controlMode,
+    tasks: slice,
+    assumptions: await listAssumptions(store),
+  };
   return {
     specId: active,
     phase: state.phase,

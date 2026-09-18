@@ -130,11 +130,13 @@ test("help --all lists the grouped command surface", () => {
   assert.match(out, /^ {2}plan$/m);
   assert.match(out, /^ {2}next$/m);
   assert.match(out, /ticket create/);
+  assert.match(out, /--parent, --title, --from-agent, --type, --priority, --adapter, --route/);
   assert.match(out, /task amend/);
   assert.match(out, /^ {2}dashboard$/m);
   assert.match(out, /^ {2}wireframe$/m);
   assert.match(out, /packet new/);
   assert.match(out, /packet respond/);
+  assert.match(out, /--message, --title, --type, --priority/);
   assert.match(out, /verify/);
   assert.match(out, /^ {2}review$/m);
   assert.match(out, /^ {2}qa$/m);

@@ -37,6 +37,25 @@ test("reader sliceTasks matches core: missing activeSpecId is empty, not all tas
   assert.doesNotMatch(src, /slice\.length > 0 \? slice : \[\.\.\.tasks\]/);
 });
 
+test("reader nextCommand shares CLI brownfield and wouldExecute branch literals", async () => {
+  const cli = await readFile(join(pkgRoot, "..", "cli", "src", "next.ts"), "utf8");
+  const mcp = await readFile(join(pkgRoot, "src", "reader.ts"), "utf8");
+  const shared = [
+    'state.phase === "initialized" && mode === "brownfield"',
+    "state.phase === \"plan_ready\" || (state.phase === \"executing\" && !isSliceTerminal(slice))",
+    "controlMode === \"advisory\" && wouldExecute",
+  ];
+  for (const snippet of shared) {
+    assert.ok(cli.includes(snippet), `cli next.ts missing ${snippet}`);
+    assert.ok(mcp.includes(snippet), `mcp reader.ts missing ${snippet}`);
+  }
+});
+
+test("task graph ready context loads assumptions from the store", async () => {
+  const src = await readFile(join(pkgRoot, "src", "reader.ts"), "utf8");
+  assert.match(src, /assumptions: await listAssumptions\(store\)/);
+});
+
 test("source must not import core/execute or take the engine lock", async () => {
   const files = await listTs(join(pkgRoot, "src"));
   assert.ok(files.length > 0);

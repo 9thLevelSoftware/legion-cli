@@ -16,8 +16,21 @@ export type PacketRespondFlags = {
 };
 
 function requesterOf(value: string | undefined): "pm" | "designer" | "human" {
+  if (value === undefined || value.trim() === "") return "pm";
   if (value === "designer" || value === "human" || value === "pm") return value;
-  return "pm";
+  refuse("requester must be pm | designer | human", HINT.packet);
+}
+
+function parseType(raw: string | undefined, nextHint: string): "feature" | "fix" | "bug" | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "fix" || raw === "bug" || raw === "feature") return raw;
+  refuse("type must be feature | fix | bug", nextHint);
+}
+
+function parsePriority(raw: string | undefined, nextHint: string): "P0" | "P1" | "P2" | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "P0" || raw === "P1" || raw === "P2") return raw;
+  refuse("priority must be P0 | P1 | P2", nextHint);
 }
 
 export async function runPacketNew(opts: CliOpts, flags: PacketNewFlags): Promise<number> {
@@ -54,9 +67,9 @@ export async function runPacketRespond(opts: CliOpts, id: string, flags: PacketR
   if (!packetId) {
     refuse("packet respond requires an id", HINT.packetRespond());
   }
-  const type = flags.type === "fix" || flags.type === "bug" || flags.type === "feature" ? flags.type : undefined;
-  const priority =
-    flags.priority === "P0" || flags.priority === "P1" || flags.priority === "P2" ? flags.priority : undefined;
+  const nextHint = HINT.packetRespond(packetId);
+  const type = parseType(flags.type, nextHint);
+  const priority = parsePriority(flags.priority, nextHint);
   const engine = createLegionEngine(opts.project);
   const result = await engine.respondPacket({
     id: packetId,

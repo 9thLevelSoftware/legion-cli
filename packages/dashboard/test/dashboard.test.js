@@ -341,6 +341,40 @@ test("POST /engine/* requires token and origin; ticket/wikiTrust/qaChecklist mut
   });
 });
 
+test("POST /engine/ticket persists type/priority and refuses invalid enums without writing", async () => {
+  await withStore(async ({ dir, store }) => {
+    await withServer(dir, async ({ handle }) => {
+      const token = handle.token;
+      const badType = await enginePost(handle, "/engine/ticket", { title: "park extra", type: "nope" }, { token });
+      assert.equal(badType.status, 400);
+      assert.match(await badType.text(), /type must be feature \| fix \| bug/);
+      await assert.rejects(() => store.readTask("TSK-0003"));
+
+      const badPriority = await enginePost(
+        handle,
+        "/engine/ticket",
+        { title: "park extra", priority: "P9" },
+        { token },
+      );
+      assert.equal(badPriority.status, 400);
+      assert.match(await badPriority.text(), /priority must be P0 \| P1 \| P2/);
+      await assert.rejects(() => store.readTask("TSK-0003"));
+
+      const ok = await enginePost(
+        handle,
+        "/engine/ticket",
+        { title: "park extra from board", type: "bug", priority: "P0" },
+        { token },
+      );
+      assert.equal(ok.status, 200, await ok.clone().text());
+      const body = await ok.json();
+      const filed = await store.readTask(body.id);
+      assert.equal(filed.data.type, "bug");
+      assert.equal(filed.data.priority, "P0");
+    });
+  });
+});
+
 test("POST /engine/* returns 409 while a live spawn is in_progress", async () => {
   await withStore(async ({ dir, store }) => {
     const live = (await store.readTask("TSK-0002")).data;

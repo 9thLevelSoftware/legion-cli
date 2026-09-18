@@ -130,6 +130,63 @@ test("packet respond --json lists spawned ticket ids", async () => {
   });
 });
 
+test("packet respond --type and --priority persist", async () => {
+  await withTempDir(async (dir) => {
+    await seedSpec(dir);
+    runCli(["packet", "new", "--project", dir, "--title", "Dark mode"]);
+    const result = runCli([
+      "packet",
+      "respond",
+      "PKT-0001",
+      "--project",
+      dir,
+      "--type",
+      "fix",
+      "--priority",
+      "P1",
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const engine = createLegionEngine(dir);
+    const ticket = (await engine.store.readTask("TSK-0001")).data;
+    assert.equal(ticket.type, "fix");
+    assert.equal(ticket.priority, "P1");
+    assert.notEqual(ticket.status, "in_progress");
+  });
+});
+
+test("packet new refuses invalid --requester; packet respond refuses invalid --type/--priority", async () => {
+  await withTempDir(async (dir) => {
+    await seedSpec(dir);
+    const engine = createLegionEngine(dir);
+    const requester = runCli([
+      "packet",
+      "new",
+      "--project",
+      dir,
+      "--title",
+      "Dark mode",
+      "--requester",
+      "bot",
+    ]);
+    assert.equal(requester.status, 1);
+    assert.match(normalize(requester.stderr), /requester must be pm \| designer \| human/);
+    await assert.rejects(() => engine.store.readPacket("PKT-0001"));
+
+    runCli(["packet", "new", "--project", dir, "--title", "Dark mode"]);
+    const badType = runCli(["packet", "respond", "PKT-0001", "--project", dir, "--type", "nope"]);
+    assert.equal(badType.status, 1);
+    assert.match(normalize(badType.stderr), /type must be feature \| fix \| bug/);
+    await assert.rejects(() => engine.store.readTask("TSK-0001"));
+    assert.equal((await engine.store.readPacket("PKT-0001")).data.status, "open");
+
+    const badPriority = runCli(["packet", "respond", "PKT-0001", "--project", dir, "--priority", "P9"]);
+    assert.equal(badPriority.status, 1);
+    assert.match(normalize(badPriority.stderr), /priority must be P0 \| P1 \| P2/);
+    await assert.rejects(() => engine.store.readTask("TSK-0001"));
+    assert.equal((await engine.store.readPacket("PKT-0001")).data.status, "open");
+  });
+});
+
 test("packet without subcommand tells the user new or respond", async () => {
   await withTempDir(async (dir) => {
     const result = runCli(["packet", "--project", dir]);

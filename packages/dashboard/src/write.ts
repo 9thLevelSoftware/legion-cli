@@ -49,20 +49,29 @@ function asRecord(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
+function parseTicketEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  label: string,
+): T | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string" && (allowed as readonly string[]).includes(value)) {
+    return value as T;
+  }
+  throw new EngineWriteError(400, { error: `${label} must be ${allowed.join(" | ")}` });
+}
+
 function parseTicket(body: unknown): NewTicket {
   const rec = asRecord(body);
   if (typeof rec.title !== "string" || rec.title.trim().length === 0) {
     throw new EngineWriteError(400, { error: "ticket requires title" });
   }
-  const type = rec.type === "fix" || rec.type === "bug" || rec.type === "feature" ? rec.type : undefined;
-  const priority =
-    rec.priority === "P0" || rec.priority === "P1" || rec.priority === "P2" ? rec.priority : undefined;
   return {
     title: rec.title,
     parentId: typeof rec.parentId === "string" ? rec.parentId : undefined,
     fromAgent: Boolean(rec.fromAgent),
-    type,
-    priority,
+    type: parseTicketEnum(rec.type, ["feature", "fix", "bug"], "type"),
+    priority: parseTicketEnum(rec.priority, ["P0", "P1", "P2"], "priority"),
     notes: typeof rec.notes === "string" ? rec.notes : undefined,
   };
 }
