@@ -92,6 +92,11 @@ function assertLayer1(out) {
   assert.doesNotMatch(out, /\bsearch\b/);
   assert.doesNotMatch(out, /\bbrief\b/);
   assert.doesNotMatch(out, /^chat {2}/m);
+  assert.doesNotMatch(out, /^map {2}/m);
+  assert.doesNotMatch(out, /^wireframe {2}/m);
+  assert.doesNotMatch(out, /^serve {2}/m);
+  assert.doesNotMatch(out, /^skills /m);
+  assert.doesNotMatch(out, /^brownfield {2}/m);
   assert.doesNotMatch(out, /wiki trust/);
   assert.doesNotMatch(out, /\bshow\b/);
   assert.doesNotMatch(out, /assume list/);
@@ -154,10 +159,15 @@ test("help --all lists the grouped command surface", () => {
   assert.match(board, /assume list/);
   assert.match(board, /assume answer/);
   assert.doesNotMatch(board, /index rebuild/);
-  const adjacent = helpSection(out, "Shipped adjacent", "Later, not this series:");
+  const adjacent = helpSection(out, "Shipped adjacent");
   assert.match(adjacent, /skills list/);
   assert.match(adjacent, /skills show <id>/);
   assert.match(adjacent, /skills install <dir\|github:owner\/repo@tag>/);
+  assert.match(adjacent, /^ {2}brownfield$/m);
+  assert.match(adjacent, /effort 1–5/);
+  assert.match(adjacent, /--effort, --execute, --resume, --lsp/);
+  assert.doesNotMatch(out, /Later, not this series/);
+  assert.doesNotMatch(out, /Not in this product/);
 });
 
 test("help --all lists dashboard as shipped adjacent", () => {
@@ -174,13 +184,12 @@ test("help --all lists serve as shipped adjacent and not later", () => {
   const result = runCli(["help", "--all"]);
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
-  const adjacent = helpSection(out, "Shipped adjacent", "Later, not this series:");
-  const later = helpSection(out, "Later, not this series:", "Not in this product:");
+  const adjacent = helpSection(out, "Shipped adjacent");
   assert.match(adjacent, /^ {2}serve$/m);
   assert.match(adjacent, /--mcp-http\/--no-mcp-http/);
   assert.match(adjacent, /--webmcp/);
-  assert.doesNotMatch(later, /\bserve\b/);
-  assert.doesNotMatch(later, /skills list\|install/);
+  assert.doesNotMatch(out, /Later, not this series/);
+  assert.doesNotMatch(out, /Not in this product/);
 });
 
 test("mcp is a read-only stdio command", () => {
@@ -205,24 +214,16 @@ test("help --all does not call control-mode later", () => {
   const result = runCli(["help", "--all"]);
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
-  const later = helpSection(out, "Later, not this series:", "Not in this product:");
-  assert.doesNotMatch(later, /control-mode/);
-  assert.doesNotMatch(later, /vendor extra-adapter argv/);
-  assert.doesNotMatch(later, /\bmap\b/);
-  assert.doesNotMatch(later, /wireframe/);
-  assert.doesNotMatch(later, /\bserve\b/);
-  assert.doesNotMatch(later, /skills list/);
-  const adjacent = helpSection(out, "Shipped adjacent (not the default window):", "Later, not this series:");
+  assert.doesNotMatch(out, /Later, not this series/);
+  assert.doesNotMatch(out, /Not in this product/);
+  const adjacent = helpSection(out, "Shipped adjacent (not the default window):");
   assert.match(adjacent, /^ {2}map$/m);
   assert.match(adjacent, /--refresh, --lsp, --no-lsp/);
   assert.doesNotMatch(out, /v0 gap; follow-up PRs in this series/);
   assert.doesNotMatch(out, /v0 gap/);
   const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");
   assert.match(alwaysOn, /control-mode \[mode\]/);
-  const notIn = helpSection(out, "Not in this product:", "");
-  assert.doesNotMatch(notIn, /\bchat\b/);
-  assert.doesNotMatch(notIn, /HTTP model router/);
-  assert.doesNotMatch(notIn, /bin legion/);
+  assert.match(alwaysOn, /^ {2}chat$/m);
 });
 
 test("installer flags refuse with exit 2", () => {
@@ -604,7 +605,6 @@ test("help --all drops HTTP model router and lists http init flags", () => {
   assert.match(out, /--http-base-url/);
   assert.match(out, /--http-model/);
   assert.match(out, /--http-api-key-env/);
-  assert.doesNotMatch(out, /HTTP model router/);
-  assert.doesNotMatch(out, /Not in this product:[\s\S]*\bchat\b/);
-  assert.doesNotMatch(out, /Not in this product:[\s\S]*bin legion/);
+  assert.doesNotMatch(out, /Later, not this series/);
+  assert.doesNotMatch(out, /Not in this product/);
 });

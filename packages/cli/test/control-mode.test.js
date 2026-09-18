@@ -16,14 +16,10 @@ test("help --all lists control-mode in always-on, not later or v0 gap", () => {
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
   assert.match(out, /Always-on operations:[\s\S]*control-mode \[mode\]/);
-  assert.doesNotMatch(out, /Later, not this series:[\s\S]*control-mode/);
-  assert.doesNotMatch(out, /Later, not this series:[\s\S]*vendor extra-adapter argv/);
+  assert.doesNotMatch(out, /Later, not this series/);
+  assert.doesNotMatch(out, /Not in this product/);
   assert.doesNotMatch(out, /v0 gap; follow-up PRs in this series/);
   assert.doesNotMatch(out, /v0 gap/);
-  assert.doesNotMatch(out, /Later, not this series:[\s\S]*skills list/);
-  assert.doesNotMatch(out, /Later, not this series:[\s\S]*wireframe/);
-  assert.doesNotMatch(out, /Later, not this series:[\s\S]*\bserve\b/);
-  assert.doesNotMatch(out, /Later, not this series:[\s\S]*\bmap\b/);
   assert.match(out, /Shipped adjacent[\s\S]*\bmap\b/);
 });
 

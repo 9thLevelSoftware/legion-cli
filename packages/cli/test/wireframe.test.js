@@ -40,10 +40,8 @@ test("help --all lists wireframe in shipped adjacent, not later", () => {
   const out = normalize(result.stdout);
   assert.match(out, /Shipped adjacent[\s\S]*\bwireframe\b/);
   assert.match(out, /--restyle, --spawn, --adapter/);
-  assert.doesNotMatch(out, /Later, not this series:\n {2}.*wireframe/);
-  assert.doesNotMatch(out, /Later, not this series:\n {2}skills list\|install/);
-  assert.doesNotMatch(out, /Not in this product:\n {2}HTTP model router/);
-  assert.doesNotMatch(out, /Not in this product:\n {2}chat,/);
+  assert.doesNotMatch(out, /Later, not this series/);
+  assert.doesNotMatch(out, /Not in this product/);
 });
 
 test("wireframe refuses uninitialized and --skip-palette-check", async () => {

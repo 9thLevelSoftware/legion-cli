@@ -5,10 +5,10 @@
 | **Title** | Adapter routing: per-task and per-skill selection of which coding-agent CLI to spawn |
 | **Author** | Systems Architecture |
 | **Date** | 2026-09-03 |
-| **Status** | Draft (rev 6 — verified vendor argv; nested extra `.strict()`) |
+| **Status** | Draft (rev 7 — AdapterId `http` in-product; nested extra `.strict()`) |
 | **Product** | Legion CLI (`legion-cli`, npm `@9thlevelsoftware/legion-cli`) |
 | **Audience** | Senior engineers implementing the feature; product leads reviewing scope |
-| **Design of record** | `docs/design/product-engineering-cli.md` (rev 12 — verified extra-adapter vendor argv; nested extra `.strict()`) |
+| **Design of record** | `docs/design/product-engineering-cli.md` (rev 14 — twelve previously deferred surfaces shipped; AdapterId `http` in-product) |
 | **Git author** | 9thLevelSoftware / engineering@9thlevelsoftware.com |
 
 ---
@@ -31,9 +31,9 @@ Users already have several subscription coding CLIs on PATH (`grok`, `codex` fro
 
 The product clarification (treat as definition):
 
-- Legion does not call vendor HTTP APIs.
-- Legion starts a program already on the machine. That program is already signed in. It talks to the model.
-- The same user goal (“this task on Grok, that task on MiniMax”) is achieved by routing **which coding CLI to launch**, with optional argv `--model` if the user wants that CLI to pin a model.
+- Spawn CLIs remain the default: Legion starts a program already on the machine. That program is already signed in. It talks to the model.
+- AdapterId `http` is an in-process OpenAI-compat completions client (`packages/http`, `apiKeyEnv`, SSRF-bounded `baseUrl`). It is **not** a marketplace, LiteLLM, or Anthropic `tool_use` preset. Nested extras stay spawn-only (no `baseUrl` / `provider` on `adapter.grok`). Inline `apiKey` still fails parse.
+- The same user goal (“this task on Grok, that task on MiniMax”) is achieved by routing **which AdapterId to launch**, with optional argv `--model` if the user wants a spawn CLI to pin a model.
 
 ### Current state (snapshot 2026-09-03)
 
@@ -43,8 +43,8 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 
 | Surface | Path | What it does |
 | --- | --- | --- |
-| Adapter ids | `packages/schema/src/versions.ts` | `ADAPTER_IDS = claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax`. `EXTRA_ADAPTER_IDS` + `ASSUMED_EXTRA_BINARIES`: grok→`grok`, openai→`codex`, codex→`codex`, mimo→`mimo`, minimax→`mcode`. **`openai` and `codex` share assumed binary `codex`.** `mcode` is not an AdapterId. |
-| Config | `packages/schema/src/schemas.ts` `LegionConfigSchema` | Required `adapter.default`. Per-id knobs: `claude.extraArgs`; `generic.binary`/`args`; `ExtraAdapterConfig { binary?, args? }` for extras. Optional `adapter.routes` / `adapter.named`. **No `model` / `provider` / `apiKey` / `apiBase` field.** Top-level adapter object **and nested extra blocks** are **`.strict()`** — those HTTP-router keys fail parse. Generic required when default **or** any route/named target is `generic`. |
+| Adapter ids | `packages/schema/src/versions.ts` | `ADAPTER_IDS = claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax\|http`. `EXTRA_ADAPTER_IDS` + `ASSUMED_EXTRA_BINARIES`: grok→`grok`, openai→`codex`, codex→`codex`, mimo→`mimo`, minimax→`mcode`. **`openai` and `codex` share assumed binary `codex`.** `mcode` is not an AdapterId. `http` is not an extra spawn binary. |
+| Config | `packages/schema/src/schemas.ts` `LegionConfigSchema` | Required `adapter.default`. Per-id knobs: `claude.extraArgs`; `generic.binary`/`args`; `ExtraAdapterConfig { binary?, args? }` for extras; `adapter.http` (`baseUrl`, `model`, `apiKeyEnv`, `allowLoopback`, optional `headers`, `.strict()`, no inline `apiKey`; loopback `http:` requires `allowLoopback: true`; `headers` cannot set `Authorization` / `X-Api-Key`). Optional `adapter.routes` / `adapter.named`. Nested extra spawn blocks have **no** `model` / `provider` / `apiKey` / `apiBase`. Top-level adapter object **and nested extra blocks** are **`.strict()`** — those HTTP-router keys fail parse on spawn extras. Generic required when default **or** any route/named target is `generic`. |
 | Task | `TaskSchema` same file | Optional `adapter?: AdapterId`. Fixture `packages/persist/test/fixtures/project/legion-cli/tasks/TSK-0002.md` has no adapter key — **leave it that way.** Task is not `.strict()` (strip-unknown except the enum field). |
 | Resume | `ResumeFileSchema` | Optional `adapterId`, `binary`, `argvSummary` (template), `resolutionSource`. Old resume files without them still parse. |
 | Session brief | `SessionBriefSchema.currentTask` | Optional **raw** `adapter?: AdapterId`. |
@@ -68,7 +68,7 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 | Nested extra HTTP keys | `ExtraAdapterConfigSchema` | `.strict()`. `adapter.grok.apiKey` **fails parse**. |
 | Vendor argv | `FROZEN_ARGV_TABLE` | KD-7 frozen templates. Prefix-compatible extra flags only. |
 
-**Design of record (rev 12):** KD5 and §5.1 of `docs/design/product-engineering-cli.md` say extras are **spawnable** (`DETECT_ONLY_ADAPTER_IDS` empty; `AdapterNotEnabled` is a dead path) with **verified vendor argv**. Pre-rev-9 text said `grok`/`codex` were v0 detect-only. This design **does not** put extras back on detect-only. CLI `--adapter` on spawn verbs is landed. Nested extra `.strict()`. No HTTP completions client.
+**Design of record (rev 14):** KD5 and §5.1 of `docs/design/product-engineering-cli.md` say extras are **spawnable** (`DETECT_ONLY_ADAPTER_IDS` empty; `AdapterNotEnabled` is a dead path) with **verified vendor argv**. Pre-rev-9 text said `grok`/`codex` were v0 detect-only. This design **does not** put extras back on detect-only. CLI `--adapter` on spawn verbs is landed. Nested extra `.strict()`. AdapterId `http` is in-product (OpenAI-compat, `apiKeyEnv`, SSRF-bounded `baseUrl`); spawn remains the default.
 
 ### Pain points
 
@@ -79,7 +79,7 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 
 ### Constraints carried forward (no exception unless noted)
 
-- Legion CLI does not call vendor HTTP APIs. Auth is whatever the installed CLI already uses. Never store API keys in Legion config.
+- Spawn-CLI auth is whatever the installed CLI already uses. AdapterId `http` reads `process.env[apiKeyEnv]` in memory. Never store API keys in Legion config.
 - No product-default adapter. `adapter.default` remains **required**.
 - Frozen vendor argv + pointer prompt. Extra adapters spawn with the KD-7 table; doctor/spawn fail-closed on dropped `-p`/`exec`/`run` or omitted `{{pointer}}`.
 - Engine, not the spawn, writes `STATE.md`, task `status`, `lastReadiness`, `lastReview`.
@@ -93,25 +93,24 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 
 ### Goals
 
-1. **Resolution:** a second step that yields an existing `AdapterId`, then current `createAdapter` / `detect` / `spawn`. Fallback **only** to required `adapter.default`. Never invent an id. Never HTTP.
+1. **Resolution:** a second step that yields an existing `AdapterId`, then current `createAdapter` / `detect` / `spawn` (spawn CLI **or** in-process `http`). Fallback **only** to required `adapter.default`. Never invent an id.
 2. **Per-task routing:** `TSK-0001` → Grok CLI, `TSK-0002` → Codex CLI, persisted on the task file and git-reviewed.
 3. **Skill-level routing:** optional config so `plan` can spawn Grok while `execute` defaults to Claude, without a product-default adapter.
 4. **One-shot override:** `--adapter <id>` on `plan`, `execute`, `review`, `verify`, and `fix` (fix forwards into `ExecuteOptions.adapter`). No intent/discuss/spec CLI flags in v1.
-5. **Model choice stays argv:** `--model` via existing `claude.extraArgs` / `generic.args` / `adapter.<id>.args` (must keep the vendor prefix + `{{pointer}}`). No `provider` / `model` / `apiKey` / `apiBase` fields. Config parse **rejects** those HTTP-router keys on the top-level adapter object **and nested extra blocks** (`.strict()`).
+5. **Model choice stays argv on spawn CLIs:** `--model` via existing `claude.extraArgs` / `generic.args` / `adapter.<id>.args` (must keep the vendor prefix + `{{pointer}}`). `provider` / `model` / `apiKey` / `apiBase` remain illegal on the top-level adapter object **and nested extra spawn blocks** (`.strict()`). `adapter.http` is a separate `.strict()` object with `model` + `apiKeyEnv` (never inline `apiKey`).
 6. **Fail-closed on the routed adapter:** required skills (`plan`, `execute`, `review`) refuse if the **resolved** id is not spawnable (`resolveAdapter(config, { id })` then `await isSpawnable`, same as spawn); optional skills skip spawn. Doctor fail-closed covers default **and required-skill routes** (`routes.plan` / `routes.execute` / `routes.review`). Optional-skill routes, named aliases, and `Task.adapter` warn only.
 7. **Observability:** every spawn writes `adapterId` / template `argvSummary` on `resume.json` **before** `wait()`. Existing execute/timeout audit events gain the same fields. Brief/next/dashboard show **raw** `Task.adapter`. Resolved id is execute/fix outcome only.
 8. **Compatibility:** a project with only `adapter.default` behaves exactly as today. Do not edit the TSK-0002 persist fixture.
 
 ### Non-goals
 
-- No vendor HTTP client (OpenAI, xAI, MiniMax, Anthropic, …).
-- No stored tokens / API keys in `.legion-cli/config.yaml` or task files.
+- Not a LiteLLM / OpenRouter / Continue gateway. One OpenAI-compat AdapterId `http`, not a marketplace. Nested extras stay spawn-only.
+- No stored tokens / API keys in `.legion-cli/config.yaml` or task files (`http` uses `apiKeyEnv` only).
 - No request-time model picker UI.
 - No LiteLLM / OpenRouter / Continue / Cline gateway.
 - Dashboard is not a completions proxy (no POST that forwards prompts to a model). Dashboard ticket write does not accept `adapter`; inherit is engine-side only (`#fileTicketLocked`).
-- No new `AdapterId` values in this feature.
 - No revival of detect-only extras.
-- No OS sandboxing; FileContract revert is unchanged.
+- OS sandbox around execute is founding-doc rev 14 (separate from this routing RFC). FileContract revert is unchanged.
 - No product-default adapter if `adapter.default` is missing.
 - No changing frozen pointer-prompt text or SkillContract allowed roots.
 - No argv getter on `AgentAdapter` / `AgentHandle`. Template argv is derived from `FROZEN_ARGV_TABLE` + per-id config.
@@ -860,7 +859,7 @@ Used only by CLI `task amend --route` and `ticket create --route`. Spawn never c
 
 | Topic | Handling |
 | --- | --- |
-| **Threat: Legion grows an HTTP completions client and harvests keys** | Non-goal. Adapter object `.strict()` rejects `apiKey`/`apiBase`/`model`/`provider`. Legion never writes keys into `.legion-cli/config.yaml` or task files. |
+| **Threat: Legion grows an HTTP completions client and harvests keys** | AdapterId `http` is in-product and uses `apiKeyEnv` (never inline `apiKey`). Nested extra spawn blocks `.strict()` reject `apiKey`/`apiBase`/`model`/`provider`. Completions URL is SSRF-bounded. Legion never writes keys into `.legion-cli/config.yaml` or task files. |
 | **Env allowlist (inherit-if-set, never written by Legion)** | Base keys in `packages/agents/src/env.ts`: `PATH`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `ComSpec`, `TERM`. Provider credentials are **per spawned adapter** via `ADAPTER_CREDENTIAL_KEYS` (`filterSpawnEnv(env, adapterId)`): `claude` → `CLAUDE_API_KEY`; `grok` → `GROK_API_KEY`/`XAI_API_KEY`; `openai`/`codex` → `OPENAI_API_KEY`; `minimax` → `MINIMAX_API_KEY`; `fake`/`generic`/`mimo` → none. Never pass every vendor key to every child. Windows inherit: `SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`, `PATHEXT`. `SSH_AUTH_SOCK` inherited when present, never injected. Legion never writes keys into config or tasks. `argvSummary` must **not** persist env. |
 | **Threat: extraArgs smuggle secrets into argv and audit** | Doctor trust-warns extra args through `argvSummarySafe` (value-free). Resume/audit use the same helper, not pattern-only `redactSecrets`. Audit `data` is local jsonl; `DO_NOT_TRACK` still means no phone-home (`doctor --metrics`). |
 | **Threat: spawn writes `.legion-cli/config.yaml` to retarget later tasks** | Still implicit-forbidden; revert after `wait()`. |
@@ -933,7 +932,7 @@ If product later wants a request-time picker, that is a dashboard write-surface 
 
 ## References
 
-- Design of record: `docs/design/product-engineering-cli.md` (rev 11 — claim-source: 10-verb + extras; control-mode + vendor argv are this series; KD5 extras spawnable, §5.1 frozen argv, doctor, SkillContract table, PR-06 / PR-23).
+- Design of record: `docs/design/product-engineering-cli.md` (rev 14 — twelve previously deferred surfaces shipped; KD5 extras spawnable + AdapterId `http`; §5.1 frozen argv, doctor, SkillContract table).
 - Adapter ids and extras: `packages/schema/src/versions.ts` (`openai`/`codex` both → `codex`).
 - Config / Task / Resume: `packages/schema/src/schemas.ts`.
 - Resolve + create: `packages/agents/src/resolve.ts`, `packages/agents/src/types.ts`, `packages/agents/src/adapters/extra.ts`, `packages/agents/src/argv.ts`.

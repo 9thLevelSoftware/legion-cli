@@ -21,7 +21,9 @@ import {
   generateMap,
   MapError,
   mergeArchitecture,
+  readExistingMapFile,
   renderArchitecture,
+  writeMapFile,
 } from "@9thlevelsoftware/legion-cli-map";
 import { existsSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -665,7 +667,7 @@ export class LegionEngine {
 
   async map(opts: MapOptions = {}): Promise<MapResult> {
     let started: StartedSkillSpawn | undefined;
-    let generated: Awaited<ReturnType<typeof generateMap>> | undefined;
+    let generated!: Awaited<ReturnType<typeof generateMap>>;
 
     await this.#withLockOrRefuse(async () => {
       const state = await this.#readState();
@@ -703,43 +705,17 @@ export class LegionEngine {
     const waited = started?.spawned ? await waitStartedSpawn(started) : undefined;
 
     return this.#withLockOrRefuse(async () => {
-      if (!generated) {
-        refuse("Map needs a Legion CLI project first", HINT.init);
-      }
       if (started?.spawned) {
         const revert = await finishStartedSpawn(started);
         await ensureRealMapDir(this.projectRoot, this.store.paths.mapDir);
         const fingerprintsPath = join(this.store.paths.mapDir, "fingerprints.json");
         const architecturePath = join(this.store.paths.mapDir, "ARCHITECTURE.md");
-        let existingArch: string | undefined;
-        try {
-          const st = await lstat(architecturePath);
-          if (st.isSymbolicLink()) {
-            await rm(architecturePath, { force: true });
-          } else if (st.isDirectory()) {
-            await rm(architecturePath, { recursive: true, force: true });
-          } else if (st.isFile()) {
-            existingArch = await readFile(architecturePath, "utf8");
-          } else {
-            await rm(architecturePath, { force: true });
-          }
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        }
-        for (const [abs, contents] of [
-          [fingerprintsPath, `${JSON.stringify(generated.fingerprints, null, 2)}\n`],
-          [architecturePath, mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints))],
-        ] as const) {
-          try {
-            const st = await lstat(abs);
-            if (st.isSymbolicLink()) await rm(abs, { force: true });
-            else if (st.isDirectory()) await rm(abs, { recursive: true, force: true });
-            else if (!st.isFile()) await rm(abs, { force: true });
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-          }
-          await writeFile(abs, contents, "utf8");
-        }
+        const existingArch = await readExistingMapFile(architecturePath);
+        await writeMapFile(fingerprintsPath, `${JSON.stringify(generated.fingerprints, null, 2)}\n`);
+        await writeMapFile(
+          architecturePath,
+          mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints)),
+        );
         if (revert.incident) {
           refuse("inspect .git — spawn touched .git/", HINT.map);
         }

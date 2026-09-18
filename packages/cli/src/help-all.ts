@@ -132,10 +132,6 @@ export function printHelpAll(): void {
       "",
       "Shipped adjacent (not the default window):",
       ...SHIPPED_ADJACENT.map(row),
-      "",
-      "Later, not this series:",
-      "",
-      "Not in this product:",
     ].join("\n"),
   );
 }
