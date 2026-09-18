@@ -22,7 +22,7 @@ export type SandboxPolicy = {
   allowedWrites: readonly string[];
   readSet: readonly string[];
   adapterBinary?: string;
-  backend?: "auto" | "bwrap" | "seatbelt" | "copy";
+  backend?: SandboxBackend | "auto";
   /** When LSM bind fails, copy jail is allowed only if a hatch was already granted. */
   allowDegradedCopy?: boolean;
   /** Adapter-scoped vendor keys only; never the full credential dump. */
@@ -921,7 +921,8 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
       }
     }
 
-    const copyInHashes = hardened ? new Map<string, string>() : await hashJailFiles(jailRoot);
+    // node_modules is jail metadata and is not hashed; extras suppression still needs hashes on hardened.
+    const copyInHashes = await hashJailFiles(jailRoot);
 
     return {
       backend,
