@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createWriteStream, type WriteStream } from "node:fs";
+import { createWriteStream, realpathSync, type WriteStream } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -43,6 +43,20 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
     windowsHide: true,
     shell: false,
   } as const;
+
+  if (job.wrapper) {
+    let invoke = resolved;
+    try {
+      invoke = realpathSync(resolved);
+    } catch {
+      invoke = resolved;
+    }
+    return spawn(job.wrapper.bin, [...job.wrapper.argvPrefix, invoke, ...args], {
+      ...common,
+      stdio: ["ignore", stdout, stderr],
+      detached: process.platform !== "win32",
+    });
+  }
 
   if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
     const unwrapped = unwrapCmdShim(resolved);

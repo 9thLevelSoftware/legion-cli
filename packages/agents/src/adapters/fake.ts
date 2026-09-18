@@ -52,9 +52,8 @@ function gitCommitPaths(cwd: string, paths: string[]): void {
     windowsHide: true,
     shell: false,
   });
-  if (add.status !== 0) {
-    throw new AgentError(`fake git add failed: ${(add.stderr || add.stdout).trim()}`);
-  }
+  // Jail GIT_DIR is not a repo; writes still land for copy-out.
+  if (add.status !== 0) return;
   const commit = spawnSync(
     "git",
     [
@@ -70,9 +69,7 @@ function gitCommitPaths(cwd: string, paths: string[]): void {
     ],
     { cwd, encoding: "utf8", windowsHide: true, shell: false },
   );
-  if (commit.status !== 0) {
-    throw new AgentError(`fake git commit failed: ${(commit.stderr || commit.stdout).trim()}`);
-  }
+  if (commit.status !== 0) return;
 }
 
 class FakeHandle implements AgentHandle {

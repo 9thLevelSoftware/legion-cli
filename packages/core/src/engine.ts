@@ -107,6 +107,7 @@ import {
   type TaskStatus,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { copyShippedCraft, isBrandViolationBlockingFreeze } from "@9thlevelsoftware/legion-cli-design-system";
+import { assertExecuteSandbox, SandboxError } from "@9thlevelsoftware/legion-cli-sandbox";
 import { HINT, LegionRefuseError, refuse, refuseKind } from "./errors.js";
 import { assertIngestSourceAllowed } from "./ingest-guard.js";
 import { decisionFileName, templateDecisions } from "./discuss.js";
@@ -1142,6 +1143,7 @@ export class LegionEngine {
       const outcome = await this.#executeOne(nextId, {
         fix: Boolean(opts?.fix),
         adapter: opts?.adapter,
+        allowNoSandbox: Boolean(opts?.allowNoSandbox),
         config,
       });
       config = outcome.config;
@@ -1936,7 +1938,7 @@ export class LegionEngine {
 
   async #executeOne(
     taskId: string | "auto",
-    opts: { fix: boolean; adapter?: AdapterId; config?: LegionConfig },
+    opts: { fix: boolean; adapter?: AdapterId; allowNoSandbox?: boolean; config?: LegionConfig },
   ): Promise<{ result: ExecuteTaskResult; config: LegionConfig }> {
     let task: Task | undefined;
     let config: LegionConfig | undefined = opts.config;
@@ -1965,6 +1967,14 @@ export class LegionEngine {
         cliAdapter: opts.adapter,
         taskAdapter: task.adapter,
       });
+      try {
+        assertExecuteSandbox(config, { allowNoSandbox: opts.allowNoSandbox });
+      } catch (err) {
+        if (err instanceof SandboxError) {
+          refuse(err.message, HINT.allowNoSandbox);
+        }
+        throw err;
+      }
       if (state.phase !== "executing") {
         assertCanTransition(state.phase, "executing");
       }
@@ -2002,13 +2012,30 @@ export class LegionEngine {
           required: true,
           cliAdapter: opts.adapter,
           taskAdapter: task.adapter,
+          allowNoSandbox: opts.allowNoSandbox,
         });
       } catch (err) {
         await this.#transitionTaskTo(task.id, "blocked");
+        if (err instanceof SandboxError) {
+          refuse(err.message, HINT.allowNoSandbox);
+        }
         throw err;
       }
       if (!started.spawned) {
         await this.#transitionTaskTo(task.id, "blocked");
+      } else if (started.sandbox) {
+        const degraded = Boolean(opts.allowNoSandbox) && !started.sandbox.hardened;
+        await this.#audit(
+          degraded ? "sandbox_degraded" : "sandbox_start",
+          "executing",
+          "agent",
+          {
+            backend: started.sandbox.backend,
+            hardened: started.sandbox.hardened,
+            degraded,
+          },
+          task.id,
+        );
       }
     });
 
@@ -2024,6 +2051,20 @@ export class LegionEngine {
       const extras = revert?.extrasReverted ?? [];
       const incident = Boolean(revert?.incident);
       const headMoved = Boolean(revert?.headMoved);
+      if (started?.spawned && started.sandbox && revert) {
+        await this.#audit(
+          "sandbox_copyout",
+          "executing",
+          "agent",
+          {
+            backend: started.sandbox.backend,
+            hardened: started.sandbox.hardened,
+            copied: revert.sandboxCopied ?? [],
+            dropped: revert.sandboxDropped ?? [],
+          },
+          lockedTask.id,
+        );
+      }
       const runId = started?.runId ?? "";
       const durationMs = waited.durationMs;
       const timedOut = Boolean(waited.timedOut);

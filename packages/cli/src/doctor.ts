@@ -15,6 +15,7 @@ import {
   listResolvedSkillCatalog,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
   readAuditEvents,
   summarizeAuditMetrics,
@@ -436,6 +437,29 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     pushArgsTrustWarnings(config, warnings);
   }
 
+  const detectedSandbox = detectSandbox();
+  let sandboxOk = true;
+  let sandboxDetail = `${detectedSandbox.backend}, hardened=${detectedSandbox.hardened}`;
+  if (config) {
+    try {
+      assertExecuteSandbox(config, {});
+    } catch (err) {
+      sandboxOk = false;
+      sandboxDetail = err instanceof Error ? err.message : String(err);
+      warnings.push(
+        `sandbox config cannot satisfy requireHardened (${config.sandbox.backend}); guarded execute needs --allow-no-sandbox or sandbox.allowCopyJail`,
+      );
+    }
+  } else if (detectedSandbox.backend === "copy") {
+    sandboxOk = false;
+    warnings.push("sandbox is not hardened; guarded execute needs --allow-no-sandbox or sandbox.allowCopyJail");
+  }
+  checks.push({
+    ok: sandboxOk,
+    label: "sandbox",
+    detail: sandboxDetail,
+  });
+
   const skillsDir = findSkillsDir();
   const catalogResult = await listResolvedSkillCatalog({
     projectRoot: opts.project,
@@ -564,6 +588,10 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       routed,
       matrix: adapterMatrix,
     },
+    sandbox: {
+      backend: detectedSandbox.backend,
+      hardened: detectedSandbox.hardened,
+    },
     secrets: secrets.map((hit) => ({ name: hit.name, file: hit.file })),
     overlays: overlayLines.map((line) => line.trim()),
     ...(metrics
@@ -593,6 +621,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     "PATH",
     ...pathListing.flatMap((group) => formatPathGroup(group.name, group.paths)),
     "",
+    `Sandbox     ${detectedSandbox.backend} hardened=${detectedSandbox.hardened}`,
     `Playwright  ${playwrightDetail}`,
     `Lock        ${lockPresent ? "present" : "absent"}`,
     "schemaVersions",

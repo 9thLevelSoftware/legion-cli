@@ -6,6 +6,7 @@ ok    pnpm (<version>)
 ok    git (<version>)
 ok    adapter.default (fake)
 ok    adapter spawnable (yes)
+ok    sandbox (<backend>)
 ok    skill plan frontmatter (ok)
 ok    skill execute frontmatter (ok)
 ok    skill review frontmatter (ok)
@@ -16,6 +17,7 @@ PATH
   legion
     <paths>
 
+Sandbox     <backend>
 Playwright  <playwright>
 Lock        absent
 schemaVersions

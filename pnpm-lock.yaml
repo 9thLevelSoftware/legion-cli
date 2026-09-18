@@ -89,6 +89,9 @@ importers:
       '@9thlevelsoftware/legion-cli-qa':
         specifier: workspace:*
         version: link:../qa
+      '@9thlevelsoftware/legion-cli-sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:../schema
@@ -119,6 +122,9 @@ importers:
       '@9thlevelsoftware/legion-cli-qa':
         specifier: workspace:*
         version: link:../qa
+      '@9thlevelsoftware/legion-cli-sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:../schema

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import { normalize, runCli, withTempDir, withUnspawnableGrok } from "./helpers.js";
+import { allowCopyJail, normalize, runCli, withTempDir, withUnspawnableGrok } from "./helpers.js";
 
 function quoteArg(value) {
   return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
@@ -41,6 +41,7 @@ function makeTask(overrides = {}) {
 async function seedPlanReady(dir, extra = {}) {
   const engine = createLegionEngine(dir);
   await engine.init({ name: "Checkin", adapter: "fake" });
+  await allowCopyJail(engine.store);
   await engine.store.writeSpec(
     {
       schemaVersion: "legion-cli-spec/v1",
@@ -151,6 +152,31 @@ test("help lists execute flags", async () => {
   assert.match(out, /until-blocked/);
   assert.match(out, /fix/);
   assert.match(out, /adapter/);
+  assert.match(out, /allow-no-sandbox/);
+});
+
+test("execute --allow-no-sandbox without TTY refuses", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir);
+    const result = runCli(["execute", "--allow-no-sandbox", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /requires a TTY/);
+    assert.match(normalize(result.stderr), /--allow-no-sandbox/);
+  });
+});
+
+test("execute --allow-no-sandbox with piped Y runs", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir);
+    const result = runCli(["execute", "--allow-no-sandbox", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+      input: "Y\n",
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(result.stdout), /Verification PASS/);
+  });
 });
 
 test("doctor --metrics counts one execute timeout", async () => {

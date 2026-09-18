@@ -19,6 +19,7 @@ export const HINT = {
   blockers: "legion-cli status --blockers",
   advisory: "legion-cli control-mode guarded",
   execute: "legion-cli next / legion-cli execute",
+  allowNoSandbox: "legion-cli execute --allow-no-sandbox",
   verify: "legion-cli verify",
   review: "legion-cli review",
   qa: "legion-cli qa",

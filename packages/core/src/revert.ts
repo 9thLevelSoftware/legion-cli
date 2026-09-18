@@ -26,6 +26,8 @@ export type RevertResult = {
   incident: boolean;
   headMoved: boolean;
   preSpawnRef: string | null;
+  sandboxCopied?: string[];
+  sandboxDropped?: string[];
 };
 
 /** Pre-spawn bytes of `.legion-cli/tasks/*.md`, keyed by filename. */

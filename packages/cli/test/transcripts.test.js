@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import { normalize, readGolden, runCli, sanitizeDoctor, withTempDir } from "./helpers.js";
+import { allowCopyJail, normalize, readGolden, runCli, sanitizeDoctor, withTempDir } from "./helpers.js";
 
 function quoteArg(value) {
   return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
@@ -641,6 +641,7 @@ test("Checkin session key lines match the design-doc walkthrough (golden)", asyn
     assert.equal(approve.status, 0, approve.stderr);
 
     const engine = createLegionEngine(dir);
+    await allowCopyJail(engine.store);
     await mkdir(join(dir, ".legion-cli", "specs", "spec-checkin"), { recursive: true });
     await writeFile(join(dir, ".legion-cli", "specs", "spec-checkin", "stories.yaml"), "stories: []\n", "utf8");
     await engine.store.writeTask(makeReadyTask(), "Scaffold the check-in app.\n");

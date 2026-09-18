@@ -88,6 +88,12 @@ export async function withFakeAdapter(fn) {
 
 export async function initProject(engine, opts = {}) {
   await engine.init({ name: "Checkin", adapter: "fake", ...opts });
+  if (opts.keepSandbox) return;
+  const config = await engine.store.readConfig();
+  await engine.store.writeConfig({
+    ...config,
+    sandbox: { ...config.sandbox, allowCopyJail: true },
+  });
 }
 
 /** Grok on PATH is still unspawnable when args omit {{pointer}}. */
