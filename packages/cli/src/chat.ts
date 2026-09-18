@@ -13,6 +13,7 @@ import type { AdapterId, ChatAction, ChatSessionFile, ControlMode } from "@9thle
 import { parseAdapterFlag } from "./adapter-route.js";
 import { runBrief } from "./brief.js";
 import type { CliOpts } from "./io.js";
+import { formatHelpLayer1 } from "./help-all.js";
 import { writeErr, writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 import { closePrompt, isYes, readLine } from "./prompt.js";
@@ -70,8 +71,9 @@ async function printRead(
     return 0;
   }
   if (turn.local === "help") {
-    if (opts.json) writeJson({ kind: "help", output: turn.output, next: turn.nextHint });
-    else writeOut(turn.output);
+    const help = formatHelpLayer1();
+    if (opts.json) writeJson({ kind: "help", output: help, next: turn.nextHint });
+    else writeOut(help);
     return 0;
   }
   if (action.type === "status") {

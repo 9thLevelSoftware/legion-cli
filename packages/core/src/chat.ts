@@ -444,7 +444,7 @@ export async function buildChatPrompt(
     "Reply with a single JSON object (ChatAction). No markdown. Extra keys are ignored.",
     "Allowed types: status, search, next_verb, intent_answer, discuss_decide, ticket, assume_answer.",
     "Do not emit execute, ship, plan, spec_approve, control_mode, or wiki_trust.",
-    "Do not include wiki page bodies. Titles and paths only (see SessionBrief wiki list).",
+    "Do not include wiki page bodies. Use titles and paths from SessionBrief above; never inline page bodies.",
     `Phase: ${state.phase}`,
     `Next verb: ${await nextVerbForState(engine, state.phase)}`,
     "",
