@@ -46,7 +46,7 @@ export async function runServe(opts: CliOpts, flags: ServeFlags): Promise<number
     mcpHttp,
     webmcp: flags.webmcp === true,
     handleMcpHttp: mcpHttp ? handleMcpHttp : undefined,
-    onClose: () => closeMcpHttp(),
+    onClose: () => closeMcpHttp(opts.project),
   });
 
   if (opts.json) {

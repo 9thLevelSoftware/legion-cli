@@ -9,7 +9,6 @@ import {
   PathEscapeError,
   serveJsonPath,
   toFsPath,
-  writeTextFile,
 } from "@9thlevelsoftware/legion-cli-persist";
 import { SCHEMA_VERSION, ServeFileSchema, type ServeFile } from "@9thlevelsoftware/legion-cli-schema";
 import {
@@ -202,21 +201,34 @@ function tokenSha256(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-async function readServeFile(projectRoot: string): Promise<ServeFile | null> {
+async function readServeFile(projectRoot: string): Promise<{ file: ServeFile; raw: string } | null> {
+  let raw: string;
   try {
-    const raw = await readFile(toFsPath(projectRoot, serveJsonPath()), "utf8");
-    const parsed = ServeFileSchema.safeParse(JSON.parse(raw) as unknown);
-    return parsed.success ? parsed.data : null;
+    raw = await readFile(toFsPath(projectRoot, serveJsonPath()), "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    return null;
+    throw new LegionRefuseError(
+      `unreadable serve.json: ${(err as Error).message}`,
+      "legion-cli status",
+    );
   }
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(raw) as unknown;
+  } catch {
+    throw new LegionRefuseError("unreadable serve.json: invalid JSON", "legion-cli status");
+  }
+  const parsed = ServeFileSchema.safeParse(parsedJson);
+  if (!parsed.success) {
+    throw new LegionRefuseError("unreadable serve.json: invalid schema", "legion-cli status");
+  }
+  return { file: parsed.data, raw };
 }
 
 export async function readLiveServe(projectRoot: string): Promise<ServeFile | null> {
-  const file = await readServeFile(projectRoot);
-  if (!file || !isPidAlive(file.pid)) return null;
-  return file;
+  const record = await readServeFile(projectRoot);
+  if (!record || !isPidAlive(record.file.pid)) return null;
+  return record.file;
 }
 
 function serveFileBody(input: {
@@ -239,16 +251,6 @@ function serveFileBody(input: {
   return `${JSON.stringify(file, null, 2)}\n`;
 }
 
-async function writeServeFile(input: {
-  projectRoot: string;
-  port: number;
-  bind: string;
-  mcpHttp: boolean;
-  token: string;
-}): Promise<void> {
-  await writeTextFile(toFsPath(input.projectRoot, serveJsonPath()), serveFileBody(input));
-}
-
 async function claimServeSlot(input: {
   projectRoot: string;
   port: number;
@@ -265,14 +267,28 @@ async function claimServeSlot(input: {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
-  const live = await readLiveServe(input.projectRoot);
-  if (live) {
+  const existing = await readServeFile(input.projectRoot);
+  if (existing && isPidAlive(existing.file.pid)) {
     throw new LegionRefuseError(
-      `serve is already running on ${live.bind}:${live.port} (pid ${live.pid})`,
+      `serve is already running on ${existing.file.bind}:${existing.file.port} (pid ${existing.file.pid})`,
       "legion-cli status",
     );
   }
-  await unlink(path).catch(() => undefined);
+  if (existing) {
+    let currentRaw: string;
+    try {
+      currentRaw = await readFile(path, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      currentRaw = "";
+    }
+    if (currentRaw && currentRaw !== existing.raw) {
+      throw new LegionRefuseError("serve is already running", "legion-cli status");
+    }
+    if (currentRaw === existing.raw) {
+      await unlink(path);
+    }
+  }
   try {
     await writeFile(path, body, { encoding: "utf8", flag: "wx" });
   } catch (err) {
@@ -286,9 +302,10 @@ async function claimServeSlot(input: {
 async function removeOwnServeFile(projectRoot: string, pid: number): Promise<void> {
   try {
     const current = await readServeFile(projectRoot);
-    if (current && current.pid !== pid) return;
+    if (current && current.file.pid !== pid) return;
     await unlink(toFsPath(projectRoot, serveJsonPath()));
   } catch (err) {
+    if (err instanceof LegionRefuseError) return;
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
 }

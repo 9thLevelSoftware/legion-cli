@@ -350,3 +350,78 @@ test("closeMcpHttp ends an open GET SSE so server.close does not hang", async ()
     ]);
   });
 });
+
+test("PUT /mcp is 405 and consumes the body", async () => {
+  await withTempDir(async (dir) => {
+    await withMcpHttp(dir, async (base) => {
+      const res = await fetch(`${base}/mcp`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      assert.equal(res.status, 405);
+      assert.match(res.headers.get("allow") ?? "", /POST/);
+      await res.text();
+    });
+  });
+});
+
+test("closeMcpHttp(projectRoot) does not close another project's session", async () => {
+  await withTempDir(async (dirA) => {
+    await withTempDir(async (dirB) => {
+      const server = createServer((req, res) => {
+        const url = new URL(req.url ?? "/", "http://127.0.0.1");
+        const root = url.searchParams.get("root") === "b" ? dirB : dirA;
+        void handleMcpHttp({ req, res, projectRoot: root });
+      });
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+      const addr = server.address();
+      const base = `http://127.0.0.1:${addr.port}`;
+      const initBody = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "scope", version: "0" },
+        },
+      });
+      const headers = {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      };
+      try {
+        const initA = await fetch(`${base}/mcp?root=a`, { method: "POST", headers, body: initBody });
+        const initB = await fetch(`${base}/mcp?root=b`, { method: "POST", headers, body: initBody });
+        assert.equal(initA.status, 200, await initA.clone().text());
+        assert.equal(initB.status, 200, await initB.clone().text());
+        const sessionB = initB.headers.get("mcp-session-id");
+        assert.ok(sessionB);
+        await closeMcpHttp(dirA);
+        const pingB = await fetch(`${base}/mcp?root=b`, {
+          method: "POST",
+          headers: {
+            ...headers,
+            "MCP-Session-Id": sessionB,
+            "MCP-Protocol-Version": "2025-03-26",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" }),
+        });
+        assert.notEqual(pingB.status, 404, await pingB.text());
+      } finally {
+        await closeMcpHttp();
+        server.closeAllConnections?.();
+        await new Promise((resolve, reject) => {
+          server.close((err) => (err ? reject(err) : resolve()));
+        });
+      }
+    });
+  });
+});

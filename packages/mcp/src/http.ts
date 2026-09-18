@@ -24,35 +24,57 @@ type McpSession = {
   server: McpServer;
   projectRoot: string;
   lastSeen: number;
+  openStreams: number;
 };
 
-const sessions = new Map<string, McpSession>();
-const openResponses = new Set<ServerResponse>();
-const hitsBySocket = new WeakMap<Socket, number[]>();
+type TrackedResponse = { res: ServerResponse; projectRoot: string };
 
-function trackResponse(res: ServerResponse): void {
-  openResponses.add(res);
+const sessions = new Map<string, McpSession>();
+const openResponses = new Set<TrackedResponse>();
+const hitsBySocket = new WeakMap<Socket, number[]>();
+let pendingInits = 0;
+
+function trackResponse(res: ServerResponse, projectRoot: string): void {
+  const tracked: TrackedResponse = { res, projectRoot: resolve(projectRoot) };
+  openResponses.add(tracked);
   const done = () => {
-    openResponses.delete(res);
+    openResponses.delete(tracked);
   };
   res.once("close", done);
   res.once("finish", done);
 }
 
-function endOpenResponses(): void {
-  for (const res of openResponses) {
-    try {
-      if (!res.writableEnded) res.end();
-    } catch {
-      // already closed
-    }
-    try {
-      res.destroy();
-    } catch {
-      // already destroyed
-    }
+function attachStream(session: McpSession, res: ServerResponse): void {
+  session.openStreams += 1;
+  session.lastSeen = Date.now();
+  const done = () => {
+    session.openStreams = Math.max(0, session.openStreams - 1);
+    session.lastSeen = Date.now();
+  };
+  res.once("close", done);
+  res.once("finish", done);
+}
+
+function endTrackedResponse(res: ServerResponse): void {
+  try {
+    if (!res.writableEnded) res.end();
+  } catch {
+    // already closed
   }
-  openResponses.clear();
+  try {
+    res.destroy();
+  } catch {
+    // already destroyed
+  }
+}
+
+function endOpenResponses(projectRoot?: string): void {
+  const root = projectRoot ? resolve(projectRoot) : undefined;
+  for (const tracked of [...openResponses]) {
+    if (root && tracked.projectRoot !== root) continue;
+    openResponses.delete(tracked);
+    endTrackedResponse(tracked.res);
+  }
 }
 
 function sessionHeader(req: IncomingMessage): string | undefined {
@@ -163,7 +185,9 @@ async function closeSession(id: string, session: McpSession): Promise<void> {
 }
 
 async function reapIdleSessions(now = Date.now()): Promise<void> {
-  const stale = [...sessions.entries()].filter(([, session]) => now - session.lastSeen > MCP_HTTP_IDLE_MS);
+  const stale = [...sessions.entries()].filter(
+    ([, session]) => session.openStreams === 0 && now - session.lastSeen > MCP_HTTP_IDLE_MS,
+  );
   await Promise.all(stale.map(([id, session]) => closeSession(id, session)));
 }
 
@@ -182,7 +206,7 @@ async function createSession(projectRoot: string): Promise<McpSession> {
     sessionIdGenerator: () => randomUUID(),
     enableJsonResponse: true,
     onsessioninitialized: (id) => {
-      sessions.set(id, { transport, server, projectRoot: root, lastSeen: Date.now() });
+      sessions.set(id, { transport, server, projectRoot: root, lastSeen: Date.now(), openStreams: 0 });
     },
     onsessionclosed: (id) => {
       sessions.delete(id);
@@ -195,7 +219,7 @@ async function createSession(projectRoot: string): Promise<McpSession> {
     void server.close();
   };
   await server.connect(transport);
-  return { transport, server, projectRoot: root, lastSeen: Date.now() };
+  return { transport, server, projectRoot: root, lastSeen: Date.now(), openStreams: 0 };
 }
 
 /**
@@ -237,10 +261,11 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
         }),
       );
     }
+    req.resume();
     return;
   }
 
-  trackResponse(res);
+  trackResponse(res, projectRoot);
 
   let parsedBody: unknown;
   if (method === "POST" || method === "DELETE") {
@@ -281,6 +306,7 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
       return;
     }
     if (existing) {
+      attachStream(existing, res);
       await existing.transport.handleRequest(req, res);
       return;
     }
@@ -294,12 +320,17 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
   }
 
   if (method === "POST" && isInit(parsedBody)) {
-    if (sessions.size >= MCP_HTTP_MAX_SESSIONS) {
+    if (sessions.size + pendingInits >= MCP_HTTP_MAX_SESSIONS) {
       jsonRpcError(res, 429, -32000, "too many MCP sessions");
       return;
     }
-    const session = await createSession(projectRoot);
-    await session.transport.handleRequest(req, res, parsedBody);
+    pendingInits += 1;
+    try {
+      const session = await createSession(projectRoot);
+      await session.transport.handleRequest(req, res, parsedBody);
+    } finally {
+      pendingInits -= 1;
+    }
     return;
   }
 
@@ -311,12 +342,13 @@ export async function handleMcpHttp(opts: HandleMcpHttpOpts): Promise<void> {
   jsonRpcError(res, 400, -32000, "Bad Request: No valid session ID provided");
 }
 
-export async function closeMcpHttp(): Promise<void> {
-  endOpenResponses();
-  const live = [...sessions.values()];
-  sessions.clear();
+export async function closeMcpHttp(projectRoot?: string): Promise<void> {
+  const root = projectRoot ? resolve(projectRoot) : undefined;
+  endOpenResponses(root);
+  const live = [...sessions.entries()].filter(([, session]) => !root || session.projectRoot === root);
+  for (const [id] of live) sessions.delete(id);
   await Promise.all(
-    live.map(async (session) => {
+    live.map(async ([, session]) => {
       try {
         await session.transport.close();
       } catch {

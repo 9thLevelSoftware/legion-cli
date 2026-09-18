@@ -727,6 +727,30 @@ test("second startServe while pid is live refuses; dead pid is overwritten", asy
   });
 });
 
+test("occupy refuses corrupt serve.json instead of overwriting it", async () => {
+  await withTempDir(async (dir) => {
+    const servePath = join(dir, ".legion-cli", "serve.json");
+    await mkdir(join(dir, ".legion-cli"), { recursive: true });
+    await writeFile(servePath, "{not-json", "utf8");
+    await assert.rejects(
+      () =>
+        startDashboard({
+          projectRoot: dir,
+          port: 0,
+          open: false,
+          warn: () => {},
+          occupy: true,
+          mcpHttp: false,
+        }),
+      (err) => {
+        assert.match(String(err.message), /unreadable serve\.json/);
+        return true;
+      },
+    );
+    assert.equal(await readFile(servePath, "utf8"), "{not-json");
+  });
+});
+
 test("EADDRINUSE Next is legion-cli serve --port <n>", async () => {
   await withTempDir(async (dir) => {
     const first = await startDashboard({
