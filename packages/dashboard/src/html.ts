@@ -162,9 +162,9 @@ ${pathList(snapshot)}
     <div class="board">
 ${cols}
     </div>
-    <h2>Blockers</h2>
+    <h2 id="blockers">Blockers</h2>
     ${blockers}
-    <h2>Timeline</h2>
+    <h2 id="timeline">Timeline</h2>
     ${timeline}
 `;
   return layout(`${name} · board`, body, { alert: alertFor(snapshot), webmcp });

@@ -418,6 +418,7 @@ test("LegionConfig requires adapter.default and defaults ingest.autoCommit", () 
   assert.equal(parsed.qa.passScore, 85);
   assert.equal(parsed.dashboard.bind, "127.0.0.1");
   assert.equal(parsed.flags.mcpApps, false);
+  assert.equal(parsed.flags.webmcp, false);
   assert.equal(parsed.adapter.http, undefined);
   assert.equal(parsed.sandbox.requireHardened, true);
   assert.equal(parsed.sandbox.allowCopyJail, false);

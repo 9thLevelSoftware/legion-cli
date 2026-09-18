@@ -117,6 +117,7 @@ test("help --all lists serve as shipped adjacent and not later", () => {
   const later = helpSection(out, "Later, not this series:", "Not in this product:");
   assert.match(adjacent, /^ {2}serve$/m);
   assert.match(adjacent, /--mcp-http\/--no-mcp-http/);
+  assert.match(adjacent, /--webmcp/);
   assert.doesNotMatch(later, /\bserve\b/);
   assert.doesNotMatch(later, /skills list\|install/);
 });

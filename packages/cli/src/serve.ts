@@ -58,10 +58,12 @@ export async function runServe(opts: CliOpts, flags: ServeFlags): Promise<number
       sourceOfTruth: "cli",
       mcpHttp,
       mcpPath: mcpHttp ? "/mcp" : null,
+      webmcp: handle.webmcp,
     });
   } else {
     const lines = [`Viewer: ${handle.url}`];
     if (mcpHttp) lines.push(`MCP HTTP: ${handle.url}/mcp (read-only tools).`);
+    if (handle.webmcp) lines.push("WebMCP: UI-only tools at /webmcp.js.");
     lines.push(
       "Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist). CLI remains the source of truth.",
     );
