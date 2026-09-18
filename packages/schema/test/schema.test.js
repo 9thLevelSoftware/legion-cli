@@ -1060,6 +1060,17 @@ test("JSON Schema overlays reject .git paths, no-browser pass, and generic witho
       `Ajv baseUrl ${JSON.stringify(baseUrl)} must fail without a valid authority`,
     );
   }
+  assert.equal(
+    validateConfig({
+      ...loopbackHttp,
+      adapter: {
+        ...loopbackHttp.adapter,
+        http: { ...loopbackHttp.adapter.http, baseUrl: "http://localhost:99999/v1" },
+      },
+    }),
+    false,
+    "Ajv loopback baseUrl with port 99999 must fail",
+  );
 });
 
 test("SkillId enum has twelve ids including map, wireframe, chat", () => {
@@ -1178,6 +1189,9 @@ test("ADAPTER_IDS includes http and spawn extras stay strict", () => {
     "ftp://api.x.ai/v1",
     "https://sk-secret@api.openai.com/v1",
     "http://127.0.0.1:8080/v1",
+    "https://:",
+    "https://[]",
+    "https://example.com:99999/v1",
   ]) {
     assert.equal(
       LegionConfigSchema.safeParse({
@@ -1212,6 +1226,17 @@ test("ADAPTER_IDS includes http and spawn extras stay strict", () => {
       `baseUrl ${baseUrl} with allowLoopback must parse`,
     );
   }
+  assert.equal(
+    LegionConfigSchema.safeParse({
+      ...configBase,
+      adapter: {
+        default: "http",
+        http: { ...httpBlock, baseUrl: "http://localhost:99999/v1", allowLoopback: true },
+      },
+    }).success,
+    false,
+    "baseUrl http://localhost:99999/v1 must fail parse even with allowLoopback",
+  );
   for (const env of ["xai_api_key", "1ABC", "A", ""]) {
     assert.equal(
       LegionConfigSchema.safeParse({
