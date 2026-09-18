@@ -750,6 +750,8 @@ async function copyOutWrites(
       dropped.push(rel);
       continue;
     }
+    const before = copyInHashes.get(rel);
+    if (before !== undefined && (await fileSha256(src)) === before) continue;
     if (
       !st.isFile() ||
       st.isSymbolicLink() ||
@@ -757,13 +759,9 @@ async function copyOutWrites(
       !isConcretePosixRepoRelativePath(rel) ||
       !matchesAllowed(rel, allowedWrites)
     ) {
-      const before = copyInHashes.get(rel);
-      if (before !== undefined && (await fileSha256(src)) === before) continue;
       dropped.push(rel);
       continue;
     }
-    const before = copyInHashes.get(rel);
-    if (before !== undefined && (await fileSha256(src)) === before) continue;
     const dest = toFsPath(projectRoot, rel);
     try {
       if (!(await safeCopyOutFile(src, dest, projectRoot))) {
