@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-skill-overlay/v1"
+    },
+    "skillId": {
+      "type": "string",
+      "enum": [
+        "interview",
+        "discuss",
+        "spec",
+        "ingest",
+        "plan",
+        "execute",
+        "verify",
+        "review",
+        "qa",
+        "map",
+        "wireframe",
+        "chat"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "local",
+            "github"
+          ]
+        },
+        "origin": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "origin"
+      ]
+    },
+    "integrity": {
+      "type": "object",
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "minisign": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sha256"
+      ]
+    },
+    "installedAt": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "skillId",
+    "source",
+    "integrity",
+    "installedAt"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "github"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "object",
+            "required": [
+              "type",
+              "origin",
+              "ref"
+            ],
+            "properties": {
+              "origin": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+              }
+            }
+          },
+          "integrity": {
+            "type": "object",
+            "required": [
+              "sha256",
+              "minisign"
+            ]
+          }
+        },
+        "required": [
+          "source",
+          "integrity"
+        ]
+      }
+    }
+  ]
+}

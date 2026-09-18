@@ -40,6 +40,11 @@ schemaVersions
   legion-cli-design-system/v1
   legion-cli-design-active/v1
   legion-cli-packet/v1
+  legion-cli-map/v1
+  legion-cli-fingerprint/v1
+  legion-cli-skill-overlay/v1
+  legion-cli-chat/v1
+  legion-cli-serve/v1
 
 Adapter
   default      fake
@@ -52,6 +57,7 @@ Adapter
   codex        <detect>
   mimo         <detect>
   minimax      <detect>
+  http         not configured
 
 Routes
   default      fake  spawnable

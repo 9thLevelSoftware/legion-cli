@@ -56,7 +56,8 @@
         "openai",
         "codex",
         "mimo",
-        "minimax"
+        "minimax",
+        "http"
       ]
     },
     "parentId": {

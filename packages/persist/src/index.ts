@@ -61,6 +61,7 @@ export {
   runResumePath,
   runStorePath,
   packetPath,
+  serveJsonPath,
   specPath,
   taskPath,
   wikiPageStorePath,

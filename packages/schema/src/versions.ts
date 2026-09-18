@@ -21,6 +21,11 @@ export const SCHEMA_VERSION = {
   designSystem: "legion-cli-design-system/v1",
   designActive: "legion-cli-design-active/v1",
   packet: "legion-cli-packet/v1",
+  map: "legion-cli-map/v1",
+  fingerprint: "legion-cli-fingerprint/v1",
+  skillOverlay: "legion-cli-skill-overlay/v1",
+  chatSession: "legion-cli-chat/v1",
+  serve: "legion-cli-serve/v1",
 } as const;
 
 export type SchemaVersion = (typeof SCHEMA_VERSION)[keyof typeof SCHEMA_VERSION];
@@ -69,6 +74,9 @@ export const SkillIdSchema = z.enum([
   "verify",
   "review",
   "qa",
+  "map",
+  "wireframe",
+  "chat",
 ]);
 export type SkillId = z.infer<typeof SkillIdSchema>;
 
@@ -93,10 +101,12 @@ export const ADAPTER_IDS = [
   "codex",
   "mimo",
   "minimax",
+  "http",
 ] as const;
 export const AdapterIdSchema = z.enum(ADAPTER_IDS);
 export type AdapterId = z.infer<typeof AdapterIdSchema>;
-export const ADAPTER_ID_HELP = ADAPTER_IDS.join("|");
+/** Spawn-selectable ids for CLI help / `--adapter`. `http` is config-only until PR-11 flags. */
+export const ADAPTER_ID_HELP = ADAPTER_IDS.filter((id) => id !== "http").join("|");
 
 /** Subscription coding CLIs spawned by PATH name. Frozen vendor argv lives in agents `FROZEN_ARGV_TABLE`. */
 export const EXTRA_ADAPTER_IDS = ["grok", "openai", "codex", "mimo", "minimax"] as const;

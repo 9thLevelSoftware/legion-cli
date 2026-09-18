@@ -1,22 +1,15 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { SkillIdSchema } from "@9thlevelsoftware/legion-cli-schema";
 import { normalize, runCli, withTempDir } from "./helpers.js";
 
 const REQUIRED_SKILL_IDS = ["plan", "execute", "review"];
-const ALL_SKILL_IDS = [
-  "interview",
-  "discuss",
-  "spec",
-  "ingest",
-  "plan",
-  "execute",
-  "verify",
-  "review",
-  "qa",
-];
+const ALL_SKILL_IDS = [...SkillIdSchema.options];
+const repoSkills = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
 
 function skillMarkdown(skillId, overrides = {}) {
   const required = REQUIRED_SKILL_IDS.includes(skillId);
@@ -111,6 +104,17 @@ test("doctor warns when SKILL.md body exceeds 20k and does not refuse", async ()
     const out = normalize(result.stdout);
     assert.match(out, /skills\/execute\/SKILL.md body is \d+ characters \(warn at 20000\)/);
     assert.match(out, /ok    skill execute frontmatter \(ok\)/);
+    assert.match(out, /Doctor passed/);
+  });
+});
+
+test("doctor does not warn on unpackaged optional SKILL.md", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const result = runCli(["doctor", "--project", dir], { env: doctorEnv(repoSkills) });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout);
+    assert.doesNotMatch(out, /missing SKILL.md/);
     assert.match(out, /Doctor passed/);
   });
 });

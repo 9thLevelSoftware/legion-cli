@@ -11,6 +11,8 @@ import {
   type AdapterResolution,
   type AgentAdapter,
   type AgentAdapterId,
+  type AgentHandle,
+  type AgentJob,
   type DetectResult,
   type SkillId,
 } from "./types.js";
@@ -59,6 +61,17 @@ export function createAdapter(id: AgentAdapterId, options: AdapterCreateOptions 
       return new ExtraAdapter("mimo", options.mimo);
     case "minimax":
       return new ExtraAdapter("minimax", options.minimax);
+    case "http":
+      return {
+        id: "http",
+        binary: "(http)",
+        async detect(): Promise<DetectResult> {
+          return { ok: false, reason: "adapter.http is not configured" };
+        },
+        async spawn(_job: AgentJob): Promise<AgentHandle> {
+          throw new AdapterConfigError("adapter.http is not configured");
+        },
+      };
   }
 }
 

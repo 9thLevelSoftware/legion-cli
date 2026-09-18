@@ -32,7 +32,10 @@
         "execute",
         "verify",
         "review",
-        "qa"
+        "qa",
+        "map",
+        "wireframe",
+        "chat"
       ]
     },
     "preSpawnRef": {
@@ -70,7 +73,8 @@
         "openai",
         "codex",
         "mimo",
-        "minimax"
+        "minimax",
+        "http"
       ]
     },
     "binary": {

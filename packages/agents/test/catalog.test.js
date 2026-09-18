@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { SkillIdSchema } from "@9thlevelsoftware/legion-cli-schema";
 import {
   REQUIRED_SKILL_IDS,
   SKILL_BODY_WARN_CHARS,
@@ -43,17 +44,7 @@ function skillMarkdown(skillId, overrides = {}) {
   ].join("\n");
 }
 
-const ALL_SKILL_IDS = [
-  "interview",
-  "discuss",
-  "spec",
-  "ingest",
-  "plan",
-  "execute",
-  "verify",
-  "review",
-  "qa",
-];
+const ALL_SKILL_IDS = [...SkillIdSchema.options];
 
 async function writeSkillTree(skillsDir, opts = {}) {
   const invalidId = opts.invalidId;
@@ -154,12 +145,37 @@ test("listSkillCatalog records missing required SKILL.md as skipped required", a
 });
 
 test("listSkillCatalog of the repo skills tree has nine valid entries", () => {
+  assert.equal(SkillIdSchema.options.length, 12);
+  assert.deepEqual(
+    [...SkillIdSchema.options],
+    [
+      "interview",
+      "discuss",
+      "spec",
+      "ingest",
+      "plan",
+      "execute",
+      "verify",
+      "review",
+      "qa",
+      "map",
+      "wireframe",
+      "chat",
+    ],
+  );
   const { catalog, skipped } = listSkillCatalog(repoSkills);
   assert.deepEqual(
     skipped.filter((row) => row.required),
     [],
   );
   assert.equal(catalog.skills.length, 9);
+  const missingOptional = skipped.filter((row) => row.reason === "missing SKILL.md");
+  assert.equal(missingOptional.length, 3);
+  assert.deepEqual(
+    missingOptional.map((row) => row.path).sort(),
+    ["skills/chat/SKILL.md", "skills/map/SKILL.md", "skills/wireframe/SKILL.md"],
+  );
+  assert.ok(missingOptional.every((row) => row.required === false));
   for (const skill of catalog.skills) {
     assert.deepEqual(skill.resources, { scripts: [], references: [], assets: [] }, skill.skillId);
     assert.deepEqual(listLevel3Resources(join(repoSkills, skill.skillId)), {

@@ -13,7 +13,10 @@
         "execute",
         "verify",
         "review",
-        "qa"
+        "qa",
+        "map",
+        "wireframe",
+        "chat"
       ]
     },
     "allowedRoots": {

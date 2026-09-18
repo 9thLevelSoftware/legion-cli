@@ -97,6 +97,7 @@ function isConfiguredSpawnable(config: LegionConfig, id: AdapterId): boolean {
     if (!spec?.binary) return false;
     return argsIncludePointer(genericArgsOrDefault(spec.args ?? [])) && isSpawnableBinary(spec.binary);
   }
+  if (id === "http") return false;
   return extraOnPath(id, config) && extraArgvOk(id, config);
 }
 
@@ -478,6 +479,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   }
   for (const skipped of catalogResult.skipped) {
     if (skipped.required) continue;
+    if (skipped.reason === "missing SKILL.md") continue;
     warnings.push(`optional skill ${skipped.path}: ${skipped.reason}`);
   }
 
@@ -503,6 +505,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       : "(unset)",
     fake: fakeSpawnable() ? "spawnable (LEGION_CLI_ADAPTER=fake)" : "not spawnable (set LEGION_CLI_ADAPTER=fake)",
     ...extraLabels,
+    http: config?.adapter.http ? "not spawnable" : "not configured",
   };
 
   const ok = checks.every((check) => check.ok);
@@ -577,6 +580,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     `  generic      ${adapterMatrix.generic}`,
     `  fake         ${adapterMatrix.fake}`,
     ...EXTRA_ADAPTER_IDS.map((id) => `  ${id.padEnd(13)}${adapterMatrix[id]}`),
+    `  ${"http".padEnd(13)}${adapterMatrix.http}`,
     "",
     "Routes",
     ...(routed.length > 0 ? routed.map(formatRoutedLine) : ["  (none)"]),

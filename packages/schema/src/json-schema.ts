@@ -3,11 +3,14 @@ import {
   AssumptionSchema,
   AuditEventSchema,
   BrownfieldRunSchema,
+  ChatActionSchema,
+  ChatSessionFileSchema,
   ContextFileSchema,
   DesignActiveSchema,
   DesignSystemPackageSchema,
   DiscussFileSchema,
   FileContractSchema,
+  FingerprintFileSchema,
   IngestReceiptSchema,
   IntentAnswersFileSchema,
   LegionConfigSchema,
@@ -15,9 +18,11 @@ import {
   ProjectFileSchema,
   QAScoreSchema,
   ResumeFileSchema,
+  ServeFileSchema,
   SessionBriefSchema,
   SkillCatalogSchema,
   SkillContractSchema,
+  SkillOverlayPinSchema,
   TopicsFileSchema,
   SpecSchema,
   StateFileSchema,
@@ -51,6 +56,11 @@ export const JSON_SCHEMA_FILES = [
   "design-system-package",
   "design-active",
   "packet",
+  "fingerprint-file",
+  "skill-overlay-pin",
+  "chat-action",
+  "chat-session",
+  "serve-file",
 ] as const;
 
 export type JsonSchemaFileName = (typeof JSON_SCHEMA_FILES)[number];
@@ -81,6 +91,11 @@ const schemaByFile = {
   "design-system-package": DesignSystemPackageSchema,
   "design-active": DesignActiveSchema,
   packet: PacketSchema,
+  "fingerprint-file": FingerprintFileSchema,
+  "skill-overlay-pin": SkillOverlayPinSchema,
+  "chat-action": ChatActionSchema,
+  "chat-session": ChatSessionFileSchema,
+  "serve-file": ServeFileSchema,
 } as const satisfies Record<JsonSchemaFileName, z.ZodType>;
 
 export function toLegionJsonSchema(schema: z.ZodType): Record<string, unknown> {
@@ -101,21 +116,98 @@ function withAllOf(
   return { ...json, allOf: [...existing, clause] };
 }
 
+function objectProperties(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const properties = (value as Record<string, unknown>).properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return undefined;
+  return properties as Record<string, unknown>;
+}
+
 function namedPropertyNames(
   json: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
-  const properties = json.properties;
-  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return undefined;
-  const adapter = (properties as Record<string, unknown>).adapter;
-  if (!adapter || typeof adapter !== "object" || Array.isArray(adapter)) return undefined;
-  const adapterProps = (adapter as Record<string, unknown>).properties;
-  if (!adapterProps || typeof adapterProps !== "object" || Array.isArray(adapterProps)) return undefined;
-  const named = (adapterProps as Record<string, unknown>).named;
+  const adapterProps = objectProperties(objectProperties(json)?.adapter);
+  if (!adapterProps) return undefined;
+  const named = adapterProps.named;
   if (!named || typeof named !== "object" || Array.isArray(named)) return undefined;
   const propertyNames = (named as Record<string, unknown>).propertyNames;
   if (!propertyNames || typeof propertyNames !== "object" || Array.isArray(propertyNames)) return undefined;
   return propertyNames as Record<string, unknown>;
 }
+
+function adapterTargetIfThen(id: string, requiredKey: string): Record<string, unknown> {
+  const adapterIf = (clause: Record<string, unknown>): Record<string, unknown> => ({
+    type: "object",
+    properties: clause,
+    required: Object.keys(clause),
+  });
+  return {
+    if: {
+      type: "object",
+      properties: {
+        adapter: {
+          anyOf: [
+            adapterIf({ default: { const: id } }),
+            ...SkillIdSchema.options.map((skillId) =>
+              adapterIf({
+                routes: {
+                  type: "object",
+                  properties: { [skillId]: { const: id } },
+                  required: [skillId],
+                },
+              }),
+            ),
+            {
+              type: "object",
+              properties: {
+                named: {
+                  type: "object",
+                  not: { additionalProperties: { not: { const: id } } },
+                },
+              },
+              required: ["named"],
+            },
+          ],
+        },
+      },
+      required: ["adapter"],
+    },
+    then: {
+      type: "object",
+      properties: {
+        adapter: {
+          type: "object",
+          required: ["default", requiredKey],
+        },
+      },
+    },
+  };
+}
+
+const IPV4_OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const IPV4 = `${IPV4_OCTET}(?:\\.${IPV4_OCTET}){3}`;
+const H16 = "[0-9A-Fa-f]{1,4}";
+const IPV6 =
+  `(?:(?:${H16}:){7}${H16}` +
+  `|(?:${H16}:){1,7}:` +
+  `|(?:${H16}:){1,6}:${H16}` +
+  `|(?:${H16}:){1,5}(?::${H16}){1,2}` +
+  `|(?:${H16}:){1,4}(?::${H16}){1,3}` +
+  `|(?:${H16}:){1,3}(?::${H16}){1,4}` +
+  `|(?:${H16}:){1,2}(?::${H16}){1,5}` +
+  `|${H16}:(?:(?::${H16}){1,6})` +
+  `|:(?:(?::${H16}){1,7}|:)` +
+  `|(?:${H16}:){6}${IPV4}` +
+  `|::(?:${H16}:){0,5}${IPV4}` +
+  `|(?:${H16}:){1,5}:${IPV4})`;
+const DNS_LABEL = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
+const HOSTNAME = `(?!(?:\\d{1,3}\\.){3}\\d{1,3}(?::|[/?#]|$))(?:${DNS_LABEL}\\.)*${DNS_LABEL}`;
+const HTTPS_HOST = `(?:${IPV4}|\\[${IPV6}\\]|${HOSTNAME})`;
+const HTTPS_PORT =
+  "(?::(?:0|[1-9]\\d{0,3}|[1-5]\\d{4}|6[0-4]\\d{3}|65[0-4]\\d{2}|655[0-2]\\d|6553[0-5]))?";
+const HTTPS_BASE_URL = `^https://${HTTPS_HOST}${HTTPS_PORT}([/?#].*)?$`;
+const LOOPBACK_OR_HTTPS_BASE_URL =
+  `^(https://${HTTPS_HOST}${HTTPS_PORT}|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])${HTTPS_PORT})([/?#].*)?$`;
 
 /** Overlay Zod refinements that `toJSONSchema` cannot represent. */
 function overlayJsonSchema(
@@ -127,50 +219,107 @@ function overlayJsonSchema(
     if (propertyNames) {
       propertyNames.not = { enum: [...ADAPTER_IDS] };
     }
-    const genericAdapterIf = (clause: Record<string, unknown>): Record<string, unknown> => ({
-      type: "object",
-      properties: clause,
-      required: Object.keys(clause),
-    });
+    const adapterProps = objectProperties(objectProperties(json)?.adapter);
+    const httpProps = objectProperties(adapterProps?.http);
+    const headers = httpProps?.headers;
+    if (headers && typeof headers === "object" && !Array.isArray(headers)) {
+      const headerObj = headers as Record<string, unknown>;
+      const names =
+        headerObj.propertyNames &&
+        typeof headerObj.propertyNames === "object" &&
+        !Array.isArray(headerObj.propertyNames)
+          ? (headerObj.propertyNames as Record<string, unknown>)
+          : ((headerObj.propertyNames = {}) as Record<string, unknown>);
+      names.not = {
+        anyOf: [
+          { pattern: "^[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]$" },
+          { pattern: "^[Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy]$" },
+        ],
+      };
+    }
+    return withAllOf(
+      withAllOf(
+        withAllOf(json, adapterTargetIfThen("generic", "generic")),
+        adapterTargetIfThen("http", "http"),
+      ),
+      {
+        if: {
+          type: "object",
+          properties: {
+            adapter: {
+              type: "object",
+              properties: {
+                http: {
+                  type: "object",
+                  properties: { allowLoopback: { const: true } },
+                  required: ["allowLoopback"],
+                },
+              },
+              required: ["http"],
+            },
+          },
+          required: ["adapter"],
+        },
+        then: {
+          type: "object",
+          properties: {
+            adapter: {
+              type: "object",
+              properties: {
+                http: {
+                  type: "object",
+                  properties: { baseUrl: { type: "string", pattern: LOOPBACK_OR_HTTPS_BASE_URL } },
+                },
+              },
+            },
+          },
+        },
+        else: {
+          type: "object",
+          properties: {
+            adapter: {
+              type: "object",
+              properties: {
+                http: {
+                  type: "object",
+                  properties: { baseUrl: { type: "string", pattern: HTTPS_BASE_URL } },
+                },
+              },
+            },
+          },
+        },
+      },
+    );
+  }
+  if (name === "skill-overlay-pin") {
     return withAllOf(json, {
       if: {
         type: "object",
         properties: {
-          adapter: {
-            anyOf: [
-              genericAdapterIf({ default: { const: "generic" } }),
-              ...SkillIdSchema.options.map((skillId) =>
-                genericAdapterIf({
-                  routes: {
-                    type: "object",
-                    properties: { [skillId]: { const: "generic" } },
-                    required: [skillId],
-                  },
-                }),
-              ),
-              {
-                type: "object",
-                properties: {
-                  named: {
-                    type: "object",
-                    not: { additionalProperties: { not: { const: "generic" } } },
-                  },
-                },
-                required: ["named"],
-              },
-            ],
+          source: {
+            type: "object",
+            properties: { type: { const: "github" } },
+            required: ["type"],
           },
         },
-        required: ["adapter"],
+        required: ["source"],
       },
       then: {
         type: "object",
         properties: {
-          adapter: {
+          source: {
             type: "object",
-            required: ["default", "generic"],
+            required: ["type", "origin", "ref"],
+            properties: {
+              origin: { type: "string", pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+            },
+          },
+          integrity: {
+            type: "object",
+            required: ["sha256", "minisign"],
           },
         },
+        required: ["source", "integrity"],
       },
     });
   }

@@ -16,6 +16,9 @@ export function expandNamedAdapter(
   }
   const parsed = AdapterIdSchema.safeParse(named[route]);
   if (!parsed.success) refuse(`unknown named route ${route}`, HINT.doctor);
+  if (parsed.data === "http") {
+    refuse("adapter http is not selectable yet", `--adapter ${ADAPTER_ID_HELP}`);
+  }
   return parsed.data;
 }
 
@@ -24,6 +27,9 @@ export function parseAdapterFlag(raw: string | undefined): AdapterId | undefined
   const parsed = AdapterIdSchema.safeParse(raw.trim());
   if (!parsed.success) {
     refuse(`adapter must be ${ADAPTER_ID_HELP}`, `--adapter ${ADAPTER_ID_HELP}`);
+  }
+  if (parsed.data === "http") {
+    refuse("adapter http is not selectable yet", `--adapter ${ADAPTER_ID_HELP}`);
   }
   return parsed.data;
 }

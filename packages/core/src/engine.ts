@@ -368,6 +368,9 @@ export class LegionEngine {
         qa: { mode: "full", passScore: 85 },
         dashboard: { port: 7420, bind: "127.0.0.1" },
         flags: { mcpApps: false, webmcp: false, parallelExecute: false },
+        sandbox: { requireHardened: true, allowCopyJail: false, backend: "auto", skills: ["execute"] },
+        skills: { trustKeys: [] },
+        map: {},
       };
       await this.store.writeConfig(config);
 

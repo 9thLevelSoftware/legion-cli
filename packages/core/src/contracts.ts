@@ -12,6 +12,9 @@ export const SKILL_CONTRACTS: Record<SkillId, readonly string[]> = {
   // tasks/** is for filing new fix tasks; mutating existing TSK-*.md still FAILs review.
   review: [".legion-cli/qa/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
   qa: [".legion-cli/qa/**", ".legion-cli/cache/runs/<id>/**"],
+  map: [".legion-cli/map/**", ".legion-cli/cache/runs/<id>/**"],
+  wireframe: [".legion-cli/specs/<activeSpecId>/wireframes/**", ".legion-cli/cache/runs/<id>/**"],
+  chat: [".legion-cli/cache/runs/<id>/**"],
 };
 
 /** Revert implicit denylist (KD-11 gate 3). Not the plan-time SoT list. */
@@ -22,12 +25,14 @@ const IMPLICIT_FORBIDDEN = [
   ".legion-cli/index/**",
 ];
 
-/** Cache/index/worktrees/audit are engine-owned; never revert them as extras. */
+/** Cache/index/worktrees/audit/sandbox/chat are engine-owned; never revert them as extras. */
 const ENGINE_OWNED = [
   ".legion-cli/cache/**",
   ".legion-cli/index/**",
   ".legion-cli/worktrees/**",
   ".legion-cli/audit/**",
+  ".legion-cli/sandbox/**",
+  ".legion-cli/chat/**",
 ];
 
 export function skillContract(skillId: SkillId, opts: { runId: string; specId?: string }): SkillContract {
