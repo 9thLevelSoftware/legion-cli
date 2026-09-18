@@ -218,6 +218,19 @@ test("unzipZipball refuses a destDir or child directory that is a symlink", asyn
   });
 });
 
+test("unzipZipball allows POSIX colon names", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const dest = join(dir, "out");
+    const zip = makeZip([
+      { name: "brand-v1/README.md", data: "ok\n" },
+      { name: "brand-v1/docs/api:v2.md", data: "colon\n" },
+    ]);
+    const written = await unzipZipball(zip, dest);
+    assert.equal(written.includes("docs/api:v2.md"), true);
+    assert.equal(await readFile(join(dest, "docs", "api:v2.md"), "utf8"), "colon\n");
+  });
+});
+
 test("unzipZipball refuses nested Windows drive-relative zip-slip", async () => {
   await withTempDir(async (dir) => {
     const dest = join(dir, "out");

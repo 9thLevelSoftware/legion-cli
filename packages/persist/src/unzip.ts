@@ -33,6 +33,12 @@ function isUnixSymlink(entry: import("yauzl").Entry): boolean {
   return (mode & UNIX_IFMT) === UNIX_IFLNK;
 }
 
+/** Backslash, NUL, or Windows drive-relative segments (`D:payload`). POSIX `api:v2.md` is allowed. */
+function zipNameHasEscape(name: string): boolean {
+  if (name.includes("\\") || name.includes("\0")) return true;
+  return name.split("/").some((part) => part !== "" && /^[A-Za-z]:/.test(part));
+}
+
 function openZipBuffer(buffer: Buffer): Promise<import("yauzl").ZipFile> {
   return new Promise((resolve, reject) => {
     yauzl.fromBuffer(buffer, { lazyEntries: true, validateEntrySizes: true }, (err, zipfile) => {
@@ -110,7 +116,7 @@ function readAllEntries(
     zip.on("entry", (entry: import("yauzl").Entry) => {
       void (async () => {
         try {
-          if (entry.fileName.includes("\\") || entry.fileName.includes("\0") || entry.fileName.includes(":")) {
+          if (zipNameHasEscape(entry.fileName)) {
             throw new PathEscapeError(entry.fileName);
           }
           if (isUnixSymlink(entry)) {
@@ -217,7 +223,7 @@ export async function unzipZipball(zip: Buffer, destDir: string, opts?: UnzipZip
     let rel = entry.fileName;
     if (prefix && rel.startsWith(prefix)) rel = rel.slice(prefix.length);
     if (rel === "" || rel === "/") continue;
-    if (rel.includes("\\") || rel.includes("\0") || rel.includes(":")) {
+    if (zipNameHasEscape(rel)) {
       throw new PathEscapeError(rel);
     }
     const abs = assertResolvedInside(destDir, toFsPath(destDir, rel), rel);
