@@ -45,18 +45,45 @@ function unique(values: string[]): string[] {
   return [...new Set(values)].slice(0, MAX_NAMES);
 }
 
+function stripJsComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:\\])\/\/.*$/gm, "$1");
+}
+
+function exportListNames(source: string): string[] {
+  const names: string[] = [];
+  for (const block of capture(source, /\bexport\s+(?:type\s+)?\{([^}]+)\}/g)) {
+    for (const part of block.split(",")) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      const asMatch = trimmed.match(/^(?:type\s+)?[A-Za-z_$][\w$]*\s+as\s+([A-Za-z_$][\w$]*)$/);
+      if (asMatch?.[1]) {
+        names.push(asMatch[1]);
+        continue;
+      }
+      const simple = trimmed.match(/^(?:type\s+)?([A-Za-z_$][\w$]*)$/);
+      if (simple?.[1]) names.push(simple[1]);
+    }
+  }
+  return names;
+}
+
 function parseTsJs(source: string): { exports: string[]; imports: string[] } {
+  const text = stripJsComments(source);
   const exports = [
-    ...capture(source, /\bexport\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g),
-    ...capture(source, /\bexport\s+class\s+([A-Za-z_$][\w$]*)/g),
-    ...capture(source, /\bexport\s+(?:type|interface|const|enum)\s+([A-Za-z_$][\w$]*)/g),
-    ...capture(source, /\bmodule\.exports\.([A-Za-z_$][\w$]*)/g),
-    ...capture(source, /\bexports\.([A-Za-z_$][\w$]*)/g),
+    ...capture(text, /\bexport\s+(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g),
+    ...capture(text, /\bexport\s+(?:default\s+)?class\s+([A-Za-z_$][\w$]*)/g),
+    ...capture(text, /\bexport\s+(?:type|interface|const|let|var|enum)\s+([A-Za-z_$][\w$]*)/g),
+    ...exportListNames(text),
+    ...capture(text, /\bmodule\.exports\.([A-Za-z_$][\w$]*)/g),
+    ...capture(text, /\bexports\.([A-Za-z_$][\w$]*)/g),
   ];
-  if (/\bmodule\.exports\b/.test(source)) exports.push("module.exports");
+  if (/\bexport\s+default\b/.test(text)) exports.push("default");
+  if (/\bmodule\.exports\b/.test(text)) exports.push("module.exports");
   const imports = [
-    ...capture(source, /\bfrom\s+['"]([^'"]+)['"]/g),
-    ...capture(source, /\brequire\(\s*['"]([^'"]+)['"]\s*\)/g),
+    ...capture(text, /\bfrom\s+['"]([^'"]+)['"]/g),
+    ...capture(text, /\brequire\(\s*['"]([^'"]+)['"]\s*\)/g),
   ];
   return { exports: unique(exports), imports: unique(imports) };
 }

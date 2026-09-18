@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseSource } from "./parse.js";
 import type { WalkedFile } from "./walk.js";
 
 export const MAX_LSP_FILES = 500;
@@ -260,7 +261,7 @@ function symbolName(value: unknown): string | null {
   return value.name;
 }
 
-export function exportsFromDocumentSymbols(result: unknown): string[] {
+export function exportsFromDocumentSymbols(result: unknown, source?: string, posixPath?: string): string[] {
   if (!Array.isArray(result)) return [];
   const names: string[] = [];
   for (const item of result) {
@@ -277,7 +278,11 @@ export function exportsFromDocumentSymbols(result: unknown): string[] {
       if (name) names.push(name);
     }
   }
-  return names;
+  if (!source || !posixPath) return names;
+  const declared = new Set(parseSource(posixPath, source).exports);
+  if (declared.size === 0) return names;
+  const exported = names.filter((name) => declared.has(name));
+  return exported.length > 0 ? exported : names;
 }
 
 type Pending = {
@@ -479,7 +484,7 @@ export async function collectLspExports(opts: {
           { textDocument: { uri } },
           remaining(deadline),
         );
-        exportsByPath.set(file.path, exportsFromDocumentSymbols(result));
+        exportsByPath.set(file.path, exportsFromDocumentSymbols(result, file.text, file.path));
       } catch {
         return null;
       }

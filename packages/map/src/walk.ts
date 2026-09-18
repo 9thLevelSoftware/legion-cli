@@ -166,11 +166,13 @@ export async function walkSources(opts: {
 
       let isDir = entry.isDirectory();
       let isFile = entry.isFile();
+      let targetSize: number | undefined;
       if (entry.isSymbolicLink()) {
         try {
           const target = await stat(abs);
           isDir = target.isDirectory();
           isFile = target.isFile();
+          targetSize = target.size;
         } catch {
           continue;
         }
@@ -189,7 +191,8 @@ export async function walkSources(opts: {
       } catch {
         continue;
       }
-      if (meta.size > MAX_FILE_BYTES) continue;
+      const size = targetSize ?? meta.size;
+      if (size > MAX_FILE_BYTES) continue;
       let buf: Buffer;
       try {
         buf = await readFile(abs);

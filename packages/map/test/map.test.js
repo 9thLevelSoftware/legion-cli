@@ -84,6 +84,15 @@ test("fallback parser: three TS files, stable hash; comment-only does not churn;
 
     await writeFile(
       join(dir, "src", "auth.ts"),
+      `${THREE_TS["src/auth.ts"]}\n// export function temporary() {}\n`,
+      "utf8",
+    );
+    const commentedExport = await generateMap(dir);
+    assert.equal(moduleOf(commentedExport, "src/auth.ts").hash, auth.hash);
+    assert.deepEqual(commentedExport.changed, []);
+
+    await writeFile(
+      join(dir, "src", "auth.ts"),
       `${THREE_TS["src/auth.ts"]}\nexport function refresh() {}\n`,
       "utf8",
     );
