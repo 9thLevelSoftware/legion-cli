@@ -1,13 +1,10 @@
 import { HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
 import {
   ADAPTER_ID_HELP,
-  ADAPTER_IDS,
   AdapterIdSchema,
   type AdapterId,
   type LegionConfig,
 } from "@9thlevelsoftware/legion-cli-schema";
-
-const SELECTABLE_ADAPTER_HELP = ADAPTER_IDS.filter((id) => id !== "http").join("|");
 
 export function expandNamedAdapter(
   config: Pick<LegionConfig, "adapter">,
@@ -20,7 +17,7 @@ export function expandNamedAdapter(
   const parsed = AdapterIdSchema.safeParse(named[route]);
   if (!parsed.success) refuse(`unknown named route ${route}`, HINT.doctor);
   if (parsed.data === "http") {
-    refuse("adapter http is not selectable yet", `--adapter ${SELECTABLE_ADAPTER_HELP}`);
+    refuse("adapter http is not selectable yet", `--adapter ${ADAPTER_ID_HELP}`);
   }
   return parsed.data;
 }
@@ -32,7 +29,7 @@ export function parseAdapterFlag(raw: string | undefined): AdapterId | undefined
     refuse(`adapter must be ${ADAPTER_ID_HELP}`, `--adapter ${ADAPTER_ID_HELP}`);
   }
   if (parsed.data === "http") {
-    refuse("adapter http is not selectable yet", `--adapter ${SELECTABLE_ADAPTER_HELP}`);
+    refuse("adapter http is not selectable yet", `--adapter ${ADAPTER_ID_HELP}`);
   }
   return parsed.data;
 }
