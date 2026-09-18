@@ -11,6 +11,7 @@ import { runAssumeAnswer, runAssumeList } from "./assume.js";
 import { runBrief } from "./brief.js";
 import { runBrownfield } from "./brownfield.js";
 import { runDashboard } from "./dashboard.js";
+import { runServe } from "./serve.js";
 import { runDiscuss } from "./discuss.js";
 import { runControlMode } from "./control-mode.js";
 import { runDoctor } from "./doctor.js";
@@ -407,13 +408,47 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
+  addGlobalOptions(
+    program
+      .command("serve")
+      .description("Dashboard plus read-only MCP HTTP"),
+  )
+    .option("--no-open", "do not open a browser")
+    .option("--port <port>", "port (default 7420)")
+    .option("--expose", "bind 0.0.0.0 (warning)")
+    .option("--mcp-http", "read-only MCP HTTP at /mcp (default on)")
+    .option("--no-mcp-http", "disable MCP HTTP at /mcp")
+    .option("--webmcp", "process-level flags.webmcp for this process")
+    .option("--token-stdout", "print the write token on stdout")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as {
+        open?: boolean;
+        port?: string;
+        expose?: boolean;
+        mcpHttp?: boolean;
+        webmcp?: boolean;
+        tokenStdout?: boolean;
+      };
+      const code = await runServe(resolveOpts(cmd), flags);
+      process.exitCode = code;
+    });
+
   addGlobalOptions(program.command("dashboard").description("Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist); not the source of truth)"))
     .option("--no-open", "do not open a browser")
     .option("--port <port>", "port (default 7420)")
     .option("--expose", "bind 0.0.0.0 (warning)")
+    .option("--webmcp", "process-level flags.webmcp for this process")
+    .option("--token-stdout", "print the write token on stdout")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { open?: boolean; port?: string; expose?: boolean };
+      const flags = opts as {
+        open?: boolean;
+        port?: string;
+        expose?: boolean;
+        webmcp?: boolean;
+        tokenStdout?: boolean;
+      };
       const code = await runDashboard(resolveOpts(cmd), flags);
       process.exitCode = code;
     });

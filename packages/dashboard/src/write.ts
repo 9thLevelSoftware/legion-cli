@@ -98,8 +98,8 @@ export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
+        req.pause();
         fail(new EngineWriteError(413, { error: "payload too large" }));
-        req.destroy();
         return;
       }
       chunks.push(chunk);

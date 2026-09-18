@@ -103,6 +103,18 @@ test("help --all lists dashboard as shipped adjacent", () => {
   assert.equal([...out.matchAll(/^ {2}dashboard$/gm)].length, 1);
 });
 
+test("help --all lists serve as shipped adjacent and not later", () => {
+  const result = runCli(["help", "--all"]);
+  assert.equal(result.status, 0, result.stderr);
+  const out = normalize(result.stdout);
+  const adjacent = helpSection(out, "Shipped adjacent", "Later, not this series:");
+  const later = helpSection(out, "Later, not this series:", "Not in this product:");
+  assert.match(adjacent, /^ {2}serve$/m);
+  assert.match(adjacent, /--mcp-http\/--no-mcp-http/);
+  assert.doesNotMatch(later, /\bserve\b/);
+  assert.match(later, /map, skills list\|install/);
+});
+
 test("mcp is a read-only stdio command", () => {
   const help = runCli(["mcp", "--help"]);
   assert.equal(help.status, 0, help.stderr);
@@ -128,8 +140,9 @@ test("help --all does not call control-mode later", () => {
   const later = helpSection(out, "Later, not this series:", "Not in this product:");
   assert.doesNotMatch(later, /control-mode/);
   assert.doesNotMatch(later, /vendor extra-adapter argv/);
-  assert.match(later, /map, skills list\|install, serve/);
+  assert.match(later, /map, skills list\|install/);
   assert.doesNotMatch(later, /wireframe/);
+  assert.doesNotMatch(later, /\bserve\b/);
   assert.doesNotMatch(out, /v0 gap; follow-up PRs in this series/);
   assert.doesNotMatch(out, /v0 gap/);
   const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");

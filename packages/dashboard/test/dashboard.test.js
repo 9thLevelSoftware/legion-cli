@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { ServeFileSchema } from "@9thlevelsoftware/legion-cli-schema";
 import { ENGINE_WRITE_METHODS, startDashboard } from "../dist/index.js";
 import { otherSpecTask, todoTask, withStore, withTempDir } from "./helpers.js";
 
@@ -551,5 +553,272 @@ test("open is opt-in; default does not spawn a browser", async () => {
       },
       { open: true },
     );
+  });
+});
+
+test("startServe routes GET/POST/DELETE /mcp inside one handle", async () => {
+  const src = await readFile(join(pkgRoot, "src", "server.ts"), "utf8");
+  assert.equal([...src.matchAll(/createServer\(/g)].length, 1);
+  assert.doesNotMatch(src, /server\.on\(\s*["']request["']/);
+  assert.match(src, /pathname === MCP_PATH/);
+
+  await withTempDir(async (dir) => {
+    const methods = [];
+    const handle = await startDashboard({
+      projectRoot: dir,
+      port: 0,
+      open: false,
+      warn: () => {},
+      occupy: true,
+      mcpHttp: true,
+      handleMcpHttp: async ({ req, res }) => {
+        methods.push(req.method);
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.end(": ok\n\n");
+      },
+    });
+    try {
+      const get = await fetch(`${handle.url}/mcp`, { headers: { Accept: "text/event-stream" } });
+      assert.equal(get.status, 200);
+      assert.match(get.headers.get("content-type") ?? "", /text\/event-stream/);
+      assert.notEqual(get.status, 405);
+      const post = await fetch(`${handle.url}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(post.status, 200);
+      assert.notEqual(post.status, 403);
+      const del = await fetch(`${handle.url}/mcp`, { method: "DELETE" });
+      assert.equal(del.status, 200);
+      assert.deepEqual(methods.sort(), ["DELETE", "GET", "POST"]);
+
+      const origin = originFor(handle);
+      const opt = await fetch(`${handle.url}/mcp`, { method: "OPTIONS", headers: { Origin: origin } });
+      assert.equal(opt.status, 204);
+      assert.match(opt.headers.get("allow") ?? "", /DELETE/);
+      assert.match(opt.headers.get("access-control-allow-methods") ?? "", /DELETE/);
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+test("startServe refuses MCP HTTP on --expose; close does not hang on open SSE", async () => {
+  await withTempDir(async (dir) => {
+    await assert.rejects(
+      () =>
+        startDashboard({
+          projectRoot: dir,
+          host: "0.0.0.0",
+          port: 0,
+          open: false,
+          warn: () => {},
+          occupy: true,
+          mcpHttp: true,
+          handleMcpHttp: async ({ res }) => {
+            res.statusCode = 200;
+            res.end();
+          },
+        }),
+      (err) => {
+        assert.match(String(err.message), /loopback-only|unauthenticated \/mcp/);
+        assert.match(String(err.nextHint ?? ""), /--no-mcp-http --expose/);
+        return true;
+      },
+    );
+
+    const handle = await startDashboard({
+      projectRoot: dir,
+      port: 0,
+      open: false,
+      warn: () => {},
+      occupy: true,
+      mcpHttp: true,
+      handleMcpHttp: async ({ res }) => {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.write(": hang\n\n");
+      },
+    });
+    const sse = fetch(`${handle.url}/mcp`, { headers: { Accept: "text/event-stream" } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Promise.race([
+      handle.close(),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("close hung with GET SSE open")), 2000);
+      }),
+    ]);
+    await sse.catch(() => undefined);
+  });
+});
+
+test("second startServe while pid is live refuses; dead pid is overwritten", async () => {
+  await withTempDir(async (dir) => {
+    const first = await startDashboard({
+      projectRoot: dir,
+      port: 0,
+      open: false,
+      warn: () => {},
+      occupy: true,
+      mcpHttp: false,
+    });
+    try {
+      const occupancy = ServeFileSchema.parse(
+        JSON.parse(await readFile(join(dir, ".legion-cli", "serve.json"), "utf8")),
+      );
+      assert.equal(occupancy.pid, process.pid);
+      assert.equal(occupancy.port, first.port);
+      assert.equal(occupancy.bind, "127.0.0.1");
+      assert.equal(occupancy.mcpPath, "/mcp");
+      assert.equal(occupancy.mcpHttp, false);
+      assert.match(occupancy.tokenSha256, /^[a-f0-9]{64}$/);
+      await assert.rejects(
+        () =>
+          startDashboard({
+            projectRoot: dir,
+            port: 0,
+            open: false,
+            warn: () => {},
+            occupy: true,
+            mcpHttp: false,
+          }),
+        (err) => {
+          assert.match(String(err.message), /already running/);
+          return true;
+        },
+      );
+    } finally {
+      await first.close();
+    }
+
+    const servePath = join(dir, ".legion-cli", "serve.json");
+    await mkdir(join(dir, ".legion-cli"), { recursive: true });
+    await writeFile(
+      servePath,
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-serve/v1",
+        port: 7420,
+        bind: "127.0.0.1",
+        mcpPath: "/mcp",
+        mcpHttp: false,
+        tokenSha256: "a".repeat(64),
+        startedAt: new Date().toISOString(),
+        pid: 1_000_000_000,
+      })}\n`,
+    );
+    const revived = await startDashboard({
+      projectRoot: dir,
+      port: 0,
+      open: false,
+      warn: () => {},
+      occupy: true,
+      mcpHttp: false,
+    });
+    try {
+      const written = ServeFileSchema.parse(JSON.parse(await readFile(servePath, "utf8")));
+      assert.equal(written.pid, process.pid);
+      assert.equal(written.port, revived.port);
+      assert.equal(written.mcpPath, "/mcp");
+    } finally {
+      await revived.close();
+    }
+  });
+});
+
+test("occupy refuses corrupt serve.json instead of overwriting it", async () => {
+  await withTempDir(async (dir) => {
+    const servePath = join(dir, ".legion-cli", "serve.json");
+    await mkdir(join(dir, ".legion-cli"), { recursive: true });
+    await writeFile(servePath, "{not-json", "utf8");
+    await assert.rejects(
+      () =>
+        startDashboard({
+          projectRoot: dir,
+          port: 0,
+          open: false,
+          warn: () => {},
+          occupy: true,
+          mcpHttp: false,
+        }),
+      (err) => {
+        assert.match(String(err.message), /unreadable serve\.json/);
+        return true;
+      },
+    );
+    assert.equal(await readFile(servePath, "utf8"), "{not-json");
+  });
+});
+
+test("EADDRINUSE Next is legion-cli serve --port <n>", async () => {
+  await withTempDir(async (dir) => {
+    const first = await startDashboard({
+      projectRoot: dir,
+      port: 0,
+      open: false,
+      warn: () => {},
+    });
+    try {
+      await withTempDir(async (other) => {
+        await assert.rejects(
+          () =>
+            startDashboard({
+              projectRoot: other,
+              port: first.port,
+              open: false,
+              warn: () => {},
+            }),
+          (err) => {
+            assert.match(String(err.message), /already in use/);
+            assert.equal(err.nextHint, `legion-cli serve --port ${first.port + 1}`);
+            return true;
+          },
+        );
+      });
+    } finally {
+      await first.close();
+    }
+  });
+});
+
+test("POST /engine/ticket over 64 KiB is 413", async () => {
+  await withStore(async ({ dir }) => {
+    await withServer(dir, async ({ handle }) => {
+      const url = new URL(`${handle.url}/engine/ticket`);
+      const origin = originFor(handle);
+      const huge = await new Promise((resolve, reject) => {
+        let status;
+        const req = http.request(
+          {
+            hostname: url.hostname,
+            port: url.port,
+            path: url.pathname,
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Origin: origin,
+              "X-Legion-Cli-Token": handle.token,
+              "Transfer-Encoding": "chunked",
+            },
+          },
+          (res) => {
+            status = res.statusCode;
+            res.resume();
+            res.on("end", () => resolve(status));
+          },
+        );
+        req.on("error", (err) => {
+          if (status === 413) {
+            resolve(413);
+            return;
+          }
+          reject(err);
+        });
+        req.write(Buffer.alloc(64 * 1024 + 1, 0x78));
+        req.end();
+      });
+      assert.equal(huge, 413);
+    });
   });
 });

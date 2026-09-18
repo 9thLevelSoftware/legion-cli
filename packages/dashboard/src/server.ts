@@ -1,11 +1,16 @@
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFile } from "node:fs/promises";
-import { basename, extname } from "node:path";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, extname } from "node:path";
+import { LegionRefuseError } from "@9thlevelsoftware/legion-cli-core";
 import {
   createLegionStore,
+  isPidAlive,
   PathEscapeError,
+  serveJsonPath,
   toFsPath,
 } from "@9thlevelsoftware/legion-cli-persist";
+import { SCHEMA_VERSION, ServeFileSchema, type ServeFile } from "@9thlevelsoftware/legion-cli-schema";
 import {
   backlinks,
   loadWikiLinks,
@@ -50,10 +55,19 @@ import {
 const VIEW_METHODS = "GET, HEAD, OPTIONS";
 const ALLOW_METHODS = "GET, HEAD, POST, OPTIONS";
 const ALLOW_HEADERS = "X-Legion-Cli-Token, Content-Type";
+const MCP_PATH = "/mcp";
+const MCP_ALLOW_METHODS = "GET, HEAD, POST, DELETE, OPTIONS";
+const MCP_ALLOW_HEADERS = "Content-Type, Accept, MCP-Session-Id, MCP-Protocol-Version";
 const CSP =
   "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
 const CSP_WEBMCP =
   "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; frame-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
+
+export type McpHttpHandler = (opts: {
+  req: IncomingMessage;
+  res: ServerResponse;
+  projectRoot: string;
+}) => Promise<void>;
 
 export type DashboardOptions = {
   projectRoot: string;
@@ -63,6 +77,11 @@ export type DashboardOptions = {
   openBrowser?: (url: string) => void;
   warn?: (message: string) => void;
   pollMs?: number;
+  mcpHttp?: boolean;
+  webmcp?: boolean;
+  handleMcpHttp?: McpHttpHandler;
+  occupy?: boolean;
+  onClose?: () => Promise<void>;
 };
 
 export type DashboardHandle = {
@@ -178,15 +197,139 @@ async function serveWireframe(
   }
 }
 
+function tokenSha256(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+async function readServeFile(projectRoot: string): Promise<{ file: ServeFile; raw: string } | null> {
+  let raw: string;
+  try {
+    raw = await readFile(toFsPath(projectRoot, serveJsonPath()), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new LegionRefuseError(
+      `unreadable serve.json: ${(err as Error).message}`,
+      "legion-cli status",
+    );
+  }
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(raw) as unknown;
+  } catch {
+    throw new LegionRefuseError("unreadable serve.json: invalid JSON", "legion-cli status");
+  }
+  const parsed = ServeFileSchema.safeParse(parsedJson);
+  if (!parsed.success) {
+    throw new LegionRefuseError("unreadable serve.json: invalid schema", "legion-cli status");
+  }
+  return { file: parsed.data, raw };
+}
+
+export async function readLiveServe(projectRoot: string): Promise<ServeFile | null> {
+  const record = await readServeFile(projectRoot);
+  if (!record || !isPidAlive(record.file.pid)) return null;
+  return record.file;
+}
+
+function serveFileBody(input: {
+  projectRoot: string;
+  port: number;
+  bind: string;
+  mcpHttp: boolean;
+  token: string;
+}): string {
+  const file = ServeFileSchema.parse({
+    schemaVersion: SCHEMA_VERSION.serve,
+    port: input.port,
+    bind: input.bind,
+    mcpPath: MCP_PATH,
+    mcpHttp: input.mcpHttp,
+    tokenSha256: tokenSha256(input.token),
+    startedAt: new Date().toISOString(),
+    pid: process.pid,
+  });
+  return `${JSON.stringify(file, null, 2)}\n`;
+}
+
+async function claimServeSlot(input: {
+  projectRoot: string;
+  port: number;
+  bind: string;
+  mcpHttp: boolean;
+  token: string;
+}): Promise<void> {
+  const path = toFsPath(input.projectRoot, serveJsonPath());
+  await mkdir(dirname(path), { recursive: true });
+  const body = serveFileBody(input);
+  try {
+    await writeFile(path, body, { encoding: "utf8", flag: "wx" });
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+  const existing = await readServeFile(input.projectRoot);
+  if (existing && isPidAlive(existing.file.pid)) {
+    throw new LegionRefuseError(
+      `serve is already running on ${existing.file.bind}:${existing.file.port} (pid ${existing.file.pid})`,
+      "legion-cli status",
+    );
+  }
+  if (existing) {
+    let currentRaw: string;
+    try {
+      currentRaw = await readFile(path, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      currentRaw = "";
+    }
+    if (currentRaw && currentRaw !== existing.raw) {
+      throw new LegionRefuseError("serve is already running", "legion-cli status");
+    }
+    if (currentRaw === existing.raw) {
+      await unlink(path);
+    }
+  }
+  try {
+    await writeFile(path, body, { encoding: "utf8", flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new LegionRefuseError("serve is already running", "legion-cli status");
+    }
+    throw err;
+  }
+}
+
+async function removeOwnServeFile(projectRoot: string, pid: number): Promise<void> {
+  try {
+    const current = await readServeFile(projectRoot);
+    if (current && current.file.pid !== pid) return;
+    await unlink(toFsPath(projectRoot, serveJsonPath()));
+  } catch (err) {
+    if (err instanceof LegionRefuseError) return;
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+}
+
 export async function startDashboard(opts: DashboardOptions): Promise<DashboardHandle> {
   const host = opts.host ?? LOOPBACK_BIND;
   const port = opts.port ?? DEFAULT_DASHBOARD_PORT;
   const pollMs = opts.pollMs ?? 1000;
   const warn = opts.warn ?? ((message: string) => process.stderr.write(`${message}\n`));
   const token = mintWriteToken();
+  const occupy = opts.occupy === true;
+  const mcpHttp = opts.mcpHttp === true;
+  if (mcpHttp && !opts.handleMcpHttp) {
+    throw new Error("mcpHttp requires handleMcpHttp");
+  }
+  if (mcpHttp && host === EXPOSE_BIND) {
+    throw new LegionRefuseError(
+      "MCP HTTP is loopback-only; --expose would bind unauthenticated /mcp on 0.0.0.0",
+      "legion-cli serve --no-mcp-http --expose",
+    );
+  }
   const engine = createDashboardEngine(opts.projectRoot);
   const config = await readOptionalConfig(createLegionStore(opts.projectRoot));
-  const webmcp = config?.flags.webmcp === true;
+  const webmcp = opts.webmcp === true || config?.flags.webmcp === true;
   const sseClients = new Set<SseClient>();
   let lastEncoded = "";
   let closed = false;
@@ -218,16 +361,36 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     }
 
     const method = (req.method ?? "GET").toUpperCase();
+    const url = new URL(req.url ?? "/", `http://${hostHeader ?? `${host}:${boundPort}`}`);
+    const pathname = decodeURIComponent(url.pathname);
+    const mcpRoute = mcpHttp && pathname === MCP_PATH;
+
     if (method === "OPTIONS") {
       setSecurityHeaders(res, cors);
       res.statusCode = 204;
-      res.setHeader("Allow", ALLOW_METHODS);
+      res.setHeader("Allow", mcpRoute ? MCP_ALLOW_METHODS : ALLOW_METHODS);
+      if (mcpRoute) {
+        res.setHeader("Access-Control-Allow-Methods", MCP_ALLOW_METHODS);
+        res.setHeader("Access-Control-Allow-Headers", MCP_ALLOW_HEADERS);
+      }
       res.end();
       return;
     }
 
-    const url = new URL(req.url ?? "/", `http://${hostHeader ?? `${host}:${boundPort}`}`);
-    const pathname = decodeURIComponent(url.pathname);
+    if (mcpRoute) {
+      if (cors) {
+        res.setHeader("Access-Control-Allow-Origin", cors);
+        res.setHeader("Vary", "Origin");
+        res.setHeader("Access-Control-Allow-Methods", MCP_ALLOW_METHODS);
+        res.setHeader("Access-Control-Allow-Headers", MCP_ALLOW_HEADERS);
+      }
+      if (!opts.handleMcpHttp) {
+        send(res, 501, "MCP HTTP is not attached\n", "text/plain; charset=utf-8", false, cors);
+        return;
+      }
+      await opts.handleMcpHttp({ req, res, projectRoot: opts.projectRoot });
+      return;
+    }
 
     if (method === "POST") {
       if (!pathname.startsWith("/engine/")) {
@@ -261,6 +424,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       } catch (err) {
         if (err instanceof EngineWriteError) {
           sendJson(res, err.status, err.payload, cors);
+          if (err.status === 413) req.destroy();
           return;
         }
         throw err;
@@ -410,14 +574,25 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     });
   });
 
-  await new Promise<void>((resolve, reject) => {
-    const onError = (err: Error) => reject(err);
-    server.once("error", onError);
-    server.listen(port, host, () => {
-      server.off("error", onError);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error) => reject(err);
+      server.once("error", onError);
+      server.listen(port, host, () => {
+        server.off("error", onError);
+        resolve();
+      });
     });
-  });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") {
+      const nextPort = port > 0 && port < 65535 ? port + 1 : DEFAULT_DASHBOARD_PORT + 1;
+      throw new LegionRefuseError(
+        `port ${port} is already in use`,
+        `legion-cli serve --port ${nextPort}`,
+      );
+    }
+    throw err;
+  }
 
   const addr = server.address();
   boundPort = typeof addr === "object" && addr ? addr.port : port;
@@ -451,6 +626,24 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
   }
   warn(`Write token: ${token}`);
 
+  if (occupy) {
+    try {
+      await claimServeSlot({
+        projectRoot: opts.projectRoot,
+        port: boundPort,
+        bind: host,
+        mcpHttp,
+        token,
+      });
+    } catch (err) {
+      server.closeAllConnections?.();
+      await new Promise<void>((resolve, reject) => {
+        server.close((closeErr) => (closeErr ? reject(closeErr) : resolve()));
+      });
+      throw err;
+    }
+  }
+
   if (opts.open) {
     (opts.openBrowser ?? openBrowser)(url);
   }
@@ -461,19 +654,28 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
     port: boundPort,
     token,
     close: async () => {
+      if (closed) return;
       closed = true;
       clearInterval(timer);
+      await opts.onClose?.();
       for (const client of sseClients) {
         try {
           client.res.end();
         } catch {
           // already closed
         }
+        try {
+          client.res.destroy();
+        } catch {
+          // already destroyed
+        }
       }
       sseClients.clear();
+      server.closeAllConnections?.();
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
       });
+      if (occupy) await removeOwnServeFile(opts.projectRoot, process.pid);
     },
   };
 }
