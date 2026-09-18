@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { unwrapCmdShim } from "@9thlevelsoftware/legion-cli-agents";
 
 function uniquePaths(paths: string[]): string[] {
@@ -274,4 +274,30 @@ export function isSpawnableBinary(binary: string): boolean {
   }
   const names = process.platform === "win32" ? [binary, `${binary}.cmd`, `${binary}.exe`] : [binary];
   return listOnPath(names).length > 0;
+}
+
+/**
+ * True when a PATH shim text (npm/pnpm `.cmd`/`.ps1`/sh shim) or a symlink target points at this
+ * CLI's entry: `@9thlevelsoftware/legion-cli/dist/bin.js` or the workspace `packages/cli/dist/bin.js`.
+ */
+export function looksLikeLegionCliShim(text: string): boolean {
+  return /legion-cli[\\/]dist[\\/]bin\.js/i.test(text) || /packages[\\/]cli[\\/]dist[\\/]bin\.js/i.test(text);
+}
+
+/**
+ * Does the first `legion` on PATH run Legion CLI? Reads the shim or resolves the symlink; never
+ * executes the binary. `null` when there is no `legion` on PATH or it can't be read.
+ */
+export function pathLegionIsLegionCli(paths: readonly string[]): boolean | null {
+  const first = paths[0];
+  if (!first) return null;
+  try {
+    const target = realpathSync(first);
+    if (looksLikeLegionCliShim(target)) return true;
+    const stat = statSync(target);
+    if (!stat.isFile() || stat.size > 64 * 1024) return false;
+    return looksLikeLegionCliShim(readFileSync(target, "utf8"));
+  } catch {
+    return null;
+  }
 }

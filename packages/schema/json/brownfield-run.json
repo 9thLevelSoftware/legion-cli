@@ -21,8 +21,15 @@
     "phase": {
       "type": "string",
       "enum": [
+        "intent",
+        "plan",
         "analysis",
+        "assumptions",
+        "design",
+        "review",
+        "present",
         "execute",
+        "verify",
         "complete"
       ]
     },
@@ -50,6 +57,7 @@
       "type": "boolean"
     },
     "pages": {
+      "default": [],
       "type": "array",
       "items": {
         "type": "string",
@@ -59,6 +67,178 @@
     "context": {
       "default": "",
       "type": "string"
+    },
+    "size": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lines": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "tiny",
+            "small",
+            "medium",
+            "large"
+          ]
+        },
+        "maxPrs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "suggestedEffortMax": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        }
+      },
+      "required": [
+        "files",
+        "lines",
+        "tier",
+        "maxPrs",
+        "suggestedEffortMax"
+      ],
+      "additionalProperties": false
+    },
+    "roster": {
+      "type": "object",
+      "properties": {
+        "effort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "pass1": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "architecture",
+              "product-intent",
+              "code",
+              "code-2",
+              "tests",
+              "security",
+              "performance",
+              "documentation"
+            ]
+          }
+        },
+        "pass2": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "architecture",
+              "product-intent",
+              "code",
+              "code-2",
+              "tests",
+              "security",
+              "performance",
+              "documentation"
+            ]
+          }
+        },
+        "addedBySignal": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "architecture",
+              "product-intent",
+              "code",
+              "code-2",
+              "tests",
+              "security",
+              "performance",
+              "documentation"
+            ]
+          }
+        },
+        "injectDoctrine": {
+          "type": "boolean"
+        },
+        "designReviewers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "executeReviewersDefault": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "outputs": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "effort",
+        "pass1",
+        "pass2",
+        "addedBySignal",
+        "injectDoctrine",
+        "designReviewers",
+        "executeReviewersDefault",
+        "outputs"
+      ],
+      "additionalProperties": false
+    },
+    "designReviewRounds": {
+      "default": 0,
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "assumptionRounds": {
+      "default": 0,
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "baseBranch": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "updatedAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "meta": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {}
     }
   },
   "required": [
@@ -68,7 +248,6 @@
     "execute",
     "phase",
     "preSpawnRef",
-    "startedAt",
-    "pages"
+    "startedAt"
   ]
 }

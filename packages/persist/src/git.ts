@@ -216,7 +216,7 @@ export function listGitWorktrees(cwd: string): GitWorktree[] {
   return out;
 }
 
-function gitBranchExists(cwd: string, branch: string): boolean {
+export function gitBranchExists(cwd: string, branch: string): boolean {
   const result = runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
   return result.status === 0;
 }
@@ -238,8 +238,12 @@ function dropStaleWorktree(cwd: string, worktreeAbs: string): void {
   }
 }
 
-/** Isolated checkout for brownfield --execute. Greenfield execute stays in-place. */
-export function gitWorktreeAdd(cwd: string, worktreePath: string, branch: string): string {
+/**
+ * Isolated checkout for brownfield --execute. Greenfield execute stays in-place.
+ * Reuses an existing branch tip (never `-B`). A missing branch is created at
+ * `startPoint` when given, else at the current HEAD.
+ */
+export function gitWorktreeAdd(cwd: string, worktreePath: string, branch: string, startPoint?: string): string {
   if (!isGitRepo(cwd)) {
     throw new PersistError("git worktree add requires a git repository");
   }
@@ -247,13 +251,61 @@ export function gitWorktreeAdd(cwd: string, worktreePath: string, branch: string
   if (isGitRepo(abs)) return abs;
   dropStaleWorktree(cwd, abs);
   // Recreate the existing branch tip; do not -B (that would reset to current HEAD).
-  const result = gitBranchExists(cwd, branch)
-    ? runGit(cwd, ["worktree", "add", abs, branch])
-    : runGit(cwd, ["worktree", "add", "-b", branch, abs]);
+  const args = gitBranchExists(cwd, branch)
+    ? ["worktree", "add", abs, branch]
+    : ["worktree", "add", "-b", branch, abs, ...(startPoint ? [startPoint] : [])];
+  const result = runGit(cwd, args);
   if (result.status !== 0) {
     throw new PersistError(`git worktree add failed: ${result.stderr.trim() || result.stdout.trim()}`);
   }
   return abs;
+}
+
+/** Remove a linked worktree and prune. The branch is kept. Returns false when nothing was registered or on disk. */
+export function gitWorktreeRemove(cwd: string, worktreePath: string, opts: { force?: boolean } = {}): boolean {
+  if (!isGitRepo(cwd)) {
+    throw new PersistError("git worktree remove requires a git repository");
+  }
+  const abs = resolve(worktreePath);
+  const listed = listGitWorktrees(cwd).find((wt) => sameAbsPath(wt.path, abs));
+  if (!listed) {
+    gitWorktreePrune(cwd);
+    return false;
+  }
+  const args = ["worktree", "remove", ...(opts.force ? ["--force"] : []), listed.path];
+  const result = runGit(cwd, args);
+  if (result.status !== 0) {
+    throw new PersistError(`git worktree remove failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+  gitWorktreePrune(cwd);
+  return true;
+}
+
+/** Create `branch` at `startPoint` without checking it out. No-op when the branch already exists. */
+export function gitBranchCreate(cwd: string, branch: string, startPoint: string): boolean {
+  if (gitBranchExists(cwd, branch)) return false;
+  const result = runGit(cwd, ["branch", branch, startPoint]);
+  if (result.status !== 0) {
+    throw new PersistError(`git branch failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+  return true;
+}
+
+/** Current branch name, or null when HEAD is detached, unborn-without-branch, or not a repo. */
+export function tryGitBranch(cwd: string): string | null {
+  if (!isGitRepo(cwd)) return null;
+  const result = runGit(cwd, ["symbolic-ref", "--short", "-q", "HEAD"]);
+  if (result.status !== 0) return null;
+  const name = result.stdout.trim();
+  return name.length > 0 ? name : null;
+}
+
+/** Commit sha a ref resolves to, or null. */
+export function gitRevParse(cwd: string, ref: string): string | null {
+  const result = runGit(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  if (result.status !== 0) return null;
+  const sha = result.stdout.trim();
+  return sha.length > 0 ? sha : null;
 }
 
 export function gitPorcelainPaths(cwd: string): string[] {

@@ -23,6 +23,8 @@ export {
   commitIngest,
   commitPaths,
   gitAdd,
+  gitBranchCreate,
+  gitBranchExists,
   gitCheckIgnore,
   gitCommitIndex,
   gitDiffCached,
@@ -33,14 +35,17 @@ export {
   gitPathTracked,
   gitPorcelainPaths,
   gitResetMixed,
+  gitRevParse,
   gitRestoreStaged,
   gitRestoreWorktree,
   gitRmWorktree,
   gitStagedPaths,
   gitStatusPorcelain,
   gitWorktreeAdd,
+  gitWorktreeRemove,
   isGitRepo,
   listGitWorktrees,
+  tryGitBranch,
   tryGitHead,
 } from "./git.js";
 export type { GitWorktree } from "./git.js";
@@ -69,6 +74,7 @@ export {
   taskPath,
   wikiPageStorePath,
   wikiRunPagePath,
+  worktreeNodeStorePath,
   worktreeStorePath,
 } from "./layout.js";
 export type { LegionPaths } from "./layout.js";

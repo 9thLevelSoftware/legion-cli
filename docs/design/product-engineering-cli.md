@@ -214,7 +214,7 @@ legion-cli/
 
 The workspace **root** is `"private": true`. Packages are public under `@9thlevelsoftware` at `0.0.0` until the first `v*` tag: `@9thlevelsoftware/legion-cli` (CLI, bins `legion-cli` and `legion`) plus `@9thlevelsoftware/legion-cli-*` libraries. Publish workflow is git tags (`v*`) with provenance via **GitHub Actions trusted publisher** on the `@9thlevelsoftware` org (same path as [`@9thlevelsoftware/legion`](https://www.npmjs.com/package/@9thlevelsoftware/legion)). Do not claim already on npm. Workspace is `D:\legion-cli`.
 
-Supported invocation today: **`pnpm exec legion-cli`**. After the first `v*` tag: `npx @9thlevelsoftware/legion-cli` or `npm i -g @9thlevelsoftware/legion-cli`. PATH also registers `legion` (same `dist/bin.js`); installer first-args refuse. `legion-cli doctor` lists every `legion` and `legion-cli` binary on PATH. A global install is collision-checked; it is not required. GA `v1.0.0` still waits on the sibling installer-major checklist.
+Supported invocation today: **`pnpm exec legion-cli`**. After the first `v*` tag: `npx @9thlevelsoftware/legion-cli` or `npm i -g @9thlevelsoftware/legion-cli`. PATH also registers `legion` (same `dist/bin.js`); installer first-args and legion-ascended verbs this CLI lacks refuse (exit 2); `doctor` warns when the first PATH `legion` is another program. `legion-cli doctor` lists every `legion` and `legion-cli` binary on PATH. A global install is collision-checked; it is not required. GA `v1.0.0` still waits on the sibling installer-major checklist.
 
 #### 1.2 A user project after `legion-cli init`
 
@@ -1034,7 +1034,7 @@ Craft files actually shipped: `typography.md`, `color.md`, `anti-ai-slop.md`, `a
 `legion-cli init` defaults to greenfield and requires `--adapter`. **Two brownfield surfaces** stay two surfaces (do not merge):
 
 1. `init --mode brownfield` sets `project.mode` and the next command (`legion-cli brownfield`). 10-verb `execute` after that init is **in-place**.
-2. `legion-cli brownfield` is the effort 1–5 audit extra. `--execute` on that verb is the only worktree path.
+2. `legion-cli brownfield` is the audit extra (effort 1–5): the orchestrating agent does judgment, the CLI keeps the books (`init | state | roster | evidence | merge | review-status | pr-plan | dag | worktree | patterns`). `--execute` on that verb is the only worktree path (one worktree per reviewed PR).
 
 | | Greenfield | Brownfield (two surfaces) |
 | --- | --- | --- |
@@ -1044,7 +1044,7 @@ Craft files actually shipped: `typography.md`, `color.md`, `anti-ai-slop.md`, `a
 | Map | Optional notes | `.legion-cli/map/` + fingerprints (`legion-cli map`; `--lsp` optional; default fallback parser) |
 | Runs | Execute runs under `.legion-cli/cache/runs/` | `.legion-cli/runs/<id>/` analysis; `legion-cli run promote` (untrusted until `wiki trust`; optional `--trust` is an explicit human gate; `--yes` does not review; re-promote overwrites; Next is first page) |
 | Acceptance | Spec AC + tests + contract porcelain | Same + no unrelated debt in this task |
-| Execute isolation | In-place working tree | 10-verb `execute` after `init --mode brownfield` is **in-place**. **git worktrees** only for `legion-cli brownfield --execute` |
+| Execute isolation | In-place working tree | 10-verb `execute` after `init --mode brownfield` is **in-place**. **git worktrees** only for `legion-cli brownfield --execute`: `.legion-cli/worktrees/<run>/pr-N/` on `brownfield/<run>/pr-N-<slug>`, roots on the audited commit, dependents on their first dependency's branch; merge stays a human decision |
 
 ---
 
@@ -1186,7 +1186,7 @@ Off the default window. Packets spawn tickets, not execute. Compaction is manual
 
 | Command | Notes |
 | --- | --- |
-| `legion-cli brownfield` | Effort 1–5, `--execute`, `--resume`, `--lsp` (effort 5 pass-through to map); `--execute` uses git worktrees. Separate from `init --mode brownfield`. |
+| `legion-cli brownfield` | Effort 1–5, `--execute`, `--resume`; subcommands `init`, `state`, `roster`, `evidence`, `merge`, `review-status`, `pr-plan`, `dag`, `worktree`, `patterns`. Deterministic bookkeeping for an audit the orchestrating agent runs (`skills/brownfield`). `--execute` uses per-PR git worktrees. Separate from `init --mode brownfield`. |
 | `legion-cli garden` | Stale wiki, orphans, duplicates (read-only report) |
 | `legion-cli context compact` | Manual compaction of `done` tasks (no `in_progress` sibling) |
 | `legion-cli mcp` | Read-only stdio server |
@@ -1964,6 +1964,7 @@ Historical founding series from an empty repo. **PR-01–PR-16 were v0.** Packet
 - **Files/components:** `legion-cli brownfield`, `.legion-cli/runs/<id>/`, `legion-cli run promote`
 - **Depends on:** PR-08, PR-12
 - **Description:** No LSP. Resume JSON. Not the durable wiki unless promoted (untrusted until `wiki trust`; optional `--trust` is an explicit human gate; `--yes` does not review). Re-promote overwrites wiki body/trust (ingest skip-if-unchanged does not apply). Next is first promoted page (`intent.md`). `legion-cli brownfield --execute` uses **git worktrees** (v0 greenfield execute stays in-place).
+- **Follow-up (skill parity):** effort 1–5 bookkeeping subcommands replace the six canned effort-1 pages. The judgment layer is the `skills/brownfield` Claude Code skill (parallel specialists, assumptions register, design writer↔reviewer loop, per-PR implementers); the CLI parses and gates (`merge`, `review-status`, `pr-plan`, `dag`, `worktree`). The effort 2–5 rigor ladder (#90) moved from init into `brownfield evidence`: test runners, test gaps, secret patterns, lockfile audit, and docs coverage (README, wiki orphans, and exports without nearby markdown from `legion-cli map` fingerprints when present). Init no longer runs map/LSP or writes canned pages; the orchestrator runs `legion-cli map` when it wants fingerprints, and `--lsp` is gone from `brownfield`. `.legion-cli/runs/` is now gitignored. Legacy 3-phase `resume.json` files still parse.
 
 ### PR-20 — MCP Apps HTML + WebMCP page tools (flagged off)
 

@@ -34,6 +34,8 @@ schemaVersions
   legion-cli-audit/v1
   legion-cli-resume/v1
   legion-cli-run/v1
+  legion-cli-dag/v1
+  legion-cli-brownfield-patterns/v1
   legion-cli-qa/v1
   legion-cli-brief/v1
   legion-cli-skill-catalog/v1

@@ -55,7 +55,7 @@ const ALWAYS_ON = [
 
 const BOARD_EXTRAS = [
   ["next", "What is unblocked?", ""],
-  ["ticket create", "Park extra work", "--parent, --title, --from-agent, --adapter, --route"],
+  ["ticket create", "Park extra work", "--parent, --title, --from-agent, --type, --priority, --adapter, --route"],
   ["task amend", "Human changes a file contract", "--allow-deps, --adapter, --route, --clear-adapter"],
   ["fix <bug>", "Test first (must stay RED), then fix", "--adapter, --allow-no-sandbox"],
   ["abandon", "Stop this spec without shipping", "--message"],
@@ -67,11 +67,11 @@ const SHIPPED_ADJACENT = [
   ["serve", "Dashboard plus read-only MCP HTTP (MCP HTTP is loopback-only)", "--port, --expose, --no-open, --mcp-http/--no-mcp-http, --webmcp, --token-stdout"],
   ["dashboard", "Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist); not the source of truth)", "--no-open, --port, --expose"],
   ["packet new", "PM/designer request without the DAG", "--title, --request, --requester"],
-  ["packet respond", "Spawn tickets from a packet (does not execute)", "--message, --title"],
+  ["packet respond", "Spawn tickets from a packet (does not execute)", "--message, --title, --type, --priority"],
   ["context compact", "Manual compaction of done tasks", ""],
   ["map", "Generate architecture markdown and fingerprints", "--refresh, --lsp, --no-lsp"],
   ["garden", "Stale wiki, orphans, duplicates", ""],
-  ["brownfield", "Audit an existing app (effort 1–5)", "--effort, --execute, --resume, --lsp"],
+  ["brownfield [context]", "Audit an existing app: init a run, then roster|evidence|merge|review-status|pr-plan|dag|worktree|state|patterns", "--effort 1–5, --execute, --resume"],
   [
     "run promote",
     "Copy brownfield run pages into the wiki (untrusted until wiki trust; re-promote overwrites; Next is first page)",

@@ -14,6 +14,8 @@ export const SCHEMA_VERSION = {
   audit: "legion-cli-audit/v1",
   resume: "legion-cli-resume/v1",
   run: "legion-cli-run/v1",
+  dag: "legion-cli-dag/v1",
+  brownfieldPatterns: "legion-cli-brownfield-patterns/v1",
   qa: "legion-cli-qa/v1",
   brief: "legion-cli-brief/v1",
   skillCatalog: "legion-cli-skill-catalog/v1",

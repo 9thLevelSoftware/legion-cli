@@ -149,6 +149,131 @@ test("brief uses overlay skill description over packaged", async () => {
   });
 });
 
+test("status next matches CLI for brownfield initialized and advisory execute", async () => {
+  await withStore(async ({ dir, store }) => {
+    const project = await store.readProject();
+    await store.writeProject({ ...project.data, mode: "brownfield" }, project.body);
+    const state = await store.readState();
+    await store.writeState({ ...state.data, phase: "initialized" }, state.body);
+    await withClient(dir, async (client) => {
+      const status = parseTool(await client.callTool({ name: "legion_cli_status", arguments: {} }));
+      assert.equal(status.isError, false, status.text);
+      assert.equal(status.json.next.run, "legion-cli brownfield");
+    });
+  });
+
+  await withStore(async ({ dir, store }) => {
+    const state = await store.readState();
+    await store.writeState({ ...state.data, phase: "initialized" }, state.body);
+    await withClient(dir, async (client) => {
+      const status = parseTool(await client.callTool({ name: "legion_cli_status", arguments: {} }));
+      assert.equal(status.isError, false, status.text);
+      assert.equal(status.json.mode, "greenfield");
+      assert.equal(status.json.next.run, "legion-cli intent");
+    });
+  });
+
+  await withStore(async ({ dir, store }) => {
+    const config = await store.readConfig();
+    await store.writeConfig({ ...config, control_mode: "advisory" });
+    await withClient(dir, async (client) => {
+      const status = parseTool(await client.callTool({ name: "legion_cli_status", arguments: {} }));
+      assert.equal(status.isError, false, status.text);
+      assert.equal(status.json.next.run, "legion-cli control-mode guarded");
+    });
+  });
+
+  await withStore(async ({ dir, store }) => {
+    const config = await store.readConfig();
+    await store.writeConfig({ ...config, control_mode: "advisory" });
+    const state = await store.readState();
+    await store.writeState({ ...state.data, phase: "plan_ready", currentTaskId: null }, state.body);
+    await withClient(dir, async (client) => {
+      const status = parseTool(await client.callTool({ name: "legion_cli_status", arguments: {} }));
+      assert.equal(status.isError, false, status.text);
+      assert.equal(status.json.next.run, "legion-cli control-mode guarded");
+    });
+  });
+
+  await withStore(async ({ dir, store }) => {
+    const config = await store.readConfig();
+    await store.writeConfig({ ...config, control_mode: "advisory" });
+    const doc = await store.readTask("TSK-0002");
+    await store.writeTask({ ...doc.data, status: "done", blockedBy: [] }, doc.body);
+    const state = await store.readState();
+    await store.writeState({ ...state.data, phase: "executing", lastReview: "FAIL" }, state.body);
+    await withClient(dir, async (client) => {
+      const status = parseTool(await client.callTool({ name: "legion_cli_status", arguments: {} }));
+      assert.equal(status.isError, false, status.text);
+      assert.equal(status.json.next.run, "legion-cli review");
+    });
+  });
+
+  await withStore(async ({ dir, store }) => {
+    const config = await store.readConfig();
+    await store.writeConfig({ ...config, control_mode: "advisory" });
+    const doc = await store.readTask("TSK-0002");
+    await store.writeTask({ ...doc.data, status: "done", blockedBy: [] }, doc.body);
+    const state = await store.readState();
+    await store.writeState({ ...state.data, phase: "executing", lastReview: "PASS" }, state.body);
+    await withClient(dir, async (client) => {
+      const status = parseTool(await client.callTool({ name: "legion_cli_status", arguments: {} }));
+      assert.equal(status.isError, false, status.text);
+      assert.equal(status.json.next.run, "legion-cli qa");
+    });
+  });
+});
+
+test("task graph ready includes open blocking assumptions", async () => {
+  await withStore(async ({ dir, store }) => {
+    await store.writeTask(
+      otherSpecTask({
+        id: "TSK-0003",
+        title: "otherwise ready",
+        status: "ready",
+        specId: "spec-checkin",
+        blockedBy: [],
+        contract: {
+          filesAllowed: ["notes/TSK-0003.md"],
+          expectedArtifacts: ["notes/TSK-0003.md"],
+        },
+      }),
+      "Otherwise ready.\n",
+    );
+    const asm = await store.readAssumption("ASM-0001");
+    await store.writeAssumption({ ...asm.data, status: "confirmed" }, asm.body);
+
+    await withClient(dir, async (client) => {
+      const before = parseTool(await client.callTool({ name: "legion_cli_task_graph", arguments: {} }));
+      assert.equal(before.isError, false, before.text);
+      const ready = before.json.tasks.find((row) => row.id === "TSK-0003");
+      assert.ok(ready, "expected TSK-0003 in the active slice");
+      assert.equal(ready.ready, true);
+    });
+
+    await store.writeAssumption(
+      {
+        schemaVersion: "legion-cli-assumption/v1",
+        id: "ASM-0002",
+        statement: "Need office wifi",
+        status: "open",
+        blocking: true,
+        escalatesTo: "user",
+        createdIn: "intent",
+      },
+      "Need office wifi\n",
+    );
+
+    await withClient(dir, async (client) => {
+      const after = parseTool(await client.callTool({ name: "legion_cli_task_graph", arguments: {} }));
+      assert.equal(after.isError, false, after.text);
+      const blocked = after.json.tasks.find((row) => row.id === "TSK-0003");
+      assert.ok(blocked, "expected TSK-0003 in the active slice");
+      assert.equal(blocked.ready, false);
+    });
+  });
+});
+
 test("task graph and current task pass through raw Task.adapter when set", async () => {
   await withStore(async ({ dir, store }) => {
     const doc = await store.readTask("TSK-0002");

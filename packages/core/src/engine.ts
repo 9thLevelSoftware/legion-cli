@@ -165,8 +165,21 @@ import {
 import type {
   Actor,
   AmendTaskOptions,
+  BrownfieldDagResult,
+  BrownfieldEvidenceOptions,
+  BrownfieldEvidenceResult,
+  BrownfieldMergeResult,
   BrownfieldOptions,
+  BrownfieldPatternsOptions,
+  BrownfieldPatternsResult,
+  BrownfieldPrPlanResult,
   BrownfieldResult,
+  BrownfieldReviewStatusOptions,
+  BrownfieldReviewStatusResult,
+  BrownfieldRosterResult,
+  BrownfieldStateResult,
+  BrownfieldWorktreeOptions,
+  BrownfieldWorktreeResult,
   CompactOptions,
   CompactResult,
   DecisionInput,
@@ -193,7 +206,20 @@ import type {
   WireframeOptions,
   WireframeResult,
 } from "./types.js";
-import { collectBrownfieldAudit, commitBrownfield, prepareBrownfield, promoteBrownfieldRun } from "./brownfield.js";
+import {
+  brownfieldEntry,
+  dagRun,
+  evidenceRun,
+  mergeRun,
+  patternsRun,
+  prPlanRun,
+  promoteBrownfieldRun,
+  reviewStatusRun,
+  rosterRun,
+  stateRun,
+  worktreeRun,
+} from "./brownfield/index.js";
+import { parseRunId as parseBrownfieldRunId } from "./brownfield/state.js";
 import {
   MAP_ARCHITECTURE_PATH,
   MAP_FINGERPRINTS_PATH,
@@ -1907,45 +1933,52 @@ export class LegionEngine {
     }
   }
 
+  /** Start a brownfield run (or, with `resume`, report its state). The orchestrating agent does judgment. */
   async brownfield(opts: BrownfieldOptions = {}): Promise<BrownfieldResult> {
-    const prepared = await this.#mutate(() => prepareBrownfield(this.store, opts));
-    if (prepared.kind === "done") return prepared.result;
+    return this.#mutate(() => brownfieldEntry(this.store, opts));
+  }
 
-    const effort = prepared.run.effort;
-    const audit = await collectBrownfieldAudit(this.projectRoot, effort);
+  async brownfieldState(runId: string, pairs: readonly string[] = []): Promise<BrownfieldStateResult> {
+    return this.#mutate(() => stateRun(this.store, parseBrownfieldRunId(runId), pairs));
+  }
 
-    return this.#mutate(async () => {
-      let map: MapResult | undefined;
-      if (effort >= 5) {
-        try {
-          const generated = await generateMap(this.projectRoot, {
-            refresh: true,
-            lsp: opts.lsp ? "require" : "auto",
-            resolveBinary: opts.resolveBinary,
-            spawnLsp: opts.spawnLsp,
-            lspDeadlineMs: opts.lspDeadlineMs,
-          });
-          map = {
-            path: MAP_ARCHITECTURE_PATH,
-            fingerprintsPath: MAP_FINGERPRINTS_PATH,
-            backend: generated.backend,
-            modules: generated.fingerprints.modules.length,
-            changed: generated.changed,
-            next: MAP_SHOW_NEXT,
-          };
-        } catch (err) {
-          if (err instanceof MapError) refuse(err.message, err.nextHint);
-          throw err;
-        }
-      }
-      return commitBrownfield(this.store, prepared.run, {
-        resume: prepared.resume,
-        findings: audit.findings,
-        auditLines: audit.auditLines,
-        secretsTruncated: audit.secretsTruncated,
-        map,
-      });
-    });
+  async brownfieldRoster(runId: string): Promise<BrownfieldRosterResult> {
+    return this.#mutate(() => rosterRun(this.store, parseBrownfieldRunId(runId)));
+  }
+
+  async brownfieldEvidence(runId: string, opts: BrownfieldEvidenceOptions = {}): Promise<BrownfieldEvidenceResult> {
+    return this.#mutate(() => evidenceRun(this.store, parseBrownfieldRunId(runId), opts));
+  }
+
+  async brownfieldMerge(runId: string): Promise<BrownfieldMergeResult> {
+    return this.#mutate(() => mergeRun(this.store, parseBrownfieldRunId(runId)));
+  }
+
+  async brownfieldReviewStatus(
+    runId: string,
+    opts: BrownfieldReviewStatusOptions = {},
+  ): Promise<BrownfieldReviewStatusResult> {
+    return this.#mutate(() => reviewStatusRun(this.store, parseBrownfieldRunId(runId), opts));
+  }
+
+  async brownfieldPrPlan(runId: string): Promise<BrownfieldPrPlanResult> {
+    return this.#mutate(() => prPlanRun(this.store, parseBrownfieldRunId(runId)));
+  }
+
+  async brownfieldDag(runId: string, nodeId?: string, pairs: readonly string[] = []): Promise<BrownfieldDagResult> {
+    return this.#mutate(() => dagRun(this.store, parseBrownfieldRunId(runId), nodeId, pairs));
+  }
+
+  async brownfieldWorktree(
+    runId: string,
+    nodeId: string,
+    opts: BrownfieldWorktreeOptions = {},
+  ): Promise<BrownfieldWorktreeResult> {
+    return this.#mutate(() => worktreeRun(this.store, parseBrownfieldRunId(runId), nodeId, opts));
+  }
+
+  async brownfieldPatterns(opts: BrownfieldPatternsOptions = {}): Promise<BrownfieldPatternsResult> {
+    return this.#mutate(() => patternsRun(this.store, opts));
   }
 
   async promoteRun(runId: string, opts: PromoteRunOptions = {}): Promise<PromoteRunResult> {

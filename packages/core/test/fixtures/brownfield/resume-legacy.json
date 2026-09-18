@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "legion-cli-run/v1",
+  "runId": "0a0a0a0a",
+  "effort": 1,
+  "execute": false,
+  "phase": "complete",
+  "preSpawnRef": "UNBORN",
+  "startedAt": "2026-09-01T12:00:00.000Z",
+  "worktreePath": null,
+  "promoted": false,
+  "pages": ["intent.md", "assumptions.md", "architecture.md", "code.md", "analysis.md", "design.md"],
+  "context": "legacy effort-1 run"
+}

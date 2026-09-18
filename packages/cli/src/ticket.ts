@@ -13,14 +13,26 @@ export type TicketCreateFlags = {
   route?: string;
 };
 
+function parseType(raw: string | undefined, nextHint: string): "feature" | "fix" | "bug" | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "fix" || raw === "bug" || raw === "feature") return raw;
+  refuse("type must be feature | fix | bug", nextHint);
+}
+
+function parsePriority(raw: string | undefined, nextHint: string): "P0" | "P1" | "P2" | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "P0" || raw === "P1" || raw === "P2") return raw;
+  refuse("priority must be P0 | P1 | P2", nextHint);
+}
+
 export async function runTicketCreate(opts: CliOpts, flags: TicketCreateFlags): Promise<number> {
   const title = flags.title?.trim();
   if (!title) {
     refuse("ticket create requires --title", HINT.ticket(flags.parent ?? "TSK-x"));
   }
-  const type = flags.type === "fix" || flags.type === "bug" || flags.type === "feature" ? flags.type : undefined;
-  const priority =
-    flags.priority === "P0" || flags.priority === "P1" || flags.priority === "P2" ? flags.priority : undefined;
+  const nextHint = HINT.ticket(flags.parent ?? "TSK-x");
+  const type = parseType(flags.type, nextHint);
+  const priority = parsePriority(flags.priority, nextHint);
   const engine = createLegionEngine(opts.project);
   const persisted = resolvePersistAdapter(await engine.store.readConfig(), flags);
   const ticket = await engine.fileTicket({

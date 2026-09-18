@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { appendFile, cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -28,8 +29,13 @@ import {
   gitCheckIgnore,
   gitDiscoverChanges,
   gitHead,
+  gitBranchCreate,
+  gitRevParse,
   gitWorktreeAdd,
+  gitWorktreeRemove,
   gitStagedPaths,
+  tryGitBranch,
+  worktreeNodeStorePath,
   hasSecretPattern,
   queryIndex,
   redactSecrets,
@@ -102,7 +108,9 @@ test("gitignore template covers index, cache, engine.lock, worktrees, sandbox, c
     ".legion-cli/sandbox/",
     ".legion-cli/chat/",
     ".legion-cli/serve.json",
+    ".legion-cli/runs/",
   ]);
+  assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/runs\//);
   assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/index\//);
   assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/cache\//);
   assert.match(GITIGNORE_TEMPLATE, /\.legion-cli\/index\/engine\.lock/);
@@ -332,6 +340,7 @@ test("index db and engine.lock are gitignored", async () => {
       assert.equal(gitCheckIgnore(dir, ".legion-cli/sandbox/run-1"), true);
       assert.equal(gitCheckIgnore(dir, ".legion-cli/chat/session.json"), true);
       assert.equal(gitCheckIgnore(dir, ".legion-cli/serve.json"), true);
+      assert.equal(gitCheckIgnore(dir, ".legion-cli/runs/aaaaaaaa/resume.json"), true);
       const status = spawnSync("git", ["status", "--porcelain"], {
         cwd: dir,
         encoding: "utf8",
@@ -680,6 +689,49 @@ test("gitWorktreeAdd recreates a deleted checkout without resetting the branch",
     assert.match(git(worktree, ["branch", "--show-current"]), /brownfield\/bbbbbbbb/);
     assert.equal(git(worktree, ["rev-parse", "HEAD"]), branchTip);
     assert.equal(git(dir, ["rev-parse", "HEAD"]), mainHead);
+  });
+});
+
+test("gitWorktreeAdd creates a missing branch at startPoint, not HEAD", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "README.md"), "app\n", "utf8");
+    initGitRepo(dir);
+    const base = git(dir, ["rev-parse", "HEAD"]);
+    await writeFile(join(dir, "README.md"), "moved\n", "utf8");
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-m", "main moved"]);
+    const worktree = join(dir, ".legion-cli", "worktrees", "aaaaaaaa", "pr-1");
+    gitWorktreeAdd(dir, worktree, "brownfield/aaaaaaaa/pr-1-x", base);
+    assert.equal(git(worktree, ["rev-parse", "HEAD"]), base);
+    assert.equal(gitRevParse(dir, "brownfield/aaaaaaaa/pr-1-x"), base);
+    assert.equal(worktreeNodeStorePath("aaaaaaaa", "pr-1"), ".legion-cli/worktrees/aaaaaaaa/pr-1");
+  });
+});
+
+test("gitWorktreeRemove removes the checkout and keeps the branch", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "README.md"), "app\n", "utf8");
+    initGitRepo(dir);
+    const worktree = join(dir, ".legion-cli", "worktrees", "cccccccc", "pr-1");
+    gitWorktreeAdd(dir, worktree, "brownfield/cccccccc/pr-1-x");
+    assert.equal(gitWorktreeRemove(dir, worktree), true);
+    assert.equal(existsSync(worktree), false);
+    assert.notEqual(gitRevParse(dir, "brownfield/cccccccc/pr-1-x"), null);
+    assert.equal(gitWorktreeRemove(dir, worktree), false);
+  });
+});
+
+test("gitBranchCreate and tryGitBranch handle detached HEAD", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "README.md"), "app\n", "utf8");
+    initGitRepo(dir);
+    const head = git(dir, ["rev-parse", "HEAD"]);
+    assert.ok(tryGitBranch(dir));
+    assert.equal(gitBranchCreate(dir, "brownfield/x/pr-1-a", head), true);
+    assert.equal(gitBranchCreate(dir, "brownfield/x/pr-1-a", head), false);
+    git(dir, ["checkout", "--detach", head]);
+    assert.equal(tryGitBranch(dir), null);
+    assert.equal(gitRevParse(dir, "no-such-branch"), null);
   });
 });
 

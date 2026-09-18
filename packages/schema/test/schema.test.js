@@ -15,6 +15,8 @@ import {
   ChatSessionFileSchema,
   computeQaPass,
   DesignSystemPackageSchema,
+  BrownfieldDagSchema,
+  BrownfieldPatternsFileSchema,
   BrownfieldRunSchema,
   FileContractSchema,
   FingerprintFileSchema,
@@ -136,6 +138,8 @@ test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.audit, "legion-cli-audit/v1");
   assert.equal(SCHEMA_VERSION.resume, "legion-cli-resume/v1");
   assert.equal(SCHEMA_VERSION.run, "legion-cli-run/v1");
+  assert.equal(SCHEMA_VERSION.dag, "legion-cli-dag/v1");
+  assert.equal(SCHEMA_VERSION.brownfieldPatterns, "legion-cli-brownfield-patterns/v1");
   assert.equal(SCHEMA_VERSION.qa, "legion-cli-qa/v1");
   assert.equal(SCHEMA_VERSION.brief, "legion-cli-brief/v1");
   assert.equal(SCHEMA_VERSION.skillCatalog, "legion-cli-skill-catalog/v1");
@@ -191,6 +195,82 @@ test("BrownfieldRunSchema requires 8-hex runId and resume fields", () => {
   assert.deepEqual(BrownfieldRunSchema.parse(run).runId, "a1b2c3d4");
   assert.equal(BrownfieldRunSchema.safeParse({ ...run, runId: "not-hex" }).success, false);
   assert.equal(BrownfieldRunSchema.safeParse({ ...run, effort: 6 }).success, false);
+});
+
+test("BrownfieldRunSchema parses legacy 3-phase resume files with defaults", () => {
+  const legacy = {
+    schemaVersion: "legion-cli-run/v1",
+    runId: "a1b2c3d4",
+    effort: 1,
+    execute: true,
+    phase: "execute",
+    preSpawnRef: "abc123",
+    startedAt: "2026-09-01T12:00:00Z",
+    worktreePath: ".legion-cli/worktrees/a1b2c3d4",
+    promoted: false,
+    pages: ["intent.md"],
+    context: "",
+  };
+  const parsed = BrownfieldRunSchema.parse(legacy);
+  assert.equal(parsed.designReviewRounds, 0);
+  assert.equal(parsed.assumptionRounds, 0);
+  assert.equal(parsed.baseBranch, null);
+  assert.deepEqual(parsed.meta, {});
+  assert.equal(parsed.size, undefined);
+  const { pages: _pages, worktreePath: _wt, ...minimal } = legacy;
+  assert.deepEqual(BrownfieldRunSchema.parse({ ...minimal, phase: "intent" }).pages, []);
+  for (const phase of ["intent", "plan", "assumptions", "design", "review", "present", "verify"]) {
+    assert.equal(BrownfieldRunSchema.safeParse({ ...legacy, phase }).success, true, phase);
+  }
+  assert.equal(BrownfieldRunSchema.safeParse({ ...legacy, phase: "bogus" }).success, false);
+  assert.equal(
+    BrownfieldRunSchema.safeParse({
+      ...legacy,
+      size: { files: 1, lines: 10, tier: "tiny", maxPrs: 3, suggestedEffortMax: 2, extra: 1 },
+    }).success,
+    false,
+  );
+});
+
+test("BrownfieldDagSchema validates node ids and statuses", () => {
+  const node = {
+    id: "pr-1",
+    number: 1,
+    title: "Add owner check",
+    branch: "brownfield/a1b2c3d4/pr-1-add-owner-check",
+    dependsOn: [],
+    files: ["src/orders.ts"],
+    tracesTo: "F-001",
+    risk: "low",
+    spec: "### PR 1: Add owner check",
+    status: "pending",
+    level: 0,
+    base: "main",
+    mergeIn: [],
+  };
+  const dag = BrownfieldDagSchema.parse({ schemaVersion: "legion-cli-dag/v1", runId: "a1b2c3d4", nodes: [node] });
+  assert.equal(dag.nodes[0].commit, null);
+  assert.equal(dag.nodes[0].reviewRounds, 0);
+  const bad = (patch) =>
+    BrownfieldDagSchema.safeParse({ schemaVersion: "legion-cli-dag/v1", runId: "a1b2c3d4", nodes: [{ ...node, ...patch }] })
+      .success;
+  assert.equal(bad({ id: "PR-1" }), false);
+  assert.equal(bad({ id: "pr-0" }), false);
+  assert.equal(bad({ status: "done" }), false);
+  assert.equal(bad({ dependsOn: ["pr-x"] }), false);
+});
+
+test("BrownfieldPatternsFileSchema counts lessons", () => {
+  const file = {
+    schemaVersion: "legion-cli-brownfield-patterns/v1",
+    patterns: { "missing authz on object access": { count: 2, firstSeen: "a", lastSeen: "b" } },
+  };
+  assert.equal(BrownfieldPatternsFileSchema.parse(file).patterns["missing authz on object access"].count, 2);
+  assert.equal(
+    BrownfieldPatternsFileSchema.safeParse({ ...file, patterns: { x: { count: 0, firstSeen: "a", lastSeen: "b" } } })
+      .success,
+    false,
+  );
 });
 
 test("PacketSchema accepts open and responded packets", () => {

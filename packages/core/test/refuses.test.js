@@ -415,7 +415,7 @@ const cases = [
   },
   {
     name: "brownfield resume cannot change effort",
-    hint: /legion-cli brownfield --effort 1\|2\|3\|4\|5/,
+    hint: /legion-cli brownfield --resume/,
     setup: async ({ engine, dir }) => {
       await initProject(engine, { mode: "brownfield" });
       initGitRepo(dir);
