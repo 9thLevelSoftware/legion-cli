@@ -1,5 +1,5 @@
 import { cp, mkdir, readdir } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { runCachePaths } from "./paths.js";
 
 export type StageSkillOptions = {
@@ -13,6 +13,13 @@ function isOverlayMetadataName(name: string): boolean {
   return name === "overlay.json" || name === "sha256.hex" || name.endsWith(".minisig");
 }
 
+/** Overlay pin/signature files live only at the skill root, not under L3 dirs. */
+function isOverlayRootMetadata(skillDir: string, src: string): boolean {
+  const rel = relative(resolve(skillDir), resolve(src)).replaceAll("\\", "/");
+  if (!rel || rel === "." || rel.startsWith("../") || rel === ".." || rel.includes("/")) return false;
+  return isOverlayMetadataName(rel);
+}
+
 /** Copy (not symlink) the skill directory into `.legion-cli/cache/skills/<run-id>/`. */
 export async function stageSkill(opts: StageSkillOptions): Promise<string> {
   const dest = runCachePaths(opts.projectRoot, opts.runId).skillDir;
@@ -21,8 +28,7 @@ export async function stageSkill(opts: StageSkillOptions): Promise<string> {
     recursive: true,
     dereference: true,
     force: true,
-    // Pin/signature files are overlay metadata, not skill protocol.
-    filter: (src) => !isOverlayMetadataName(basename(src)),
+    filter: (src) => !isOverlayRootMetadata(opts.skillDir, src),
   });
   if (opts.craftDir) {
     const craftDest = join(dest, "craft");

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { crc32 } from "node:zlib";
 
-import { MinisignError, SsrfError } from "@9thlevelsoftware/legion-cli-persist";
+import { MinisignError, PathEscapeError, SsrfError } from "@9thlevelsoftware/legion-cli-persist";
 import {
   AgentError,
   hashSkillTree,
@@ -320,6 +321,102 @@ test("multi-skill bundle without --skill refuses", async () => {
       skillId: "execute",
     });
     assert.equal(installed.skillId, "execute");
+  });
+});
+
+test("github root-level SKILL.md uses frontmatter skillId not tmp dir name", async () => {
+  await withTempDir(async (dir) => {
+    const zip = makeZip([{ name: "skills-v1/SKILL.md", data: skillMarkdown("execute") }]);
+    await assert.rejects(
+      () =>
+        installSkillOverlay({
+          projectRoot: dir,
+          source: "github:acme/skills@v1",
+          skillId: "execute",
+          fetchZip: async () => ({ body: zip }),
+        }),
+      (err) => {
+        assert.equal(err instanceof AgentError, true);
+        assert.match(err.message, /minisign signature/);
+        assert.doesNotMatch(err.message, /does not contain execute/);
+        assert.doesNotMatch(err.message, /must equal directory/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () =>
+        installSkillOverlay({
+          projectRoot: dir,
+          source: "github:acme/skills@v1",
+          fetchZip: async () => ({ body: zip }),
+        }),
+      (err) => {
+        assert.equal(err instanceof AgentError, true);
+        assert.match(err.message, /minisign signature/);
+        assert.doesNotMatch(err.message, /must equal directory/);
+        return true;
+      },
+    );
+  });
+});
+
+test("unsigned local install with --integrity compares dest digest", async () => {
+  await withTempDir(async (dir) => {
+    const src = join(dir, "execute");
+    await mkdir(src, { recursive: true });
+    await writeFile(join(src, "SKILL.md"), skillMarkdown("execute"), "utf8");
+    const sha256 = await hashSkillTree(src);
+    await assert.rejects(
+      () =>
+        installSkillOverlay({
+          projectRoot: dir,
+          source: src,
+          unsigned: true,
+          integritySha256: "a".repeat(64),
+        }),
+      /integrity mismatch/,
+    );
+    const installed = await installSkillOverlay({
+      projectRoot: dir,
+      source: src,
+      unsigned: true,
+      integritySha256: sha256,
+    });
+    assert.equal(installed.pin.integrity.sha256, sha256);
+  });
+});
+
+test("reinstall from overlay dest does not delete the source before copy", async () => {
+  await withTempDir(async (dir) => {
+    const src = join(dir, "execute");
+    await mkdir(src, { recursive: true });
+    await writeFile(join(src, "SKILL.md"), skillMarkdown("execute", { description: "first overlay" }), "utf8");
+    await installSkillOverlay({ projectRoot: dir, source: src, unsigned: true });
+    const dest = overlaySkillDir(dir, "execute");
+    const again = await installSkillOverlay({ projectRoot: dir, source: dest, unsigned: true });
+    assert.equal(again.skillId, "execute");
+    assert.equal(existsSync(join(dest, "SKILL.md")), true);
+    assert.match(await readFile(join(dest, "SKILL.md"), "utf8"), /first overlay/);
+  });
+});
+
+test("overlay dest refuses symlink ancestors", async () => {
+  await withTempDir(async (dir) => {
+    const outside = join(dir, "outside");
+    const src = join(dir, "execute");
+    await mkdir(outside, { recursive: true });
+    await mkdir(join(dir, ".legion-cli"), { recursive: true });
+    await mkdir(src, { recursive: true });
+    await writeFile(join(src, "SKILL.md"), skillMarkdown("execute"), "utf8");
+    await symlink(outside, join(dir, ".legion-cli", "skills"), process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(
+      () => installSkillOverlay({ projectRoot: dir, source: src, unsigned: true }),
+      (err) => {
+        assert.equal(err instanceof PathEscapeError, true);
+        return true;
+      },
+    );
+    assert.equal(existsSync(join(outside, "execute")), false);
   });
 });
 

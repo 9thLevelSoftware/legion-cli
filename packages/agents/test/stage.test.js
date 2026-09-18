@@ -50,6 +50,23 @@ test("stageSkill omits overlay pin metadata", async () => {
   });
 });
 
+test("stageSkill keeps descendant overlay.json and minisig resources", async () => {
+  await withTempDir(async (dir) => {
+    const skillDir = join(dir, "skills", "execute");
+    await writeSkill(skillDir, "# execute\n");
+    await mkdir(join(skillDir, "references"), { recursive: true });
+    await writeFile(join(skillDir, "overlay.json"), "{}\n", "utf8");
+    await writeFile(join(skillDir, "references", "overlay.json"), "KEEP_OVERLAY_JSON\n", "utf8");
+    await writeFile(join(skillDir, "references", "note.minisig"), "KEEP_MINISIG\n", "utf8");
+    await writeFile(join(skillDir, "references", "sha256.hex"), "KEEP_HEX\n", "utf8");
+    const dest = await stageSkill({ projectRoot: dir, runId: "run-overlay-l3", skillDir });
+    assert.equal(existsSync(join(dest, "overlay.json")), false);
+    assert.equal(await readFile(join(dest, "references", "overlay.json"), "utf8"), "KEEP_OVERLAY_JSON\n");
+    assert.equal(await readFile(join(dest, "references", "note.minisig"), "utf8"), "KEEP_MINISIG\n");
+    assert.equal(await readFile(join(dest, "references", "sha256.hex"), "utf8"), "KEEP_HEX\n");
+  });
+});
+
 test("stageSkill copies craft/*.md into the staged tree", async () => {
   await withTempDir(async (dir) => {
     const skillDir = join(dir, "skills", "execute");

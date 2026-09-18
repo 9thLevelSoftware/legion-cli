@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
-import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import {
+  assertResolvedInside,
   fetchGithubZipball,
   hashTreeFiles,
   legionPaths,
@@ -377,11 +378,37 @@ function uniqueInstallCandidates(rows: InstallCandidate[]): InstallCandidate[] {
   return out;
 }
 
+function samePath(a: string, b: string): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+/** GitHub zipballs land in a UUID tmp dir; ID comes from frontmatter, not basename. */
+function peekOverlaySkillId(raw: string): SkillId | undefined {
+  for (const skillId of SkillIdSchema.options) {
+    const parsed = parseSkillFrontmatter(raw, skillCatalogPath(skillId));
+    if (parsed.ok) return parsed.entry.skillId;
+  }
+  return undefined;
+}
+
+function rootInstallDirName(root: string): string {
+  const rootMd = join(root, "SKILL.md");
+  try {
+    const peeked = peekOverlaySkillId(readFileSync(rootMd, "utf8"));
+    if (peeked) return peeked;
+  } catch {
+    // keep basename when frontmatter cannot be read
+  }
+  return basename(root);
+}
+
 function listInstallCandidates(root: string): InstallCandidate[] {
   const out: InstallCandidate[] = [];
   const rootMd = join(root, "SKILL.md");
   if (existsSync(rootMd) && statSync(rootMd).isFile()) {
-    out.push({ dir: root, dirName: basename(root) });
+    out.push({ dir: root, dirName: rootInstallDirName(root) });
   }
   for (const skillId of SkillIdSchema.options) {
     for (const rel of [skillId, join("skills", skillId)]) {
@@ -393,6 +420,25 @@ function listInstallCandidates(root: string): InstallCandidate[] {
     }
   }
   return uniqueInstallCandidates(out);
+}
+
+async function assertSafeOverlayDest(projectRoot: string, dest: string): Promise<void> {
+  const root = resolve(projectRoot);
+  assertResolvedInside(root, dest, dest);
+  let current = resolve(dest);
+  for (;;) {
+    try {
+      const st = await lstat(current);
+      if (st.isSymbolicLink()) throw new PathEscapeError(dest);
+    } catch (err) {
+      if (err instanceof PathEscapeError) throw err;
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    if (samePath(current, root)) return;
+    const parent = dirname(current);
+    if (samePath(parent, current)) return;
+    current = parent;
+  }
 }
 
 function selectInstallCandidate(candidates: InstallCandidate[], skillId?: SkillId): InstallCandidate {
@@ -521,6 +567,7 @@ export async function installSkillOverlay(opts: InstallSkillOverlayOpts): Promis
       return await materializeOverlay({
         projectRoot: opts.projectRoot,
         srcDir: chosen.dir,
+        expectedDirName: chosen.dirName,
         searchDirs: [chosen.dir, tmp],
         origin: `${parsed.owner}/${parsed.repo}`,
         ref: parsed.ref,
@@ -549,6 +596,7 @@ export async function installSkillOverlay(opts: InstallSkillOverlayOpts): Promis
   return materializeOverlay({
     projectRoot: opts.projectRoot,
     srcDir: chosen.dir,
+    expectedDirName: chosen.dirName,
     searchDirs: [chosen.dir, abs],
     origin: abs,
     type: "local",
@@ -563,6 +611,7 @@ export async function installSkillOverlay(opts: InstallSkillOverlayOpts): Promis
 async function materializeOverlay(opts: {
   projectRoot: string;
   srcDir: string;
+  expectedDirName?: string;
   searchDirs: readonly string[];
   origin: string;
   ref?: string;
@@ -575,14 +624,18 @@ async function materializeOverlay(opts: {
 }): Promise<InstalledSkillOverlay> {
   const skillMd = join(opts.srcDir, "SKILL.md");
   const raw = await readFile(skillMd, "utf8");
-  const dirName = basename(opts.srcDir);
-  const parsed = parseSkillFrontmatter(raw, skillCatalogPath(dirName));
+  const folderName = basename(opts.srcDir);
+  const catalogDir = opts.expectedDirName ?? folderName;
+  const parsed = parseSkillFrontmatter(raw, skillCatalogPath(catalogDir));
   if (!parsed.ok) {
     throw new AgentError(`skill overlay frontmatter is invalid (${parsed.reason})`);
   }
   const skillId = parsed.entry.skillId;
-  if (parsed.entry.name !== dirName || skillId !== dirName) {
-    throw new AgentError(`name "${parsed.entry.name}" must equal directory "${dirName}" and skillId "${skillId}"`);
+  if (opts.type === "local" && (parsed.entry.name !== folderName || skillId !== folderName)) {
+    throw new AgentError(`name "${parsed.entry.name}" must equal directory "${folderName}" and skillId "${skillId}"`);
+  }
+  if (parsed.entry.name !== skillId) {
+    throw new AgentError(`name "${parsed.entry.name}" must equal skillId "${skillId}"`);
   }
 
   let signature: string | undefined;
@@ -614,25 +667,35 @@ async function materializeOverlay(opts: {
   }
 
   const dest = overlaySkillDir(opts.projectRoot, skillId);
-  await rm(dest, { recursive: true, force: true });
-  await copySkillTree(opts.srcDir, dest);
-  const sha256 = await hashSkillTree(dest);
-  if (opts.requireSig && sha256 !== computedSrc) {
+  await assertSafeOverlayDest(opts.projectRoot, dest);
+  const staging = join(opts.projectRoot, ".legion-cli", "cache", "skill-install", randomUUID());
+  try {
+    await copySkillTree(opts.srcDir, staging);
+    const sha256 = await hashSkillTree(staging);
+    if ((signature || opts.expectedSha256) && sha256 !== computedSrc) {
+      throw new AgentError("skill overlay integrity mismatch");
+    }
+    const pin: SkillOverlayPin = {
+      schemaVersion: SCHEMA_VERSION.skillOverlay,
+      skillId,
+      source:
+        opts.type === "github"
+          ? { type: "github", origin: opts.origin, ref: opts.ref }
+          : { type: "local", origin: opts.origin },
+      integrity: signature ? { sha256, minisign: signature } : { sha256 },
+      installedAt: new Date().toISOString(),
+    };
+    const checked = SkillOverlayPinSchema.parse(pin);
+    await mkdir(staging, { recursive: true });
+    await writeFile(join(staging, OVERLAY_PIN_FILENAME), `${JSON.stringify(checked, null, 2)}\n`, "utf8");
+    await assertSafeOverlayDest(opts.projectRoot, dest);
     await rm(dest, { recursive: true, force: true });
-    throw new AgentError("skill overlay integrity mismatch");
+    await mkdir(dirname(dest), { recursive: true });
+    await assertSafeOverlayDest(opts.projectRoot, dest);
+    await rename(staging, dest);
+    return { skillId, dest, pin: checked };
+  } catch (err) {
+    await rm(staging, { recursive: true, force: true });
+    throw err;
   }
-  const pin: SkillOverlayPin = {
-    schemaVersion: SCHEMA_VERSION.skillOverlay,
-    skillId,
-    source:
-      opts.type === "github"
-        ? { type: "github", origin: opts.origin, ref: opts.ref }
-        : { type: "local", origin: opts.origin },
-    integrity: signature ? { sha256, minisign: signature } : { sha256 },
-    installedAt: new Date().toISOString(),
-  };
-  const checked = SkillOverlayPinSchema.parse(pin);
-  await mkdir(dest, { recursive: true });
-  await writeFile(join(dest, OVERLAY_PIN_FILENAME), `${JSON.stringify(checked, null, 2)}\n`, "utf8");
-  return { skillId, dest, pin: checked };
 }
