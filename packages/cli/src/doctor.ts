@@ -586,7 +586,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       : "(unset)",
     fake: fakeSpawnable() ? "spawnable (LEGION_CLI_ADAPTER=fake)" : "not spawnable (set LEGION_CLI_ADAPTER=fake)",
     ...extraLabels,
-    http: config?.adapter.http ? "not spawnable" : "not configured",
+    http: !config?.adapter.http ? "not configured" : "not spawnable (detect-only)",
   };
 
   const ok = checks.every((check) => check.ok);

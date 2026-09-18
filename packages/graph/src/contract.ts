@@ -22,8 +22,14 @@ export function isEngineSoTPath(posixPath: string): boolean {
 export function isImplicitForbiddenPath(posixPath: string): boolean {
   if (posixPath === ".git" || posixPath.startsWith(".git/")) return true;
   if (isEngineSoTPath(posixPath)) return true;
-  const base = posixPath.split("/").pop() ?? posixPath;
-  if (base === ".env" || base.startsWith(".env.")) return true;
+  if (
+    posixPath.split("/").some((part) => {
+      const lower = part.toLowerCase();
+      return lower === ".env" || lower.startsWith(".env.");
+    })
+  ) {
+    return true;
+  }
   return false;
 }
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { SkillIdSchema } from "@9thlevelsoftware/legion-cli-schema";
-import { SKILL_CONTRACTS, isEngineOwned, skillContract } from "../dist/index.js";
+import { SKILL_CONTRACTS, isEngineOwned, isImplicitForbidden, skillContract } from "../dist/index.js";
 
 test("SKILL_CONTRACTS covers every SkillId including map, wireframe, chat", () => {
   assert.deepEqual(Object.keys(SKILL_CONTRACTS).sort(), [...SkillIdSchema.options].sort());
@@ -29,4 +29,10 @@ test("SKILL_CONTRACTS covers every SkillId including map, wireframe, chat", () =
   ]);
   assert.equal(isEngineOwned(".legion-cli/sandbox/run-1/src/main.ts"), true);
   assert.equal(isEngineOwned(".legion-cli/chat/session.json"), false);
+  assert.equal(isImplicitForbidden(".env"), true);
+  assert.equal(isImplicitForbidden(".ENV"), true);
+  assert.equal(isImplicitForbidden(".env.local"), true);
+  assert.equal(isImplicitForbidden("src/.ENV"), true);
+  assert.equal(isImplicitForbidden(".ENV.local"), true);
+  assert.equal(isImplicitForbidden("src/main.ts"), false);
 });

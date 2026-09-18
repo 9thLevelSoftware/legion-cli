@@ -19,7 +19,11 @@ const LAYER_1 = [
 ] as const;
 
 const LIFECYCLE_CORE = [
-  ["init", "Start a product in this folder", `--name, --adapter ${ADAPTER_ID_HELP}, --mode greenfield|brownfield`],
+  [
+    "init",
+    "Start a product in this folder",
+    `--name, --adapter ${ADAPTER_ID_HELP}, --mode greenfield|brownfield, --http-base-url, --http-model, --http-api-key-env`,
+  ],
   ["intent", "Interview me about the product", "--done"],
   ["discuss", "Capture decisions before planning", ""],
   ["spec", "Write the short contract + wireframes", "--skip-wireframes"],
@@ -132,7 +136,6 @@ export function printHelpAll(): void {
       "Later, not this series:",
       "",
       "Not in this product:",
-      "  HTTP model router",
     ].join("\n"),
   );
 }

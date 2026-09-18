@@ -292,26 +292,39 @@ test("isResolvedAdapterSpawnable uses default when id is omitted", async () => {
   }
 });
 
-test("createAdapter http detect is not ok and spawn throws", async () => {
+test("createAdapter http detect is not ok until adapter.http + env are set", async () => {
   const adapter = createAdapter("http");
   assert.equal(adapter.id, "http");
   assert.equal(adapter.binary, "(http)");
   const detected = await adapter.detect();
   assert.equal(detected.ok, false);
-  assert.match(detected.reason ?? "", /adapter\.http is not configured/);
-  await assert.rejects(
-    () =>
-      adapter.spawn({
-        runId: "r",
-        skillId: "plan",
-        promptPath: "p",
-        pointerPrompt: "x",
-        cwd: process.cwd(),
-        timeoutMs: 1000,
-        env: {},
-      }),
-    (err) => err instanceof AdapterConfigError && /adapter\.http is not configured/.test(err.message),
-  );
+  assert.match(detected.reason ?? "", /no HTTP completions client/);
+  const previous = process.env.OPENAI_API_KEY;
+  try {
+    process.env.OPENAI_API_KEY = "sk-test";
+    const ready = createAdapter("http", {
+      http: {
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-4",
+        apiKeyEnv: "OPENAI_API_KEY",
+        allowLoopback: false,
+      },
+    });
+    assert.equal((await ready.detect()).ok, false);
+    assert.equal(await isResolvedAdapterSpawnable({
+      adapter: {
+        default: "http",
+        http: {
+          baseUrl: "https://api.openai.com/v1",
+          model: "gpt-4",
+          apiKeyEnv: "OPENAI_API_KEY",
+        },
+      },
+    }), false);
+  } finally {
+    if (previous === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previous;
+  }
 });
 
 test("generic without a binary is not spawnable", async () => {

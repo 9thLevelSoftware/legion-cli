@@ -105,7 +105,7 @@ export const ADAPTER_IDS = [
 ] as const;
 export const AdapterIdSchema = z.enum(ADAPTER_IDS);
 export type AdapterId = z.infer<typeof AdapterIdSchema>;
-/** Spawn-selectable ids for CLI help / `--adapter`. `http` is config-only until PR-11 flags. */
+/** Spawn-selectable ids for CLI help / `--adapter`. `http` is detect-only. */
 export const ADAPTER_ID_HELP = ADAPTER_IDS.filter((id) => id !== "http").join("|");
 
 /** Subscription coding CLIs spawned by PATH name. Frozen vendor argv lives in agents `FROZEN_ARGV_TABLE`. */

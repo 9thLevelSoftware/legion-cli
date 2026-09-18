@@ -1,5 +1,10 @@
 import { createLegionEngine, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
-import { ADAPTER_ID_HELP, AdapterIdSchema, type AdapterId } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  ADAPTER_ID_HELP,
+  AdapterIdSchema,
+  HttpAdapterConfigSchema,
+  type AdapterId,
+} from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { promptIfTty } from "./prompt.js";
@@ -10,6 +15,10 @@ export type InitFlags = {
   mode?: string;
   genericBinary?: string;
   genericArgs?: string[];
+  httpBaseUrl?: string;
+  httpModel?: string;
+  httpApiKeyEnv?: string;
+  httpAllowLoopback?: boolean;
 };
 
 async function requireValue(
@@ -49,9 +58,6 @@ export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> 
     refuse(`adapter.default must be ${ADAPTER_ID_HELP}`, `legion-cli init --adapter ${ADAPTER_ID_HELP}`);
   }
   const adapter: AdapterId = adapterParsed.data;
-  if (adapter === "http") {
-    refuse("adapter http is not selectable yet", `legion-cli init --adapter ${ADAPTER_ID_HELP}`);
-  }
 
   let generic: { binary: string; args: string[] } | undefined;
   if (adapter === "generic") {
@@ -64,8 +70,43 @@ export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> 
     generic = { binary, args: flags.genericArgs ?? [] };
   }
 
+  let http: { baseUrl: string; model: string; apiKeyEnv: string; allowLoopback?: boolean } | undefined;
+  if (adapter === "http") {
+    const hint =
+      "legion-cli init --adapter http --http-base-url <url> --http-model <id> --http-api-key-env <ENV>";
+    const baseUrl = await requireValue(
+      flags.httpBaseUrl,
+      "HTTP base URL: ",
+      "adapter.http.baseUrl is required when adapter.default is http",
+      hint,
+    );
+    const model = await requireValue(
+      flags.httpModel,
+      "HTTP model: ",
+      "adapter.http.model is required when adapter.default is http",
+      hint,
+    );
+    const apiKeyEnv = await requireValue(
+      flags.httpApiKeyEnv,
+      "HTTP api key env var (A-Z0-9_): ",
+      "adapter.http.apiKeyEnv is required when adapter.default is http",
+      hint,
+    );
+    const parsedHttp = HttpAdapterConfigSchema.safeParse({
+      baseUrl,
+      model,
+      apiKeyEnv,
+      ...(flags.httpAllowLoopback ? { allowLoopback: true } : {}),
+    });
+    if (!parsedHttp.success) {
+      const issue = parsedHttp.error.issues[0];
+      refuse(issue?.message ?? "adapter.http is invalid", hint);
+    }
+    http = parsedHttp.data;
+  }
+
   const engine = createLegionEngine(opts.project);
-  await engine.init({ name, adapter, generic, mode });
+  await engine.init({ name, adapter, generic, http, mode });
   const next = mode === "brownfield" ? "legion-cli brownfield" : "legion-cli intent";
 
   if (opts.json) {

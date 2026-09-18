@@ -1,9 +1,10 @@
 {
-  "name": "@9thlevelsoftware/legion-cli-agents",
+  "name": "@9thlevelsoftware/legion-cli-http",
   "version": "0.0.0",
-  "description": "Legion CLI agent adapters (fake, generic, claude, grok, openai, mimo, minimax)",
+  "description": "Legion CLI OpenAI-compatible HTTP adapter (apiKeyEnv, SSRF-bounded, tool-loop)",
   "type": "module",
   "license": "MIT",
+  "private": true,
   "engines": {
     "node": ">=22"
   },
@@ -24,14 +25,10 @@
     "test": "pnpm run build && node --test test/*.test.js",
     "prepublishOnly": "pnpm run build"
   },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/9thLevelSoftware/product-engineer-helper.git",
-    "directory": "packages/agents"
+    "directory": "packages/http"
   },
   "author": {
     "name": "9thLevelSoftware",
@@ -40,13 +37,10 @@
   "keywords": [
     "legion",
     "legion-cli",
-    "agents",
-    "adapter"
+    "http",
+    "openai"
   ],
   "dependencies": {
-    "@9thlevelsoftware/legion-cli-http": "workspace:*",
-    "@9thlevelsoftware/legion-cli-persist": "workspace:*",
-    "@9thlevelsoftware/legion-cli-schema": "workspace:*",
-    "yaml": "^2.9.0"
+    "@9thlevelsoftware/legion-cli-schema": "workspace:*"
   }
 }

@@ -58,6 +58,7 @@ export type InitOptions = {
   name: string;
   adapter: AdapterId;
   generic?: { binary: string; args: string[] };
+  http?: { baseUrl: string; model: string; apiKeyEnv: string; allowLoopback?: boolean };
   mode?: "greenfield" | "brownfield";
   controlMode?: ControlMode | "autonomous" | string;
 };

@@ -4,6 +4,7 @@ export {
   executeAllowedRoots,
   isAllowedPath,
   isEngineOwned,
+  isImplicitForbidden,
   matchesGlob,
   skillContract,
 } from "./contracts.js";

@@ -1,9 +1,11 @@
+import type { HttpToolHost } from "@9thlevelsoftware/legion-cli-http";
 import {
   ADAPTER_IDS,
   EXTRA_ADAPTER_IDS,
   type AdapterId,
   type AdapterResolutionSource,
   type ExtraAdapterId,
+  type HttpAdapterConfig,
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 
@@ -59,12 +61,14 @@ export interface AgentJob {
   env: Record<string, string>;
   /** Hardened sandbox wrapper (bwrap/seatbelt). Copy jail omits this. */
   wrapper?: { bin: string; argvPrefix: string[] };
+  /** Engine-owned jail FS for the in-process HTTP tool-loop. Spawn CLIs ignore this. */
+  httpHost?: HttpToolHost;
   /** Fixture paths the fake adapter writes. Real adapters ignore this. */
   expectedArtifacts?: Array<string | FakeArtifact>;
 }
 
 export interface AgentHandle {
-  pid: number;
+  pid: number | null;
   wait(): Promise<AgentResult>;
   abort(): Promise<void>;
 }
@@ -103,6 +107,7 @@ export type AdapterCreateOptions = {
   codex?: ExtraAdapterConfig;
   mimo?: ExtraAdapterConfig;
   minimax?: ExtraAdapterConfig;
+  http?: HttpAdapterConfig;
   artifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
   timedOut?: boolean;

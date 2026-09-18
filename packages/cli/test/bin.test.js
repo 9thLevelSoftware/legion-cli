@@ -6,6 +6,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
+import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import { bin, normalize, runCli, withTempDir } from "./helpers.js";
 import { RUN_BOUNDED_MAX_BUFFER, runBounded } from "../dist/which.js";
 
@@ -220,7 +221,7 @@ test("help --all does not call control-mode later", () => {
   assert.match(alwaysOn, /control-mode \[mode\]/);
   const notIn = helpSection(out, "Not in this product:", "");
   assert.doesNotMatch(notIn, /\bchat\b/);
-  assert.match(notIn, /HTTP model router/);
+  assert.doesNotMatch(notIn, /HTTP model router/);
   assert.doesNotMatch(notIn, /bin legion/);
 });
 
@@ -517,11 +518,93 @@ test("run promote --help says untrusted until wiki trust", () => {
   assert.match(out, /--yes does not review/);
 });
 
-test("init --adapter http refuses until http flags land", () => {
+test("init --adapter http persists adapter.http and pid is not spawned", async () => {
+  await withTempDir(async (dir) => {
+    const result = runCli([
+      "init",
+      "--project",
+      dir,
+      "--name",
+      "Checkin",
+      "--adapter",
+      "http",
+      "--http-base-url",
+      "https://api.openai.com/v1",
+      "--http-model",
+      "gpt-4",
+      "--http-api-key-env",
+      "OPENAI_API_KEY",
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const engine = createLegionEngine(dir);
+    const config = await engine.store.readConfig();
+    assert.equal(config.adapter.default, "http");
+    assert.equal(config.adapter.http?.baseUrl, "https://api.openai.com/v1");
+    assert.equal(config.adapter.http?.model, "gpt-4");
+    assert.equal(config.adapter.http?.apiKeyEnv, "OPENAI_API_KEY");
+    assert.equal(config.adapter.http?.allowLoopback, false);
+    assert.equal(config.adapter.http?.apiKey, undefined);
+  });
+});
+
+test("init --adapter http requires http flags", () => {
   const result = runCli(["init", "--name", "Checkin", "--adapter", "http"]);
   assert.equal(result.status, 1);
   const err = normalize(result.stderr);
-  assert.match(err, /adapter http is not selectable yet/);
-  assert.match(err, /--adapter claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax/);
-  assert.doesNotMatch(err, /\|http/);
+  assert.match(err, /adapter\.http\.baseUrl is required/);
+  assert.match(err, /--http-base-url/);
+  assert.match(err, /--http-model/);
+  assert.match(err, /--http-api-key-env/);
+});
+
+test("init --adapter http validates flags before writing the workspace", async () => {
+  await withTempDir(async (dir) => {
+    const badKey = runCli([
+      "init",
+      "--project",
+      dir,
+      "--name",
+      "Checkin",
+      "--adapter",
+      "http",
+      "--http-base-url",
+      "https://api.openai.com/v1",
+      "--http-model",
+      "gpt-4",
+      "--http-api-key-env",
+      "foo",
+    ]);
+    assert.equal(badKey.status, 1);
+    assert.match(normalize(badKey.stderr), /must match pattern|apiKeyEnv|adapter\.http/);
+    const badUrl = runCli([
+      "init",
+      "--project",
+      dir,
+      "--name",
+      "Checkin",
+      "--adapter",
+      "http",
+      "--http-base-url",
+      "http://example.com/v1",
+      "--http-model",
+      "gpt-4",
+      "--http-api-key-env",
+      "OPENAI_API_KEY",
+    ]);
+    assert.equal(badUrl.status, 1);
+    assert.match(normalize(badUrl.stderr), /https:|allowLoopback|adapter\.http/);
+  });
+});
+
+test("help --all drops HTTP model router and lists http init flags", () => {
+  const result = runCli(["help", "--all"]);
+  assert.equal(result.status, 0, result.stderr);
+  const out = normalize(result.stdout);
+  assert.doesNotMatch(out, /HTTP model router/);
+  assert.match(out, /--http-base-url/);
+  assert.match(out, /--http-model/);
+  assert.match(out, /--http-api-key-env/);
+  assert.doesNotMatch(out, /HTTP model router/);
+  assert.doesNotMatch(out, /Not in this product:[\s\S]*\bchat\b/);
+  assert.doesNotMatch(out, /Not in this product:[\s\S]*bin legion/);
 });

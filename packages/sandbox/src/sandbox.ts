@@ -205,7 +205,7 @@ function unique(paths: readonly string[]): string[] {
 
 function isBlockedName(name: string): boolean {
   const lower = name.toLowerCase();
-  return lower === "node_modules" || lower === ".git";
+  return lower === "node_modules" || lower === ".git" || lower === ".env" || lower.startsWith(".env.");
 }
 
 function isBlockedRel(posix: string): boolean {

@@ -1,3 +1,4 @@
+import { HttpAdapter } from "@9thlevelsoftware/legion-cli-http";
 import type { LegionConfig } from "@9thlevelsoftware/legion-cli-schema";
 import { ClaudeAdapter } from "./adapters/claude.js";
 import { ExtraAdapter } from "./adapters/extra.js";
@@ -11,8 +12,6 @@ import {
   type AdapterResolution,
   type AgentAdapter,
   type AgentAdapterId,
-  type AgentHandle,
-  type AgentJob,
   type DetectResult,
   type SkillId,
 } from "./types.js";
@@ -62,16 +61,7 @@ export function createAdapter(id: AgentAdapterId, options: AdapterCreateOptions 
     case "minimax":
       return new ExtraAdapter("minimax", options.minimax);
     case "http":
-      return {
-        id: "http",
-        binary: "(http)",
-        async detect(): Promise<DetectResult> {
-          return { ok: false, reason: "adapter.http is not configured" };
-        },
-        async spawn(_job: AgentJob): Promise<AgentHandle> {
-          throw new AdapterConfigError("adapter.http is not configured");
-        },
-      };
+      return new HttpAdapter(options.http);
   }
 }
 
@@ -92,6 +82,7 @@ export function resolveAdapter(
     codex: options.codex ?? config.adapter.codex,
     mimo: options.mimo ?? config.adapter.mimo,
     minimax: options.minimax ?? config.adapter.minimax,
+    http: options.http ?? config.adapter.http,
     artifacts: options.artifacts,
     throwAfterWrite: options.throwAfterWrite,
     timedOut: options.timedOut,
@@ -114,6 +105,7 @@ export async function detectMatrix(
       codex: config?.adapter.codex,
       mimo: config?.adapter.mimo,
       minimax: config?.adapter.minimax,
+      http: config?.adapter.http,
     });
     out[id] = await adapter.detect();
   }

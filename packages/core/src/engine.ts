@@ -324,6 +324,12 @@ export class LegionEngine {
     if (!opts.adapter) {
       refuse("adapter.default is required", "set adapter.default in .legion-cli/config.yaml");
     }
+    if (opts.adapter === "http" && !opts.http) {
+      refuse(
+        "adapter.http is required when adapter.default is http",
+        "legion-cli init --adapter http --http-base-url <url> --http-model <id> --http-api-key-env <ENV>",
+      );
+    }
 
     return this.#mutate(async () => {
       if (await this.store.pathExists(".legion-cli/STATE.md")) {
@@ -379,6 +385,7 @@ export class LegionEngine {
         adapter: {
           default: opts.adapter,
           ...(opts.generic ? { generic: opts.generic } : {}),
+          ...(opts.http ? { http: { allowLoopback: false, ...opts.http } } : {}),
         },
         ingest: { autoCommit: true },
         control_mode: controlMode,
