@@ -26,6 +26,9 @@ importers:
       '@9thlevelsoftware/legion-cli-graph':
         specifier: workspace:*
         version: link:packages/graph
+      '@9thlevelsoftware/legion-cli-map':
+        specifier: workspace:*
+        version: link:packages/map
       '@9thlevelsoftware/legion-cli-mcp':
         specifier: workspace:*
         version: link:packages/mcp
@@ -146,6 +149,15 @@ importers:
 
   packages/graph:
     dependencies:
+      '@9thlevelsoftware/legion-cli-schema':
+        specifier: workspace:*
+        version: link:../schema
+
+  packages/map:
+    dependencies:
+      '@9thlevelsoftware/legion-cli-persist':
+        specifier: workspace:*
+        version: link:../persist
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:../schema
