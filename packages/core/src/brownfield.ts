@@ -1,9 +1,9 @@
 import { unwrapCmdShim } from "@9thlevelsoftware/legion-cli-agents";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
 import {
   gitWorktreeAdd,
   isGitRepo,
@@ -148,8 +148,10 @@ async function writeRunResume(projectRoot: string, run: BrownfieldRun): Promise<
 }
 
 function isTestFile(rel: string, name: string): boolean {
-  if (rel === "tests" || rel.startsWith("tests/")) return true;
+  const parts = rel.replaceAll("\\", "/").split("/");
+  if (parts.includes("tests")) return true;
   if (/\.test\.[^.]+$/i.test(name) || /\.spec\.[^.]+$/i.test(name)) return true;
+  if (/^test_.+\.py$/i.test(name) || /_test\.py$/i.test(name)) return true;
   return /_test\.go$/i.test(name);
 }
 
@@ -166,11 +168,9 @@ async function collectEvidence(projectRoot: string): Promise<Evidence> {
   const tests: string[] = [];
   const markdown: string[] = [];
 
+  let visited = 0;
   async function walk(dir: string, rel: string, depth: number): Promise<void> {
-    if (layout.length + sources.length >= WALK_CAP && tests.length >= WALK_CAP && markdown.length >= WALK_CAP) {
-      return;
-    }
-    if (depth > 4) return;
+    if (visited >= WALK_CAP || depth > 4) return;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -179,7 +179,9 @@ async function collectEvidence(projectRoot: string): Promise<Evidence> {
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
+      if (visited >= WALK_CAP) return;
       if (entry.name === "." || entry.name === "..") continue;
+      visited += 1;
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         if (SKIP_DIR_NAMES.has(entry.name)) continue;
@@ -246,11 +248,28 @@ async function detectTestRunners(projectRoot: string, tests: readonly string[]):
   return runners;
 }
 
+function sourceStem(path: string): string {
+  return basename(path).replace(/\.[^.]+$/, "");
+}
+
 function sourceHasNearbyTest(source: string, tests: readonly string[]): boolean {
-  const base = source.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
+  const posix = source.replaceAll("\\", "/");
+  const sourceDir = dirname(posix).replace(/\\/g, "/");
+  const base = sourceStem(posix);
+  const withoutSrc = sourceDir.replace(/(^|\/)src(?=\/|$)/, "$1tests").replace(/^\//, "") || "tests";
+  const nearbyDirs = new Set([
+    sourceDir,
+    sourceDir === "." ? "__tests__" : `${sourceDir}/__tests__`,
+    sourceDir === "." ? "tests" : `tests/${sourceDir}`,
+    sourceDir === "." ? "tests" : `tests/${sourceDir.replace(/^src\/?/, "")}`,
+    withoutSrc,
+  ]);
   return tests.some((path) => {
-    const name = path.replace(/^.*\//, "");
-    if (name === `${base}_test.go`) return true;
+    const p = path.replaceAll("\\", "/");
+    const testDir = dirname(p).replace(/\\/g, "/");
+    if (!nearbyDirs.has(testDir)) return false;
+    const name = basename(p);
+    if (name === `${base}_test.go` || name === `${base}_test.py` || name === `test_${base}.py`) return true;
     return /\.(test|spec)\.[^.]+$/i.test(name) && name.replace(/\.(test|spec)\.[^.]+$/i, "") === base;
   });
 }
@@ -281,9 +300,12 @@ function renderTestsMd(input: { runners: string[]; tests: string[]; gaps: string
 
 type SecretFinding = { path: string; kind: string };
 
-async function scanSecretFindings(projectRoot: string): Promise<SecretFinding[]> {
+async function scanSecretFindings(
+  projectRoot: string,
+): Promise<{ findings: SecretFinding[]; truncated: boolean }> {
   const findings: SecretFinding[] = [];
   let filesSeen = 0;
+  let truncated = false;
 
   async function walk(dir: string, rel: string): Promise<void> {
     if (findings.length >= WALK_CAP || filesSeen >= SECRET_FILE_CAP) return;
@@ -295,7 +317,11 @@ async function scanSecretFindings(projectRoot: string): Promise<SecretFinding[]>
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (findings.length >= WALK_CAP || filesSeen >= SECRET_FILE_CAP) return;
+      if (findings.length >= WALK_CAP) return;
+      if (filesSeen >= SECRET_FILE_CAP) {
+        truncated = true;
+        return;
+      }
       if (entry.name === "." || entry.name === "..") continue;
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       const abs = join(dir, entry.name);
@@ -315,6 +341,7 @@ async function scanSecretFindings(projectRoot: string): Promise<SecretFinding[]>
       }
       if (!st.isFile()) continue;
       filesSeen += 1;
+      if (st.size > SECRET_FILE_MAX_BYTES) continue;
       let text: string;
       try {
         const buf = await readFile(abs);
@@ -340,7 +367,8 @@ async function scanSecretFindings(projectRoot: string): Promise<SecretFinding[]>
   }
 
   await walk(projectRoot, "");
-  return findings;
+  if (filesSeen >= SECRET_FILE_CAP) truncated = true;
+  return { findings, truncated };
 }
 
 function parseAuditNames(stdout: string): string[] {
@@ -374,6 +402,7 @@ function formatAuditLines(input: {
   stderr?: string;
   timedOut?: boolean;
   error?: string;
+  status?: number | null;
 }): string[] {
   if (input.timedOut) {
     return [`lockfile: ${input.lockfile}`, "audit timed out (60s)"];
@@ -382,7 +411,13 @@ function formatAuditLines(input: {
     return [`lockfile: ${input.lockfile}`, `audit skipped: ${input.bin} (${input.error})`];
   }
   const names = parseAuditNames(input.stdout);
+  const failed = (input.status !== undefined && input.status !== null && input.status !== 0) ||
+    (names.length === 0 && looksLikeAuditError(input.stdout));
   const lines = [`lockfile: ${input.lockfile}`, `command: ${input.bin} audit --json`];
+  if (failed && names.length === 0) {
+    lines.push(`audit failed (exit ${input.status ?? "unknown"})`);
+    return lines;
+  }
   if (names.length === 0) {
     lines.push("packages: (none named)");
   } else {
@@ -391,10 +426,38 @@ function formatAuditLines(input: {
   return lines;
 }
 
+function looksLikeAuditError(stdout: string): boolean {
+  try {
+    const json = JSON.parse(stdout) as { error?: unknown };
+    return Boolean(json && typeof json === "object" && json.error);
+  } catch {
+    return stdout.trim().length > 0;
+  }
+}
+
 function samePath(a: string, b: string): boolean {
   const left = resolve(a);
   const right = resolve(b);
   return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function pathIsInside(candidate: string, root: string): boolean {
+  let candAbs = resolve(candidate);
+  let rootAbs = resolve(root);
+  try {
+    candAbs = realpathSync(candAbs);
+  } catch {
+    // lexical fallback
+  }
+  try {
+    rootAbs = realpathSync(rootAbs);
+  } catch {
+    // lexical fallback
+  }
+  const rel = relative(rootAbs, candAbs).replaceAll("\\", "/");
+  if (rel === "" || rel === ".") return true;
+  if (rel === ".." || rel.startsWith("../") || /^[A-Za-z]:/.test(rel) || rel.startsWith("/")) return false;
+  return true;
 }
 
 /** PATH lookup that never returns a binary sitting in the project cwd (cmd.exe cwd-search RCE). */
@@ -408,11 +471,11 @@ function resolveAuditBin(name: string, projectRoot: string): string | null {
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
     if (!dir || dir === ".") continue;
     const absDir = resolve(dir);
-    if (samePath(absDir, root) || samePath(absDir, cwd)) continue;
+    if (pathIsInside(absDir, root) || samePath(absDir, cwd)) continue;
     for (const ext of exts) {
       const candidate = join(absDir, ext ? `${name}${ext}` : name);
       if (!existsSync(candidate)) continue;
-      if (samePath(dirname(candidate), root)) continue;
+      if (pathIsInside(candidate, root)) continue;
       return candidate;
     }
   }
@@ -433,12 +496,16 @@ function runLockfileAudit(projectRoot: string): string[] {
   }
   const bin = pnpmLock ? "pnpm" : "npm";
   const lockfile = pnpmLock ? "pnpm-lock.yaml" : "package-lock.json";
-  const argv = ["audit", "--json"];
+  const argv = pnpmLock ? ["audit", "--json", "--ignore-pnpmfile"] : ["audit", "--json"];
   const resolved = resolveAuditBin(bin, projectRoot);
   if (!resolved) {
     return formatAuditLines({ lockfile, bin, stdout: "", error: `${bin} not on PATH` });
   }
-  const env: NodeJS.ProcessEnv = { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    NoDefaultCurrentDirectoryInExePath: "1",
+    npm_config_ignore_scripts: "true",
+  };
   delete env.NODE_TEST_CONTEXT;
   const spawnOpts = {
     cwd: projectRoot,
@@ -484,18 +551,26 @@ function runLockfileAudit(projectRoot: string): string[] {
     bin,
     stdout: String(result.stdout ?? ""),
     stderr: String(result.stderr ?? ""),
+    status: result.status,
   });
 }
 
-function renderSecurityMd(findings: SecretFinding[], auditLines: string[]): string {
+function renderSecurityMd(
+  findings: SecretFinding[],
+  auditLines: string[],
+  truncated = false,
+): string {
   const secretLines =
     findings.length > 0
       ? findings.map((hit) => `- \`${hit.path}\` (${hit.kind}): [REDACTED:${hit.kind}]`).join("\n")
-      : "- (none)";
+      : truncated
+        ? "- (truncated; scan stopped at file cap)"
+        : "- (none)";
   return [
     "# Security",
     "",
     "## Secrets",
+    ...(truncated ? ["- scan truncated at 200 files"] : []),
     secretLines,
     "",
     "## Dependency audit",
@@ -508,13 +583,20 @@ async function readFingerprints(projectRoot: string): Promise<FingerprintFile | 
   try {
     const raw = JSON.parse(await readFile(join(projectRoot, ".legion-cli", "map", "fingerprints.json"), "utf8"));
     const parsed = FingerprintFileSchema.safeParse(raw);
-    return parsed.success ? parsed.data : undefined;
+    if (!parsed.success) return undefined;
+    const modules = parsed.data.modules.filter((module) => existsSync(join(projectRoot, module.path)));
+    if (modules.length === 0 && parsed.data.modules.length > 0) return undefined;
+    return { ...parsed.data, modules };
   } catch {
     return undefined;
   }
 }
 
-function nearbyMarkdownExists(modulePath: string, markdown: ReadonlySet<string>): boolean {
+function nearbyMarkdownExists(
+  modulePath: string,
+  markdown: ReadonlySet<string>,
+  projectRoot?: string,
+): boolean {
   const dir = dirname(modulePath).replaceAll("\\", "/");
   const base = modulePath.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
   const dirPrefix = dir === "." ? "" : `${dir}/`;
@@ -524,7 +606,9 @@ function nearbyMarkdownExists(modulePath: string, markdown: ReadonlySet<string>)
     `docs/${base}.md`,
     `docs/${dirPrefix}${base}.md`,
   ];
-  return candidates.some((path) => markdown.has(path));
+  if (candidates.some((path) => markdown.has(path))) return true;
+  if (!projectRoot) return false;
+  return candidates.some((path) => existsSync(join(projectRoot, path)));
 }
 
 function renderDocsMd(input: {
@@ -750,7 +834,7 @@ async function writeDocsMd(store: LegionStore, runId: string, evidence: Evidence
   const undocumented: string[] = [];
   if (fingerprints) {
     for (const module of fingerprints.modules) {
-      if (nearbyMarkdownExists(module.path, mdSet)) continue;
+      if (nearbyMarkdownExists(module.path, mdSet, store.projectRoot)) continue;
       for (const name of module.exports) {
         undocumented.push(`\`${module.path}\` export \`${name}\``);
         if (undocumented.length >= WALK_CAP) break;
@@ -762,7 +846,12 @@ async function writeDocsMd(store: LegionStore, runId: string, evidence: Evidence
   try {
     orphans = gardenReport(store.projectRoot).orphans.map((page) => ({ path: page.path, title: page.title }));
   } catch {
-    orphans = [];
+    try {
+      await store.rebuild();
+      orphans = gardenReport(store.projectRoot).orphans.map((page) => ({ path: page.path, title: page.title }));
+    } catch {
+      orphans = [{ path: ".legion-cli/index", title: "wiki index unavailable (not a clean orphan list)" }];
+    }
   }
   await writeRunFile(
     store.projectRoot,
@@ -780,11 +869,14 @@ async function writeLadderExtras(
   runId: string,
   effort: BrownfieldEffort,
   evidence: Evidence,
-  extras: { findings: SecretFinding[]; auditLines: string[] },
+  extras: { findings: SecretFinding[]; auditLines: string[]; secretsTruncated?: boolean },
 ): Promise<void> {
   if (effort < 2) return;
   const runners = await detectTestRunners(store.projectRoot, evidence.tests);
-  const gaps = evidence.sources.filter((source) => !sourceHasNearbyTest(source, evidence.tests)).slice(0, 20);
+  const sourceExt = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|cs|php)$/i;
+  const gaps = evidence.sources
+    .filter((source) => sourceExt.test(source) && !sourceHasNearbyTest(source, evidence.tests))
+    .slice(0, 20);
   await writeRunFile(store.projectRoot, runPagePath(runId, "tests.md"), renderTestsMd({
     runners,
     tests: evidence.tests,
@@ -794,7 +886,7 @@ async function writeLadderExtras(
   await writeRunFile(
     store.projectRoot,
     runPagePath(runId, "security.md"),
-    renderSecurityMd(extras.findings, extras.auditLines),
+    renderSecurityMd(extras.findings, extras.auditLines, extras.secretsTruncated),
   );
   if (effort < 4) return;
   await writeDocsMd(store, runId, evidence);
@@ -806,9 +898,28 @@ function extractUserGoal(intentBody: string): string {
   return goal || "(none)";
 }
 
-function extractAnalysisHeadings(analysisBody: string): string[] {
-  const found = [...analysisBody.matchAll(/^#{2,3} (.+)$/gm)].map((match) => match[1].trim()).filter(Boolean);
-  return found.length > 0 ? found : ["Architecture and code evidence captured"];
+function extractLadderFindings(bodies: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const body of bodies) {
+    for (const match of body.matchAll(/^- \*\*Statement\*\*: (.+)$/gm)) {
+      const line = match[1]?.trim();
+      if (line) out.push(line);
+    }
+    for (const match of body.matchAll(/^- `([^`]+)` \(([^)]+)\):/gm)) {
+      out.push(`\`${match[1]}\` (${match[2]})`);
+    }
+    for (const match of body.matchAll(/^- `([^`]+)` export `.+`$/gm)) {
+      out.push(match[0].slice(2));
+    }
+    for (const match of body.matchAll(/^- scan truncated.+$/gm)) {
+      out.push(match[0].slice(2));
+    }
+    for (const match of body.matchAll(/^- audit failed.+$/gm)) {
+      out.push(match[0].slice(2));
+    }
+  }
+  const unique = [...new Set(out)].filter((line) => line !== "(none)");
+  return unique.length > 0 ? unique.slice(0, 12) : ["Architecture and code evidence captured"];
 }
 
 function renderImprovementSpec(input: { runId: string; name: string; userGoal: string; mustBeTrue: string[] }): string {
@@ -933,11 +1044,11 @@ export async function prepareBrownfield(store: LegionStore, opts: BrownfieldOpti
 export async function collectBrownfieldAudit(
   projectRoot: string,
   effort: number,
-): Promise<{ findings: Array<{ path: string; kind: string }>; auditLines: string[] }> {
+): Promise<{ findings: Array<{ path: string; kind: string }>; auditLines: string[]; secretsTruncated?: boolean }> {
   if (effort < 3) return { findings: [], auditLines: [] };
-  const findings = await scanSecretFindings(projectRoot);
+  const scanned = await scanSecretFindings(projectRoot);
   const auditLines = runLockfileAudit(projectRoot);
-  return { findings, auditLines };
+  return { findings: scanned.findings, auditLines, secretsTruncated: scanned.truncated };
 }
 
 async function applyEffort5Map(store: LegionStore, run: BrownfieldRun, map: MapResult): Promise<void> {
@@ -960,6 +1071,14 @@ async function applyEffort5Map(store: LegionStore, run: BrownfieldRun, map: MapR
     analysisBody = "";
   }
   const project = (await store.readProject()).data;
+  const ladderBodies: string[] = [analysisBody];
+  for (const page of ["tests.md", "security.md", "docs.md"] as const) {
+    try {
+      ladderBodies.push(await readFile(join(store.projectRoot, ...runPagePath(run.runId, page).split("/")), "utf8"));
+    } catch {
+      // page may be absent
+    }
+  }
   await writeRunFile(
     store.projectRoot,
     runPagePath(run.runId, "improvement-spec.md"),
@@ -967,7 +1086,7 @@ async function applyEffort5Map(store: LegionStore, run: BrownfieldRun, map: MapR
       runId: run.runId,
       name: project.name,
       userGoal: extractUserGoal(intentBody),
-      mustBeTrue: extractAnalysisHeadings(analysisBody),
+      mustBeTrue: extractLadderFindings(ladderBodies),
     }),
   );
 }
@@ -980,6 +1099,7 @@ export async function commitBrownfield(
     resume: boolean;
     findings: SecretFinding[];
     auditLines: string[];
+    secretsTruncated?: boolean;
     map?: MapResult;
   },
 ): Promise<BrownfieldResult> {
@@ -1007,6 +1127,7 @@ export async function commitBrownfield(
   await writeLadderExtras(store, run.runId, effort, evidence, {
     findings: extras.findings,
     auditLines: extras.auditLines,
+    secretsTruncated: extras.secretsTruncated,
   });
 
   let next: BrownfieldRun = {

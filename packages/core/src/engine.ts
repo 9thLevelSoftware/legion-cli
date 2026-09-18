@@ -1929,37 +1929,40 @@ export class LegionEngine {
     if (prepared.kind === "done") return prepared.result;
 
     const effort = prepared.run.effort;
-    // 60s audit and effort-5 generateMap stay outside #mutate (no map skill spawn).
     const audit = await collectBrownfieldAudit(this.projectRoot, effort);
-    let map: MapResult | undefined;
-    if (effort >= 5) {
-      try {
-        const generated = await generateMap(this.projectRoot, {
-          refresh: true,
-          lsp: opts.lsp ? "require" : "auto",
-        });
-        map = {
-          path: MAP_ARCHITECTURE_PATH,
-          fingerprintsPath: MAP_FINGERPRINTS_PATH,
-          backend: generated.backend,
-          modules: generated.fingerprints.modules.length,
-          changed: generated.changed,
-          next: MAP_SHOW_NEXT,
-        };
-      } catch (err) {
-        if (err instanceof MapError) refuse(err.message, err.nextHint);
-        throw err;
-      }
-    }
 
-    return this.#mutate(() =>
-      commitBrownfield(this.store, prepared.run, {
+    return this.#mutate(async () => {
+      let map: MapResult | undefined;
+      if (effort >= 5) {
+        try {
+          const generated = await generateMap(this.projectRoot, {
+            refresh: true,
+            lsp: opts.lsp ? "require" : "auto",
+            resolveBinary: opts.resolveBinary,
+            spawnLsp: opts.spawnLsp,
+            lspDeadlineMs: opts.lspDeadlineMs,
+          });
+          map = {
+            path: MAP_ARCHITECTURE_PATH,
+            fingerprintsPath: MAP_FINGERPRINTS_PATH,
+            backend: generated.backend,
+            modules: generated.fingerprints.modules.length,
+            changed: generated.changed,
+            next: MAP_SHOW_NEXT,
+          };
+        } catch (err) {
+          if (err instanceof MapError) refuse(err.message, err.nextHint);
+          throw err;
+        }
+      }
+      return commitBrownfield(this.store, prepared.run, {
         resume: prepared.resume,
         findings: audit.findings,
         auditLines: audit.auditLines,
+        secretsTruncated: audit.secretsTruncated,
         map,
-      }),
-    );
+      });
+    });
   }
 
   async promoteRun(runId: string, opts: PromoteRunOptions = {}): Promise<PromoteRunResult> {

@@ -382,8 +382,7 @@ test("effort 3 security.md names leftpad when audit stderr is noisy", async () =
       "@echo off\r\necho PWNED> PWNED.txt\r\n",
       "utf8",
     );
-    const bin = join(dir, "fake-bin");
-    await mkdir(bin, { recursive: true });
+    const bin = await mkdtemp(join(tmpdir(), "legion-audit-bin-"));
     const script = [
       "const args = process.argv.slice(2);",
       "if (args[0] === 'audit') {",
@@ -416,6 +415,7 @@ test("effort 3 security.md names leftpad when audit stderr is noisy", async () =
       assert.doesNotMatch(security, /none named/);
     } finally {
       process.env.PATH = previous;
+      await rm(bin, { recursive: true, force: true });
     }
   });
 });
