@@ -10,7 +10,7 @@
 - Closed-work compaction (shipped): `legion-cli context compact`. Manual; lock-held; no auto-compact on ship.
 - Workspace **root** is `"private": true`, historical npm name `product-engineer-helper`. Do not publish the root. Do not rename the private root.
 - Workspace packages are public under `@9thlevelsoftware`.
-- PATH bins: `legion-cli` and `legion` (same `dist/bin.js`). Installer first-args (`--claude` / `--copilot` / `--kiro` / `--uninstall` / other `@9thlevelsoftware/legion` runtime flags, plus `install` / `plugin`) refuse exit 2; plugin installer is `npx @9thlevelsoftware/legion --claude` (bin `legion-plugins`).
+- PATH bins: `legion-cli` and `legion` (same `dist/bin.js`). Installer first-args (`--claude` / `--copilot` / `--kiro` / `--uninstall` / other `@9thlevelsoftware/legion` runtime flags, plus `install` / `uninstall` / `add` / `remove` / `update` / `upgrade` / `plugin`) refuse exit 2; plugin installer is `npx @9thlevelsoftware/legion --claude` (bin `legion-plugins`).
 - Supported invocation: `pnpm exec legion-cli`.
 - `init` requires `--adapter` (or a TTY prompt). Two brownfield surfaces (document both; do not merge): (1) `init --mode brownfield` sets `project.mode` and next-command (10-verb `execute` stays **in-place**); (2) `legion-cli brownfield` is the effort-1 audit extra (`--execute` is the only worktree path).
 - Parent verbs `wiki` / `ticket` / `task` / `context` / `run` print `requires <sub>` + `Next:` (same pattern as `packet` / `assume`).
