@@ -1,12 +1,18 @@
+import { unwrapCmdShim } from "@9thlevelsoftware/legion-cli-agents";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
 import {
   gitWorktreeAdd,
   isGitRepo,
+  PathEscapeError,
   PersistError,
+  redactSecrets,
   runPagePath,
   runResumePath,
+  toProjectRelativePosix,
   tryGitHead,
   WIKI_PAGE_SCHEMA_VERSION,
   wikiRunPagePath,
@@ -16,11 +22,15 @@ import {
 import {
   BrownfieldRunIdSchema,
   BrownfieldRunSchema,
+  FingerprintFileSchema,
   SCHEMA_VERSION,
   type BrownfieldRun,
+  type FingerprintFile,
 } from "@9thlevelsoftware/legion-cli-schema";
+import { gardenReport } from "@9thlevelsoftware/legion-cli-wiki";
 import { HINT, refuse } from "./errors.js";
-import type { BrownfieldOptions, BrownfieldResult, PromoteRunOptions, PromoteRunResult } from "./types.js";
+import type { MapResult } from "./map.js";
+import type { BrownfieldEffort, BrownfieldOptions, BrownfieldResult, PromoteRunOptions, PromoteRunResult } from "./types.js";
 
 export const BROWNFIELD_PAGES = [
   "intent.md",
@@ -30,6 +40,12 @@ export const BROWNFIELD_PAGES = [
   "analysis.md",
   "design.md",
 ] as const;
+
+/** Same 60s cap as map LSP — hung `pnpm audit` must not hold the engine forever. */
+const AUDIT_TIMEOUT_MS = 60_000;
+const WALK_CAP = 80;
+const SECRET_FILE_CAP = 200;
+const SECRET_FILE_MAX_BYTES = 1024 * 1024;
 
 const SKIP_DIR_NAMES = new Set([
   ".git",
@@ -42,7 +58,19 @@ const SKIP_DIR_NAMES = new Set([
   ".cache",
 ]);
 
-const SKIP_LEGION_CHILDREN = new Set(["index", "cache", "worktrees"]);
+const SKIP_LEGION_CHILDREN = new Set(["index", "cache", "worktrees", "runs", "map", "sandbox", "chat", "skills"]);
+
+/** Same regexes as `packages/cli/src/secrets.ts` / persist redact — findings must not re-emit the secret. */
+const SECRET_PATTERNS: { name: string; re: RegExp }[] = [
+  { name: "aws-access-key", re: /AKIA[0-9A-Z]{16}/g },
+  { name: "sk-proj", re: /\bsk-proj-[A-Za-z0-9_-]{8,}/g },
+  { name: "sk-ant", re: /\bsk-ant-[A-Za-z0-9_-]{8,}/g },
+  { name: "sk", re: /\bsk-[A-Za-z0-9]{20,}/g },
+  { name: "xai", re: /\bxai-[A-Za-z0-9]{20,}/g },
+  { name: "private-key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  { name: "ghp", re: /ghp_[A-Za-z0-9]+/g },
+  { name: "github_pat", re: /github_pat_[A-Za-z0-9_]+/g },
+];
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -52,15 +80,30 @@ function newRunId(): string {
   return randomBytes(4).toString("hex");
 }
 
-function parseEffort(raw: number | undefined): 1 {
+function isEffort(n: number): n is BrownfieldEffort {
+  return n === 1 || n === 2 || n === 3 || n === 4 || n === 5;
+}
+
+function parseEffort(raw: number | undefined): BrownfieldEffort {
   const effort = raw ?? 1;
-  if (!Number.isInteger(effort) || effort < 1 || effort > 5) {
+  if (!Number.isInteger(effort) || !isEffort(effort)) {
     refuse("brownfield --effort must be 1–5", HINT.brownfield);
   }
-  if (effort !== 1) {
-    refuse("brownfield effort 2–5 is not implemented yet", HINT.brownfield);
-  }
-  return 1;
+  return effort;
+}
+
+function asEffort(n: number): BrownfieldEffort {
+  if (!isEffort(n)) refuse("brownfield --effort must be 1–5", HINT.brownfield);
+  return n;
+}
+
+function ladderPages(effort: BrownfieldEffort, mapped: boolean): string[] {
+  const pages: string[] = [...BROWNFIELD_PAGES];
+  if (effort >= 2) pages.push("tests.md");
+  if (effort >= 3) pages.push("security.md");
+  if (effort >= 4) pages.push("docs.md");
+  if (effort >= 5 && mapped) pages.push("improvement-spec.md");
+  return pages;
 }
 
 function parseRunId(raw: string): string {
@@ -104,12 +147,30 @@ async function writeRunResume(projectRoot: string, run: BrownfieldRun): Promise<
   await writeFile(abs, `${JSON.stringify(run, null, 2)}\n`, "utf8");
 }
 
-async function collectEvidence(projectRoot: string): Promise<{ layout: string[]; sources: string[] }> {
+function isTestFile(rel: string, name: string): boolean {
+  const parts = rel.replaceAll("\\", "/").split("/");
+  if (parts.includes("tests")) return true;
+  if (/\.test\.[^.]+$/i.test(name) || /\.spec\.[^.]+$/i.test(name)) return true;
+  if (/^test_.+\.py$/i.test(name) || /_test\.py$/i.test(name)) return true;
+  return /_test\.go$/i.test(name);
+}
+
+type Evidence = {
+  layout: string[];
+  sources: string[];
+  tests: string[];
+  markdown: string[];
+};
+
+async function collectEvidence(projectRoot: string): Promise<Evidence> {
   const layout: string[] = [];
   const sources: string[] = [];
+  const tests: string[] = [];
+  const markdown: string[] = [];
 
+  let visited = 0;
   async function walk(dir: string, rel: string, depth: number): Promise<void> {
-    if (layout.length + sources.length >= 80 || depth > 4) return;
+    if (visited >= WALK_CAP || depth > 4) return;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -118,26 +179,33 @@ async function collectEvidence(projectRoot: string): Promise<{ layout: string[];
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (layout.length + sources.length >= 80) return;
+      if (visited >= WALK_CAP) return;
       if (entry.name === "." || entry.name === "..") continue;
+      visited += 1;
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         if (SKIP_DIR_NAMES.has(entry.name)) continue;
         if (rel === ".legion-cli" && SKIP_LEGION_CHILDREN.has(entry.name)) continue;
-        if (depth === 0) layout.push(`${childRel}/`);
+        if (depth === 0 && layout.length < WALK_CAP) layout.push(`${childRel}/`);
         await walk(join(dir, entry.name), childRel, depth + 1);
         continue;
       }
       if (!entry.isFile()) continue;
-      if (depth === 0) layout.push(childRel);
-      if (/\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|cs|php)$/i.test(entry.name) || childRel.startsWith("src/")) {
-        sources.push(childRel);
+      if (depth === 0 && layout.length < WALK_CAP) layout.push(childRel);
+      if (isTestFile(childRel, entry.name)) {
+        if (tests.length < WALK_CAP) tests.push(childRel);
+      } else if (
+        /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|cs|php)$/i.test(entry.name) ||
+        childRel.startsWith("src/")
+      ) {
+        if (sources.length < WALK_CAP) sources.push(childRel);
       }
+      if (/\.md$/i.test(entry.name) && markdown.length < WALK_CAP) markdown.push(childRel);
     }
   }
 
   await walk(projectRoot, "", 0);
-  return { layout, sources };
+  return { layout, sources, tests, markdown };
 }
 
 async function readPackageHint(projectRoot: string): Promise<string> {
@@ -154,9 +222,435 @@ async function readPackageHint(projectRoot: string): Promise<string> {
   }
 }
 
+async function detectTestRunners(projectRoot: string, tests: readonly string[]): Promise<string[]> {
+  const runners: string[] = [];
+  try {
+    const raw = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8")) as {
+      scripts?: { test?: unknown };
+    };
+    if (typeof raw.scripts?.test === "string" && raw.scripts.test.trim()) {
+      runners.push(`package.json scripts.test: ${redactSecrets(raw.scripts.test.trim())}`);
+    }
+  } catch {
+    // no package.json
+  }
+  if (existsSync(join(projectRoot, "pytest.ini"))) runners.push("pytest.ini");
+  try {
+    const pyproject = await readFile(join(projectRoot, "pyproject.toml"), "utf8");
+    if (pyproject.includes("[tool.pytest")) runners.push("pyproject.toml [tool.pytest]");
+  } catch {
+    // no pyproject
+  }
+  if (existsSync(join(projectRoot, "go.mod")) && tests.some((path) => path.endsWith("_test.go"))) {
+    runners.push("go.mod + *_test.go");
+  }
+  if (existsSync(join(projectRoot, "Cargo.toml"))) runners.push("Cargo.toml");
+  return runners;
+}
+
+function sourceStem(path: string): string {
+  return basename(path).replace(/\.[^.]+$/, "");
+}
+
+function sourceHasNearbyTest(source: string, tests: readonly string[]): boolean {
+  const posix = source.replaceAll("\\", "/");
+  const sourceDir = dirname(posix).replace(/\\/g, "/");
+  const base = sourceStem(posix);
+  const withoutSrc = sourceDir.replace(/(^|\/)src(?=\/|$)/, "$1tests").replace(/^\//, "") || "tests";
+  const nearbyDirs = new Set([
+    sourceDir,
+    sourceDir === "." ? "__tests__" : `${sourceDir}/__tests__`,
+    sourceDir === "." ? "tests" : `tests/${sourceDir}`,
+    sourceDir === "." ? "tests" : `tests/${sourceDir.replace(/^src\/?/, "")}`,
+    withoutSrc,
+  ]);
+  return tests.some((path) => {
+    const p = path.replaceAll("\\", "/");
+    const testDir = dirname(p).replace(/\\/g, "/");
+    if (!nearbyDirs.has(testDir)) return false;
+    const name = basename(p);
+    if (name === `${base}_test.go` || name === `${base}_test.py` || name === `test_${base}.py`) return true;
+    return /\.(test|spec)\.[^.]+$/i.test(name) && name.replace(/\.(test|spec)\.[^.]+$/i, "") === base;
+  });
+}
+
+function renderTestsMd(input: { runners: string[]; tests: string[]; gaps: string[] }): string {
+  const runners = input.runners.length > 0 ? input.runners.map((r) => `- ${r}`).join("\n") : "- (none detected)";
+  const listed = input.tests.length > 0 ? input.tests.map((p) => `- ${p}`).join("\n") : "- (no test files listed)";
+  const gaps =
+    input.gaps.length > 0
+      ? input.gaps.map((source, i) => {
+          const id = `A-T${String(i + 1).padStart(2, "0")}`;
+          return `### ${id}\n- **Statement**: \`${source}\` has no nearby test\n- **Status**: needs_confirmation\n`;
+        }).join("\n")
+      : "- (none)\n";
+  return [
+    "# Tests",
+    "",
+    "## Runners",
+    runners,
+    "",
+    "## Test files",
+    listed,
+    "",
+    "## Coverage gaps",
+    gaps,
+  ].join("\n");
+}
+
+type SecretFinding = { path: string; kind: string };
+
+async function scanSecretFindings(
+  projectRoot: string,
+): Promise<{ findings: SecretFinding[]; truncated: boolean }> {
+  const findings: SecretFinding[] = [];
+  let filesSeen = 0;
+  let truncated = false;
+
+  async function walk(dir: string, rel: string): Promise<void> {
+    if (findings.length >= WALK_CAP || filesSeen >= SECRET_FILE_CAP) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (findings.length >= WALK_CAP) return;
+      if (filesSeen >= SECRET_FILE_CAP) {
+        truncated = true;
+        return;
+      }
+      if (entry.name === "." || entry.name === "..") continue;
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      const abs = join(dir, entry.name);
+      let st;
+      try {
+        st = await lstat(abs);
+      } catch {
+        continue;
+      }
+      // Junctions/symlinks can escape the project; do not follow or record childRel.
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
+        if (SKIP_DIR_NAMES.has(entry.name)) continue;
+        if (rel === ".legion-cli" && SKIP_LEGION_CHILDREN.has(entry.name)) continue;
+        await walk(abs, childRel);
+        continue;
+      }
+      if (!st.isFile()) continue;
+      filesSeen += 1;
+      if (st.size > SECRET_FILE_MAX_BYTES) continue;
+      let text: string;
+      try {
+        const buf = await readFile(abs);
+        if (buf.byteLength > SECRET_FILE_MAX_BYTES) continue;
+        if (buf.includes(0)) continue;
+        text = buf.toString("utf8");
+      } catch {
+        continue;
+      }
+      let path: string;
+      try {
+        path = toProjectRelativePosix(projectRoot, abs);
+      } catch (err) {
+        if (err instanceof PathEscapeError) continue;
+        continue;
+      }
+      for (const pattern of SECRET_PATTERNS) {
+        pattern.re.lastIndex = 0;
+        if (!pattern.re.test(text)) continue;
+        findings.push({ path, kind: pattern.name });
+      }
+    }
+  }
+
+  await walk(projectRoot, "");
+  if (filesSeen >= SECRET_FILE_CAP) truncated = true;
+  return { findings, truncated };
+}
+
+function parseAuditNames(stdout: string): string[] {
+  let json: unknown;
+  try {
+    json = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  if (!json || typeof json !== "object") return [];
+  const names = new Set<string>();
+  const rec = json as Record<string, unknown>;
+  if (rec.vulnerabilities && typeof rec.vulnerabilities === "object") {
+    for (const key of Object.keys(rec.vulnerabilities as object)) names.add(key);
+  }
+  if (rec.advisories && typeof rec.advisories === "object") {
+    for (const value of Object.values(rec.advisories as object)) {
+      if (value && typeof value === "object" && typeof (value as { module_name?: unknown }).module_name === "string") {
+        names.add((value as { module_name: string }).module_name);
+      }
+    }
+  }
+  return [...names].sort();
+}
+
+/** Stdout-only JSON parse so stderr warnings cannot hide vulnerability names. */
+function formatAuditLines(input: {
+  lockfile: string;
+  bin: string;
+  stdout: string;
+  stderr?: string;
+  timedOut?: boolean;
+  error?: string;
+  status?: number | null;
+}): string[] {
+  if (input.timedOut) {
+    return [`lockfile: ${input.lockfile}`, "audit timed out (60s)"];
+  }
+  if (input.error) {
+    return [`lockfile: ${input.lockfile}`, `audit skipped: ${input.bin} (${input.error})`];
+  }
+  const names = parseAuditNames(input.stdout);
+  const failed = (input.status !== undefined && input.status !== null && input.status !== 0) ||
+    (names.length === 0 && looksLikeAuditError(input.stdout));
+  const lines = [`lockfile: ${input.lockfile}`, `command: ${input.bin} audit --json`];
+  if (failed && names.length === 0) {
+    lines.push(`audit failed (exit ${input.status ?? "unknown"})`);
+    return lines;
+  }
+  if (names.length === 0) {
+    lines.push("packages: (none named)");
+  } else {
+    lines.push(`packages: ${names.join(", ")}`);
+  }
+  return lines;
+}
+
+function looksLikeAuditError(stdout: string): boolean {
+  try {
+    const json = JSON.parse(stdout) as { error?: unknown };
+    return Boolean(json && typeof json === "object" && json.error);
+  } catch {
+    return stdout.trim().length > 0;
+  }
+}
+
+function samePath(a: string, b: string): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function pathIsInside(candidate: string, root: string): boolean {
+  let candAbs = resolve(candidate);
+  let rootAbs = resolve(root);
+  try {
+    candAbs = realpathSync(candAbs);
+  } catch {
+    // lexical fallback
+  }
+  try {
+    rootAbs = realpathSync(rootAbs);
+  } catch {
+    // lexical fallback
+  }
+  const rel = relative(rootAbs, candAbs).replaceAll("\\", "/");
+  if (rel === "" || rel === ".") return true;
+  if (rel === ".." || rel.startsWith("../") || /^[A-Za-z]:/.test(rel) || rel.startsWith("/")) return false;
+  return true;
+}
+
+/** PATH lookup that never returns a binary sitting in the project cwd (cmd.exe cwd-search RCE). */
+function resolveAuditBin(name: string, projectRoot: string): string | null {
+  const root = resolve(projectRoot);
+  const cwd = resolve(process.cwd());
+  const exts =
+    process.platform === "win32"
+      ? ["", ...(process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)]
+      : [""];
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir || dir === ".") continue;
+    const absDir = resolve(dir);
+    if (pathIsInside(absDir, root) || samePath(absDir, cwd)) continue;
+    for (const ext of exts) {
+      const candidate = join(absDir, ext ? `${name}${ext}` : name);
+      if (!existsSync(candidate)) continue;
+      if (pathIsInside(candidate, root)) continue;
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function quoteCmdArg(arg: string): string {
+  if (arg.length === 0) return '""';
+  if (!/[\t\r\n "]/.test(arg)) return arg;
+  return `"${arg.replaceAll('"', '""')}"`;
+}
+
+function runLockfileAudit(projectRoot: string): string[] {
+  const pnpmLock = existsSync(join(projectRoot, "pnpm-lock.yaml"));
+  const npmLock = existsSync(join(projectRoot, "package-lock.json"));
+  if (!pnpmLock && !npmLock) {
+    return ["no audit (no lockfile)"];
+  }
+  const bin = pnpmLock ? "pnpm" : "npm";
+  const lockfile = pnpmLock ? "pnpm-lock.yaml" : "package-lock.json";
+  const argv = pnpmLock ? ["audit", "--json", "--ignore-pnpmfile"] : ["audit", "--json"];
+  const resolved = resolveAuditBin(bin, projectRoot);
+  if (!resolved) {
+    return formatAuditLines({ lockfile, bin, stdout: "", error: `${bin} not on PATH` });
+  }
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    NoDefaultCurrentDirectoryInExePath: "1",
+    npm_config_ignore_scripts: "true",
+  };
+  delete env.NODE_TEST_CONTEXT;
+  const spawnOpts = {
+    cwd: projectRoot,
+    encoding: "utf8" as const,
+    windowsHide: true,
+    shell: false,
+    timeout: AUDIT_TIMEOUT_MS,
+    killSignal: "SIGKILL" as const,
+    env,
+    maxBuffer: 8 * 1024 * 1024,
+  };
+  let result: ReturnType<typeof spawnSync>;
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
+    const unwrapped = unwrapCmdShim(resolved);
+    if (unwrapped) {
+      result = spawnSync(unwrapped.command, [...unwrapped.prefixArgs, ...argv], spawnOpts);
+    } else {
+      const line = [resolved, ...argv].map(quoteCmdArg).join(" ");
+      result = spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", line], {
+        ...spawnOpts,
+        windowsVerbatimArguments: true,
+      });
+    }
+  } else {
+    result = spawnSync(resolved, argv, spawnOpts);
+  }
+  const timedOut =
+    (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ||
+    (result.signal === "SIGKILL" && result.status === null);
+  if (timedOut) {
+    return formatAuditLines({ lockfile, bin, stdout: "", timedOut: true });
+  }
+  if (result.error) {
+    return formatAuditLines({
+      lockfile,
+      bin,
+      stdout: "",
+      error: (result.error as NodeJS.ErrnoException).code ?? result.error.message,
+    });
+  }
+  return formatAuditLines({
+    lockfile,
+    bin,
+    stdout: String(result.stdout ?? ""),
+    stderr: String(result.stderr ?? ""),
+    status: result.status,
+  });
+}
+
+function renderSecurityMd(
+  findings: SecretFinding[],
+  auditLines: string[],
+  truncated = false,
+): string {
+  const secretLines =
+    findings.length > 0
+      ? findings.map((hit) => `- \`${hit.path}\` (${hit.kind}): [REDACTED:${hit.kind}]`).join("\n")
+      : truncated
+        ? "- (truncated; scan stopped at file cap)"
+        : "- (none)";
+  return [
+    "# Security",
+    "",
+    "## Secrets",
+    ...(truncated ? ["- scan truncated at 200 files"] : []),
+    secretLines,
+    "",
+    "## Dependency audit",
+    ...auditLines.map((line) => (line.startsWith("no audit") ? line : `- ${line}`)),
+    "",
+  ].join("\n");
+}
+
+async function readFingerprints(projectRoot: string): Promise<FingerprintFile | undefined> {
+  try {
+    const raw = JSON.parse(await readFile(join(projectRoot, ".legion-cli", "map", "fingerprints.json"), "utf8"));
+    const parsed = FingerprintFileSchema.safeParse(raw);
+    if (!parsed.success) return undefined;
+    const modules = parsed.data.modules.filter((module) => existsSync(join(projectRoot, module.path)));
+    if (modules.length === 0 && parsed.data.modules.length > 0) return undefined;
+    return { ...parsed.data, modules };
+  } catch {
+    return undefined;
+  }
+}
+
+function nearbyMarkdownExists(
+  modulePath: string,
+  markdown: ReadonlySet<string>,
+  projectRoot?: string,
+): boolean {
+  const dir = dirname(modulePath).replaceAll("\\", "/");
+  const base = modulePath.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
+  const dirPrefix = dir === "." ? "" : `${dir}/`;
+  const candidates = [
+    `${dirPrefix}${base}.md`,
+    `${dirPrefix}README.md`,
+    `docs/${base}.md`,
+    `docs/${dirPrefix}${base}.md`,
+  ];
+  if (candidates.some((path) => markdown.has(path))) return true;
+  if (!projectRoot) return false;
+  return candidates.some((path) => existsSync(join(projectRoot, path)));
+}
+
+function renderDocsMd(input: {
+  readme: string | null;
+  orphans: Array<{ path: string; title: string }>;
+  undocumented: string[];
+}): string {
+  const readme = input.readme ? `- present: \`${input.readme}\`` : "- missing";
+  const orphans =
+    input.orphans.length > 0
+      ? input.orphans.map((page) => `- \`${page.path}\` ${page.title}`).join("\n")
+      : "- (none)";
+  const undocumented =
+    input.undocumented.length > 0
+      ? input.undocumented.map((line) => `- ${line}`).join("\n")
+      : "- (none, or no fingerprints yet)";
+  return [
+    "# Docs",
+    "",
+    "## README",
+    readme,
+    "",
+    "## Wiki orphans",
+    orphans,
+    "",
+    "## Exports without nearby markdown",
+    undocumented,
+    "",
+  ].join("\n");
+}
+
+function findReadme(projectRoot: string): string | null {
+  for (const name of ["README.md", "README", "readme.md"]) {
+    if (existsSync(join(projectRoot, name))) return name;
+  }
+  return null;
+}
+
 function renderPages(input: {
   runId: string;
   name: string;
+  effort: BrownfieldEffort;
   context: string;
   execute: boolean;
   packageHint: string;
@@ -169,6 +663,17 @@ function renderPages(input: {
   const sources =
     input.sources.length > 0 ? input.sources.map((p) => `- ${p}`).join("\n") : "- (no source files listed)";
   const pkg = input.packageHint || "(no package.json)";
+  const outOfScope =
+    input.effort === 1
+      ? [
+          "## Out of scope (effort 1)",
+          "- LSP / architecture fingerprints",
+          "- Tests, security, and documentation specialists (effort 2+)",
+        ]
+      : [
+          `## Out of scope (effort ${input.effort})`,
+          input.effort < 5 ? "- Durable architecture map lives in `.legion-cli/map/` after effort 5" : "- This file is evidence, not a frozen SPEC",
+        ];
   return {
     "intent.md": [
       "# Intent brief",
@@ -176,7 +681,7 @@ function renderPages(input: {
       `- **Run ID**: ${input.runId}`,
       `- **Project**: ${input.name}`,
       `- **Captured**: ${nowIso()}`,
-      "- **Effort level**: 1",
+      `- **Effort level**: ${input.effort}`,
       `- **Execute requested**: ${input.execute}`,
       "",
       "## User Goal",
@@ -189,9 +694,7 @@ function renderPages(input: {
       "- [ ] Architecture and code evidence captured in this run",
       "- [ ] Improvement SPEC can be written from this run (promote first if the wiki should own it)",
       "",
-      "## Out of scope (effort 1)",
-      "- LSP / architecture fingerprints",
-      "- Tests, security, and documentation specialists (effort 2+)",
+      ...outOfScope,
       "",
     ].join("\n"),
     "assumptions.md": [
@@ -244,7 +747,9 @@ function renderPages(input: {
       "# Brownfield analysis findings",
       "",
       ...(rawContext ? [rawContext, ""] : []),
-      "Effort 1: Architecture + Code only. No LSP.",
+      input.effort === 1
+        ? "Effort 1: Architecture + Code only. No LSP."
+        : `Effort ${input.effort}: in-process rigor ladder (no brownfield skill spawn).`,
       "",
       "### Architecture Summary",
       `Top-level evidence (${input.layout.length} entries). Existing layering may be accidental.`,
@@ -275,20 +780,20 @@ function renderPages(input: {
   };
 }
 
-async function writeAnalysisPages(
+async function writeNamedPages(
   projectRoot: string,
   runId: string,
-  pages: Record<(typeof BROWNFIELD_PAGES)[number], string>,
+  pages: Record<string, string>,
 ): Promise<void> {
-  for (const name of BROWNFIELD_PAGES) {
-    await writeRunFile(projectRoot, runPagePath(runId, name), pages[name]);
+  for (const [name, body] of Object.entries(pages)) {
+    await writeRunFile(projectRoot, runPagePath(runId, name), body);
   }
 }
 
 function toResult(run: BrownfieldRun): BrownfieldResult {
   return {
     runId: run.runId,
-    effort: 1,
+    effort: asEffort(run.effort),
     execute: run.execute,
     phase: run.phase,
     pages: run.pages,
@@ -319,11 +824,158 @@ async function ensureWorktree(store: LegionStore, run: BrownfieldRun): Promise<B
     phase: "complete",
     preSpawnRef: head,
     worktreePath: rel,
-    pages: [...BROWNFIELD_PAGES],
+    pages: [...run.pages],
   };
 }
 
-export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions): Promise<BrownfieldResult> {
+async function writeDocsMd(store: LegionStore, runId: string, evidence: Evidence): Promise<void> {
+  const fingerprints = await readFingerprints(store.projectRoot);
+  const mdSet = new Set(evidence.markdown);
+  const undocumented: string[] = [];
+  if (fingerprints) {
+    for (const module of fingerprints.modules) {
+      if (nearbyMarkdownExists(module.path, mdSet, store.projectRoot)) continue;
+      for (const name of module.exports) {
+        undocumented.push(`\`${module.path}\` export \`${name}\``);
+        if (undocumented.length >= WALK_CAP) break;
+      }
+      if (undocumented.length >= WALK_CAP) break;
+    }
+  }
+  let orphans: Array<{ path: string; title: string }> = [];
+  try {
+    orphans = gardenReport(store.projectRoot).orphans.map((page) => ({ path: page.path, title: page.title }));
+  } catch {
+    try {
+      await store.rebuild();
+      orphans = gardenReport(store.projectRoot).orphans.map((page) => ({ path: page.path, title: page.title }));
+    } catch {
+      orphans = [{ path: ".legion-cli/index", title: "wiki index unavailable (not a clean orphan list)" }];
+    }
+  }
+  await writeRunFile(
+    store.projectRoot,
+    runPagePath(runId, "docs.md"),
+    renderDocsMd({
+      readme: findReadme(store.projectRoot),
+      orphans,
+      undocumented,
+    }),
+  );
+}
+
+async function writeLadderExtras(
+  store: LegionStore,
+  runId: string,
+  effort: BrownfieldEffort,
+  evidence: Evidence,
+  extras: { findings: SecretFinding[]; auditLines: string[]; secretsTruncated?: boolean },
+): Promise<void> {
+  if (effort < 2) return;
+  const runners = await detectTestRunners(store.projectRoot, evidence.tests);
+  const sourceExt = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|cs|php)$/i;
+  const gaps = evidence.sources
+    .filter((source) => sourceExt.test(source) && !sourceHasNearbyTest(source, evidence.tests))
+    .slice(0, 20);
+  await writeRunFile(store.projectRoot, runPagePath(runId, "tests.md"), renderTestsMd({
+    runners,
+    tests: evidence.tests,
+    gaps,
+  }));
+  if (effort < 3) return;
+  await writeRunFile(
+    store.projectRoot,
+    runPagePath(runId, "security.md"),
+    renderSecurityMd(extras.findings, extras.auditLines, extras.secretsTruncated),
+  );
+  if (effort < 4) return;
+  await writeDocsMd(store, runId, evidence);
+}
+
+function extractUserGoal(intentBody: string): string {
+  const match = intentBody.match(/^## User Goal\s*\n([\s\S]*?)(?=\n## |$)/m);
+  const goal = (match?.[1] ?? "").trim();
+  return goal || "(none)";
+}
+
+function extractLadderFindings(bodies: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const body of bodies) {
+    for (const match of body.matchAll(/^- \*\*Statement\*\*: (.+)$/gm)) {
+      const line = match[1]?.trim();
+      if (line) out.push(line);
+    }
+    for (const match of body.matchAll(/^- `([^`]+)` \(([^)]+)\):/gm)) {
+      out.push(`\`${match[1]}\` (${match[2]})`);
+    }
+    for (const match of body.matchAll(/^- `([^`]+)` export `.+`$/gm)) {
+      out.push(match[0].slice(2));
+    }
+    for (const match of body.matchAll(/^- scan truncated.+$/gm)) {
+      out.push(match[0].slice(2));
+    }
+    for (const match of body.matchAll(/^- audit failed.+$/gm)) {
+      out.push(match[0].slice(2));
+    }
+  }
+  const unique = [...new Set(out)].filter((line) => line !== "(none)");
+  return unique.length > 0 ? unique.slice(0, 12) : ["Architecture and code evidence captured"];
+}
+
+function renderImprovementSpec(input: { runId: string; name: string; userGoal: string; mustBeTrue: string[] }): string {
+  const bullets = input.mustBeTrue.map((item) => `- ${item}`).join("\n");
+  const first = input.mustBeTrue[0] ?? "Architecture and code evidence captured";
+  return [
+    "# Improvement SPEC draft (not frozen)",
+    `- **Run ID**: ${input.runId}`,
+    `- **Status**: draft-in-run`,
+    `- **Title**: ${input.name} improvements`,
+    "## Problem",
+    input.userGoal,
+    "## Must be true",
+    bullets,
+    "## Must not change",
+    "- Existing public CLI/API unless a finding names it",
+    "## Out of scope",
+    "- Unrelated debt not in this run",
+    "## Acceptance",
+    `- AC-P0-01 (P0): ${first}`,
+    "## Next",
+    `1. \`legion-cli run promote ${input.runId}\``,
+    "2. `legion-cli wiki trust` the promoted pages",
+    "3. `legion-cli spec` (templates) — this file is not SPEC.md",
+    "",
+  ].join("\n");
+}
+
+function renderEffort5Architecture(map: MapResult, fingerprints: FingerprintFile | undefined): string {
+  const modules =
+    fingerprints && fingerprints.modules.length > 0
+      ? fingerprints.modules
+          .map((module) => `- \`${module.path}\` — exports: ${module.exports.join(", ")}`)
+          .join("\n")
+      : "- (none)";
+  return [
+    "# Architecture (effort 5)",
+    "",
+    `backend: ${map.backend}`,
+    `rootHash: ${fingerprints?.rootHash ?? "(unknown)"}`,
+    `modules: ${map.modules}`,
+    "",
+    "Durable map: `.legion-cli/map/ARCHITECTURE.md`. This run page is a summary, not the durable map.",
+    "",
+    "## Modules",
+    modules,
+    "",
+  ].join("\n");
+}
+
+export type PreparedBrownfield =
+  | { kind: "done"; result: BrownfieldResult }
+  | { kind: "pending"; run: BrownfieldRun; resume: boolean };
+
+/** Lock-held: validate and build the in-memory run. Does not persist a new run (map/audit stay outside #mutate). */
+export async function prepareBrownfield(store: LegionStore, opts: BrownfieldOptions): Promise<PreparedBrownfield> {
   const stateExists = await store.pathExists(".legion-cli/STATE.md");
   if (!stateExists) {
     refuse("brownfield is refused until init", HINT.init);
@@ -332,16 +984,17 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
     refuse("brownfield requires a git repository", HINT.gitRepo);
   }
 
-  const project = (await store.readProject()).data;
   const executeRequested = Boolean(opts.execute);
   const context = (opts.context ?? "").trim();
 
-  let run: BrownfieldRun;
   if (opts.resume) {
     const runId = parseRunId(opts.resume);
-    run = await readRunResume(store, runId);
-    if (run.effort !== 1) {
-      refuse("brownfield effort 2–5 is not implemented yet", HINT.brownfield);
+    let run = await readRunResume(store, runId);
+    if (opts.effort !== undefined) {
+      const requested = parseEffort(opts.effort);
+      if (requested !== asEffort(run.effort)) {
+        refuse("resuming a brownfield run cannot change effort; start a new run", HINT.brownfield);
+      }
     }
     const wantExecute = run.execute || executeRequested;
     if (run.phase === "complete" && !wantExecute) {
@@ -350,20 +1003,28 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
     if (run.phase === "complete" && wantExecute) {
       run = await ensureWorktree(store, { ...run, execute: true });
       await writeRunResume(store.projectRoot, run);
-      return toResult(run);
+      return { kind: "done", result: toResult(run) };
     }
-    run = {
-      ...run,
-      execute: wantExecute,
-      context: run.context || context,
+    return {
+      kind: "pending",
+      resume: true,
+      run: {
+        ...run,
+        execute: wantExecute,
+        context: run.context || context,
+      },
     };
-  } else {
-    const effort = parseEffort(opts.effort);
-    const runId = opts.runId ? parseRunId(opts.runId) : newRunId();
-    if (await store.pathExists(runResumePath(runId))) {
-      refuse(`brownfield run ${runId} already exists`, HINT.brownfieldResume);
-    }
-    run = {
+  }
+
+  const effort = parseEffort(opts.effort);
+  const runId = opts.runId ? parseRunId(opts.runId) : newRunId();
+  if (await store.pathExists(runResumePath(runId))) {
+    refuse(`brownfield run ${runId} already exists`, HINT.brownfieldResume);
+  }
+  return {
+    kind: "pending",
+    resume: false,
+    run: {
       schemaVersion: SCHEMA_VERSION.run,
       runId,
       effort,
@@ -373,34 +1034,119 @@ export async function runBrownfield(store: LegionStore, opts: BrownfieldOptions)
       startedAt: nowIso(),
       worktreePath: null,
       promoted: false,
-      pages: [...BROWNFIELD_PAGES],
+      pages: ladderPages(effort, false),
       context,
-    };
+    },
+  };
+}
+
+/** Secrets walk + 60s audit — call outside #mutate. */
+export async function collectBrownfieldAudit(
+  projectRoot: string,
+  effort: number,
+): Promise<{ findings: Array<{ path: string; kind: string }>; auditLines: string[]; secretsTruncated?: boolean }> {
+  if (effort < 3) return { findings: [], auditLines: [] };
+  const scanned = await scanSecretFindings(projectRoot);
+  const auditLines = runLockfileAudit(projectRoot);
+  return { findings: scanned.findings, auditLines, secretsTruncated: scanned.truncated };
+}
+
+async function applyEffort5Map(store: LegionStore, run: BrownfieldRun, map: MapResult): Promise<void> {
+  const fingerprints = await readFingerprints(store.projectRoot);
+  await writeRunFile(
+    store.projectRoot,
+    runPagePath(run.runId, "architecture.md"),
+    renderEffort5Architecture(map, fingerprints),
+  );
+  let intentBody = "";
+  let analysisBody = "";
+  try {
+    intentBody = await readFile(join(store.projectRoot, ...runPagePath(run.runId, "intent.md").split("/")), "utf8");
+  } catch {
+    intentBody = "";
+  }
+  try {
+    analysisBody = await readFile(join(store.projectRoot, ...runPagePath(run.runId, "analysis.md").split("/")), "utf8");
+  } catch {
+    analysisBody = "";
+  }
+  const project = (await store.readProject()).data;
+  const ladderBodies: string[] = [analysisBody];
+  for (const page of ["tests.md", "security.md", "docs.md"] as const) {
+    try {
+      ladderBodies.push(await readFile(join(store.projectRoot, ...runPagePath(run.runId, page).split("/")), "utf8"));
+    } catch {
+      // page may be absent
+    }
+  }
+  await writeRunFile(
+    store.projectRoot,
+    runPagePath(run.runId, "improvement-spec.md"),
+    renderImprovementSpec({
+      runId: run.runId,
+      name: project.name,
+      userGoal: extractUserGoal(intentBody),
+      mustBeTrue: extractLadderFindings(ladderBodies),
+    }),
+  );
+}
+
+/** Lock-held write of run pages after outside-lock audit/map. */
+export async function commitBrownfield(
+  store: LegionStore,
+  run: BrownfieldRun,
+  extras: {
+    resume: boolean;
+    findings: SecretFinding[];
+    auditLines: string[];
+    secretsTruncated?: boolean;
+    map?: MapResult;
+  },
+): Promise<BrownfieldResult> {
+  const existed = await store.pathExists(runResumePath(run.runId));
+  if (existed && !extras.resume) {
+    refuse(`brownfield run ${run.runId} already exists`, HINT.brownfieldResume);
   }
 
+  const effort = asEffort(run.effort);
+  const project = (await store.readProject()).data;
   await mkdir(join(store.projectRoot, ".legion-cli", "runs", run.runId), { recursive: true });
-  await writeRunResume(store.projectRoot, run);
 
   const evidence = await collectEvidence(store.projectRoot);
   const pages = renderPages({
     runId: run.runId,
     name: project.name,
+    effort,
     context: run.context,
     execute: run.execute,
     packageHint: await readPackageHint(store.projectRoot),
     layout: evidence.layout,
     sources: evidence.sources,
   });
-  await writeAnalysisPages(store.projectRoot, run.runId, pages);
-  run = { ...run, pages: [...BROWNFIELD_PAGES], phase: run.execute ? "execute" : "complete" };
-  await writeRunResume(store.projectRoot, run);
+  await writeNamedPages(store.projectRoot, run.runId, pages);
+  await writeLadderExtras(store, run.runId, effort, evidence, {
+    findings: extras.findings,
+    auditLines: extras.auditLines,
+    secretsTruncated: extras.secretsTruncated,
+  });
 
-  if (run.execute) {
-    run = await ensureWorktree(store, run);
-    await writeRunResume(store.projectRoot, run);
+  let next: BrownfieldRun = {
+    ...run,
+    pages: ladderPages(effort, Boolean(extras.map)),
+    phase: run.execute ? "execute" : "complete",
+  };
+
+  if (effort >= 5 && extras.map) {
+    await applyEffort5Map(store, next, extras.map);
+    next = { ...next, pages: ladderPages(5, true) };
   }
 
-  return toResult(run);
+  await writeRunResume(store.projectRoot, next);
+  if (next.execute) {
+    next = await ensureWorktree(store, next);
+    await writeRunResume(store.projectRoot, next);
+  }
+  return toResult(next);
 }
 
 export async function promoteBrownfieldRun(

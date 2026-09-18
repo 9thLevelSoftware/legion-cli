@@ -191,7 +191,7 @@ import type {
   WireframeOptions,
   WireframeResult,
 } from "./types.js";
-import { promoteBrownfieldRun, runBrownfield } from "./brownfield.js";
+import { collectBrownfieldAudit, commitBrownfield, prepareBrownfield, promoteBrownfieldRun } from "./brownfield.js";
 import {
   MAP_ARCHITECTURE_PATH,
   MAP_FINGERPRINTS_PATH,
@@ -1925,7 +1925,44 @@ export class LegionEngine {
   }
 
   async brownfield(opts: BrownfieldOptions = {}): Promise<BrownfieldResult> {
-    return this.#mutate(() => runBrownfield(this.store, opts));
+    const prepared = await this.#mutate(() => prepareBrownfield(this.store, opts));
+    if (prepared.kind === "done") return prepared.result;
+
+    const effort = prepared.run.effort;
+    const audit = await collectBrownfieldAudit(this.projectRoot, effort);
+
+    return this.#mutate(async () => {
+      let map: MapResult | undefined;
+      if (effort >= 5) {
+        try {
+          const generated = await generateMap(this.projectRoot, {
+            refresh: true,
+            lsp: opts.lsp ? "require" : "auto",
+            resolveBinary: opts.resolveBinary,
+            spawnLsp: opts.spawnLsp,
+            lspDeadlineMs: opts.lspDeadlineMs,
+          });
+          map = {
+            path: MAP_ARCHITECTURE_PATH,
+            fingerprintsPath: MAP_FINGERPRINTS_PATH,
+            backend: generated.backend,
+            modules: generated.fingerprints.modules.length,
+            changed: generated.changed,
+            next: MAP_SHOW_NEXT,
+          };
+        } catch (err) {
+          if (err instanceof MapError) refuse(err.message, err.nextHint);
+          throw err;
+        }
+      }
+      return commitBrownfield(this.store, prepared.run, {
+        resume: prepared.resume,
+        findings: audit.findings,
+        auditLines: audit.auditLines,
+        secretsTruncated: audit.secretsTruncated,
+        map,
+      });
+    });
   }
 
   async promoteRun(runId: string, opts: PromoteRunOptions = {}): Promise<PromoteRunResult> {

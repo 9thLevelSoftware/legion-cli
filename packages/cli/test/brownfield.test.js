@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -152,11 +152,66 @@ test("greenfield execute stays in-place (no worktree)", async () => {
   });
 });
 
-test("legion-cli brownfield --effort 2 refuses", async () => {
+test("legion-cli brownfield --effort 2 writes tests.md", async () => {
   await withTempDir(async (dir) => {
     await seedBrownfield(dir);
-    const result = runCli(["brownfield", "--project", dir, "--effort", "2"]);
+    const result = runCli(["brownfield", "--project", dir, "--effort", "2", "--json"]);
+    assert.equal(result.status, 0, result.stderr);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.effort, 2);
+    assert.ok(body.pages.includes("tests.md"));
+    assert.equal(await exists(join(dir, ".legion-cli", "runs", body.runId, "tests.md")), true);
+    const resume = JSON.parse(
+      await readFile(join(dir, ".legion-cli", "runs", body.runId, "resume.json"), "utf8"),
+    );
+    assert.equal(resume.effort, 2);
+  });
+});
+
+test("legion-cli brownfield --effort 6 still refuses range", async () => {
+  await withTempDir(async (dir) => {
+    await seedBrownfield(dir);
+    const result = runCli(["brownfield", "--project", dir, "--effort", "6"]);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /effort 2–5 is not implemented/);
+    assert.match(result.stderr, /brownfield --effort must be 1–5/);
+    assert.match(result.stderr, /legion-cli brownfield --effort 1\|2\|3\|4\|5/);
+  });
+});
+
+test("legion-cli brownfield --lsp is ignored on effort 1–4", async () => {
+  await withTempDir(async (dir) => {
+    await seedBrownfield(dir);
+    const result = runCli(["brownfield", "--project", dir, "--effort", "2", "--lsp", "--json"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /--lsp is ignored for effort 1–4/);
+    assert.equal(JSON.parse(result.stdout).effort, 2);
+  });
+});
+
+test("legion-cli brownfield --effort 5 --lsp without a server refuses map --no-lsp", async () => {
+  await withTempDir(async (dir) => {
+    await seedBrownfield(dir);
+    const result = runCli(["brownfield", "--project", dir, "--effort", "5", "--lsp"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /no language server on PATH/);
+    assert.match(result.stderr, /Next: legion-cli map --no-lsp/);
+  });
+});
+
+test("legion-cli brownfield --effort 5 writes map fingerprints and leaves specs untouched", async () => {
+  await withTempDir(async (dir) => {
+    await seedBrownfield(dir);
+    const result = runCli(["brownfield", "--project", dir, "--effort", "5", "--json"]);
+    assert.equal(result.status, 0, result.stderr);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.effort, 5);
+    assert.ok(body.pages.includes("improvement-spec.md"));
+    assert.equal(await exists(join(dir, ".legion-cli", "map", "fingerprints.json")), true);
+    assert.equal(await exists(join(dir, ".legion-cli", "runs", body.runId, "improvement-spec.md")), true);
+    assert.equal(await exists(join(dir, ".legion-cli", "specs", "improvement-spec.md")), false);
+    const specBody = await readFile(join(dir, ".legion-cli", "runs", body.runId, "improvement-spec.md"), "utf8");
+    assert.match(specBody, /this file is not SPEC\.md/);
+    const listed = await readdir(join(dir, ".legion-cli", "specs")).catch(() => []);
+    assert.deepEqual(listed, []);
   });
 });

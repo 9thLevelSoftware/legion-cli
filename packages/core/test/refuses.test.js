@@ -405,13 +405,23 @@ const cases = [
     act: ({ engine }) => engine.brownfield({ effort: 1 }),
   },
   {
-    name: "brownfield effort 2",
-    hint: /legion-cli brownfield --effort 1/,
+    name: "brownfield effort 6",
+    hint: /legion-cli brownfield --effort 1\|2\|3\|4\|5/,
     setup: async ({ engine, dir }) => {
       await initProject(engine, { mode: "brownfield" });
       initGitRepo(dir);
     },
-    act: ({ engine }) => engine.brownfield({ effort: 2 }),
+    act: ({ engine }) => engine.brownfield({ effort: 6 }),
+  },
+  {
+    name: "brownfield resume cannot change effort",
+    hint: /legion-cli brownfield --effort 1\|2\|3\|4\|5/,
+    setup: async ({ engine, dir }) => {
+      await initProject(engine, { mode: "brownfield" });
+      initGitRepo(dir);
+      await engine.brownfield({ effort: 1, runId: "aaaaaaaa" });
+    },
+    act: ({ engine }) => engine.brownfield({ resume: "aaaaaaaa", effort: 5 }),
   },
   {
     name: "ingest from uninitialized",

@@ -45,7 +45,7 @@ export const HINT = {
   controlMode: "legion-cli control-mode",
   designGenerate: "legion-cli design-system generate",
   initMode: "legion-cli init --mode greenfield|brownfield",
-  brownfield: "legion-cli brownfield --effort 1",
+  brownfield: "legion-cli brownfield --effort 1|2|3|4|5",
   brownfieldResume: "legion-cli brownfield --resume <id>",
   promote: "legion-cli run promote <id>",
   wikiTrust: "legion-cli wiki trust <page>",
