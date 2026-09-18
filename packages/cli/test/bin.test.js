@@ -49,6 +49,11 @@ const INSTALLER_FLAGS = [
   "--uninstall",
   "--update",
   "install",
+  "uninstall",
+  "add",
+  "remove",
+  "update",
+  "upgrade",
   "plugin",
 ];
 
