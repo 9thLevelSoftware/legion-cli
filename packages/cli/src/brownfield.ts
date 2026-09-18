@@ -17,6 +17,7 @@ export type BrownfieldFlags = {
   execute?: boolean;
   resume?: string;
   runId?: string;
+  lsp?: boolean;
   context?: string[];
 };
 
@@ -39,6 +40,7 @@ function initLines(result: BrownfieldInitResult): string[] {
   return [
     `Brownfield run ${result.runId}, effort ${result.effort} (${size.tier}: ${size.lines} code lines, max ${size.maxPrs} PRs); execute: ${result.execute ? "yes" : "no"}`,
     `Wrote ${result.paths.runDir}/ (gitignored; not the durable wiki unless promoted)`,
+    `Map: ${result.map.modules} modules (${result.map.backend}) at ${result.map.path}`,
     ...result.warnings.map((warning) => `Note: ${warning}`),
     `Resume: legion-cli brownfield --resume ${result.runId}`,
     `Next: ${result.next}`,
@@ -68,6 +70,7 @@ export async function runBrownfield(opts: CliOpts, flags: BrownfieldFlags): Prom
     execute: Boolean(flags.execute),
     resume: flags.resume,
     runId: flags.runId,
+    lsp: Boolean(flags.lsp),
     context: (flags.context ?? []).join(" ").trim(),
   });
   return emit(opts, { ...result }, result.kind === "init" ? initLines(result) : stateLines(result));

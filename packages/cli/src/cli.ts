@@ -576,12 +576,19 @@ export function createProgram(): Command {
   const brownfieldInitAction = async (context: string[], _opts: unknown, cmd: Command) => {
     // The parent `brownfield` also declares these flags, and commander lets it consume them
     // even after the `init` subcommand name, so read them merged.
-    const flags = cmd.optsWithGlobals() as { effort?: string; execute?: boolean; resume?: string; runId?: string };
+    const flags = cmd.optsWithGlobals() as {
+      effort?: string;
+      execute?: boolean;
+      resume?: string;
+      runId?: string;
+      lsp?: boolean;
+    };
     const code = await runBrownfield(resolveOpts(cmd), {
       effort: flags.effort,
       execute: Boolean(flags.execute),
       resume: flags.resume,
       runId: flags.runId,
+      lsp: Boolean(flags.lsp),
       context,
     });
     process.exitCode = code;
@@ -596,6 +603,7 @@ export function createProgram(): Command {
     .argument("[context...]", "scope notes (quote them, or use `brownfield init`, if they start with a subcommand name)")
     .option("--effort <n>", "analysis rigor 1–5 (default 2)")
     .option("--execute", "plan to implement the reviewed PR plan as per-PR git worktrees")
+    .option("--lsp", "require a language server for the codebase map init runs (default: auto)")
     .option("--resume <id>", "show a run's state and where to continue")
     .addOption(new Option("--run-id <id>", "fixed 8-hex run id").hideHelp())
     .allowExcessArguments(false)
@@ -604,6 +612,7 @@ export function createProgram(): Command {
     .argument("[context...]", "scope notes")
     .option("--effort <n>", "analysis rigor 1–5 (default 2)")
     .option("--execute", "plan to implement the reviewed PR plan as per-PR git worktrees")
+    .option("--lsp", "require a language server for the codebase map init runs (default: auto)")
     .addOption(new Option("--run-id <id>", "fixed 8-hex run id").hideHelp())
     .allowExcessArguments(false)
     .action(brownfieldInitAction);

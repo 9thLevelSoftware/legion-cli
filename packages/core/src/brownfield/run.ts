@@ -20,6 +20,7 @@ import type {
   BrownfieldResult,
   BrownfieldStateResult,
 } from "../types.js";
+import type { MapResult } from "../map.js";
 import { readDag, summarizeDag } from "./dag.js";
 import { section, splitBlocks } from "./markdown.js";
 import { RUN_SUBDIRS, runAbs, runArtifactPaths, storeAbs } from "./paths.js";
@@ -172,7 +173,15 @@ export function nextStepFor(
   }
 }
 
-export async function initRun(store: LegionStore, opts: BrownfieldOptions): Promise<BrownfieldInitResult> {
+/**
+ * Start a run. `runMap` refreshes the codebase map after validation and before anything is
+ * written, so a failed map (e.g. `--lsp` with no language server) leaves no half-made run.
+ */
+export async function initRun(
+  store: LegionStore,
+  opts: BrownfieldOptions,
+  runMap: () => Promise<MapResult>,
+): Promise<BrownfieldInitResult> {
   await assertBrownfieldReady(store);
   const effort = parseEffort(opts.effort);
   const runId = opts.runId ? parseRunId(opts.runId) : newRunId();
@@ -185,6 +194,7 @@ export async function initRun(store: LegionStore, opts: BrownfieldOptions): Prom
   if (execute && !head) {
     refuse("brownfield --execute requires a git commit (HEAD)", HINT.gitRepo);
   }
+  const map = await runMap();
   for (const dir of RUN_SUBDIRS) await mkdir(runAbs(root, runId, dir), { recursive: true });
   await ensureGitignore(root);
   const size = await measureRepo(root);
@@ -210,7 +220,7 @@ export async function initRun(store: LegionStore, opts: BrownfieldOptions): Prom
     designReviewRounds: 0,
     assumptionRounds: 0,
     baseBranch: tryGitBranch(root),
-    meta: {},
+    meta: { map: { backend: map.backend, modules: map.modules, path: map.path } },
   });
   return {
     kind: "init",
@@ -223,6 +233,7 @@ export async function initRun(store: LegionStore, opts: BrownfieldOptions): Prom
     preSpawnRef: run.preSpawnRef,
     paths: runArtifactPaths(runId),
     resumePath: runResumePath(runId),
+    map,
     warnings,
     next: nextStepFor(run, { intent: false }, {}, null),
   };
@@ -287,9 +298,13 @@ export async function resumeRun(store: LegionStore, runIdRaw: string, opts: Brow
   return stateRun(store, runId);
 }
 
-export async function brownfieldEntry(store: LegionStore, opts: BrownfieldOptions): Promise<BrownfieldResult> {
+export async function brownfieldEntry(
+  store: LegionStore,
+  opts: BrownfieldOptions,
+  runMap: () => Promise<MapResult>,
+): Promise<BrownfieldResult> {
   if (opts.resume) return resumeRun(store, opts.resume, opts);
-  return initRun(store, opts);
+  return initRun(store, opts, runMap);
 }
 
 export type { BrownfieldEffort };

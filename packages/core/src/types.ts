@@ -1,5 +1,5 @@
 import type { FakeArtifact, FakeHoldWait } from "@9thlevelsoftware/legion-cli-agents";
-import type { MapOptions } from "./map.js";
+import type { MapOptions, MapResult } from "./map.js";
 import type { GardenReport, SearchHit } from "@9thlevelsoftware/legion-cli-wiki";
 import type {
   AdapterId,
@@ -77,7 +77,7 @@ export type BrownfieldOptions = {
   resume?: string;
   context?: string;
   runId?: string;
-  /** Effort 5 pass-through to in-process map `{ lsp: "require" }`. Ignored on 1–4. */
+  /** Init always maps the repo. true = `{ lsp: "require" }` (refuse without a language server); default "auto". */
   lsp?: boolean;
   resolveBinary?: MapOptions["resolveBinary"];
   spawnLsp?: MapOptions["spawnLsp"];
@@ -114,6 +114,8 @@ export type BrownfieldInitResult = {
   preSpawnRef: string;
   paths: BrownfieldArtifactPaths;
   resumePath: string;
+  /** The codebase map every init refreshes (`.legion-cli/map/`). */
+  map: MapResult;
   warnings: string[];
   next: string;
 };

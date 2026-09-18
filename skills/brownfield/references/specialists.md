@@ -36,6 +36,8 @@ intent and first principles, then compare reality against that.
 Read first:
 - Intent brief: <intent_path>  (goal, axioms FP-n, success criteria, scope)
 - Analysis plan: <plan_path>  (your focus bullets are under your role)
+- Codebase map: <map_path> and <map_fingerprints_path>  (modules, exports, imports; built at run
+  start. It is structure, not a verdict: verify anything you rely on against the code)
 <pass 2 only:>
 - Pass-1 outputs: <analysis_dir>/architecture.md <and product-intent.md if present>
   Build on them; challenge them when your evidence disagrees.

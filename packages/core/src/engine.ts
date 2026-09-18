@@ -1935,7 +1935,40 @@ export class LegionEngine {
 
   /** Start a brownfield run (or, with `resume`, report its state). The orchestrating agent does judgment. */
   async brownfield(opts: BrownfieldOptions = {}): Promise<BrownfieldResult> {
-    return this.#mutate(() => brownfieldEntry(this.store, opts));
+    return this.#mutate(() =>
+      brownfieldEntry(this.store, opts, async () => {
+        // Every brownfield run starts from a fresh map, same generator as `legion-cli map`
+        // (no map-skill spawn). `--lsp` requires a language server; default "auto".
+        let generated: Awaited<ReturnType<typeof generateMap>>;
+        try {
+          generated = await generateMap(this.projectRoot, {
+            refresh: true,
+            lsp: opts.lsp ? "require" : "auto",
+            resolveBinary: opts.resolveBinary,
+            spawnLsp: opts.spawnLsp,
+            lspDeadlineMs: opts.lspDeadlineMs,
+          });
+        } catch (err) {
+          if (err instanceof MapError) refuse(err.message, err.nextHint);
+          throw err;
+        }
+        const state = await this.#readState();
+        await this.#audit("map_refresh", state.phase, "user", {
+          backend: generated.backend,
+          modules: generated.fingerprints.modules.length,
+          changedCount: generated.changed.length,
+          rootHash: generated.fingerprints.rootHash,
+        });
+        return {
+          path: MAP_ARCHITECTURE_PATH,
+          fingerprintsPath: MAP_FINGERPRINTS_PATH,
+          backend: generated.backend,
+          modules: generated.fingerprints.modules.length,
+          changed: generated.changed,
+          next: MAP_SHOW_NEXT,
+        };
+      }),
+    );
   }
 
   async brownfieldState(runId: string, pairs: readonly string[] = []): Promise<BrownfieldStateResult> {
