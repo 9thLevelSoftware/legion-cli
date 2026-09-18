@@ -1,5 +1,6 @@
 export {
   EngineLockedError,
+  MinisignError,
   PathEscapeError,
   PersistError,
   PersistValidationError,
@@ -57,6 +58,8 @@ export {
   LOCK_BASENAME,
   MAX_INGEST_FILE_BYTES,
   MAX_INGEST_TREE_BYTES,
+  MAX_ZIPBALL_BYTES,
+  MAX_ZIPBALL_ENTRIES,
   runPagePath,
   runResumePath,
   runStorePath,
@@ -86,6 +89,7 @@ export {
 export type { MarkdownDoc } from "./markdown.js";
 export {
   assertInsideProject,
+  assertResolvedInside,
   canonicalizePath,
   resolveProjectPath,
   toFsPath,
@@ -93,6 +97,28 @@ export {
   toProjectRelativePosix,
   toStorePath,
 } from "./paths.js";
+export {
+  fetchPublicHttpsBinary,
+  fetchPublicHttpsPinned,
+  isPrivateOrLocalHost,
+  resolvePublicAddress,
+  SsrfError,
+} from "./ssrf.js";
+export type { FetchedBinary, FetchPublicHttpsBinaryOpts, FetchPublicHttpsPinnedOpts, SsrfLookup } from "./ssrf.js";
+export {
+  fetchGithubZipball,
+  GITHUB_ZIPBALL_HOSTS,
+  githubZipballUrl,
+  parseGithubRepoSource,
+} from "./github-fetch.js";
+export type { GithubRepoRef } from "./github-fetch.js";
+export { unzipZipball } from "./unzip.js";
+export { hashTreeFiles, hashTreeRecords } from "./hash-tree.js";
+export {
+  NINTHLEVEL_MINISIGN_PUB_PATH,
+  readNinthlevelMinisignPub,
+  verifyMinisign,
+} from "./minisign.js";
 export { hasSecretPattern, redactSecrets } from "./redact.js";
 export { openIndexDb, queryIndex, rebuildIndex, REBUILD_SQL } from "./sqlite.js";
 export { createLegionStore, LegionStore } from "./store.js";

@@ -33,6 +33,7 @@ import {
   hasSecretPattern,
   queryIndex,
   redactSecrets,
+  toFsPath,
   toPosixPath,
   toProjectRelativePosix,
   toStorePath,
@@ -81,6 +82,15 @@ test("Windows backslash ingest paths normalize to POSIX store paths", () => {
   assert.equal(toStorePath("src\\ui\\button.ts"), "src/ui/button.ts");
   assert.equal(toStorePath(".\\src\\ui\\button.ts"), "src/ui/button.ts");
   assert.equal(toPosixPath("src/ui/button.ts"), "src/ui/button.ts");
+});
+
+test("toFsPath refuses nested drive-relative segments", () => {
+  const dest = resolve(tmpdir(), "legion-tofs");
+  assert.throws(() => toFsPath(dest, "nested/D:payload"), PathEscapeError);
+  assert.throws(() => toFsPath(dest, "nested/C:../Windows/win.ini"), PathEscapeError);
+  assert.throws(() => toFsPath(dest, "D:payload"), PathEscapeError);
+  const colonName = toFsPath(dest, "docs/api:v2.md");
+  assert.equal(colonName, resolve(dest, "docs", "api:v2.md"));
 });
 
 test("gitignore template covers index, cache, engine.lock, worktrees, sandbox, chat, serve", () => {

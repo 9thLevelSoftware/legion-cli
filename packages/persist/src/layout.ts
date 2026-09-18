@@ -7,6 +7,8 @@ export const LOCK_BASENAME = "engine.lock";
 export const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 export const MAX_INGEST_FILE_BYTES = 8 * 1024 * 1024;
 export const MAX_INGEST_TREE_BYTES = 64 * 1024 * 1024;
+export const MAX_ZIPBALL_BYTES = 32 * 1024 * 1024;
+export const MAX_ZIPBALL_ENTRIES = 10_000;
 
 export type LegionPaths = {
   root: string;

@@ -19,6 +19,21 @@ export function toStorePath(input: string): string {
   return posix;
 }
 
+/**
+ * Require resolve(root, candidate) stays under root.
+ * Windows `relative()` of a different drive is `D:\…`, not `../`.
+ */
+export function assertResolvedInside(root: string, candidateAbs: string, label = candidateAbs): string {
+  const rootAbs = resolve(root);
+  const candAbs = resolve(candidateAbs);
+  const rel = toPosixPath(relative(rootAbs, candAbs));
+  if (rel === "" || rel === ".") return candAbs;
+  if (rel.startsWith("../") || rel === ".." || /^[A-Za-z]:/.test(rel) || rel.startsWith("/")) {
+    throw new PathEscapeError(label);
+  }
+  return candAbs;
+}
+
 /** Join a store POSIX path onto the project root using OS separators. */
 export function toFsPath(projectRoot: string, storePath: string): string {
   const posix = toStorePath(storePath);
@@ -26,10 +41,12 @@ export function toFsPath(projectRoot: string, storePath: string): string {
     throw new PathEscapeError(storePath);
   }
   const parts = posix.split("/").filter((part) => part !== "");
-  if (parts.some((part) => part === "." || part === "..")) {
+  // `nested/D:file` is not absolute, but Windows resolve() treats `D:` as a drive.
+  // POSIX names like `docs/api:v2.md` are valid; only reject drive-relative segments.
+  if (parts.some((part) => part === "." || part === ".." || /^[A-Za-z]:/.test(part))) {
     throw new PathEscapeError(storePath);
   }
-  return resolve(projectRoot, ...parts);
+  return assertResolvedInside(projectRoot, resolve(projectRoot, ...parts), storePath);
 }
 
 export function resolveProjectPath(projectRoot: string, input: string): string {
