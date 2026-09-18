@@ -91,10 +91,6 @@ async function lstatOrNull(absPath: string) {
 async function ensureRealMapDir(projectRoot: string, mapDir: string): Promise<void> {
   const legionDir = dirname(mapDir);
   await mkdir(legionDir, { recursive: true });
-  const legionStat = await lstatOrNull(legionDir);
-  if (legionStat?.isSymbolicLink()) {
-    refuse("map output escaped the project workspace", MAP_HINT.concretePaths);
-  }
   const mapStat = await lstatOrNull(mapDir);
   if (mapStat?.isSymbolicLink()) {
     await rm(mapDir, { recursive: false, force: true });
