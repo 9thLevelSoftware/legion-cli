@@ -1737,6 +1737,7 @@ export class LegionEngine {
   ): Promise<{ spawned: boolean; runId: string }> {
     let started: StartedSkillSpawn | undefined;
     await this.#withLockOrRefuse(async () => {
+      await refuseIfLiveSkillSpawn(this.projectRoot, "chat");
       let config: LegionConfig;
       try {
         config = await this.#readConfig();

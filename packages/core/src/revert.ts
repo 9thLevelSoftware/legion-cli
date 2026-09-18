@@ -103,6 +103,29 @@ export async function snapshotPaths(projectRoot: string): Promise<Set<string>> {
   return out;
 }
 
+export async function snapshotChatSessions(projectRoot: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const dir = join(projectRoot, ".legion-cli", "chat");
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const posix = `.legion-cli/chat/${entry.name}`;
+    try {
+      const st = await lstat(join(dir, entry.name));
+      if (st.isSymbolicLink()) continue;
+      out.set(posix, await readFile(join(dir, entry.name), "utf8"));
+    } catch {
+      // skip unreadable session files
+    }
+  }
+  return out;
+}
+
 async function walk(root: string, rel: string, out: Set<string>): Promise<void> {
   const abs = rel ? join(root, rel) : root;
   let entries;
@@ -178,6 +201,7 @@ export async function revertExtras(opts: {
   snapshot?: Set<string>;
   gitPolicy?: GitPolicySnapshot;
   dirtyAtStart?: ReadonlySet<string>;
+  chatSessions?: ReadonlyMap<string, string>;
 }): Promise<RevertResult> {
   const extrasReverted: string[] = [];
   const headNow = tryGitHead(opts.projectRoot);
@@ -190,6 +214,13 @@ export async function revertExtras(opts: {
       // New paths vs the pre-spawn filesystem snapshot (gitignored extras).
       // Pre-existing ignored files stay in `opts.snapshot` so they are not extras.
       if (!opts.snapshot.has(posix)) candidates.add(posix);
+    }
+  }
+  if (opts.chatSessions) {
+    const afterChat = await snapshotChatSessions(opts.projectRoot);
+    for (const [posix, body] of afterChat) {
+      const before = opts.chatSessions.get(posix);
+      if (before !== undefined && before !== body) candidates.add(posix);
     }
   }
 
@@ -209,14 +240,23 @@ export async function revertExtras(opts: {
       continue;
     }
     extrasReverted.push(posix);
-    await restoreOne(opts.projectRoot, opts.preSpawnRef, posix);
+    await restoreOne(opts.projectRoot, opts.preSpawnRef, posix, opts.chatSessions?.get(posix));
   }
 
   return { extrasReverted, incident, headMoved, preSpawnRef: opts.preSpawnRef };
 }
 
-async function restoreOne(projectRoot: string, preSpawnRef: string | null, posix: string): Promise<void> {
+async function restoreOne(
+  projectRoot: string,
+  preSpawnRef: string | null,
+  posix: string,
+  chatBody?: string,
+): Promise<void> {
   const abs = toFsPath(projectRoot, posix);
+  if (chatBody !== undefined) {
+    await writeFile(abs, chatBody, "utf8");
+    return;
+  }
   if (preSpawnRef && gitPathExistsAtRef(projectRoot, preSpawnRef, posix)) {
     gitRestoreWorktree(projectRoot, preSpawnRef, posix);
     return;

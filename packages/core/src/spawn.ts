@@ -41,6 +41,7 @@ import {
   revertExtras,
   snapshotDirtyPaths,
   snapshotGitPolicy,
+  snapshotChatSessions,
   snapshotPaths,
   type RevertResult,
 } from "./revert.js";
@@ -167,6 +168,7 @@ type SpawnRevertCtx = {
   snapshot: Awaited<ReturnType<typeof snapshotPaths>> | undefined;
   gitPolicy: Awaited<ReturnType<typeof snapshotGitPolicy>>;
   dirtyAtStart: ReturnType<typeof snapshotDirtyPaths>;
+  chatSessions: Awaited<ReturnType<typeof snapshotChatSessions>>;
 };
 
 export type StartedSkillSpawn =
@@ -372,6 +374,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   const snapshot = await snapshotPaths(opts.projectRoot);
   const dirtyAtStart = snapshotDirtyPaths(opts.projectRoot, preSpawnRef);
   const gitPolicy = await snapshotGitPolicy(opts.projectRoot);
+  const chatSessions = await snapshotChatSessions(opts.projectRoot);
   const resumeDir = join(opts.projectRoot, ".legion-cli", "cache", "runs", runId);
   await mkdir(resumeDir, { recursive: true });
 
@@ -426,6 +429,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       snapshot,
       gitPolicy,
       dirtyAtStart,
+      chatSessions,
     },
     resolution,
     binary: tmpl.binary,

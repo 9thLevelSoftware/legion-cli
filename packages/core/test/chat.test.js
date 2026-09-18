@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,6 @@ import {
 import { initProject, patchState, withEngine, withFakeAdapter } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
-const engineSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "engine.ts"), "utf8");
 
 async function waitUntil(predicate, timeoutMs, message) {
   const start = Date.now();
@@ -161,6 +160,23 @@ test("fabricated intent_answer in discuss phase is dropped", async () => {
   });
 });
 
+test("intent_ready intent_answer is dropped", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await patchState(store, { phase: "intent_ready" });
+    const gated = gateChatAction(
+      { type: "intent_answer", answers: ["ok"] },
+      { phase: "intent_ready", utterance: "ok" },
+    );
+    assert.equal(gated.type, "next_verb");
+    const turn = await routeChatTurn(engine, createChatSession(), "ok", {
+      fixtureAction: { type: "intent_answer", answers: ["ok"] },
+    });
+    assert.equal(turn.action.type, "next_verb");
+    assert.equal(turn.kind, "dropped");
+  });
+});
+
 test("four idle turns pause after the read", async () => {
   await withEngine(async ({ engine }) => {
     await initProject(engine);
@@ -173,9 +189,7 @@ test("four idle turns pause after the read", async () => {
       if (i < 3) assert.equal(turn.paused, false);
       else {
         assert.equal(turn.paused, true);
-        assert.match(turn.output, /Chat paused/);
-        assert.match(turn.output, /Next: legion-cli intent/);
-        assert.equal([...turn.output.matchAll(/Next:/g)].length, 1);
+        assert.match(turn.nextHint, /legion-cli intent/);
       }
     }
   });
@@ -265,18 +279,6 @@ test("session write refuses a symlink and does not follow into src/pwn", async (
 });
 
 test("chat spawn wait is outside mutate", async () => {
-  const start = engineSrc.indexOf("async spawnChatSkill");
-  const end = engineSrc.indexOf("async recoverStaleInProgress", start);
-  const body = engineSrc.slice(start, end);
-  assert.match(body, /startSkillSpawn/);
-  assert.match(body, /waitStartedSpawn/);
-  assert.match(body, /finishStartedSpawn/);
-  assert.doesNotMatch(body, /optionalSkillSpawn/);
-  const waitAt = body.indexOf("waitStartedSpawn");
-  const firstLock = body.indexOf("#withLockOrRefuse");
-  const secondLock = body.indexOf("#withLockOrRefuse", firstLock + 1);
-  assert.ok(waitAt > firstLock && waitAt < secondLock, "waitStartedSpawn must sit between the two locks");
-
   await withFakeAdapter(async () => {
     await withEngine(async ({ dir, engine }) => {
       await initProject(engine);

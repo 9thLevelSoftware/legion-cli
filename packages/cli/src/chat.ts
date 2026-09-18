@@ -13,7 +13,7 @@ import type { AdapterId, ChatAction, ChatSessionFile, ControlMode } from "@9thle
 import { parseAdapterFlag } from "./adapter-route.js";
 import { runBrief } from "./brief.js";
 import type { CliOpts } from "./io.js";
-import { writeErr, writeOut } from "./io.js";
+import { writeErr, writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 import { closePrompt, isYes, readLine } from "./prompt.js";
 import { runSearch } from "./search.js";
@@ -64,36 +64,40 @@ async function printRead(
   engine: ReturnType<typeof createLegionEngine>,
   action: ChatAction,
   turn: ChatTurnResult,
-): Promise<void> {
+): Promise<number> {
   if (turn.local === "brief") {
     await runBrief(opts);
-    return;
+    return 0;
   }
   if (turn.local === "help") {
-    writeOut(turn.output);
-    return;
+    if (opts.json) writeJson({ kind: "help", output: turn.output, next: turn.nextHint });
+    else writeOut(turn.output);
+    return 0;
   }
   if (action.type === "status") {
-    await runStatus(opts);
-    return;
+    return runStatus(opts);
   }
   if (action.type === "search") {
     await runSearch(opts, action.q, {});
-    return;
+    return 0;
   }
   if (turn.kind === "dropped") {
-    const line =
-      turn.output.split("\n").find((row) => row.startsWith("Dropped.")) ??
-      turn.output.split("\n")[0] ??
-      turn.output;
-    writeOut(line);
-    return;
+    if (opts.json) writeJson({ kind: "dropped", next: turn.nextHint, paused: turn.paused });
+    else writeOut(`Dropped. Next: ${turn.nextHint}`);
+    return 0;
   }
   if (action.type === "next_verb") {
-    writeOut(await formatNextVerb(engine));
-    return;
+    if (opts.json) {
+      const next = await formatNextVerb(engine);
+      writeJson({ kind: "next", next: next.replace(/^Next: /, ""), paused: turn.paused });
+    } else writeOut(await formatNextVerb(engine));
+    return 0;
   }
-  if (turn.output) writeOut(turn.output);
+  if (turn.output) {
+    if (opts.json) writeJson({ kind: turn.kind, output: turn.output, next: turn.nextHint, paused: turn.paused });
+    else writeOut(turn.output);
+  }
+  return 0;
 }
 
 async function handleTurn(
@@ -112,27 +116,40 @@ async function handleTurn(
     if (opts.yes && turn.action.type === "discuss_decide") {
       refuse("discuss --yes cannot skip product decisions", HINT.discuss);
     }
-    writeOut(turn.proposal ?? turn.output);
+    if (opts.json) {
+      writeJson({ kind: "proposal", proposal: turn.proposal ?? turn.output, next: turn.nextHint });
+    } else writeOut(turn.proposal ?? turn.output);
     if (flags.once || !isTty()) {
-      writeErr(`Next: ${turn.nextHint}`);
+      if (!opts.json) writeErr(`Next: ${turn.nextHint}`);
       return { code: 1, session: turn.session, stop: true };
     }
     const answer = await readLine("> ");
     if (!isYes(answer)) {
-      writeOut("Not applied.");
+      if (opts.json) writeJson({ applied: false });
+      else writeOut("Not applied.");
       return { code: 0, session: turn.session, stop: false };
     }
     const applied = await applyChatAction(engine, turn.action, { confirmed: true, utterance });
-    if (applied.output) writeOut(applied.output);
+    if (applied.output) {
+      if (opts.json) writeJson({ applied: true, output: applied.output });
+      else writeOut(applied.output);
+    }
     return { code: 0, session: turn.session, stop: false };
   }
 
-  await printRead(opts, engine, turn.action, turn);
+  const code = await printRead(opts, engine, turn.action, turn);
   if (turn.paused) {
-    writeOut("Chat paused.");
-    return { code: 0, session: turn.session, stop: flags.once };
+    if (opts.json) {
+      writeJson({ paused: true, next: turn.nextHint });
+    } else {
+      writeOut("Chat paused.");
+      if (turn.action.type === "search" || turn.kind === "dropped") {
+        writeOut(await formatNextVerb(engine));
+      }
+    }
+    return { code, session: turn.session, stop: true };
   }
-  return { code: 0, session: turn.session, stop: flags.once };
+  return { code, session: turn.session, stop: flags.once };
 }
 
 export async function runChat(opts: CliOpts, flags: ChatFlags): Promise<number> {

@@ -19,6 +19,7 @@ import {
 import { renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { HINT, refuse } from "./errors.js";
 import type { LegionEngine } from "./engine.js";
+import { isSliceTerminal } from "./slice.js";
 import type { DecisionInput, NewTicket } from "./types.js";
 
 const CHAT_IDLE_LIMIT = 4;
@@ -107,7 +108,32 @@ function nextVerbForPhase(phase: Phase): string {
   }
 }
 
-function nextHintForAction(action: ChatAction, phase: Phase): string {
+async function nextVerbForState(engine: LegionEngine, phase: Phase): Promise<string> {
+  if (phase === "uninitialized") return "legion-cli init";
+  let mode: "greenfield" | "brownfield" | undefined;
+  let controlMode: string | undefined;
+  try {
+    mode = (await engine.store.readProject()).data.mode;
+  } catch {
+    mode = undefined;
+  }
+  try {
+    controlMode = (await engine.store.readConfig()).control_mode;
+  } catch {
+    controlMode = undefined;
+  }
+  const slice = await engine.listSliceTasks();
+  if (phase === "initialized" && mode === "brownfield") return "legion-cli brownfield";
+  if (phase === "executing" && isSliceTerminal(slice)) {
+    const state = await engine.getState();
+    return state.lastReview === "PASS" ? "legion-cli qa" : "legion-cli review";
+  }
+  const wouldExecute = phase === "plan_ready" || (phase === "executing" && !isSliceTerminal(slice));
+  if (controlMode === "advisory" && wouldExecute) return "legion-cli control-mode guarded";
+  return `legion-cli ${nextVerbForPhase(phase)}`;
+}
+
+async function nextHintForAction(engine: LegionEngine, action: ChatAction, phase: Phase): Promise<string> {
   switch (action.type) {
     case "intent_answer":
       return HINT.intent;
@@ -117,12 +143,8 @@ function nextHintForAction(action: ChatAction, phase: Phase): string {
       return HINT.assumeAnswer;
     case "ticket":
       return HINT.ticket("TSK-x");
-    case "status":
-    case "search":
-    case "next_verb":
-      return `legion-cli ${nextVerbForPhase(phase)}`;
     default:
-      return `legion-cli ${nextVerbForPhase(phase)}`;
+      return nextVerbForState(engine, phase);
   }
 }
 
@@ -230,7 +252,7 @@ export function gateChatAction(
   ctx: { phase: Phase; utterance?: string },
 ): ChatAction {
   if (action.type !== "intent_answer") return action;
-  if (ctx.phase !== "intent_draft" && ctx.phase !== "intent_ready") return { type: "next_verb" };
+  if (ctx.phase !== "intent_draft") return { type: "next_verb" };
   if (ctx.utterance !== undefined && !answersAreParseOf(action.answers, ctx.utterance)) {
     return { type: "next_verb" };
   }
@@ -424,7 +446,7 @@ export async function buildChatPrompt(
     "Do not emit execute, ship, plan, spec_approve, control_mode, or wiki_trust.",
     "Do not include wiki page bodies. Titles and paths only (see SessionBrief wiki list).",
     `Phase: ${state.phase}`,
-    `Next verb: legion-cli ${nextVerbForPhase(state.phase)}`,
+    `Next verb: ${await nextVerbForState(engine, state.phase)}`,
     "",
     intent.nextQuestions.length > 0
       ? `Intent questions:\n${intent.nextQuestions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`
@@ -528,7 +550,9 @@ export async function routeChatTurn(
     : isChatProposalAction(action)
       ? "proposal"
       : "read";
-  const nextHint = local ? `legion-cli ${nextVerbForPhase(state.phase)}` : nextHintForAction(action, state.phase);
+  const nextHint = local
+    ? await nextVerbForState(engine, state.phase)
+    : await nextHintForAction(engine, action, state.phase);
   const proposal = kind === "proposal" && isChatProposalAction(action) ? formatChatProposal(action) : null;
   const output =
     kind === "proposal"
@@ -563,7 +587,7 @@ export async function routeChatTurn(
     session: nextSession,
     action,
     kind,
-    output: paused ? [output, `Chat paused. Next: ${nextHint}`].filter((line) => line.length > 0).join("\n") : output,
+    output,
     proposal,
     nextHint,
     paused,
@@ -583,7 +607,7 @@ export async function applyChatAction(
   }
   const gated = gateChatAction(action, { phase: state.phase, utterance: opts?.utterance });
   if (gated.type !== action.type) {
-    return { applied: false, output: `Next: ${nextHintForAction(gated, state.phase)}` };
+    return { applied: false, output: `Next: ${await nextHintForAction(engine, gated, state.phase)}` };
   }
   if (isChatProposalAction(action) && !opts?.confirmed) {
     return { applied: false, output: formatChatProposal(action) };
