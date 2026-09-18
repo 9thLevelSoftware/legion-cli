@@ -1047,6 +1047,9 @@ test("JSON Schema overlays reject .git paths, no-browser pass, and generic witho
     "https://:",
     "https://[]",
     "https://example.com:99999/v1",
+    "https://256.256.256.256",
+    "https://1.2.3.999/path",
+    "https://[1:::]",
   ]) {
     assert.equal(
       validateConfig({
@@ -1192,6 +1195,9 @@ test("ADAPTER_IDS includes http and spawn extras stay strict", () => {
     "https://:",
     "https://[]",
     "https://example.com:99999/v1",
+    "https://256.256.256.256",
+    "https://1.2.3.999/path",
+    "https://[1:::]",
   ]) {
     assert.equal(
       LegionConfigSchema.safeParse({
