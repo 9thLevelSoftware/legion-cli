@@ -22,6 +22,8 @@ export type SandboxPolicy = {
   allowedWrites: readonly string[];
   readSet: readonly string[];
   adapterBinary?: string;
+  env?: NodeJS.ProcessEnv;
+  backend?: SandboxBackend | "auto";
 };
 
 export interface SandboxHandle {
@@ -277,8 +279,9 @@ function isUnsafeDirname(dir: string, projectRoot: string): boolean {
   if (toPosixPath(real) === "/") return true;
   if (homeRealpaths().some((home) => samePath(real, home))) return true;
   if (samePath(real, projectRoot)) return true;
-  const projectReal = tryRealpath(projectRoot);
-  if (projectReal && samePath(real, projectReal)) return true;
+  const projectReal = tryRealpath(projectRoot) ?? resolve(projectRoot);
+  const rel = toPosixPath(relative(projectReal, real));
+  if (rel !== ".." && !rel.startsWith("../") && !/^[A-Za-z]:/.test(rel) && !rel.startsWith("/")) return true;
   return false;
 }
 
@@ -294,6 +297,7 @@ function realpathsToBind(adapterBinary?: string): { paths: string[]; ok: boolean
   const real = resolved ? tryRealpath(resolved) : undefined;
   if (!real) return { paths, ok: false };
   if (!paths.some((entry) => samePath(entry, real))) paths.push(real);
+  if (resolved && !paths.some((entry) => samePath(entry, resolved))) paths.push(resolved);
   return { paths, ok: true };
 }
 
@@ -333,13 +337,14 @@ function bwrapArgvPrefix(opts: { jailRoot: string; projectRoot: string; bindPath
 
 function seatbeltProfile(jailRoot: string): string {
   const sub = JSON.stringify(jailRoot);
+  const reads = [sub, ...SYSTEM_RO_BINDS.filter((path) => existsSync(path)).map((path) => JSON.stringify(path))];
   return [
     "(version 1)",
     "(deny default)",
     "(allow process*)",
     "(allow sysctl-read)",
     "(allow network*)",
-    "(allow file-read*)",
+    `(allow file-read* ${reads.map((path) => `(subpath ${path})`).join(" ")})`,
     `(allow file-write* (subpath ${sub}))`,
     `(allow file-ioctl (subpath ${sub}))`,
     "",
@@ -354,7 +359,9 @@ async function copyTree(
   seenDest?: Set<string>,
   srcStack?: Set<string>,
 ): Promise<void> {
-  if (depth > MAX_COPY_DEPTH) return;
+  if (depth > MAX_COPY_DEPTH) {
+    throw new SandboxError(`sandbox copy exceeded ${MAX_COPY_DEPTH} directory levels`);
+  }
   const visitedDest = seenDest ?? new Set<string>();
   const walkSrc = srcStack ?? new Set<string>();
   let st;
@@ -385,6 +392,9 @@ async function copyTree(
       const entries = await readdir(src, { withFileTypes: true });
       for (const entry of entries) {
         if (isBlockedName(entry.name)) continue;
+        if (entry.name === "sandbox" && toPosixPath(relative(projectRoot, src)).replace(/\\/g, "/") === ".legion-cli") {
+          continue;
+        }
         await copyTree(
           join(src, entry.name),
           join(dest, entry.name),
@@ -430,7 +440,7 @@ async function copySparsePath(
   await copyTree(src, dest, projectRoot);
 }
 
-async function listJailFiles(jailRoot: string): Promise<string[]> {
+async function listJailFiles(jailRoot: string, allowedWrites: readonly string[] = []): Promise<string[]> {
   const out: string[] = [];
   const stack = [jailRoot];
   while (stack.length > 0) {
@@ -446,7 +456,7 @@ async function listJailFiles(jailRoot: string): Promise<string[]> {
     for (const entry of entries) {
       const abs = join(dir, entry.name);
       const rel = toPosixPath(relative(jailRoot, abs));
-      if (rel === "" || isJailMeta(rel)) continue;
+      if (rel === "" || (isJailMeta(rel) && !matchesAllowed(rel, allowedWrites))) continue;
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
         stack.push(abs);
         continue;
@@ -525,7 +535,7 @@ async function copyOutWrites(
 ): Promise<{ copied: string[]; dropped: string[] }> {
   const copied: string[] = [];
   const dropped: string[] = [];
-  const files = (await listJailFiles(jailRoot)).sort();
+  const files = (await listJailFiles(jailRoot, allowedWrites)).sort();
   for (const rel of files) {
     let src: string;
     try {
@@ -542,6 +552,7 @@ async function copyOutWrites(
       continue;
     }
     if (
+      !st.isFile() ||
       st.isSymbolicLink() ||
       isBlockedRel(rel) ||
       !isConcretePosixRepoRelativePath(rel) ||
@@ -557,6 +568,25 @@ async function copyOutWrites(
     }
     copied.push(rel);
   }
+  const jailSet = new Set(files);
+  for (const allowed of allowedWrites) {
+    if (jailSet.has(allowed) || isBlockedRel(allowed)) continue;
+    let dest: string;
+    try {
+      dest = toFsPath(projectRoot, allowed);
+    } catch {
+      continue;
+    }
+    try {
+      const destSt = await lstat(dest);
+      if (!destSt.isFile() || destSt.isSymbolicLink()) continue;
+      if (await destIsUnsafe(projectRoot, dest)) continue;
+      await rm(dest, { force: true });
+      copied.push(allowed);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+  }
   return { copied, dropped };
 }
 
@@ -567,6 +597,10 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
   const readSet = unique(policy.readSet.map(assertPolicyPath));
 
   const jailRoot = toFsPath(projectRoot, `.legion-cli/sandbox/${runId}`);
+  const sandboxDir = legionPaths(projectRoot).sandboxDir;
+  if (await pathHasSymlinkAncestor(sandboxDir, projectRoot) || await pathHasSymlinkAncestor(jailRoot, projectRoot)) {
+    throw new SandboxError("sandbox directory is a symlink");
+  }
   await rm(jailRoot, { recursive: true, force: true });
   await mkdir(jailRoot, { recursive: true });
   await mkdir(join(jailRoot, "home"), { recursive: true });
@@ -588,20 +622,27 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
     }
 
     const detected = detectSandbox();
+    const requested = policy.backend ?? "auto";
+    const selected: SandboxBackend =
+      requested === "auto" ? detected.backend : requested;
+    if (requested !== "auto" && detected.backend !== requested && requested !== "copy") {
+      if (requested === "bwrap" && !findRunnableBwrap()) throw new SandboxError(HARDENED_REQUIRED);
+      if (requested === "seatbelt" && !findOnPath("sandbox-exec", true)) throw new SandboxError(HARDENED_REQUIRED);
+    }
     const binds = realpathsToBind(policy.adapterBinary);
-    const env = buildSandboxEnv(jailRoot);
+    const env = buildSandboxEnv(jailRoot, policy.env ?? process.env);
     let wrapper: { bin: string; argvPrefix: string[] } | undefined;
     let backend: SandboxBackend = "copy";
     let hardened = false;
 
-    if (detected.backend === "copy") {
+    if (selected === "copy") {
       backend = "copy";
       hardened = false;
     } else {
-      if (!detected.hardened || !binds.ok) {
+      if (!binds.ok) {
         throw new SandboxError(HARDENED_REQUIRED);
       }
-      if (detected.backend === "bwrap") {
+      if (selected === "bwrap") {
         const bin = findRunnableBwrap();
         if (!bin) throw new SandboxError(HARDENED_REQUIRED);
         wrapper = { bin, argvPrefix: bwrapArgvPrefix({ jailRoot, projectRoot, bindPaths: binds.paths }) };
@@ -610,11 +651,21 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
         if (!bin) throw new SandboxError(HARDENED_REQUIRED);
         const profilePath = join(legionPaths(projectRoot).sandboxDir, `${runId}.sb`);
         await mkdir(dirname(profilePath), { recursive: true });
-        await writeFile(profilePath, seatbeltProfile(jailRoot), "utf8");
+        try {
+          const st = await lstat(profilePath);
+          if (st.isSymbolicLink() || !st.isFile()) {
+            throw new SandboxError("sandbox profile path is unsafe");
+          }
+          await rm(profilePath);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT" && !(err instanceof SandboxError)) throw err;
+          if (err instanceof SandboxError) throw err;
+        }
+        await writeFile(profilePath, seatbeltProfile(jailRoot), { encoding: "utf8", flag: "wx" });
         extraFiles.push(profilePath);
         wrapper = { bin, argvPrefix: ["-f", profilePath, "--"] };
       }
-      backend = detected.backend;
+      backend = selected;
       hardened = true;
     }
 
