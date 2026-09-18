@@ -365,7 +365,7 @@ test("HOME in spawn env is under .legion-cli/sandbox/", async () => {
     const handle = await materializeJail(policy(dir));
     try {
       const env = handle.spawnOpts().env;
-      assert.equal(env.HOME, join(handle.jailRoot, "home"));
+      assert.equal(env.HOME, join(handle.jailRoot, ".legion-cli", "sandbox-home"));
       assert.equal(handle.spawnOpts().cwd, handle.jailRoot);
       assert.equal(handle.jailRoot, join(dir, ".legion-cli", "sandbox", "run-1"));
     } finally {
@@ -452,8 +452,8 @@ test("sandbox env allowlist is exact jail paths; extras and SSH_AUTH_SOCK absent
     try {
       handle = await materializeJail(policy(dir, { credentialKeys: ["OPENAI_API_KEY"] }));
       const env = handle.spawnOpts().env;
-      const home = join(handle.jailRoot, "home");
-      const tmp = join(handle.jailRoot, "tmp");
+      const home = join(handle.jailRoot, ".legion-cli", "sandbox-home");
+      const tmp = join(handle.jailRoot, ".legion-cli", "sandbox-tmp");
       assert.equal(env.HOME, home);
       assert.equal(env.USERPROFILE, home);
       assert.equal(env.APPDATA, home);
@@ -706,7 +706,7 @@ test("bwrap wrapper omits unshare-net, binds hosts/nsswitch/passwd/group, sets H
       const homeIdx = prefix.indexOf("--setenv");
       assert.ok(homeIdx >= 0);
       assert.equal(prefix[homeIdx + 1], "HOME");
-      assert.equal(prefix[homeIdx + 2], join(handle.jailRoot, "home"));
+      assert.equal(prefix[homeIdx + 2], join(handle.jailRoot, ".legion-cli", "sandbox-home"));
       assert.equal(prefix.at(-1), "--");
       assert.ok(opts.wrapper);
     } finally {
@@ -881,4 +881,93 @@ test("materializeJail refuses sandbox junction write-through", async () => {
       await rm(outside, { recursive: true, force: true });
     }
   });
+});
+
+test("copy-out skips unchanged allowed files", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const handle = await materializeJail(policy(dir, { backend: "copy" }));
+    try {
+      await writeFile(join(dir, "src", "main.ts"), "operator edit\n", "utf8");
+      const result = await handle.copyOut();
+      assert.equal(result.copied.includes("src/main.ts"), false);
+      assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "operator edit\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("copy-out preserves repo home/ and tmp/ writes", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await mkdir(join(dir, "home"), { recursive: true });
+    await writeFile(join(dir, "home", "index.html"), "old\n", "utf8");
+    const handle = await materializeJail(
+      policy(dir, { allowedWrites: ["home/index.html", "tmp/result.json"], readSet: [] }),
+    );
+    try {
+      await mkdir(join(handle.jailRoot, "home"), { recursive: true });
+      await mkdir(join(handle.jailRoot, "tmp"), { recursive: true });
+      await writeFile(join(handle.jailRoot, "home", "index.html"), "new-home\n", "utf8");
+      await writeFile(join(handle.jailRoot, "tmp", "result.json"), "{\"ok\":true}\n", "utf8");
+      const result = await handle.copyOut();
+      assert.ok(result.copied.includes("home/index.html"));
+      assert.ok(result.copied.includes("tmp/result.json"));
+      assert.equal(await readFile(join(dir, "home", "index.html"), "utf8"), "new-home\n");
+      assert.equal(await readFile(join(dir, "tmp", "result.json"), "utf8"), "{\"ok\":true}\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("copy-out drops file-to-directory replacements instead of aborting", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const handle = await materializeJail(policy(dir, { allowedWrites: ["src/main.ts"] }));
+    try {
+      await rm(join(handle.jailRoot, "src", "main.ts"), { force: true });
+      await mkdir(join(handle.jailRoot, "src", "main.ts"), { recursive: true });
+      await writeFile(join(handle.jailRoot, "src", "main.ts", "generated"), "nope\n", "utf8");
+      const result = await handle.copyOut();
+      assert.ok(result.dropped.includes("src/main.ts/generated"));
+      assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "export const main = 1;\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("copy-out matches glob SkillContract write paths", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await mkdir(join(dir, ".legion-cli", "specs", "spec-a"), { recursive: true });
+    await writeFile(join(dir, ".legion-cli", "specs", "spec-a", "prd.md"), "old\n", "utf8");
+    const handle = await materializeJail(
+      policy(dir, {
+        allowedWrites: [".legion-cli/specs/*/prd.md"],
+        readSet: [".legion-cli/specs/spec-a/prd.md"],
+      }),
+    );
+    try {
+      await writeFile(join(handle.jailRoot, ".legion-cli", "specs", "spec-a", "prd.md"), "new-prd\n", "utf8");
+      const result = await handle.copyOut();
+      assert.ok(result.copied.includes(".legion-cli/specs/spec-a/prd.md"));
+      assert.equal(await readFile(join(dir, ".legion-cli", "specs", "spec-a", "prd.md"), "utf8"), "new-prd\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("assertExecuteSandbox fails when config pins copy with requireHardened", () => {
+  assert.throws(
+    () => assertExecuteSandbox(makeConfig({ backend: "copy", requireHardened: true, allowCopyJail: false }), {}),
+    (err) => {
+      assert.equal(err.name, "SandboxError");
+      assert.match(err.message, /hardened sandbox required/);
+      return true;
+    },
+  );
 });

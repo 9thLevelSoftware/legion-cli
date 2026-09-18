@@ -14,8 +14,8 @@ export async function runFix(
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
   try {
-    await slurpStdin();
     if (flags.allowNoSandbox) {
+      await slurpStdin();
       await confirmAllowNoSandbox("fix");
     }
   const task = await engine.fix(bug);

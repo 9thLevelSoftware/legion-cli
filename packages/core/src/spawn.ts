@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { glob, mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   AgentError,
@@ -28,7 +28,9 @@ import {
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
 import { isPidAlive, type LegionReader } from "@9thlevelsoftware/legion-cli-persist";
 import {
+  assertExecuteSandbox,
   materializeJail,
+  SandboxError,
   type SandboxHandle,
 } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
@@ -218,6 +220,14 @@ const CONFIG_READ_SET = [
   "package-lock.json",
   "tsconfig.json",
   "jsconfig.json",
+  "src",
+  "packages",
+  "lib",
+  "app",
+  "test",
+  "tests",
+  "skills",
+  "scripts",
 ] as const;
 
 function sandboxReadSet(opts: {
@@ -235,22 +245,33 @@ function sandboxReadSet(opts: {
   return out;
 }
 
-function sandboxAllowedWrites(
-  runId: string,
-  skillId: SkillId,
-  specId?: string,
-  contract?: FileContract,
-): string[] {
+async function sandboxAllowedWrites(opts: {
+  projectRoot: string;
+  runId: string;
+  skillId: SkillId;
+  specId?: string;
+  contract?: FileContract;
+}): Promise<string[]> {
   const out: string[] = [];
-  for (const root of SKILL_CONTRACTS[skillId]) {
-    const concrete = root
-      .replaceAll("<id>", runId)
-      .replaceAll("<activeSpecId>", specId ?? "active")
-      .replace(/\/\*\*$/, "")
-      .replace(/\/\*$/, "");
-    if (isConcretePosixRepoRelativePath(concrete)) out.push(concrete);
+  for (const root of SKILL_CONTRACTS[opts.skillId]) {
+    const pattern = root
+      .replaceAll("<id>", opts.runId)
+      .replaceAll("<activeSpecId>", opts.specId ?? "active");
+    const trimmed = pattern.replace(/\/\*\*$/, "").replace(/\/\*$/, "");
+    if (isConcretePosixRepoRelativePath(trimmed)) out.push(trimmed);
+    else if (pattern.includes("*")) {
+      out.push(pattern);
+      try {
+        for await (const hit of glob(pattern, { cwd: opts.projectRoot })) {
+          const posix = String(hit).replaceAll("\\", "/");
+          if (isConcretePosixRepoRelativePath(posix)) out.push(posix);
+        }
+      } catch {
+        // glob optional; copy-out still matches the pattern
+      }
+    }
   }
-  if (contract) out.push(...contract.filesAllowed, ...contract.expectedArtifacts);
+  if (opts.contract) out.push(...opts.contract.filesAllowed, ...opts.contract.expectedArtifacts);
   return out;
 }
 
@@ -480,11 +501,23 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   let sandbox: SandboxHandle | undefined;
   const jailed = opts.skillId === "execute" || opts.config.sandbox.skills.includes(opts.skillId);
   if (jailed) {
+    try {
+      assertExecuteSandbox(opts.config, { allowNoSandbox: opts.allowNoSandbox });
+    } catch (err) {
+      if (err instanceof SandboxError) refuse(err.message, HINT.allowNoSandbox);
+      throw err;
+    }
     const filtered = filterSpawnEnv(process.env, adapter.id, adapter.binary);
     sandbox = await materializeJail({
       projectRoot: opts.projectRoot,
       runId,
-      allowedWrites: sandboxAllowedWrites(runId, opts.skillId, opts.specId, opts.fileContract),
+      allowedWrites: await sandboxAllowedWrites({
+        projectRoot: opts.projectRoot,
+        runId,
+        skillId: opts.skillId,
+        specId: opts.specId,
+        contract: opts.fileContract,
+      }),
       readSet: sandboxReadSet({
         projectRoot: opts.projectRoot,
         runId,
@@ -494,7 +527,6 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       adapterBinary: tmpl.binary.startsWith("(") ? undefined : tmpl.binary,
       backend: opts.config.sandbox.backend,
       allowDegradedCopy:
-        opts.skillId !== "execute" ||
         Boolean(opts.allowNoSandbox) ||
         opts.config.sandbox.allowCopyJail ||
         !opts.config.sandbox.requireHardened,

@@ -15,7 +15,7 @@ import {
   listResolvedSkillCatalog,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
-import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
+import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
   readAuditEvents,
   summarizeAuditMetrics,
@@ -438,14 +438,27 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   }
 
   const detectedSandbox = detectSandbox();
-  checks.push({
-    ok: true,
-    label: "sandbox",
-    detail: `${detectedSandbox.backend}, hardened=${detectedSandbox.hardened}`,
-  });
-  if (config?.sandbox.requireHardened && !detectedSandbox.hardened && !config.sandbox.allowCopyJail) {
+  let sandboxOk = true;
+  let sandboxDetail = `${detectedSandbox.backend}, hardened=${detectedSandbox.hardened}`;
+  if (config) {
+    try {
+      assertExecuteSandbox(config, {});
+    } catch (err) {
+      sandboxOk = false;
+      sandboxDetail = err instanceof Error ? err.message : String(err);
+      warnings.push(
+        `sandbox config cannot satisfy requireHardened (${config.sandbox.backend}); guarded execute needs --allow-no-sandbox or sandbox.allowCopyJail`,
+      );
+    }
+  } else if (detectedSandbox.backend === "copy") {
+    sandboxOk = false;
     warnings.push("sandbox is not hardened; guarded execute needs --allow-no-sandbox or sandbox.allowCopyJail");
   }
+  checks.push({
+    ok: sandboxOk,
+    label: "sandbox",
+    detail: sandboxDetail,
+  });
 
   const skillsDir = findSkillsDir();
   const catalogResult = await listResolvedSkillCatalog({

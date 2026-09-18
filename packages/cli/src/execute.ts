@@ -36,8 +36,8 @@ export async function runExecute(
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
   try {
-    await slurpStdin();
     if (flags.allowNoSandbox) {
+      await slurpStdin();
       await confirmAllowNoSandbox("execute");
     }
   const result = await engine.execute(flags.id ?? "auto", {
