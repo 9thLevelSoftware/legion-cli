@@ -119,6 +119,8 @@ async function inspectLock(lockPath: string, deep: boolean): Promise<Inspection>
 
 /** A steal guard older than this was left by a contender that crashed mid-steal. */
 const STEAL_GUARD_STALE_MS = 10_000;
+/** A guard mtime further in the future than this is clock skew, not a live stealer. */
+const STEAL_GUARD_FUTURE_SLACK_MS = 1_000;
 
 /**
  * Remove a stale lock only while holding `<lock>.steal` (created with O_EXCL), and only if the
@@ -127,7 +129,12 @@ const STEAL_GUARD_STALE_MS = 10_000;
  * stale file later finds different content and leaves the new holder's lock alone (no
  * read-then-unlink race between two stealers).
  */
-async function removeIfUnchanged(lockPath: string, raw: string): Promise<void> {
+/**
+ * Returns true when the stale lock is gone (removed by us, or already), so the caller should
+ * retry at once. False means nothing was removed (another stealer holds the guard, or the lock
+ * changed): the caller must wait and honour its timeout, never spin.
+ */
+async function removeIfUnchanged(lockPath: string, raw: string): Promise<boolean> {
   const guardPath = `${lockPath}.steal`;
   let guard: Awaited<ReturnType<typeof open>>;
   try {
@@ -135,18 +142,22 @@ async function removeIfUnchanged(lockPath: string, raw: string): Promise<void> {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
       try {
-        if (Date.now() - (await stat(guardPath)).mtimeMs > STEAL_GUARD_STALE_MS) await unlinkIfExists(guardPath);
+        const age = Date.now() - (await stat(guardPath)).mtimeMs;
+        // Older than 10 s, or dated in the future (clock skew): left by a crashed stealer.
+        if (age > STEAL_GUARD_STALE_MS || age < -STEAL_GUARD_FUTURE_SLACK_MS) await unlinkIfExists(guardPath);
       } catch {
-        // gone already
+        // gone already, or cannot be removed: the caller waits and times out
       }
     }
-    return; // another contender is stealing: re-inspect on the next round
+    return false; // another contender is stealing: wait, then re-inspect
   }
   try {
     const still = await readFile(lockPath, "utf8");
-    if (still === raw) await unlinkIfExists(lockPath);
-  } catch {
-    // gone already or busy: re-inspect on the next round
+    if (still !== raw) return false;
+    await unlinkIfExists(lockPath);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT";
   } finally {
     await guard.close().catch(() => undefined);
     await unlinkIfExists(guardPath).catch(() => undefined);
@@ -154,6 +165,13 @@ async function removeIfUnchanged(lockPath: string, raw: string): Promise<void> {
 }
 
 function lockedMessage(lockPath: string, inspection: Inspection | undefined): string | undefined {
+  if (inspection?.kind === "steal") {
+    return (
+      `${lockPath} is stale but ${lockPath}.steal is held (another legion-cli clearing it, or one that ` +
+      `crashed doing so; it is cleared after ${STEAL_GUARD_STALE_MS / 1000} s). If no legion-cli is ` +
+      `running, delete ${lockPath}.steal and re-run.`
+    );
+  }
   if (inspection?.kind === "wait" && inspection.unparseable) {
     return (
       `another legion-cli is running, or ${lockPath} is empty or unreadable (a crash while taking it?). ` +
@@ -237,10 +255,7 @@ export async function acquireEngineLock(
       if (code !== "EEXIST") throw err;
       const quick = await inspectLock(lockPath, false);
       if (quick.kind === "gone") continue;
-      if (quick.kind === "steal") {
-        await removeIfUnchanged(lockPath, quick.raw);
-        continue;
-      }
+      if (quick.kind === "steal" && (await removeIfUnchanged(lockPath, quick.raw))) continue;
       if (Date.now() - started >= timeoutMs) {
         // Contention path only: the start-time lookup is slow on Windows (PowerShell).
         let final: Inspection = quick;
@@ -248,10 +263,7 @@ export async function acquireEngineLock(
           deepChecked = true;
           final = await inspectLock(lockPath, true);
           if (final.kind === "gone") continue;
-          if (final.kind === "steal") {
-            await removeIfUnchanged(lockPath, final.raw);
-            continue;
-          }
+          if (final.kind === "steal" && (await removeIfUnchanged(lockPath, final.raw))) continue;
         }
         throw new EngineLockedError(lockedMessage(lockPath, final));
       }

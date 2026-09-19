@@ -502,6 +502,44 @@ test("two contenders stealing the same stale lock never hold it at the same time
   });
 });
 
+test("a leftover steal guard makes acquisition wait and time out, then clear once stale or future-dated", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    const guard = `${paths.lock}.steal`;
+    await mkdir(paths.indexDir, { recursive: true });
+    const deadLock = `${JSON.stringify({ pid: 2_000_000_000, pidStartedAt: 1, acquiredAt: new Date().toISOString(), token: "dead" })}\n`;
+    await writeFile(paths.lock, deadLock, "utf8");
+    // A stealer that crashed a moment ago: fresh guard. The old loop spun here until it aged out.
+    await writeFile(guard, "", "utf8");
+    const store = new LegionStore(dir);
+    const started = Date.now();
+    await assert.rejects(
+      () => store.acquireLock({ timeoutMs: 300 }),
+      (err) => {
+        assert.equal(err instanceof EngineLockedError, true);
+        assert.match(err.message, /engine\.lock\.steal is held/);
+        return true;
+      },
+    );
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 250 && elapsed < 5_000, `timed out after ${elapsed} ms`);
+    assert.equal(await readFile(paths.lock, "utf8"), deadLock);
+
+    for (const [label, when] of [
+      ["aged out", new Date(Date.now() - 11_000)],
+      ["future-dated", new Date(Date.now() + 3_600_000)],
+    ]) {
+      await writeFile(paths.lock, deadLock, "utf8");
+      await writeFile(guard, "", "utf8");
+      await utimes(guard, when, when);
+      await store.acquireLock({ timeoutMs: 2_000 });
+      assert.equal(JSON.parse(await readFile(paths.lock, "utf8")).pid, process.pid, label);
+      await store.releaseLock();
+      assert.equal(existsSync(guard), false, label);
+    }
+  });
+});
+
 test("processIdentity reports this process's start time within tolerance", async () => {
   const actual = await processIdentity(process.pid);
   assert.equal(typeof actual, "number");
