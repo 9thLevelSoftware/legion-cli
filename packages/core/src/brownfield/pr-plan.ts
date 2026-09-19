@@ -1,12 +1,17 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { LegionStore } from "@9thlevelsoftware/legion-cli-persist";
-import { SCHEMA_VERSION, type BrownfieldDag, type BrownfieldDagNode } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  BrownfieldDagSchema,
+  SCHEMA_VERSION,
+  type BrownfieldDag,
+  type BrownfieldDagNode,
+} from "@9thlevelsoftware/legion-cli-schema";
 import { HINT, refuse } from "../errors.js";
 import type { BrownfieldPrPlanResult } from "../types.js";
 import { writeDag } from "./dag.js";
 import { section, splitBlocks } from "./markdown.js";
-import { runAbs, runArtifactPaths } from "./paths.js";
+import { DAG_FILE, runAbs, runArtifactPaths } from "./paths.js";
 import { assertBrownfieldReady, readRun, writeRun } from "./state.js";
 
 export function slugify(title: string): string {
@@ -115,7 +120,26 @@ export function parsePrPlan(designMarkdown: string, runId: string, rootBase: str
   return { ok: true, nodes: out, levels: Math.max(...out.map((node) => node.level)) + 1 };
 }
 
-export async function prPlanRun(store: LegionStore, runId: string): Promise<BrownfieldPrPlanResult> {
+/** Nodes of an existing dag.json that carry progress (non-pending status or a recorded commit). */
+async function nodesWithProgress(projectRoot: string, runId: string): Promise<BrownfieldDagNode[]> {
+  const abs = runAbs(projectRoot, runId, DAG_FILE);
+  if (!existsSync(abs)) return [];
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(abs, "utf8"));
+  } catch {
+    return [];
+  }
+  const parsed = BrownfieldDagSchema.safeParse(raw);
+  if (!parsed.success) return [];
+  return parsed.data.nodes.filter((node) => node.status !== "pending" || node.commit !== null);
+}
+
+export async function prPlanRun(
+  store: LegionStore,
+  runId: string,
+  opts: { force?: boolean } = {},
+): Promise<BrownfieldPrPlanResult> {
   await assertBrownfieldReady(store);
   const run = await readRun(store, runId);
   const designAbs = runAbs(store.projectRoot, runId, "design.md");
@@ -128,6 +152,18 @@ export async function prPlanRun(store: LegionStore, runId: string): Promise<Brow
   const parsed = parsePrPlan(await readFile(designAbs, "utf8"), runId, run.preSpawnRef);
   if (!parsed.ok) {
     refuse(`brownfield pr-plan: ${parsed.error}`, HINT.brownfieldDesign(runId));
+  }
+  if (!opts.force) {
+    const progressed = await nodesWithProgress(store.projectRoot, runId);
+    if (progressed.length > 0) {
+      const list = progressed
+        .map((node) => `${node.id} ${node.status}${node.commit ? ` @${node.commit.slice(0, 12)}` : ""}`)
+        .join(", ");
+      refuse(
+        `brownfield pr-plan would reset DAG progress (${list}); continue with dag, or pass --force to rebuild`,
+        HINT.brownfieldDag(runId),
+      );
+    }
   }
   const dag: BrownfieldDag = { schemaVersion: SCHEMA_VERSION.dag, runId, nodes: parsed.nodes };
   await writeDag(store.projectRoot, runId, dag);

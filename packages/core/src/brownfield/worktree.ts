@@ -43,7 +43,8 @@ export async function worktreeRun(
     refuse(`brownfield worktree: unknown node ${nodeId} (have ${dag.nodes.map((n) => n.id).join(", ")})`, hint);
   }
   const root = store.projectRoot;
-  const storePath = node.worktree ?? worktreeNodeStorePath(runId, node.id);
+  // Always derived: a stored `worktree` (hand-edited dag.json) is never trusted as a path.
+  const storePath = worktreeNodeStorePath(runId, node.id);
   const abs = storeAbs(root, storePath);
   const registered = () => listGitWorktrees(root).some((wt) => samePath(wt.path, abs));
   let mainCheckoutDirty = false;

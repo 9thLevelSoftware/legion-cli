@@ -1,8 +1,10 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isGitRepo, runResumePath, type LegionStore } from "@9thlevelsoftware/legion-cli-persist";
 import {
+  BrownfieldDagSchema,
   BrownfieldRunIdSchema,
   BrownfieldRunPhaseSchema,
   BrownfieldRunSchema,
@@ -10,7 +12,7 @@ import {
 } from "@9thlevelsoftware/legion-cli-schema";
 import { HINT, refuse } from "../errors.js";
 import type { BrownfieldEffort } from "../types.js";
-import { storeAbs } from "./paths.js";
+import { DAG_FILE, runAbs, storeAbs } from "./paths.js";
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -132,4 +134,32 @@ export function applyStateSet(run: BrownfieldRun, pairs: [string, unknown][], hi
     refuse(`brownfield state: invalid ${issue?.path.join(".") || "value"} (${issue?.message ?? "schema"})`, hint);
   }
   return parsed.data;
+}
+
+async function completedNodeCount(projectRoot: string, runId: string): Promise<number> {
+  const abs = runAbs(projectRoot, runId, DAG_FILE);
+  if (!existsSync(abs)) return 0;
+  try {
+    const parsed = BrownfieldDagSchema.safeParse(JSON.parse(await readFile(abs, "utf8")));
+    return parsed.success ? parsed.data.nodes.filter((node) => node.status === "completed").length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * No ordering table (the skill loops design ↔ review, skips execute, re-enters on resume); only
+ * two hard refusals: execute/verify need a design review, and verify needs a completed PR.
+ */
+export async function assertPhaseAllowed(projectRoot: string, runId: string, phase: string, hint: string): Promise<void> {
+  if (phase !== "execute" && phase !== "verify") return;
+  if (!existsSync(runAbs(projectRoot, runId, "reviews", "design-review.md"))) {
+    refuse(`brownfield state: phase=${phase} needs reviews/design-review.md (run the design review first)`, hint);
+  }
+  if (phase === "verify" && (await completedNodeCount(projectRoot, runId)) === 0) {
+    refuse(
+      "brownfield state: phase=verify needs at least one completed DAG node; with none, skip verify and set phase=complete (references/execute.md § Verify)",
+      hint,
+    );
+  }
 }

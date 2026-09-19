@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, lstatSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { PersistError } from "./errors.js";
 import { toPosixPath } from "./paths.js";
@@ -225,7 +225,54 @@ function gitWorktreePrune(cwd: string): void {
   runGit(cwd, ["worktree", "prune"]);
 }
 
+/** True when `candidate` is strictly below `root` (not equal, not outside, not another drive). */
+function strictlyUnder(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel !== "" && !isAbsolute(rel) && rel.split(/[\\/]/)[0] !== "..";
+}
+
+/** Like existsSync, but a dangling link still counts as present. */
+function pathPresent(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stale-checkout cleanup may only touch `<project>/.legion-cli/worktrees/…`: never the project
+ * itself, never `.git` or a directory holding one, and never through a link (links are unlinked).
+ */
+function assertRemovableWorktreePath(cwd: string, worktreeAbs: string): void {
+  const root = resolve(cwd, ".legion-cli", "worktrees");
+  const target = resolve(worktreeAbs);
+  const refuse = (why: string): never => {
+    throw new PersistError(`refusing to remove ${target}: ${why}`);
+  };
+  if (!strictlyUnder(root, target)) {
+    refuse("stale worktrees are only removed under .legion-cli/worktrees/");
+  }
+  if (relative(root, target).split(/[\\/]/).some((part) => part.toLowerCase() === ".git")) {
+    refuse("it is a .git directory");
+  }
+  if (!pathPresent(target) || lstatSync(target).isSymbolicLink()) return;
+  // A linked parent (e.g. `.legion-cli` as a junction) must not carry the removal outside the project.
+  if (existsSync(root) && !strictlyUnder(realpathSync.native(root), realpathSync.native(target))) {
+    refuse("it resolves outside .legion-cli/worktrees/");
+  }
+  let gitEntry: ReturnType<typeof lstatSync> | undefined;
+  try {
+    gitEntry = lstatSync(join(target, ".git"));
+  } catch {
+    gitEntry = undefined;
+  }
+  if (gitEntry && !gitEntry.isFile()) refuse("it contains a .git directory");
+}
+
 function dropStaleWorktree(cwd: string, worktreeAbs: string): void {
+  assertRemovableWorktreePath(cwd, worktreeAbs);
   const listed = listGitWorktrees(cwd).find((wt) => sameAbsPath(wt.path, worktreeAbs));
   if (listed) {
     const removed = runGit(cwd, ["worktree", "remove", "--force", listed.path]);
@@ -233,7 +280,10 @@ function dropStaleWorktree(cwd: string, worktreeAbs: string): void {
   } else {
     gitWorktreePrune(cwd);
   }
-  if (existsSync(worktreeAbs) && !isGitRepo(worktreeAbs)) {
+  if (!pathPresent(worktreeAbs)) return;
+  if (lstatSync(worktreeAbs).isSymbolicLink()) {
+    unlinkSync(worktreeAbs); // the link only, never its target
+  } else if (!isGitRepo(worktreeAbs)) {
     rmSync(worktreeAbs, { recursive: true, force: true });
   }
 }

@@ -59,7 +59,7 @@ with `{"error", "next"}` and exit 1 when a precondition fails — read `next`, d
 | 4 analysis | `legion-cli brownfield merge <id> --json` |
 | 5–6 | `legion-cli brownfield state <id> phase=design --json` · `… designReviewRounds=N` |
 | 6 review | `legion-cli brownfield review-status <id> [file] [--strict] [--snapshot] --json` |
-| 8 execute | `legion-cli brownfield pr-plan <id> --json` → `dag <id> [node key=value…]` → `worktree <id> <node> [--remove]` |
+| 8 execute | `legion-cli brownfield pr-plan <id> --json` (refuses once the DAG has progress; `--force` resets it) → `dag <id> [node key=value…]` → `worktree <id> <node> [--remove]` |
 | any | `legion-cli brownfield state <id> --json` (state, artifacts present, `next`) |
 | 10 report | `legion-cli brownfield patterns --add "<lesson>" … --json` · `legion-cli run promote <id> --json` |
 
@@ -115,7 +115,9 @@ sections (auth, payments, slow, flaky tests, README…) add the matching special
 Track these phases with your todo/task tool if one is available, so progress survives long runs:
 `setup · intent · plan · analysis · assumptions · design · review · present · execute · verify · report`.
 `state` records the phase; `roster`, `merge`, and `pr-plan` advance it automatically; set the
-others yourself with `legion-cli brownfield state <id> phase=<phase>`.
+others yourself with `legion-cli brownfield state <id> phase=<phase>`. `phase=execute` and
+`phase=verify` refuse until `reviews/design-review.md` exists, and `phase=verify` also refuses
+while no PR is `completed` (skip verify then).
 
 ### 1. Setup
 - `--resume`: run `legion-cli brownfield --resume <id> --json` (add `--execute` to switch on

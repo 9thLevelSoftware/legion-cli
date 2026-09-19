@@ -27,6 +27,7 @@ import { RUN_SUBDIRS, runAbs, runArtifactPaths, storeAbs } from "./paths.js";
 import {
   applyStateSet,
   assertBrownfieldReady,
+  assertPhaseAllowed,
   newRunId,
   nowIso,
   parseEffort,
@@ -256,7 +257,10 @@ export async function stateRun(
   let run = await readRun(store, runId);
   if (pairs.length > 0) {
     const hint = HINT.brownfieldState(runId);
-    run = await writeRun(store.projectRoot, applyStateSet(run, parseKeyValuePairs(pairs, hint), hint));
+    const parsed = parseKeyValuePairs(pairs, hint);
+    const next = applyStateSet(run, parsed, hint);
+    if (parsed.some(([key]) => key === "phase")) await assertPhaseAllowed(store.projectRoot, runId, next.phase, hint);
+    run = await writeRun(store.projectRoot, next);
   }
   const paths = runArtifactPaths(runId);
   const artifacts = await artifactPresence(store.projectRoot, paths);

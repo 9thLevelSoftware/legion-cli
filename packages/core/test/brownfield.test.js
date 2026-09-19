@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -567,6 +567,113 @@ test("pr-plan roots use the audited SHA when HEAD was detached", async () => {
     await seedFixture(dir, "17171717", "design-ok.md", "design.md");
     const plan = await engine.brownfieldPrPlan("17171717");
     assert.equal(plan.order[0].base, head);
+  });
+});
+
+test("worktree ignores a hand-edited dag worktree path (.git, ../x, absolute) and leaves them intact", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    const outside = await mkdtemp(join(tmpdir(), "legion-outside-"));
+    try {
+      await writeFile(join(outside, "keep.txt"), "keep\n", "utf8");
+      await engine.brownfield({ runId: "18181818", execute: true });
+      await seedFixture(dir, "18181818", "design-ok.md", "design.md");
+      await engine.brownfieldPrPlan("18181818");
+      await assertRefuses(engine.brownfieldDag("18181818", "pr-1", ["worktree=.git"]), /worktree is not settable/);
+
+      const dagFile = join(runDir(dir, "18181818"), "dag.json");
+      for (const bad of [".git", relative(dir, outside).split(sep).join("/"), outside]) {
+        const dag = await readJson(dagFile);
+        dag.nodes[0].worktree = bad;
+        await writeFile(dagFile, `${JSON.stringify(dag, null, 2)}\n`, "utf8");
+        const wt = await engine.brownfieldWorktree("18181818", "pr-1");
+        assert.equal(wt.worktree, ".legion-cli/worktrees/18181818/pr-1", bad);
+        assert.equal(existsSync(join(dir, ".git", "HEAD")), true, bad);
+        assert.equal(await readFile(join(outside, "keep.txt"), "utf8"), "keep\n", bad);
+        assert.equal(git(dir, ["rev-parse", "--is-inside-work-tree"]), "true", bad);
+        await engine.brownfieldWorktree("18181818", "pr-1", { remove: true });
+      }
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("stale worktree cleanup unlinks a junction, never its target", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    const outside = await mkdtemp(join(tmpdir(), "legion-outside-"));
+    try {
+      await writeFile(join(outside, "keep.txt"), "keep\n", "utf8");
+      await engine.brownfield({ runId: "19191919", execute: true });
+      await seedFixture(dir, "19191919", "design-ok.md", "design.md");
+      await engine.brownfieldPrPlan("19191919");
+      const wtAbs = join(dir, ".legion-cli", "worktrees", "19191919", "pr-1");
+      await mkdir(dirname(wtAbs), { recursive: true });
+      try {
+        await symlink(outside, wtAbs, process.platform === "win32" ? "junction" : "dir");
+      } catch (err) {
+        if (err?.code === "EPERM" || err?.code === "EACCES") return;
+        throw err;
+      }
+      const wt = await engine.brownfieldWorktree("19191919", "pr-1");
+      assert.equal(wt.created, true);
+      assert.equal(git(wtAbs, ["rev-parse", "--is-inside-work-tree"]), "true");
+      assert.equal(await readFile(join(outside, "keep.txt"), "utf8"), "keep\n");
+      assert.equal(existsSync(join(outside, "src")), false);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("pr-plan refuses to reset DAG progress unless --force", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    await engine.brownfield({ runId: "1a1a1a1a", execute: true });
+    await seedFixture(dir, "1a1a1a1a", "design-ok.md", "design.md");
+    await engine.brownfieldPrPlan("1a1a1a1a");
+    await engine.brownfieldPrPlan("1a1a1a1a"); // all pending: re-running is harmless
+    const head = git(dir, ["rev-parse", "HEAD"]);
+    await engine.brownfieldDag("1a1a1a1a", "pr-2", [`commit=${head}`]);
+    await assertRefuses(engine.brownfieldPrPlan("1a1a1a1a"), /pr-2 pending @.*--force/);
+    await engine.brownfieldDag("1a1a1a1a", "pr-1", ["status=completed"]);
+    await assertRefuses(engine.brownfieldPrPlan("1a1a1a1a"), /pr-1 completed/);
+    assert.equal((await engine.brownfieldDag("1a1a1a1a")).nodes[0].status, "completed");
+    await engine.brownfieldPrPlan("1a1a1a1a", { force: true });
+    assert.deepEqual((await engine.brownfieldDag("1a1a1a1a")).counts, { pending: 3 });
+  });
+});
+
+test("run phases: execute/verify need a design review, verify needs a completed PR, the skill's sequences pass", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    await engine.brownfield({ runId: "1b1b1b1b", execute: true });
+    await assertRefuses(engine.brownfieldState("1b1b1b1b", ["phase=execute"]), /design-review\.md/);
+    await assertRefuses(engine.brownfieldState("1b1b1b1b", ["phase=verify"]), /design-review\.md/);
+    assert.equal((await engine.brownfieldState("1b1b1b1b")).state.phase, "intent");
+
+    await seedFile(dir, "1b1b1b1b", "reviews/design-review.md", "# Design Review\n");
+    await seedFixture(dir, "1b1b1b1b", "design-ok.md", "design.md");
+    for (const phase of ["analysis", "design", "review", "design", "review", "present", "execute"]) {
+      assert.equal((await engine.brownfieldState("1b1b1b1b", [`phase=${phase}`])).state.phase, phase);
+    }
+    await engine.brownfieldPrPlan("1b1b1b1b");
+    await assertRefuses(engine.brownfieldState("1b1b1b1b", ["phase=verify"]), /skip verify.*phase=complete/);
+    await engine.brownfieldDag("1b1b1b1b", "pr-1", ["status=completed"]);
+    for (const phase of ["verify", "complete"]) {
+      assert.equal((await engine.brownfieldState("1b1b1b1b", [`phase=${phase}`])).state.phase, phase);
+    }
+
+    await engine.brownfield({ runId: "1c1c1c1c" });
+    await seedFile(dir, "1c1c1c1c", "reviews/design-review.md", "# Design Review\n");
+    for (const phase of ["review", "present", "complete"]) {
+      assert.equal((await engine.brownfieldState("1c1c1c1c", [`phase=${phase}`])).state.phase, phase);
+    }
   });
 });
 

@@ -708,6 +708,31 @@ test("gitWorktreeAdd creates a missing branch at startPoint, not HEAD", async ()
   });
 });
 
+test("gitWorktreeAdd never clears .git or a path outside .legion-cli/worktrees", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "README.md"), "app\n", "utf8");
+    initGitRepo(dir);
+    const outside = await mkdtemp(join(tmpdir(), "legion-outside-"));
+    try {
+      await writeFile(join(outside, "keep.txt"), "keep\n", "utf8");
+      const refused = (path) =>
+        assert.throws(
+          () => gitWorktreeAdd(dir, path, "brownfield/dddddddd/pr-1-x"),
+          (err) => err instanceof PersistError && /refusing to remove/.test(err.message),
+        );
+      refused(join(dir, ".git"));
+      refused(join(dir, ".legion-cli", "worktrees", "dddddddd", ".git"));
+      refused(join(dir, ".legion-cli", "worktrees"));
+      refused(outside);
+      assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
+      assert.equal(git(dir, ["rev-parse", "--is-inside-work-tree"]), "true");
+      assert.equal(await readFile(join(outside, "keep.txt"), "utf8"), "keep\n");
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+
 test("gitWorktreeRemove removes the checkout and keeps the branch", async () => {
   await withTempDir(async (dir) => {
     await writeFile(join(dir, "README.md"), "app\n", "utf8");

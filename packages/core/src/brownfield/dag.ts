@@ -14,7 +14,8 @@ import { DAG_FILE, runAbs } from "./paths.js";
 import { assertBrownfieldReady, parseKeyValuePairs, readRun } from "./state.js";
 
 const TERMINAL = new Set(["completed", "failed", "skipped"]);
-const SETTABLE_NODE_KEYS = new Set(["status", "commit", "worktree", "agentId", "reviewRounds", "error"]);
+/** `worktree` is not settable: `brownfield worktree` derives and records it (a free-form path could point at `.git`). */
+const SETTABLE_NODE_KEYS = new Set(["status", "commit", "agentId", "reviewRounds", "error"]);
 
 export async function readDag(projectRoot: string, runId: string): Promise<BrownfieldDag> {
   const abs = runAbs(projectRoot, runId, DAG_FILE);
