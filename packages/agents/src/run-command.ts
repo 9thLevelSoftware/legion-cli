@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, open, type FileHandle } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { scrubSecretsEnv } from "./env-scrub.js";
-import { quoteCmdArgForSpawn, resolveBinary, unwrapCmdShim } from "./which.js";
+import { cmdScriptLaunch, resolveBinary, unwrapCmdShim } from "./which.js";
 
 export type RunCommandOptions = {
   cwd: string;
@@ -71,9 +71,6 @@ export function parseCommandLine(command: string): { argv: string[] } | { error:
   return { argv: tokens.map((token) => token.value) };
 }
 
-/** cmd.exe would interpret these even inside quotes (`%VAR%`, `^`) or split on them. */
-const CMD_UNSAFE_ARG = /[&|<>^%\r\n]/;
-
 type Launch = { command: string; args: string[]; verbatim: boolean } | { error: string };
 
 function planLaunch(argv: readonly string[], cwd: string): Launch {
@@ -88,13 +85,7 @@ function planLaunch(argv: readonly string[], cwd: string): Launch {
     if (unwrapped) {
       return { command: unwrapped.command, args: [...unwrapped.prefixArgs, ...rest], verbatim: false };
     }
-    const unsafe = rest.find((arg) => CMD_UNSAFE_ARG.test(arg));
-    if (unsafe !== undefined) {
-      return { error: `${first} is a .cmd/.bat script; argument ${JSON.stringify(unsafe)} contains & | < > ^ % or a newline` };
-    }
-    const line = [resolved, ...rest].map(quoteCmdArgForSpawn).join(" ");
-    // /s strips exactly the outer quote pair, so the line is quoted once more.
-    return { command: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], verbatim: true };
+    return cmdScriptLaunch(resolved, rest);
   }
   return { command: resolved, args: rest, verbatim: false };
 }
@@ -176,7 +167,26 @@ export async function runCommand(argv: readonly string[], opts: RunCommandOption
         timedOut = true;
         killTree(child);
       }, opts.timeoutMs);
+      // POSIX: the child has its own process group (so a timeout can kill the tree), which
+      // also means the terminal's Ctrl-C no longer reaches it. Forward SIGINT/SIGTERM to the
+      // group, then let the signal act on us as it would have (A-010 owns the fuller story).
+      const forward = (signal: NodeJS.Signals): void => {
+        killTree(child);
+        unforward();
+        if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+      };
+      const onInt = (): void => forward("SIGINT");
+      const onTerm = (): void => forward("SIGTERM");
+      const unforward = (): void => {
+        process.removeListener("SIGINT", onInt);
+        process.removeListener("SIGTERM", onTerm);
+      };
+      if (process.platform !== "win32") {
+        process.once("SIGINT", onInt);
+        process.once("SIGTERM", onTerm);
+      }
       child.once("error", (error) => {
+        unforward();
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -184,6 +194,7 @@ export async function runCommand(argv: readonly string[], opts: RunCommandOption
         done({ ...base, started: child.pid !== undefined, error: error.message, timedOut });
       });
       child.once("close", (code, signal) => {
+        unforward();
         if (settled) return;
         settled = true;
         clearTimeout(timer);

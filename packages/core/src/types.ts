@@ -39,6 +39,8 @@ export type LegionEngineOptions = {
   fakeHoldWait?: FakeHoldWait;
   fakeOnWait?: () => Promise<void>;
   fakeHandlePid?: number;
+  /** Test-only, like the other fake* seams: verification throws this message. */
+  fakeVerificationError?: string;
   verificationTimeoutMs?: number;
 };
 

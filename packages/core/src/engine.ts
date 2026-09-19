@@ -337,6 +337,7 @@ export class LegionEngine {
   readonly #fakeTimedOut: boolean;
   readonly #fakeHoldWait?: LegionEngineOptions["fakeHoldWait"];
   readonly #fakeOnWait?: () => Promise<void>;
+  readonly #fakeVerificationError?: string;
   readonly #fakeHandlePid?: number;
   readonly #verificationTimeoutMs: number;
   #lastPlanReport: ReadinessReport | null = null;
@@ -350,6 +351,7 @@ export class LegionEngine {
     this.#fakeTimedOut = Boolean(options?.fakeTimedOut);
     this.#fakeHoldWait = options?.fakeHoldWait;
     this.#fakeOnWait = options?.fakeOnWait;
+    this.#fakeVerificationError = options?.fakeVerificationError;
     this.#fakeHandlePid = options?.fakeHandlePid;
     this.#verificationTimeoutMs = options?.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   }
@@ -2291,11 +2293,14 @@ export class LegionEngine {
 
       await this.#transitionTaskTo(lockedTask.id, "verifying");
 
-      // Any exception from here on moves the task to blocked: nothing may leave it in
-      // `verifying`, which no verb can move on from (F-002, F-008).
+      // Any exception from here on (the runner, the done/blocked transition, promotion, the
+      // STATE write) blocks the task with the reason: nothing may leave it in `verifying`,
+      // which no verb can move on from (F-002, F-008).
       let verificationPass = false;
       let reason: string | undefined;
+      const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
       try {
+        if (this.#fakeVerificationError) throw new Error(this.#fakeVerificationError);
         const verification = await runVerificationCommands(
           this.projectRoot,
           lockedTask.contract.verificationCommands,
@@ -2309,20 +2314,37 @@ export class LegionEngine {
         reason = verificationFailureReason(verification);
       } catch (err) {
         verificationPass = false;
-        reason = `verification failed: ${err instanceof Error ? err.message : String(err)}`;
+        reason = `verification failed: ${describe(err)}`;
       }
-      if (verificationPass) {
-        await this.#transitionTaskTo(lockedTask.id, "done");
-        await this.#promoteReadyTasks(lockedTask.specId, "executing", lockedConfig.control_mode);
-      } else {
-        await this.#transitionTaskTo(lockedTask.id, "blocked");
+      try {
+        if (verificationPass) {
+          await this.#transitionTaskTo(lockedTask.id, "done");
+          await this.#promoteReadyTasks(lockedTask.specId, "executing", lockedConfig.control_mode);
+        } else {
+          await this.#transitionTaskTo(lockedTask.id, "blocked");
+        }
+      } catch (err) {
+        reason = `${reason ? `${reason}; ` : ""}after verification: ${describe(err)}`;
+        try {
+          const status = (await this.store.readTask(lockedTask.id)).data.status;
+          verificationPass = status === "done";
+          if (status === "verifying") await this.#transitionTaskTo(lockedTask.id, "blocked");
+        } catch (inner) {
+          // Left for #recoverDeadInProgressLocked on the next verb; say so.
+          verificationPass = false;
+          reason = `${reason}; could not move ${lockedTask.id} out of verifying: ${describe(inner)}`;
+        }
       }
 
-      await this.#writeState({
-        ...(await this.#readState()),
-        phase: "executing",
-        currentTaskId: lockedTask.id,
-      });
+      try {
+        await this.#writeState({
+          ...(await this.#readState()),
+          phase: "executing",
+          currentTaskId: lockedTask.id,
+        });
+      } catch (err) {
+        reason = `${reason ? `${reason}; ` : ""}STATE.md not updated: ${describe(err)}`;
+      }
 
       return finish({
         taskId: lockedTask.id,

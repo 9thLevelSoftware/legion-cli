@@ -86,6 +86,8 @@ export type RunProjectQaOptions = {
   createdAt?: string;
   /** Configured `adapter.*.apiKeyEnv` names to scrub from the commands' environment. */
   secretEnvNames?: readonly string[];
+  /** Per-command timeout; defaults to {@link DEFAULT_QA_COMMAND_TIMEOUT_MS}. */
+  commandTimeoutMs?: number;
 };
 
 export type ProjectQaResult = {
@@ -113,7 +115,8 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
   const evidencePaths: string[] = [];
 
   const warnings: string[] = [];
-  const commandOpts = { secretEnvNames: opts.secretEnvNames };
+  const timeoutMs = opts.commandTimeoutMs ?? DEFAULT_QA_COMMAND_TIMEOUT_MS;
+  const commandOpts = { secretEnvNames: opts.secretEnvNames, timeoutMs };
   const unitCapture = await runCommand(opts.projectRoot, opts.unitCommand?.trim() || DEFAULT_UNIT_COMMAND, {
     ...commandOpts,
     name: "unit",
@@ -121,6 +124,8 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
   if (!unitCapture.started) {
     // Scored P0 failed below (failClosed); say why instead of "your tests failed".
     warnings.push(`unit command did not start: ${unitCapture.error ?? "unknown error"}`);
+  } else if (unitCapture.timedOut) {
+    warnings.push(`unit command timed out after ${timeoutMs} ms and was stopped`);
   }
   const unitAbs = join(qaDir, "unit.json");
   const unitReport = await writeEvidence(unitAbs, unitCapture);
@@ -137,6 +142,8 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
     );
     if (!pwCapture.started) {
       warnings.push(`playwright command did not start: ${pwCapture.error ?? "unknown error"}`);
+    } else if (pwCapture.timedOut) {
+      warnings.push(`playwright command timed out after ${timeoutMs} ms and was stopped`);
     }
     const pwAbs = join(qaDir, "playwright.json");
     playwrightReport = await writeEvidence(pwAbs, pwCapture);

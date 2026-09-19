@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 import {
   ARGV_ONLY_MESSAGE,
+  cmdExePath,
+  cmdScriptLaunch,
   isSecretEnvName,
   parseCommandLine,
+  resolveBinary,
   runCommand,
+  runTool,
   scrubSecretsEnv,
   splitCommand,
 } from "../dist/index.js";
-import { withTempDir } from "./helpers.js";
+import { pkgRoot, withTempDir } from "./helpers.js";
 
 const SECRETS = {
   FOO_TOKEN: "t0k3n",
@@ -132,10 +138,12 @@ test("the default env scrubs credentials and configured apiKeyEnv names, keeps D
 
 test("isSecretEnvName follows the KD-4 pattern", () => {
   for (const name of ["FOO_TOKEN", "SENDGRID_APIKEY", "GH_PAT", "API_KEY", "DB_PASSWORD", "AZURE_CONNECTION_STRING",
-    "GOOGLE_APPLICATION_CREDENTIALS", "AWS_ACCESS_KEY_ID", "SSH_AUTH_SOCK", "npm_config__auth", "NPM_CONFIG__AUTHTOKEN"]) {
+    "GOOGLE_APPLICATION_CREDENTIALS", "AWS_ACCESS_KEY_ID", "SSH_AUTH_SOCK", "npm_config__auth", "NPM_CONFIG__AUTHTOKEN",
+    "PGPASSWORD", "MYSQL_PWD", "SMTP_PASS", "FTP_PWD", "SYSTEM_ACCESSTOKEN", "MY_ACCESSTOKEN_V2", "DOCKER_AUTH_CONFIG",
+    "GIT_ASKPASS", "SSH_ASKPASS", "VSCODE_GIT_IPC_HANDLE", "VSCODE_GIT_ASKPASS_NODE", "SLACK_WEBHOOK_URL"]) {
     assert.equal(isSecretEnvName(name), true, name);
   }
-  for (const name of ["DATABASE_URL", "PATH", "HOME", "MONKEY", "NODE_ENV", "PNPM_HOME"]) {
+  for (const name of ["DATABASE_URL", "PATH", "HOME", "MONKEY", "NODE_ENV", "PNPM_HOME", "PWD", "OLDPWD", "BYPASS", "COMPASS"]) {
     assert.equal(isSecretEnvName(name), false, name);
   }
   assert.deepEqual(scrubSecretsEnv({ A: "1", X_TOKEN: "2", CUSTOM: "3" }, { extraNames: ["custom"] }), { A: "1" });
@@ -152,5 +160,90 @@ test("a non-shim .cmd refuses cmd.exe metacharacters in arguments", { skip: proc
     const refused = await runCommand([cmd, "a&calc"], { cwd: dir, timeoutMs: 30_000, logPath: join(dir, "bad.log") });
     assert.equal(refused.started, false);
     assert.match(refused.error, /& \| < > \^ %/);
+  });
+});
+
+test("cmdScriptLaunch pins the cmd.exe argv: /d /v:off /s /c, quoted script, outer quotes", () => {
+  const launch = cmdScriptLaunch("C:\\Program Files\\nodejs\\pnpm.cmd", ["exec", "two words", ""]);
+  assert.deepEqual(launch.args, ["/d", "/v:off", "/s", "/c", '""C:\\Program Files\\nodejs\\pnpm.cmd" exec "two words" """']);
+  assert.equal(launch.verbatim, true);
+  assert.match(cmdScriptLaunch("C:\\a&b\\run.cmd", []).error, /path containing/);
+  assert.match(cmdScriptLaunch("C:\\100%x%\\run.cmd", []).error, /path containing/);
+  assert.match(cmdScriptLaunch("C:\\ok\\run.cmd", ["50%"]).error, /argument "50%"/);
+});
+
+test("cmd.exe is %ComSpec% when absolute, else %SystemRoot%\\System32\\cmd.exe, never a bare name", () => {
+  const saved = { ComSpec: process.env.ComSpec, SystemRoot: process.env.SystemRoot };
+  try {
+    delete process.env.ComSpec;
+    process.env.SystemRoot = "C:\\Windows";
+    assert.equal(cmdExePath(), "C:\\Windows\\System32\\cmd.exe");
+    process.env.ComSpec = "cmd.exe";
+    assert.equal(cmdExePath(), "C:\\Windows\\System32\\cmd.exe");
+    process.env.ComSpec = "D:\\Tools\\cmd.exe";
+    assert.equal(cmdExePath(), "D:\\Tools\\cmd.exe");
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("runTool and runCommand run a .cmd whose path contains a space", { skip: process.platform !== "win32" && "Windows cmd.exe only" }, async () => {
+  await withTempDir(async (dir) => {
+    const spaced = join(dir, "with space");
+    await mkdir(spaced, { recursive: true });
+    const cmd = join(spaced, "echoargs.cmd");
+    await writeFile(cmd, "@echo off\r\necho args:%*\r\n", "utf8");
+    const tool = runTool(cmd, ["hello"]);
+    assert.equal(tool.status, 0, tool.stderr);
+    assert.match(tool.stdout, /args:hello/);
+    const logPath = join(dir, "spaced.log");
+    const run = await runCommand([cmd, "hello"], { cwd: dir, timeoutMs: 30_000, logPath });
+    assert.equal(run.exitCode, 0, run.error);
+    assert.match(await readFile(logPath, "utf8"), /args:hello/);
+  });
+});
+
+test("resolveBinary prefers .exe/.com/.cmd/.bat over an extensionless or .js hit", { skip: process.platform !== "win32" && "Windows PATHEXT only" }, async () => {
+  await withTempDir(async (dir) => {
+    for (const name of ["legionprobe", "legionprobe.js", "legionprobe.cmd"]) {
+      await writeFile(join(dir, name), "@echo off\r\n", "utf8");
+    }
+    const saved = process.env.PATH;
+    process.env.PATH = `${dir};${saved}`;
+    try {
+      assert.equal(resolveBinary("legionprobe")?.toLowerCase(), join(dir, "legionprobe.cmd").toLowerCase());
+    } finally {
+      process.env.PATH = saved;
+    }
+  });
+});
+
+test("Ctrl-C on legion-cli also stops a running command's process group", { skip: process.platform === "win32" && "POSIX process groups only" }, async () => {
+  await withTempDir(async (dir) => {
+    const pidFile = join(dir, "child.pid");
+    const childCode = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`;
+    const script = [
+      `const { runCommand } = await import(${JSON.stringify(pathToFileURL(join(pkgRoot, "dist", "index.js")).href)});`,
+      `setTimeout(() => process.kill(process.pid, "SIGINT"), 1500);`,
+      `await runCommand([process.execPath, "-e", ${JSON.stringify(childCode)}], { cwd: ${JSON.stringify(dir)}, timeoutMs: 60000, logPath: ${JSON.stringify(join(dir, "c.log"))} });`,
+    ].join("\n");
+    const parent = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "ignore" });
+    const exit = await new Promise((done) => parent.once("exit", (code, signal) => done({ code, signal })));
+    assert.equal(exit.signal, "SIGINT");
+    const childPid = Number(await readFile(pidFile, "utf8"));
+    const deadline = Date.now() + 5_000;
+    let alive = true;
+    while (alive && Date.now() < deadline) {
+      try {
+        process.kill(childPid, 0);
+        await new Promise((done) => setTimeout(done, 50));
+      } catch {
+        alive = false;
+      }
+    }
+    assert.equal(alive, false, "the verification child outlived Ctrl-C");
   });
 });

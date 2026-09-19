@@ -369,12 +369,6 @@ export function resolveAuditBin(name: string, projectRoot: string): string | nul
   return null;
 }
 
-export function quoteCmdArg(arg: string): string {
-  if (arg.length === 0) return '""';
-  if (!/[\t\r\n "]/.test(arg)) return arg;
-  return `"${arg.replaceAll('"', '""')}"`;
-}
-
 async function runLockfileAudit(projectRoot: string, runId: string): Promise<{ lines: string[]; ran: boolean }> {
   const pnpmLock = existsSync(join(projectRoot, "pnpm-lock.yaml"));
   const npmLock = existsSync(join(projectRoot, "package-lock.json"));

@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { quoteCmdArgForSpawn, unwrapCmdShim } from "@9thlevelsoftware/legion-cli-agents";
+import { cmdScriptLaunch, unwrapCmdShim } from "@9thlevelsoftware/legion-cli-agents";
 
 // One resolver (F-021): PATH/PATHEXT lookup and the tool runner live in agents.
 export { isSpawnableBinary, listOnPath, runTool, whichAll } from "@9thlevelsoftware/legion-cli-agents";
@@ -29,18 +29,16 @@ function killProcessTree(pid: number): void {
 function boundedSpawnArgv(
   file: string,
   args: string[],
-): { command: string; argv: string[]; verbatim: boolean } {
+): { command: string; argv: string[]; verbatim: boolean } | { error: string } {
   if (process.platform === "win32" && /\.(cmd|bat)$/i.test(file)) {
     const unwrapped = unwrapCmdShim(file);
     if (unwrapped) {
       return { command: unwrapped.command, argv: [...unwrapped.prefixArgs, ...args], verbatim: false };
     }
-    const line = [file, ...args].map(quoteCmdArgForSpawn).join(" ");
-    return {
-      command: process.env.ComSpec || "cmd.exe",
-      argv: ["/d", "/s", "/c", line],
-      verbatim: true,
-    };
+    // The shared cmd.exe launch (F-096): /d /v:off, quoted script, outer quotes for /s.
+    const launch = cmdScriptLaunch(file, args);
+    if ("error" in launch) return launch;
+    return { command: launch.command, argv: launch.args, verbatim: true };
   }
   return { command: file, argv: args, verbatim: false };
 }
@@ -61,7 +59,11 @@ export async function runBounded(
   args: string[],
   timeoutMs: number,
 ): Promise<BoundedRun> {
-  const { command, argv, verbatim } = boundedSpawnArgv(file, args);
+  const planned = boundedSpawnArgv(file, args);
+  if ("error" in planned) {
+    return { status: 1, stdout: "", stderr: planned.error, timedOut: false, truncated: false };
+  }
+  const { command, argv, verbatim } = planned;
   const child = spawn(command, argv, {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,

@@ -39,6 +39,22 @@ test("an unstartable unit command says why and scores P0 failed", async () => {
   });
 });
 
+test("a unit command that times out says so", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runProjectQa({
+      projectRoot: dir,
+      spec,
+      mode: "full",
+      unitCommand: `${JSON.stringify(process.execPath)} -e "setInterval(() => {}, 1000)"`,
+      commandTimeoutMs: 500,
+      id: "qa-timeout",
+      createdAt: "2026-09-01T12:00:00Z",
+    });
+    assert.deepEqual(result.warnings, ["unit command timed out after 500 ms and was stopped"]);
+    assert.equal(result.score.pass, false);
+  });
+});
+
 test("an argv-only violation in the unit command does not start", async () => {
   await withTempDir(async (dir) => {
     const result = await runProjectQa({

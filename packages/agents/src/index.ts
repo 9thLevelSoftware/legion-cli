@@ -72,6 +72,8 @@ export { ClaudeAdapter } from "./adapters/claude.js";
 export { GenericAdapter } from "./adapters/generic.js";
 export { ExtraAdapter } from "./adapters/extra.js";
 export {
+  cmdExePath,
+  cmdScriptLaunch,
   isSpawnableBinary,
   listOnPath,
   quoteCmdArgForSpawn,

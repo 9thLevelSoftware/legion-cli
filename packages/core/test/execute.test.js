@@ -134,6 +134,24 @@ for (const [label, command, pattern] of [
   });
 }
 
+test("a verification step that throws blocks the task with the reason, never leaves it verifying", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.match(result.tasks[0].reason, /^verification failed: runner exploded$/);
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+        assert.equal((await engine.getState()).phase, "executing");
+      },
+      { fakeVerificationError: "runner exploded" },
+    );
+  });
+});
+
 test("a bare `npm --version` verification passes (Windows .cmd shim)", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ engine, store, dir }) => {
