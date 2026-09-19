@@ -218,7 +218,7 @@ test("unzipZipball refuses a destDir or child directory that is a symlink", asyn
   });
 });
 
-test("unzipZipball allows POSIX colon names", { skip: process.platform === "win32" }, async () => {
+test("unzipZipball allows POSIX colon names", { skip: process.platform === "win32" && "Windows file names cannot contain ':'" }, async () => {
   await withTempDir(async (dir) => {
     const dest = join(dir, "out");
     const zip = makeZip([
