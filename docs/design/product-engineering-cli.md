@@ -641,12 +641,12 @@ export interface AgentResult {
 | `interview` | After question-bank answers, polish `prd.md` | No — templates always write the brief | `.legion-cli/wiki/product/**`, `.legion-cli/specs/*/prd.md`, `.legion-cli/cache/runs/<id>/**` |
 | `discuss` | Propose decisions for Y/n | No — human can type decisions; spawn is default when a spawnable adapter detects | `.legion-cli/discuss/**`, `.legion-cli/decisions/**`, `.legion-cli/cache/runs/<id>/**` |
 | `spec` | Fill SPEC + optionally rewrite wireframe HTML | No — templates + question bank produce a valid Spec | `.legion-cli/specs/<activeSpecId>/**`, `.legion-cli/cache/runs/<id>/**` |
-| `ingest` | Distill a source into wiki prose | No — default is excerpt copy | `.legion-cli/wiki/**`, `.legion-cli/audit/**`, `.legion-cli/cache/runs/<id>/**` |
+| `ingest` | Distill a source into wiki prose | No — default is excerpt copy | `.legion-cli/wiki/**`, `.legion-cli/cache/runs/<id>/**` (not `audit/**`: protected, §5.2) |
 | `plan` | Emit `plans/` + `tasks/` with contracts | **Yes** — `legion-cli plan` refuses if no spawnable adapter | `.legion-cli/plans/**`, `.legion-cli/tasks/**`, `.legion-cli/cache/runs/<id>/**` |
 | `execute` | Write product code | **Yes** | `FileContract.filesAllowed ∪ expectedArtifacts` (concrete) ∪ `.legion-cli/cache/runs/<id>/**` |
-| `verify` | Optional walkthrough notes + fix-plan tasks | No for ship; notes only | `.legion-cli/qa/**`, `.legion-cli/tasks/**`, `.legion-cli/cache/runs/<id>/**` |
-| `review` | Spec-level review loop | **Yes** | `.legion-cli/qa/**`, `.legion-cli/tasks/**`, `.legion-cli/cache/runs/<id>/**` |
-| `qa` | Optional extra findings | No — scorer is in-process (Playwright JSON) | `.legion-cli/qa/**`, `.legion-cli/cache/runs/<id>/**` |
+| `verify` | Optional walkthrough notes + fix-plan tasks | No for ship; notes only | `.legion-cli/qa/verify.md`, `.legion-cli/qa/verify/*.md`, `.legion-cli/cache/runs/<id>/**`; may create new `tasks/TSK-*.md` (§5.2) |
+| `review` | Spec-level review loop | **Yes** | `.legion-cli/qa/review.md`, `.legion-cli/cache/runs/<id>/**`; may create new `tasks/TSK-*.md` (§5.2) |
+| `qa` | Optional extra findings | No — scorer is in-process (Playwright JSON) | `.legion-cli/cache/runs/<id>/**` (QA scores and the checklist are protected) |
 | `map` | Optional architecture/fingerprint spawn after fallback walk | No — fallback parser always writes the map | `.legion-cli/map/ARCHITECTURE.md`, `.legion-cli/cache/runs/<id>/**` |
 | `wireframe` | Optional HTML regenerate/restyle spawn | No — templates write INDEX.html; `--spawn` is extra | `.legion-cli/specs/<activeSpecId>/wireframes/**`, `.legion-cli/cache/runs/<id>/**` |
 | `chat` | Some REPL turns may spawn for a proposal | No — local routing covers status/next/brief/search | `.legion-cli/cache/runs/<id>/**` |
@@ -762,9 +762,25 @@ sequenceDiagram
     end
 ```
 
-**Revert algorithm** (after **every** `wait()`, still holding the lock). Porcelain alone is not enough: a vendor CLI that `git commit`s hides extras from `git status`. **Allowed-set membership is the only fail criterion. HEAD movement is a warning, not a failure.**
+**Precondition (KD-3).** Every agent spawn needs a git repository with at least one commit. A non-git or unborn project is refused before any state is written: "Legion needs a git repository with at least one commit to protect your files during agent runs. Next: `git init && git add -A && git commit -m "start"`". `init` prints the same hint when there is no repo, and `doctor` has a `git repository` check.
 
-1. Before spawn, record `preSpawnRef = git rev-parse HEAD` in `.legion-cli/cache/runs/<id>/resume.json`. Also snapshot the set of task ids (for `review` / `verify`).
+**Git hardening.** Every engine git call goes through persist's `runGit`, with git resolved once to an absolute path from PATH (a `git.exe` planted in the project is never run). Read and restore calls (status, ls-files, diff, cat-file, rev-parse, restore, worktree, …) run with `-c core.fsmonitor=false -c core.hooksPath=<empty dir> -c core.quotePath=false -c core.attributesFile=<empty file>`, `--no-ext-diff` for diff, and `GIT_NO_REPLACE_OBJECTS=1`. The user's own commits (`ship --commit`, ingest auto-commit) keep their hooks and only set `GIT_NO_REPLACE_OBJECTS=1`; that is safe because the git control files are restored after every spawn, before any git call. `ingest --diff <rev>` passes `--end-of-options` before the revision.
+
+**Protected set P (KD-1).** P is everything under `.legion-cli/` except `cache/`, `index/`, `sandbox/`, `worktrees/` and `serve.json`, plus the git control files: `config`, `config.worktree`, `commondir`, `hooks/**`, `info/**` and `objects/info/alternates` under both the git dir and the common dir (`git rev-parse --git-dir --git-common-dir`), the `.git` file of a linked worktree, `.gitmodules` and `.gitattributes`. `audit/**` is inside P on purpose, so an agent can't forge audit lines. Segment checks for `.git` and `.legion-cli` are case-insensitive everywhere (`.LEGION-CLI/…` in `filesAllowed` is refused at ticket, amend and plan).
+
+- **Snapshot.** P is snapshotted as bytes (files ≤ 4 MiB) or `{size, sha256}` (larger), with directory entries and link targets, by an lstat-only walk that never follows a link. It is held in memory (the finish path never trusts disk) and also written to the control dir for crash replay. The snapshot is the **last step before the adapter spawns**.
+- **Restore, before any git call.** After `wait()` (and after jail copy-out), P is compared with the snapshot. For each change, in its own try/catch: lstat every ancestor (a link or junction ancestor is quarantined *as a link* — unlinked, never followed — and replaced by a real directory), then quarantine the current content (moved when new, copied when changed), and restore the snapshot bytes only if the quarantine succeeded. Deleted files are restored; changed files over 4 MiB are quarantined and reported as unrestorable. Paths the skill's contract allows are exempt.
+- **New task files (R-2).** plan, review and verify may *create* `.legion-cli/tasks/TSK-*.md`. A new file that parses as a valid task is admitted (a colliding or mismatched id is re-allocated from file names); an invalid one is quarantined and the verb FAILs normally. Existing task files stay byte-protected. The review and verify contracts are otherwise just their notes (`qa/review.md`; `qa/verify.md`, `qa/verify/*.md`), and `qa` has no `.legion-cli` root: QA scores and `qa/checklist.json` are protected.
+- **Incident (per run only).** Any other P change is an incident: execute leaves the task `blocked` with `incident: true`, review records `lastReview: FAIL`, other verbs refuse this invocation. A failed restore always refuses and lists what was not restored. `protected_restored` and `quarantine_created` (with the manifest's sha256) audit events are recorded after the restore. Nothing is persisted globally; `task retry` is the exit.
+- **Quarantine (R-17, R-40).** `<userStateDir>/quarantine/<projectHash>/<runId>-<random>/` (`%LOCALAPPDATA%\legion-cli`, `~/Library/Caches/legion-cli` or `${XDG_STATE_HOME:-~/.local/state}/legion-cli`), created at finish with an exclusive mkdir, owner-only, refused if any level is a link, with a `MANIFEST.json` (`path`, `reason`, `restoredFrom`, `sha256`, `at`). Moves never overwrite (hard link + unlink; across volumes, exclusive copy, verify the sha, then delete the source). It is outside the project, so it is never committed and project cleanup (`git clean -fdX`) can't reach it. The engine never deletes it; `doctor` lists retained quarantines and flags a missing manifest or one that doesn't match its audited hash.
+
+**Freeze (KD-2).** While any agent spawn is live, every engine write is refused: "an agent run (<skill> <runId>) is in progress; wait for it to finish (legion-cli status)". The check runs first in every locked verb, before crash recovery, and again under the lock; chat session writes and the skill / design-system installers check it too. Reads (status, show, brief, search, MCP, dashboard GET) keep working. The owning process knows its spawn from memory and its finish path is exempt through an in-memory token. Other processes read the run's control record in `<userStateDir>/control/<projectHash>/<runId>/` (`resume.json`, `live.json`), never in the agent-writable run cache: it must be valid (`startedAt` not in the future, `timeoutMs` ≤ 20 min), with the engine PID alive and not reused; an unreadable or invalid record counts as live until it is older than the maximum timeout plus 10 minutes.
+
+**Write ordering (KD-15).** The engine never writes into P between the snapshot and the restore. Spawn-related writes (the task's `in_progress` transition, `STATE.md`, execute's `sandbox_start` / `sandbox_degraded` event) happen before the snapshot. Audit events this process raises during the spawn are buffered in memory; audit events from other processes (freeze refusals, lock timeouts, dashboard refusals) go to `<controlDir>/deferred-audit.jsonl`. The owning finish appends both after the restore, keeping their timestamps. Write paths outside `#mutate`: `serve.json` (excluded from P), `index/` (excluded), chat sessions (freeze-checked), installers (freeze-checked), the dashboard (through engine verbs).
+
+**Revert algorithm** (after **every** `wait()`, still holding the lock, after the P restore; P paths are never handled here). Porcelain alone is not enough: a vendor CLI that `git commit`s hides extras from `git status`. **Allowed-set membership is the only fail criterion. HEAD movement is a warning, not a failure.**
+
+1. Before spawn, record `preSpawnRef = git rev-parse HEAD` in the run's control record (`<userStateDir>/control/<projectHash>/<runId>/resume.json`). Also snapshot the set of task ids (for `review` / `verify`).
 2. After `wait()`, discover candidate paths (POSIX-normalized), union of:
    - `git diff --name-status <preSpawnRef> HEAD`
    - `git status --porcelain -uall`
@@ -789,7 +805,7 @@ PR-11 goldens:
 
 This is **after-the-fact policy**. Execute also runs inside an OS sandbox (`@9thlevelsoftware/legion-cli-sandbox`; jail-as-project-root; copy-out only `allowedWrites`; revert still runs). Vendor CLIs can still use the network. Concurrent workers stay later (§5.4).
 
-`resume.json` (also used if timeout):
+`resume.json` (in the control dir, outside the project; also used if timeout):
 
 ```json
 {
@@ -799,7 +815,10 @@ This is **after-the-fact policy**. Execute also runs inside an OS sandbox (`@9th
   "skillId": "execute",
   "preSpawnRef": "abc123",
   "startedAt": "2026-09-01T12:00:00Z",
-  "pid": 1234
+  "timeoutMs": 1200000,
+  "pid": 1234,
+  "enginePid": 1200,
+  "engineStartedAt": 1788264000000
 }
 ```
 

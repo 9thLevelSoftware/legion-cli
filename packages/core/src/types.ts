@@ -338,6 +338,12 @@ export type ReviewResult = {
   createdTaskIds: string[];
   extrasReverted: string[];
   rewrittenExistingTaskIds: string[];
+  /** The reviewer changed protected files; they were quarantined and restored (FAIL). */
+  incident?: boolean;
+  /** Protected paths the reviewer changed (restored), when `incident`. */
+  protectedChanged?: string[];
+  /** Out-of-project quarantine folder for this run, when anything was quarantined. */
+  quarantineDir?: string;
 };
 
 export type ShipReceipt = {

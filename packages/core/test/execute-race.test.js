@@ -9,6 +9,7 @@ import test from "node:test";
 import { createLegionStore, isPidAlive } from "@9thlevelsoftware/legion-cli-persist";
 import { HINT, LegionEngine, LegionRefuseError } from "../dist/index.js";
 import {
+  controlDir,
   initGitRepo,
   initProject,
   makeTask,
@@ -51,7 +52,7 @@ async function waitUntil(predicate, timeoutMs, message) {
 
 async function writeResume(dir, taskId, pid) {
   const runId = `execute-race-${taskId}`;
-  const resumeDir = join(dir, ".legion-cli", "cache", "runs", runId);
+  const resumeDir = controlDir(dir, runId);
   await mkdir(resumeDir, { recursive: true });
   await writeFile(
     join(resumeDir, "resume.json"),
@@ -103,13 +104,14 @@ test("during a fake long spawn, status is in_progress and engine.lock is absent"
       const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "release");
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
-        fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
+        fakeHoldWait: { readyPath, releasePath, timeoutMs: 60_000 },
       });
       await initProject(engine);
       await seedExecute(store);
       initGitRepo(dir);
       const pending = engine.execute("auto");
-      await waitUntil(() => existsSync(readyPath), 10_000, "fake wait never became ready");
+      // The first copy jail of the file is slow under a loaded full run.
+      await waitUntil(() => existsSync(readyPath), 30_000, "fake wait never became ready");
       assert.equal((await store.readTask("TSK-0001")).data.status, "in_progress");
       assert.equal((await store.readState()).data.currentTaskId, "TSK-0001");
       assert.equal(existsSync(store.paths.lock), false);
@@ -149,7 +151,7 @@ test("two processes execute auto: second is refused and never two in_progress", 
           () => parent.execute("auto"),
           (err) => {
             assert.equal(err instanceof LegionRefuseError, true);
-            assert.match(err.message, /in_progress/);
+            assert.match(err.message, /agent run [(]execute [^)]*[)] is in progress/);
             assert.equal(err.nextHint, HINT.status);
             return true;
           },
@@ -193,7 +195,7 @@ test("task amend is refused while review wait is live", async () => {
         () => engine.amendTask("TSK-0001", contract),
         (err) => {
           assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /task amend is refused while review is running/);
+          assert.match(err.message, /agent run [(]review [^)]*[)] is in progress/);
           assert.equal(err.nextHint, HINT.status);
           return true;
         },
@@ -223,7 +225,7 @@ test("ticket create is refused while execute wait is live", async () => {
         () => engine.fileTicket({ title: "park extra" }),
         (err) => {
           assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /ticket create is refused while /);
+          assert.match(err.message, /agent run [(]execute [^)]*[)] is in progress/);
           assert.equal(err.nextHint, HINT.status);
           return true;
         },
@@ -250,7 +252,8 @@ test("live resume pid is not demoted by recovery", async () => {
       const pending = engine.execute("auto");
       await waitUntil(() => existsSync(readyPath), 10_000, "fake wait never became ready");
       const other = new LegionEngine(dir, undefined, { skillsDir });
-      await other.recoverStaleInProgress();
+      // KD-2: another engine cannot even run recovery while the spawn is live (freeze first).
+      await assert.rejects(() => other.recoverStaleInProgress(), /agent run [(]execute [^)]*[)] is in progress/);
       assert.equal((await store.readTask("TSK-0001")).data.status, "in_progress");
       await writeFile(releasePath, "go\n");
       const result = await pending;
@@ -340,7 +343,7 @@ test("amend and ship refuse while a fake long spawn is in_progress", async () =>
           }),
         (err) => {
           assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /in_progress/);
+          assert.match(err.message, /agent run [(]execute [^)]*[)] is in progress/);
           assert.equal(err.nextHint, HINT.status);
           return true;
         },
@@ -349,7 +352,7 @@ test("amend and ship refuse while a fake long spawn is in_progress", async () =>
         () => other.ship(),
         (err) => {
           assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /in_progress/);
+          assert.match(err.message, /agent run [(]execute [^)]*[)] is in progress/);
           assert.equal(err.nextHint, HINT.status);
           return true;
         },

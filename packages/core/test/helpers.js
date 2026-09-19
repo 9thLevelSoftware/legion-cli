@@ -1,9 +1,26 @@
-import { spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { controlDirPath } from "@9thlevelsoftware/legion-cli-persist";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { LegionEngine } from "../dist/index.js";
+
+/**
+ * Control records and quarantine live in the per-user state dir (KD-2). Tests use a throwaway
+ * one so they never write into the real profile.
+ */
+if (!process.env.LEGION_CLI_STATE_DIR) {
+  const stateDir = mkdtempSync(join(tmpdir(), "legion-state-"));
+  process.env.LEGION_CLI_STATE_DIR = stateDir;
+  process.once("exit", () => {
+    try {
+      rmSync(stateDir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  });
+}
 
 export function quoteArg(value) {
   return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
@@ -54,6 +71,52 @@ export function commitAll(dir, message = "seed") {
   if ((status.stdout ?? "").trim() === "") return gitHead(dir);
   git(dir, ["commit", "-m", message]);
   return gitHead(dir);
+}
+
+/** Control dir of a run (`<userStateDir>/control/<projectHash>/<runId>/`, KD-2). */
+export function controlDir(dir, runId) {
+  return controlDirPath(dir, runId);
+}
+
+/**
+ * Write a run's control records the way another engine process would: `resume.json` and, when
+ * `live` is given, the live marker (`live.json`).
+ */
+export async function writeControlRecords(dir, resume, live) {
+  const target = controlDirPath(dir, resume.runId);
+  await mkdir(target, { recursive: true });
+  await writeFile(join(target, "resume.json"), `${JSON.stringify(resume, null, 2)}\n`, "utf8");
+  if (live) {
+    await writeFile(
+      join(target, "live.json"),
+      `${JSON.stringify({
+        runId: resume.runId,
+        skillId: resume.skillId,
+        startedAt: resume.startedAt,
+        timeoutMs: 20 * 60 * 1000,
+        ...live,
+      })}\n`,
+      "utf8",
+    );
+  }
+  return target;
+}
+
+/** A child process that stays alive until `stop()` (an "agent" or "engine" of another process). */
+export function spawnSleeper() {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  return {
+    pid: child.pid,
+    stop: () =>
+      new Promise((done) => {
+        if (child.exitCode !== null || child.signalCode !== null) return done();
+        child.once("exit", () => done());
+        child.kill();
+      }),
+  };
 }
 
 export async function withEngine(fn, options) {

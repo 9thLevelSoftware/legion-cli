@@ -111,6 +111,19 @@ export function runGit(
   };
 }
 
+/**
+ * Absolute git dir and common dir (`rev-parse --git-dir --git-common-dir`). In a linked worktree
+ * the git dir is `<main>/.git/worktrees/<name>` and the common dir is the main `.git`. Null
+ * outside a repository.
+ */
+export function gitControlDirs(cwd: string): { gitDir: string; commonDir: string } | null {
+  const result = runGit(cwd, ["rev-parse", "--git-dir", "--git-common-dir"]);
+  if (result.status !== 0) return null;
+  const [gitDir, commonDir] = result.stdout.split(/\r?\n/).map((line) => line.trim());
+  if (!gitDir || !commonDir) return null;
+  return { gitDir: resolve(cwd, gitDir), commonDir: resolve(cwd, commonDir) };
+}
+
 /** `git ls-files -z` (tracked paths), or null when git fails. */
 export function gitLsFiles(cwd: string): string[] | null {
   const result = runGit(cwd, ["ls-files", "-z"], { maxBuffer: 64 * 1024 * 1024 });

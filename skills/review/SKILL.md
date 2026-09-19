@@ -22,9 +22,9 @@ PASS is decided by the engine: only if this spawn created zero new task ids **an
 
 Allowed roots:
 
-- `.legion-cli/qa/**`
-- `.legion-cli/tasks/**`
+- `.legion-cli/qa/review.md`
 - `.legion-cli/cache/runs/<id>/**`
+- new task files `.legion-cli/tasks/TSK-*.md` only (validated and admitted by the engine; existing ones are protected)
 
 Do not write anything else. Do not `git add` or `git commit`.
 
@@ -38,8 +38,8 @@ Read the frozen spec at `.legion-cli/specs/<activeSpecId>/SPEC.md` and the slice
 
 Write review notes to `.legion-cli/qa/review.md`.
 
-If the slice does not meet the spec, file fix-plan tasks under `.legion-cli/tasks/` (`type: fix`, `parentId`) or `.legion-cli/cache/runs/<id>/extra.json`. Do not expand a live task's `filesAllowed`. Extra work is a linked ticket.
+If the slice does not meet the spec, file fix-plan tasks as NEW files `.legion-cli/tasks/TSK-*.md` (`type: fix`, `parentId`) or `.legion-cli/cache/runs/<id>/extra.json`. You may add new task files; you may not edit existing ones. The engine validates each new task file (an invalid one is quarantined and the review FAILs) and re-allocates an id that is already taken. Do not expand a live task's `filesAllowed`. Extra work is a linked ticket.
 
-If the slice is acceptable, write notes only. Do not create tasks. Do not rewrite existing `TSK-*.md`.
+If the slice is acceptable, write notes only. Do not create tasks. Do not rewrite existing `TSK-*.md`, `STATE.md`, `qa/scores/**` or `qa/checklist.json`: they are protected, and a change is restored, quarantined and FAILs the review.
 
 When finished, write a short summary to `.legion-cli/cache/runs/<id>/summary.md`.

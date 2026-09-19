@@ -27,6 +27,12 @@ export type SandboxPolicy = {
   allowDegradedCopy?: boolean;
   /** Adapter-scoped vendor keys only; never the full credential dump. */
   credentialKeys?: readonly string[];
+  /**
+   * The spawn's SkillContract roots under `.legion-cli/` (R-3). Copy-out allows a `.legion-cli`
+   * path only when one of these permits it (canonical spelling; `.LEGION-CLI/…` never matches)
+   * and blocks every other `.legion-cli` path. Omitted: `.legion-cli` paths in `allowedWrites`.
+   */
+  contractRoots?: readonly string[];
 };
 
 export interface SandboxHandle {
@@ -726,11 +732,23 @@ async function fileSha256(abs: string): Promise<string | undefined> {
   }
 }
 
+function isLegionRel(posix: string): boolean {
+  return (posix.split("/")[0] ?? "").toLowerCase() === ".legion-cli";
+}
+
+/** R-3: a `.legion-cli` path copies out only when a contract root permits it, spelled canonically. */
+function legionCopyOutAllowed(rel: string, contractRoots: readonly string[]): boolean {
+  if (!isLegionRel(rel)) return true;
+  if (!rel.startsWith(".legion-cli/")) return false;
+  return matchesAllowed(rel, contractRoots);
+}
+
 async function copyOutWrites(
   projectRoot: string,
   jailRoot: string,
   allowedWrites: readonly string[],
   copyInHashes: ReadonlyMap<string, string>,
+  contractRoots: readonly string[],
 ): Promise<{ copied: string[]; dropped: string[] }> {
   const copied: string[] = [];
   const dropped: string[] = [];
@@ -757,7 +775,8 @@ async function copyOutWrites(
       st.isSymbolicLink() ||
       isBlockedRel(rel) ||
       !isConcretePosixRepoRelativePath(rel) ||
-      !matchesAllowed(rel, allowedWrites)
+      !matchesAllowed(rel, allowedWrites) ||
+      !legionCopyOutAllowed(rel, contractRoots)
     ) {
       dropped.push(rel);
       continue;
@@ -782,6 +801,7 @@ async function copyOutWrites(
   const removed = new Set<string>();
   for (const allowed of allowedWrites) {
     if (jailSet.has(allowed) || isBlockedRel(allowed) || allowed.includes("*")) continue;
+    if (!legionCopyOutAllowed(allowed, contractRoots)) continue;
     let jailEntryExists = false;
     try {
       await lstat(toFsPath(jailRoot, allowed));
@@ -793,8 +813,9 @@ async function copyOutWrites(
     if (await unlinkAllowedIfGone(projectRoot, allowed, copied)) removed.add(allowed);
   }
   for (const allowed of allowedWrites) {
-    if (isBlockedRel(allowed)) continue;
+    if (isBlockedRel(allowed) || allowed.includes("*")) continue;
     for (const rel of await listHostFilesUnder(projectRoot, allowed)) {
+      if (!legionCopyOutAllowed(rel, contractRoots)) continue;
       if (jailSet.has(rel) || removed.has(rel)) continue;
       if (await unlinkAllowedIfGone(projectRoot, rel, copied)) removed.add(rel);
     }
@@ -807,6 +828,7 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
   const runId = assertSafeRunId(policy.runId);
   const allowedWrites = unique(policy.allowedWrites.map(assertPolicyPath));
   const readSet = unique(policy.readSet.map(assertPolicyPath));
+  const contractRoots = policy.contractRoots ? [...policy.contractRoots] : allowedWrites.filter(isLegionRel);
 
   const jailRoot = toFsPath(projectRoot, `.legion-cli/sandbox/${runId}`);
   const sandboxDir = legionPaths(projectRoot).sandboxDir;
@@ -935,7 +957,7 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
         return next;
       },
       copyOut() {
-        return copyOutWrites(projectRoot, jailRoot, allowedWrites, copyInHashes);
+        return copyOutWrites(projectRoot, jailRoot, allowedWrites, copyInHashes, contractRoots);
       },
       async destroy() {
         await destroyCreated();

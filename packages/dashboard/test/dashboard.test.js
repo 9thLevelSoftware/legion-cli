@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { controlDirPath } from "@9thlevelsoftware/legion-cli-persist";
 import { ServeFileSchema } from "@9thlevelsoftware/legion-cli-schema";
 import {
   ENGINE_WRITE_METHODS,
@@ -14,7 +15,7 @@ import {
   WEBMCP_SCRIPT_PATH,
   WEBMCP_TOOLS,
 } from "../dist/index.js";
-import { otherSpecTask, todoTask, withStore, withTempDir } from "./helpers.js";
+import { otherSpecTask, spawnSleeper, todoTask, withStore, withTempDir } from "./helpers.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -418,30 +419,61 @@ test("POST /engine/ticket persists type/priority and refuses invalid enums witho
   });
 });
 
-test("POST /engine/* returns 409 while a live spawn is in_progress", async () => {
+async function writeControlRecords(dir, runId, skillId, pid, taskId = null) {
+  const target = controlDirPath(dir, runId);
+  await mkdir(target, { recursive: true });
+  const startedAt = new Date().toISOString();
+  await writeFile(
+    join(target, "resume.json"),
+    `${JSON.stringify({
+      schemaVersion: "legion-cli-resume/v1",
+      runId,
+      taskId,
+      skillId,
+      preSpawnRef: "UNBORN",
+      startedAt,
+      pid,
+      enginePid: pid,
+      adapterId: "fake",
+    })}\n`,
+    "utf8",
+  );
+  await writeFile(
+    join(target, "live.json"),
+    `${JSON.stringify({ runId, skillId, enginePid: pid, engineStartedAt: Date.now(), startedAt, timeoutMs: 1_200_000 })}\n`,
+    "utf8",
+  );
+  return target;
+}
+
+test("R-41: a dashboard POST during another process's agent run is refused (409) and its audit is deferred", async (t) => {
+  await withStore(async ({ dir }) => {
+    const other = spawnSleeper();
+    t.after(() => other.stop());
+    const control = await writeControlRecords(dir, "review-live", "review", other.pid);
+    await withServer(dir, async ({ handle }) => {
+      const res = await enginePost(handle, "/engine/ticket", { title: "park extra" }, { token: handle.token });
+      assert.equal(res.status, 409, await res.clone().text());
+      const body = await res.json();
+      assert.match(body.error, /an agent run [(]review review-live[)] is in progress/);
+      assert.equal(body.next, "legion-cli status");
+    });
+    // The refusal is not written into the protected audit log during the run (KD-15).
+    const deferred = await readFile(join(control, "deferred-audit.jsonl"), "utf8");
+    assert.match(deferred, /"type":"refuse"/);
+    const events = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8").catch(() => "");
+    assert.doesNotMatch(events, /review-live/);
+  });
+});
+
+test("POST /engine/* returns 409 while a live spawn is in_progress", async (t) => {
   await withStore(async ({ dir, store }) => {
     const live = (await store.readTask("TSK-0002")).data;
     await store.writeTask({ ...live, status: "in_progress" }, "Implement the in/out button.\n");
-    const resumeDir = join(dir, ".legion-cli", "cache", "runs", "execute-live");
-    await mkdir(resumeDir, { recursive: true });
-    await writeFile(
-      join(resumeDir, "resume.json"),
-      `${JSON.stringify(
-        {
-          schemaVersion: "legion-cli-resume/v1",
-          runId: "execute-live",
-          taskId: "TSK-0002",
-          skillId: "execute",
-          preSpawnRef: "UNBORN",
-          startedAt: new Date().toISOString(),
-          pid: process.pid,
-          adapterId: "fake",
-        },
-        null,
-        2,
-      )}\n`,
-      "utf8",
-    );
+    // Another process's execute: its control records live outside the project (KD-2).
+    const other = spawnSleeper();
+    t.after(() => other.stop());
+    await writeControlRecords(dir, "execute-live", "execute", other.pid, "TSK-0002");
     await store.rebuild();
     await withServer(dir, async ({ handle, warns }) => {
       const html = await (await fetch(handle.url)).text();

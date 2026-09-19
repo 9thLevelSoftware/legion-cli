@@ -33,6 +33,8 @@ The engine, not this spawn, writes `STATE.md`, task `status`, and tickets.
 
 Implicit forbidden still applies: `.git/**`, `.env*`, `.legion-cli/config.yaml`, `.legion-cli/index/**`.
 
+Protected paths: everything under `.legion-cli/` except `cache/`, `index/`, `sandbox/`, `worktrees/` and `serve.json` (that includes `STATE.md`, `tasks/**`, `qa/**`, `audit/**`, `specs/**`, `wiki/**`), plus the git control files (`.git/config`, `.git/config.worktree`, `.git/commondir`, `.git/hooks/**`, `.git/info/**`, `.git/objects/info/alternates`, a worktree's `.git` file, `.gitmodules`, `.gitattributes`). The engine snapshots them before this spawn and, after it, moves any change to an out-of-project quarantine and restores the original bytes. Touching one is an incident: the task is blocked.
+
 ## Task
 
 Read the FileContract and spec in prompt.md.

@@ -12,6 +12,7 @@ import {
 } from "@9thlevelsoftware/legion-cli-persist";
 import { atomicWriteFile } from "./atomic-write.js";
 import { hasGitSegment, isAllowedPath, isEngineOwned, matchesGlob } from "./contracts.js";
+import { isProtectedPath, type ProtectedRestoreResult } from "./protected.js";
 
 export const HEAD_MOVED_WARNING =
   "agent committed; Legion CLI did not `reset`. `legion-cli ship` is the human commit gate.";
@@ -26,6 +27,10 @@ export type RevertResult = {
   incident: boolean;
   headMoved: boolean;
   preSpawnRef: string | null;
+  /** Protected-set comparison and restore (KD-1), done before any git call. */
+  protected?: ProtectedRestoreResult;
+  /** An incident from outside the protected-set restore (e.g. a jail write under `.git`). */
+  otherIncident?: boolean;
   sandboxCopied?: string[];
   sandboxDropped?: string[];
 };
@@ -234,6 +239,12 @@ export async function revertExtras(opts: {
   for (const posix of candidates) {
     if (hasGitSegment(posix)) {
       incident = true;
+      continue;
+    }
+    // P (`.legion-cli/**` minus engine runtime areas, git control files) was already compared and
+    // restored byte-for-byte before this git-based pass (KD-1); engine runtime areas are not
+    // agent output. Neither is ever reverted here, and `dirtyAtStart` never excuses a P path.
+    if (isProtectedPath(posix) || isEngineOwned(posix)) {
       continue;
     }
     if (opts.dirtyAtStart?.has(posix)) {

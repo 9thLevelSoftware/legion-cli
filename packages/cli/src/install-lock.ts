@@ -1,3 +1,4 @@
+import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import { createLegionStore, fetchGithubZipball } from "@9thlevelsoftware/legion-cli-persist";
 
 type ZipFetch = (source: string, opts?: Parameters<typeof fetchGithubZipball>[1]) => Promise<{ body: Buffer }>;
@@ -23,6 +24,9 @@ export async function installWithLock<T>(
   download: ZipFetch = fetchGithubZipball,
 ): Promise<T> {
   const store = createLegionStore(projectRoot);
+  // Installs write under `.legion-cli/` (protected): refused while an agent run is live (KD-2).
+  const engine = createLegionEngine(projectRoot, undefined);
+  await engine.assertNoLiveAgentRun();
   if (!remote) return store.withLock(() => run(undefined));
   let body: Buffer | undefined;
   try {

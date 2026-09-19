@@ -1,5 +1,5 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { appendFile, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { AuditEventSchema, SCHEMA_VERSION, type AuditEvent, type Phase } from "@9thlevelsoftware/legion-cli-schema";
 import { abandonReceiptPath, auditDayPath, auditEventsPath, legionPaths, shipReceiptPath } from "./layout.js";
 import { toFsPath } from "./paths.js";
@@ -25,6 +25,56 @@ export async function appendAuditEvent(
   await appendFile(jsonl, `${JSON.stringify(parsed)}\n`, "utf8");
   await appendAuditDay(projectRoot, parsed);
   return parsed;
+}
+
+export const DEFERRED_AUDIT_BASENAME = "deferred-audit.jsonl";
+
+/**
+ * KD-15 / R-41: while another process's agent run is live, this process never writes into
+ * `.legion-cli/audit/` (it is in the protected set). Its events go to the run's control dir,
+ * outside the project; the owning finish appends them after the protected-set restore.
+ */
+export async function appendDeferredAuditEvent(
+  controlDir: string,
+  event: Omit<AuditEvent, "schemaVersion"> & { schemaVersion?: AuditEvent["schemaVersion"] },
+): Promise<AuditEvent> {
+  const parsed = AuditEventSchema.parse({
+    schemaVersion: event.schemaVersion ?? SCHEMA_VERSION.audit,
+    ts: event.ts,
+    type: event.type,
+    phase: event.phase,
+    taskId: event.taskId ?? null,
+    actor: event.actor,
+    data: event.data,
+  });
+  await appendFile(join(controlDir, DEFERRED_AUDIT_BASENAME), `${JSON.stringify(parsed)}\n`, "utf8");
+  return parsed;
+}
+
+/** Append every deferred event (original timestamps kept) to the project audit log, then drop the file. */
+export async function drainDeferredAuditEvents(projectRoot: string, controlDir: string): Promise<number> {
+  const file = join(controlDir, DEFERRED_AUDIT_BASENAME);
+  let raw: string;
+  try {
+    raw = await readFile(file, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw err;
+  }
+  let count = 0;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = AuditEventSchema.safeParse(JSON.parse(line) as unknown);
+      if (!parsed.success) continue;
+      await appendAuditEvent(projectRoot, parsed.data);
+      count += 1;
+    } catch {
+      continue;
+    }
+  }
+  await unlink(file).catch(() => undefined);
+  return count;
 }
 
 export function auditDayFromTs(ts: string): string {

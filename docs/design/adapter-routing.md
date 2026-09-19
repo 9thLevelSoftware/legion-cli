@@ -762,7 +762,7 @@ Invalid `--adapter` refuses with `adapter must be ${ADAPTER_ID_HELP}` (same as i
 | --- | --- | --- |
 | `.legion-cli/config.yaml` | `legion-cli-config/v1` | `adapter.routes?`, `adapter.named?`; adapter object `.strict()` |
 | `.legion-cli/tasks/TSK-*.md` | `legion-cli-task/v1` | `adapter?: AdapterId` (optional; fixture TSK-0002 unchanged) |
-| `.legion-cli/cache/runs/<id>/resume.json` | `legion-cli-resume/v1` | `adapterId?`, `binary?`, `argvSummary?` (template), `resolutionSource?` |
+| `<userStateDir>/control/<projectHash>/<runId>/resume.json` (outside the project since PR 4) | `legion-cli-resume/v1` | `adapterId?`, `binary?`, `argvSummary?` (template), `resolutionSource?` |
 | Session brief (derived) | `legion-cli-brief/v1` | `currentTask.adapter?` (**raw**) |
 | Audit events | `legion-cli-audit/v1` | `data.adapterId` etc. inside existing open `data` record on execute/timeout — **no schema change required** (`z.record`) |
 
@@ -878,7 +878,7 @@ Covered in Proposed Design §9. Summary:
 
 | Signal | Where | New fields |
 | --- | --- | --- |
-| Per-run resume (during the run, before `wait()`) | `.legion-cli/cache/runs/<id>/resume.json` | `adapterId`, `binary`, template `argvSummary`, `resolutionSource` |
+| Per-run resume (during the run, before `wait()`) | `<userStateDir>/control/<projectHash>/<runId>/resume.json` | `adapterId`, `binary`, template `argvSummary`, `resolutionSource` |
 | Audit jsonl + day markdown | `.legion-cli/audit/` execute + timeout only | `data.adapterId` (and siblings); day line `adapter=` |
 | Doctor | stdout/JSON | routes, named, required vs optional routed spawnable set, extra-args trust warnings, PATH matrix unchanged |
 | next | CLI ready table | **raw** `Task.adapter` suffix when set |

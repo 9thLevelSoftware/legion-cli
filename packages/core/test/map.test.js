@@ -190,7 +190,7 @@ test("map replaces a symlink ARCHITECTURE.md without reading the target", async 
   });
 });
 
-test("map spawn overwriting fingerprints.json is restored from the in-process result", async () => {
+test("map spawn overwriting fingerprints.json is an incident; the file is restored and rewritten", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ engine, dir }) => {
       await initProject(engine);
@@ -199,8 +199,8 @@ test("map spawn overwriting fingerprints.json is restored from the in-process re
       const spawning = new LegionEngine(dir, undefined, {
         fakeArtifacts: [{ path: ".legion-cli/map/fingerprints.json", content: '{"pwned":true}\n' }],
       });
-      const result = await spawning.map({ lsp: "off" });
-      assert.equal(result.backend, "fallback");
+      // fingerprints.json is protected (not in the map contract): quarantined, restored, incident.
+      await assert.rejects(() => spawning.map({ lsp: "off" }), /protected files [(]\.legion-cli\/map\/fingerprints\.json[)]/);
       const runNames = await readdir(join(dir, ".legion-cli", "cache", "runs"));
       assert.ok(runNames.some((name) => name.startsWith("map-")), "map skill spawn must have run");
       const fingerprints = JSON.parse(
@@ -287,7 +287,7 @@ test("map spawn restore replaces a symlink ARCHITECTURE.md without reading the t
   });
 });
 
-test("map refuses while execute is in_progress; live-spawn.json unchanged", async () => {
+test("map refuses while execute is in_progress (freeze)", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
       const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "map-ready");
@@ -314,18 +314,15 @@ test("map refuses while execute is in_progress; live-spawn.json unchanged", asyn
         if (Date.now() - start > 10_000) throw new Error("fake wait never became ready");
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      const livePath = join(dir, ".legion-cli", "cache", "live-spawn.json");
-      const liveBefore = await readFile(livePath, "utf8");
       await assert.rejects(
         () => engine.map({ lsp: "off" }),
         (err) => {
           assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /refused while/);
+          assert.match(err.message, /agent run [(]execute [^)]*[)] is in progress/);
           assert.equal(err.nextHint, HINT.status);
           return true;
         },
       );
-      assert.equal(await readFile(livePath, "utf8"), liveBefore);
       assert.equal(existsSync(join(dir, ".legion-cli", "map", "fingerprints.json")), false);
       await writeFile(releasePath, "go\n");
       const result = await pending;

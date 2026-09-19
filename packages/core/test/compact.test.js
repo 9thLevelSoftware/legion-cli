@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -13,7 +13,7 @@ import {
   p0TasksNotDone,
   unionDoneFilesAllowed,
 } from "../dist/index.js";
-import { initProject, makeTask, withEngine, writeTask } from "./helpers.js";
+import { initProject, makeTask, spawnSleeper, withEngine, writeControlRecords, writeTask } from "./helpers.js";
 
 test("done → compacted is legal; other statuses are not", () => {
   assert.equal(canTransitionTaskStatus("done", "compacted"), true);
@@ -174,31 +174,37 @@ test("context compact refuses while currentTaskId is in_progress with a live pid
       { ...(await store.readState()).data, currentTaskId: "TSK-0002" },
       "Current task: TSK-0002.\n",
     );
-    const resumeDir = join(dir, ".legion-cli", "cache", "runs", "execute-live");
-    await mkdir(resumeDir, { recursive: true });
-    await writeFile(
-      join(resumeDir, "resume.json"),
-      `${JSON.stringify({
-        schemaVersion: "legion-cli-resume/v1",
-        runId: "execute-live",
-        taskId: "TSK-0002",
-        skillId: "execute",
-        preSpawnRef: "UNBORN",
-        startedAt: new Date().toISOString(),
-        pid: process.pid,
-      })}\n`,
-      "utf8",
-    );
-    await assert.rejects(
-      () => engine.compactContext(),
-      (err) => {
-        assert.equal(err instanceof LegionRefuseError, true);
-        assert.match(err.message, /in_progress/);
-        assert.match(err.nextHint, /legion-cli status/);
-        return true;
-      },
-    );
-    assert.equal((await store.readTask("TSK-0001")).data.status, "done");
+    // Another engine's execute: its control records (outside the project) with a live engine.
+    const other = spawnSleeper();
+    try {
+      await writeControlRecords(
+        dir,
+        {
+          schemaVersion: "legion-cli-resume/v1",
+          runId: "execute-live",
+          taskId: "TSK-0002",
+          skillId: "execute",
+          preSpawnRef: "UNBORN",
+          startedAt: new Date().toISOString(),
+          pid: other.pid,
+          enginePid: other.pid,
+        },
+        { enginePid: other.pid, engineStartedAt: Date.now() },
+      );
+      await assert.rejects(
+        () => engine.compactContext(),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /agent run \(execute execute-live\) is in progress/);
+          assert.match(err.nextHint, /legion-cli status/);
+          return true;
+        },
+      );
+      assert.equal((await store.readTask("TSK-0001")).data.status, "done");
+      assert.equal((await store.readTask("TSK-0002")).data.status, "in_progress");
+    } finally {
+      await other.stop();
+    }
   });
 });
 

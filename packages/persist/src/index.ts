@@ -16,6 +16,16 @@ export {
 } from "./atomic-write.js";
 export { nextFileId } from "./ids.js";
 export {
+  controlDirPath,
+  controlProjectDirPath,
+  ensureControlDir,
+  ensureOwnerDir,
+  ensureQuarantineRoot,
+  projectHash,
+  quarantineRootPath,
+  userStateDir,
+} from "./state-dir.js";
+export {
   ownProcessStartedAt,
   PROCESS_START_TOLERANCE_MS,
   processIdentity,
@@ -28,6 +38,9 @@ export {
   abandonReceiptBody,
   abandonReceiptPath,
   appendAuditEvent,
+  appendDeferredAuditEvent,
+  DEFERRED_AUDIT_BASENAME,
+  drainDeferredAuditEvents,
   auditDayFromTs,
   auditDayPath,
   auditEventsPath,
@@ -46,6 +59,7 @@ export {
   gitBranchExists,
   gitCheckIgnore,
   gitCommitIndex,
+  gitControlDirs,
   gitDiffCached,
   gitDiffRevision,
   gitDiscoverChanges,
@@ -82,6 +96,8 @@ export {
   DEFAULT_LOCK_TIMEOUT_MS,
   INDEX_DB_BASENAME,
   ingestReceiptPath,
+  isProtectedSetExcluded,
+  PROTECTED_SET_EXCLUDED,
   LEGION_DIR,
   legionPaths,
   LOCK_BASENAME,

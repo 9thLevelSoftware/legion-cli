@@ -25,13 +25,13 @@ import {
   renderArchitecture,
   writeMapFile,
 } from "@9thlevelsoftware/legion-cli-map";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   abandonReceiptBody,
   abandonReceiptPath,
-  appendAuditEvent,
   createLegionStore,
   DECISION_FILE_SCHEMA_VERSION,
   packetPath,
@@ -127,26 +127,23 @@ import {
 import { assertCanTransition, assertLegalPhase } from "./phases.js";
 import { evaluateReadiness, type ReadinessReport } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
-import {
-  HEAD_MOVED_WARNING,
-  restoreChangedTaskFiles,
-  snapshotTaskFiles,
-  type TaskFileSnapshot,
-} from "./revert.js";
+import { HEAD_MOVED_WARNING, type RevertResult } from "./revert.js";
 import {
   assertSpawnGitRepo,
   findLatestTaskResume,
   findSkillsDir,
   finishStartedSpawn,
   optionalSkillSpawn,
-  refuseIfLiveSkillSpawn,
+  protectedIncidentMessage,
   resumeRunIsLive,
+  settleStartedSpawn,
   spawnableAdapterRefuseMessage,
   startSkillSpawn,
   waitStartedSpawn,
   type OptionalSpawnResult,
   type StartedSkillSpawn,
 } from "./spawn.js";
+import { findLiveSpawn, frozenMessage, recordAuditEvent, type LiveSpawn } from "./live-spawn.js";
 import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
 import { compactTaskBody, outcomeFromTask } from "./compact.js";
 import { assertTaskStatusTransition } from "./tasks.js";
@@ -235,6 +232,16 @@ import {
 import { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands, verificationFailureReason } from "./verify.js";
 import { palettePresent } from "./wireframes.js";
 import { finishWireframe, prepareWireframe, screenPagesFor, writeWireframeFiles } from "./wireframe-run.js";
+
+/**
+ * The owning finish path's in-memory token (KD-2): set just before a spawn's post-wait locked
+ * section, it exempts that section (and only while that run is the live one) from the freeze.
+ */
+const FINISH_TOKEN = new AsyncLocalStorage<string>();
+
+function enterFinish(started: StartedSkillSpawn | undefined): void {
+  if (started?.spawned) FINISH_TOKEN.enterWith(started.runId);
+}
 
 /** Distill spawn is skipped when materialized source exceeds this many characters (64 KiB). */
 export const DISTILL_SOURCE_MAX_CHARS = 64 * 1024;
@@ -495,7 +502,6 @@ export class LegionEngine {
 
   async approveSpec(specId: string, actor: Actor): Promise<void> {
     return this.#mutate(async () => {
-      await this.#assertNoLiveInProgress("spec approve");
       const state = await this.#readState();
       if (state.phase !== "spec_draft") {
         refuse("spec approve requires phase spec_draft", HINT.spec);
@@ -544,7 +550,6 @@ export class LegionEngine {
 
   async newSpec(): Promise<void> {
     return this.#mutate(async () => {
-      await this.#assertNoLiveInProgress("spec new");
       const state = await this.#readState();
       if (state.phase !== "shipped") {
         refuse("Start a new spec after this one ships", HINT.specNew);
@@ -679,7 +684,7 @@ export class LegionEngine {
   }
 
   async brief(): Promise<SessionBrief> {
-    return this.#mutate(async () => {
+    return this.#read(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
         refuse("Brief needs a Legion CLI project first", HINT.init);
@@ -700,7 +705,7 @@ export class LegionEngine {
   }
 
   async search(q: string, opts?: { includeUntrusted?: boolean; mentions?: boolean }): Promise<SearchHit[]> {
-    return this.#mutate(async () => {
+    return this.#read(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
         refuse("Search needs a Legion CLI project first", HINT.init);
@@ -711,7 +716,7 @@ export class LegionEngine {
   }
 
   async garden(): Promise<GardenReport> {
-    return this.#mutate(async () => {
+    return this.#read(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
         refuse("garden is refused until init", HINT.init);
@@ -730,7 +735,6 @@ export class LegionEngine {
       if (state.phase === "uninitialized") {
         refuse("Map needs a Legion CLI project first", HINT.init);
       }
-      await this.#assertNoLiveInProgress("map");
       try {
         generated = await generateMap(this.projectRoot, {
           refresh: opts.refresh,
@@ -760,6 +764,7 @@ export class LegionEngine {
 
     const waited = started?.spawned ? await waitStartedSpawn(started) : undefined;
 
+    enterFinish(started);
     return this.#withLockOrRefuse(async () => {
       if (started?.spawned) {
         const revert = await finishStartedSpawn(started);
@@ -773,7 +778,7 @@ export class LegionEngine {
           mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints)),
         );
         if (revert.incident) {
-          refuse("inspect .git — spawn touched .git/", HINT.map);
+          refuse(protectedIncidentMessage(revert), HINT.map);
         }
         if (revert.extrasReverted.length > 0) {
           refuse(
@@ -807,7 +812,6 @@ export class LegionEngine {
   async compactContext(opts?: CompactOptions): Promise<CompactResult> {
     return this.#withLockOrRefuse(
       async () => {
-        await this.#assertNoLiveInProgress("context compact");
         const state = await this.#readState();
         if (state.phase === "uninitialized") {
           refuse("context compact is refused until init", HINT.init);
@@ -845,7 +849,7 @@ export class LegionEngine {
   }
 
   async assumeList(): Promise<Assumption[]> {
-    return this.#mutate(async () => {
+    return this.#read(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
         refuse("assume list needs a Legion CLI project first", HINT.init);
@@ -905,7 +909,7 @@ export class LegionEngine {
   }
 
   async getControlMode(): Promise<ControlMode> {
-    return this.#mutate(async () => {
+    return this.#read(async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
         refuse("control-mode needs a Legion CLI project first", HINT.init);
@@ -954,7 +958,6 @@ export class LegionEngine {
     let config: LegionConfig | undefined;
 
     await this.#withLockOrRefuse(async () => {
-      await this.#assertNoLiveInProgress("plan");
       const state = await this.#readState();
       if (state.phase !== "spec_frozen" && state.phase !== "planning" && state.phase !== "plan_failed") {
         refuse("Plan needs a frozen spec first", HINT.spec);
@@ -1006,6 +1009,7 @@ export class LegionEngine {
       }
     }
 
+    enterFinish(started);
     return this.#withLockOrRefuse(async () => {
       const specIdLocked = id;
       const currentLocked = current;
@@ -1018,7 +1022,7 @@ export class LegionEngine {
         const revert = await finishStartedSpawn(started);
         if (revert.incident) {
           await this.#fileExtrasFromRun(started.runId, specIdLocked);
-          refuse("inspect .git — spawn touched .git/", HINT.plan);
+          refuse(protectedIncidentMessage(revert), HINT.plan);
         }
         if (revert.extrasReverted.length > 0) {
           spawnFails.push(
@@ -1107,7 +1111,6 @@ export class LegionEngine {
 
   async fileTicket(input: NewTicket): Promise<Task> {
     return this.#mutate(async () => {
-      await this.#assertTicketAgainstLiveSpawn(input);
       return (await this.#fileTicketLocked(input)).task;
     });
   }
@@ -1122,8 +1125,6 @@ export class LegionEngine {
 
   async amendTask(id: string, contract: FileContract, opts?: AmendTaskOptions): Promise<void> {
     return this.#mutate(async () => {
-      await this.#assertNoLiveInProgress("task amend");
-      await refuseIfLiveSkillSpawn(this.projectRoot, "task amend");
       const doc = await this.store.readTask(id);
       const nextBlockedBy = opts?.blockedBy ?? doc.data.blockedBy;
       const nextBlocks = opts?.blocks ?? doc.data.blocks;
@@ -1266,6 +1267,7 @@ export class LegionEngine {
         timedOut: this.#fakeTimedOut,
         cliAdapter: opts?.adapter,
         taskAdapter: task?.adapter,
+        audit: this.#spawnAudit(),
       });
       if (result.runId) {
         await this.#fileExtrasFromRun(result.runId, specId, { type: "fix", parentId: task?.id });
@@ -1296,11 +1298,9 @@ export class LegionEngine {
     let specId: string | undefined;
     let config: LegionConfig | undefined;
     let before: string[] = [];
-    let beforeFiles: TaskFileSnapshot | undefined;
     let started: StartedSkillSpawn | undefined;
 
     await this.#withLockOrRefuse(async () => {
-      await this.#assertNoLiveInProgress("review");
       const state = await this.#readState();
       const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
       this.#assertCanReview(state, slice);
@@ -1311,7 +1311,6 @@ export class LegionEngine {
       config = await this.#readConfig();
       await this.#assertSkillSpawnable(config, "review", { cliAdapter: opts?.adapter });
       before = await this.snapshotTaskIds();
-      beforeFiles = await snapshotTaskFiles(this.store.paths.tasksDir);
       started = await startSkillSpawn({
         ...this.#skillSpawnFields(),
         config,
@@ -1322,8 +1321,8 @@ export class LegionEngine {
           `Active spec: ${specId}`,
           `Read .legion-cli/specs/${specId}/SPEC.md and .legion-cli/tasks/*.md.`,
           "Write notes to .legion-cli/qa/review.md.",
-          "If the slice does not meet the spec, file tasks under .legion-cli/tasks/ (type: fix) or extra.json.",
-          "Creating any new task id or rewriting existing TSK-*.md FAILs this review.",
+          "If the slice does not meet the spec, file NEW tasks as .legion-cli/tasks/TSK-*.md (type: fix) or extra.json.",
+          "Creating any new task id FAILs this review. Never edit existing TSK-*.md: the engine restores them and treats it as an incident.",
           "PASS only if ids are unchanged and existing task files are byte-identical.",
           "Do not git add or git commit. Do not write packets.",
         ].join("\n"),
@@ -1334,14 +1333,14 @@ export class LegionEngine {
 
     const waited = started?.spawned ? await waitStartedSpawn(started) : { error: undefined, timedOut: false, durationMs: 0 };
 
+    enterFinish(started);
     return this.#withLockOrRefuse(async () => {
+      const revert = started?.spawned ? await finishStartedSpawn(started) : null;
       if (!specId || !config) {
         refuse("review requires an active spec", HINT.spec);
       }
-      const revert = started?.spawned ? await finishStartedSpawn(started) : null;
-      const rewrittenExistingTaskIds = beforeFiles
-        ? await restoreChangedTaskFiles(this.store.paths.tasksDir, beforeFiles)
-        : [];
+      // Existing task files are in P: restored byte-for-byte (and quarantined) by the finish.
+      const rewrittenExistingTaskIds = revert?.protected?.rewrittenTaskIds ?? [];
       if (started?.runId) {
         await this.#fileExtrasFromRun(started.runId, specId);
       }
@@ -1360,17 +1359,25 @@ export class LegionEngine {
         after,
         rewrittenExistingTaskIds,
       );
+      // A protected-set incident (restored and quarantined) FAILs the review even when no task
+      // file was touched, e.g. a forged qa/checklist.json (R-10).
       const verdict = await this.#applyReviewSnapshotsLocked(
         await this.#readState(),
         before,
         after,
-        rewrittenExistingTaskIds,
+        revert?.incident && rewrittenExistingTaskIds.length === 0
+          ? ["(protected files changed)"]
+          : rewrittenExistingTaskIds,
       );
       return {
         verdict,
         createdTaskIds,
         extrasReverted: revert?.extrasReverted ?? [],
         rewrittenExistingTaskIds,
+        ...(revert?.incident
+          ? { incident: true, protectedChanged: revert.protected?.changed ?? [] }
+          : {}),
+        ...(revert?.protected?.quarantine ? { quarantineDir: revert.protected.quarantine.dir } : {}),
       };
     });
   }
@@ -1396,7 +1403,6 @@ export class LegionEngine {
 
   async qa(opts: QaOptions = {}): Promise<QAScore> {
     return this.#mutate(async () => {
-      await this.#assertNoLiveInProgress("qa");
       const state = await this.#readState();
       const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
       this.#assertCanQa(state, slice);
@@ -1472,7 +1478,6 @@ export class LegionEngine {
 
   async fix(bug: string): Promise<Task> {
     return this.#mutate(async () => {
-      await this.#assertNoLiveInProgress("fix");
       const title = bug.trim();
       if (!title) {
         refuse("fix requires a bug description", HINT.fix);
@@ -1537,7 +1542,6 @@ export class LegionEngine {
     }
 
     const preview = await this.#mutate(async () => {
-      await this.#assertNoLiveInProgress("ship");
       const state = await this.#readState();
       await this.#assertCanShip(state, opts);
       return this.#stageShipLocked(state);
@@ -1558,7 +1562,6 @@ export class LegionEngine {
     }
 
     return this.#mutate(async () => {
-      await this.#assertNoLiveInProgress("ship");
       const state = await this.#readState();
       await this.#assertCanShip(state, opts);
       return this.#completeShipLocked(state, opts, preview);
@@ -1827,6 +1830,7 @@ export class LegionEngine {
     });
     if (prepared) return prepared;
     const waited = started?.spawned ? await waitStartedSpawn(started) : { error: undefined };
+    enterFinish(started);
     return this.#mutate(async () => {
       if (!session) refuse("no active spec", HINT.spec);
       const latest = await this.store.readSpec(session.spec.id);
@@ -1853,7 +1857,6 @@ export class LegionEngine {
       refuse("abandon requires a message", HINT.abandon);
     }
     return this.#mutate(async () => {
-      await this.#assertNoLiveInProgress("abandon");
       const state = await this.#readState();
       assertCanTransition(state.phase, "abandoned");
       const specId = state.activeSpecId ?? "none";
@@ -1920,7 +1923,6 @@ export class LegionEngine {
   ): Promise<{ spawned: boolean; runId: string }> {
     let started: StartedSkillSpawn | undefined;
     await this.#withLockOrRefuse(async () => {
-      await refuseIfLiveSkillSpawn(this.projectRoot, "chat");
       let config: LegionConfig;
       try {
         config = await this.#readConfig();
@@ -1940,10 +1942,11 @@ export class LegionEngine {
     }
     const live = started;
     const waited = await waitStartedSpawn(live);
+    enterFinish(live);
     return this.#withLockOrRefuse(async () => {
       const revert = await finishStartedSpawn(live);
       if (revert.incident) {
-        refuse("inspect .git — spawn touched .git/", HINT.status);
+        refuse(protectedIncidentMessage(revert), HINT.status);
       }
       if (revert.extrasReverted.length > 0) {
         refuse(
@@ -1976,6 +1979,14 @@ export class LegionEngine {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * The freeze for writers outside the engine's own verbs (chat session files, skill and
+   * design-system installers): refuse while any agent spawn is live (KD-2).
+   */
+  async assertNoLiveAgentRun(): Promise<void> {
+    await this.#assertNotFrozen();
   }
 
   /** Start a brownfield run (or, with `resume`, report its state). The orchestrating agent does judgment. */
@@ -2076,7 +2087,6 @@ export class LegionEngine {
     let started: StartedSkillSpawn | undefined;
 
     await this.#withLockOrRefuse(async () => {
-      await this.#assertNoLiveInProgress("execute");
       const state = await this.#readState();
       if (state.phase === "plan_failed") {
         refuse("Plan failed. Fix the FAIL list before executing", HINT.planRetry);
@@ -2144,6 +2154,19 @@ export class LegionEngine {
           cliAdapter: opts.adapter,
           taskAdapter: task.adapter,
           allowNoSandbox: opts.allowNoSandbox,
+          // KD-15 / R-1: the sandbox event is written before the protected-set snapshot, so a
+          // no-op run is never an incident and the event survives the restore.
+          beforeSnapshot: async ({ sandbox }) => {
+            if (!sandbox) return;
+            const degraded = Boolean(opts.allowNoSandbox) && !sandbox.hardened;
+            await this.#audit(
+              degraded ? "sandbox_degraded" : "sandbox_start",
+              "executing",
+              "agent",
+              { backend: sandbox.backend, hardened: sandbox.hardened, degraded },
+              task?.id,
+            );
+          },
         });
       } catch (err) {
         await this.#transitionTaskTo(task.id, "blocked");
@@ -2154,19 +2177,6 @@ export class LegionEngine {
       }
       if (!started.spawned) {
         await this.#transitionTaskTo(task.id, "blocked");
-      } else if (started.sandbox) {
-        const degraded = Boolean(opts.allowNoSandbox) && !started.sandbox.hardened;
-        await this.#audit(
-          degraded ? "sandbox_degraded" : "sandbox_start",
-          "executing",
-          "agent",
-          {
-            backend: started.sandbox.backend,
-            hardened: started.sandbox.hardened,
-            degraded,
-          },
-          task.id,
-        );
       }
     });
 
@@ -2177,6 +2187,7 @@ export class LegionEngine {
     const lockedConfig = config;
     const waited = started?.spawned ? await waitStartedSpawn(started) : { error: undefined, timedOut: false, durationMs: 0 };
 
+    enterFinish(started);
     const result = await this.#withLockOrRefuse(async () => {
       const revert = started?.spawned ? await finishStartedSpawn(started) : null;
       const extras = revert?.extrasReverted ?? [];
@@ -2277,6 +2288,7 @@ export class LegionEngine {
           incident,
           headMoved,
           ticketId,
+          ...(incident && revert ? { reason: protectedIncidentMessage(revert) } : {}),
         });
       }
 
@@ -2502,26 +2514,44 @@ export class LegionEngine {
 
   async #refuseSpawnContract(
     skillId: "verify" | "review",
-    revert: { extrasReverted: string[]; incident: boolean } | null,
+    revert: Pick<RevertResult, "extrasReverted" | "incident" | "protected" | "otherIncident"> | null,
     error: unknown,
     createdTaskIds: readonly string[],
     before: readonly string[],
     after: readonly string[],
     rewrittenExistingTaskIds: readonly string[] = [],
   ): Promise<void> {
-    const failed = Boolean(revert?.incident) || Boolean(revert && revert.extrasReverted.length > 0) || Boolean(error);
+    const rejected = revert?.protected?.rejectedTaskFiles ?? [];
+    const failed =
+      Boolean(revert?.incident) ||
+      Boolean(revert && revert.extrasReverted.length > 0) ||
+      rejected.length > 0 ||
+      Boolean(error);
     if (!failed) return;
-    if (createdTaskIds.length > 0 || rewrittenExistingTaskIds.length > 0) {
+    const reviewIncident = skillId === "review" && (Boolean(revert?.incident) || rejected.length > 0);
+    if (reviewIncident || createdTaskIds.length > 0 || rewrittenExistingTaskIds.length > 0) {
+      // An incident or an invalid task file FAILs the review (R-10), never a silent pass.
       await this.#applyReviewSnapshotsLocked(
         await this.#readState(),
         before,
         after,
-        rewrittenExistingTaskIds,
+        reviewIncident && rewrittenExistingTaskIds.length === 0 ? ["(protected files changed)"] : rewrittenExistingTaskIds,
       );
     }
     const hint = skillId === "review" ? HINT.review : HINT.verify;
-    if (revert?.incident) {
-      refuse("inspect .git — spawn touched .git/", hint);
+    // A review whose protected-set changes were all quarantined and restored ends as a FAIL
+    // verdict (R-10); anything unrestored, or an incident outside P, refuses (fail closed).
+    const restoredReviewIncident =
+      skillId === "review" &&
+      Boolean(revert?.protected?.incident) &&
+      (revert?.protected?.unrestorable.length ?? 1) === 0 &&
+      !revert?.otherIncident;
+    if (revert?.incident && !restoredReviewIncident) {
+      refuse(protectedIncidentMessage(revert), hint);
+    }
+    if (rejected.length > 0) {
+      const where = revert?.protected?.quarantine ? ` (quarantined at ${revert.protected.quarantine.dir})` : "";
+      refuse(`${skillId} spawn wrote invalid task files: ${rejected.join(", ")}${where}`, hint);
     }
     if (revert && revert.extrasReverted.length > 0) {
       refuse(
@@ -2987,7 +3017,7 @@ export class LegionEngine {
     const result = await this.#runOptionalSpawn(skillId, specId, promptBody, cliAdapter);
     if (!result.spawned || !result.revert) return;
     if (result.revert.incident) {
-      refuse("inspect .git — spawn touched .git/", HINT.intent);
+      refuse(protectedIncidentMessage(result.revert), HINT.intent);
     }
     if (result.revert.extrasReverted.length > 0) {
       refuse(
@@ -3283,33 +3313,60 @@ export class LegionEngine {
     actor: string,
     data: Record<string, unknown>,
     taskId?: string,
+    live?: LiveSpawn | null,
   ): Promise<void> {
     try {
-      await appendAuditEvent(this.projectRoot, {
-        schemaVersion: SCHEMA_VERSION.audit,
-        ts: nowIso(),
-        type,
-        phase,
-        taskId: taskId ?? null,
-        actor,
-        data,
-      });
+      // KD-15 / R-41: buffered while this process's spawn is live, deferred to the control dir
+      // while another process's spawn is live, else appended to `.legion-cli/audit/`.
+      await recordAuditEvent(
+        this.projectRoot,
+        {
+          schemaVersion: SCHEMA_VERSION.audit,
+          ts: nowIso(),
+          type,
+          phase,
+          taskId: taskId ?? null,
+          actor,
+          data,
+        },
+        live,
+      );
     } catch {
       // local metrics are best-effort
     }
   }
 
-  async #auditRefuse(err: LegionRefuseError): Promise<void> {
+  async #auditRefuse(err: LegionRefuseError, live?: LiveSpawn | null): Promise<void> {
     try {
       const state = await this.#readState();
-      await this.#audit("refuse", state.phase, "user", {
-        kind: refuseKind(err.nextHint),
-        message: err.message,
-        next: err.nextHint,
-      });
+      await this.#audit(
+        "refuse",
+        state.phase,
+        "user",
+        {
+          kind: refuseKind(err.nextHint),
+          message: err.message,
+          next: err.nextHint,
+        },
+        undefined,
+        live,
+      );
     } catch {
       // local metrics are best-effort
     }
+  }
+
+  /** Audit sink handed to spawns for their finish events (after the protected-set restore). */
+  #spawnAudit(): (type: string, data: Record<string, unknown>) => Promise<void> {
+    return async (type, data) => {
+      let phase: StateFile["phase"] = "uninitialized";
+      try {
+        phase = (await this.#readState()).phase;
+      } catch {
+        // STATE unreadable: still record the event
+      }
+      await this.#audit(type, phase, "engine", data);
+    };
   }
 
   #skillSpawnFields() {
@@ -3323,39 +3380,8 @@ export class LegionEngine {
       holdWait: this.#fakeHoldWait,
       onWait: this.#fakeOnWait,
       handlePid: this.#fakeHandlePid,
+      audit: this.#spawnAudit(),
     };
-  }
-
-  async #liveInProgressTask(): Promise<Task | null> {
-    const state = await this.#readState();
-    if (!state.currentTaskId) return null;
-    try {
-      const task = (await this.store.readTask(state.currentTaskId)).data;
-      if (task.status !== "in_progress") return null;
-      return task;
-    } catch {
-      return null;
-    }
-  }
-
-  /** KD-21 is the execute `currentTaskId` + `in_progress` window. Plan/review wait is execute-only. */
-  async #assertNoLiveInProgress(action: string): Promise<void> {
-    const task = await this.#liveInProgressTask();
-    if (task) {
-      const resume = await findLatestTaskResume(this.projectRoot, task.id);
-      if (resume && resumeRunIsLive(resume)) {
-        refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
-      }
-      if (!resume) {
-        refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
-      }
-    }
-    await refuseIfLiveSkillSpawn(this.projectRoot, action);
-  }
-
-  async #assertTicketAgainstLiveSpawn(_input: NewTicket): Promise<void> {
-    await this.#assertNoLiveInProgress("ticket create");
-    await refuseIfLiveSkillSpawn(this.projectRoot, "ticket create");
   }
 
   async #recoverDeadInProgressLocked(): Promise<void> {
@@ -3393,13 +3419,30 @@ export class LegionEngine {
     }
   }
 
+  /**
+   * The freeze (KD-2): no engine write while an agent spawn is live. Checked before the lock (a
+   * fast refusal, no waiting) and again first thing under it, always before
+   * #recoverDeadInProgressLocked. The owning finish path passes its in-memory token.
+   */
+  async #assertNotFrozen(finishRunId?: string): Promise<void> {
+    const live = await findLiveSpawn(this.projectRoot);
+    if (!live) return;
+    const token = finishRunId ?? FINISH_TOKEN.getStore();
+    if (live.owned && token === live.runId) return;
+    const err = new LegionRefuseError(frozenMessage(live), HINT.status);
+    await this.#auditRefuse(err, live);
+    throw err;
+  }
+
   async #withLockOrRefuse<T>(
     fn: () => Promise<T>,
-    opts?: { timeoutMs?: number; nextHint?: string },
+    opts?: { timeoutMs?: number; nextHint?: string; finishRunId?: string },
   ): Promise<T> {
+    await this.#assertNotFrozen(opts?.finishRunId);
     try {
       return await this.store.withLock(
         async () => {
+          await this.#assertNotFrozen(opts?.finishRunId);
           await this.#recoverDeadInProgressLocked();
           try {
             return await fn();
@@ -3417,11 +3460,31 @@ export class LegionEngine {
         throw refuseErr;
       }
       throw err;
+    } finally {
+      // A finish section that refused (or never got the lock) before finishing its spawn still
+      // restores P and lifts the freeze.
+      const token = opts?.finishRunId ?? FINISH_TOKEN.getStore();
+      if (token) await settleStartedSpawn(token);
     }
   }
 
   async #mutate<T>(fn: () => Promise<T>): Promise<T> {
     return this.#withLockOrRefuse(fn);
+  }
+
+  /**
+   * Read verbs (brief, search, garden, assume list, control-mode get) keep working during an agent
+   * run: they write nothing in the protected set (only the rebuildable index). While a spawn is
+   * live they skip crash recovery, which would write task state.
+   */
+  async #read<T>(fn: () => Promise<T>): Promise<T> {
+    if (!(await findLiveSpawn(this.projectRoot))) return this.#withLockOrRefuse(fn);
+    try {
+      return await this.store.withLock(fn);
+    } catch (err) {
+      if (err instanceof EngineLockedError) throw new LegionRefuseError(err.message, HINT.status);
+      throw err;
+    }
   }
 
   /** Persist must not import wiki; catalog is engine-authored while holding the lock. */
@@ -3471,12 +3534,13 @@ export class LegionEngine {
       throwAfterWrite: this.#fakeThrowAfterWrite,
       timedOut: this.#fakeTimedOut,
       required: false,
+      audit: this.#spawnAudit(),
     });
     if (!result.spawned) {
       return { skipped: "skill unavailable", extraWikiPaths: [] };
     }
     if (result.revert?.incident) {
-      refuse("inspect .git — spawn touched .git/", HINT.inRepo);
+      refuse(protectedIncidentMessage(result.revert), HINT.inRepo);
     }
     const extraWikiPaths = await this.#clampSpawnWrittenWikiPages(wikiBefore);
     // Spawn writes are on disk but not yet in sqlite; catalog reads the index.

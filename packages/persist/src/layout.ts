@@ -10,6 +10,19 @@ export const MAX_INGEST_TREE_BYTES = 64 * 1024 * 1024;
 export const MAX_ZIPBALL_BYTES = 32 * 1024 * 1024;
 export const MAX_ZIPBALL_ENTRIES = 10_000;
 
+/**
+ * Top-level `.legion-cli/` entries outside the protected set P (KD-1): engine caches and jails,
+ * the index and lock, worktrees, and `serve.json` (runtime state `serve` rewrites at any time,
+ * R-41). Everything else under `.legion-cli/` is byte-protected during agent runs.
+ */
+export const PROTECTED_SET_EXCLUDED = ["cache", "index", "sandbox", "worktrees", "serve.json"] as const;
+
+/** True when a top-level `.legion-cli/` entry name is outside P (case-insensitive, F-060). */
+export function isProtectedSetExcluded(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (PROTECTED_SET_EXCLUDED as readonly string[]).includes(lower);
+}
+
 export type LegionPaths = {
   root: string;
   projectMd: string;

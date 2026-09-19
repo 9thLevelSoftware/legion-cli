@@ -65,7 +65,26 @@ export {
   verificationFailureReason,
 } from "./verify.js";
 export type { VerificationRun } from "./verify.js";
-export { argvSummarySafe, findSkillsDir, optionalSkillSpawn, resolveSkillDir, resumeRunIsLive } from "./spawn.js";
+export {
+  argvSummarySafe,
+  findSkillsDir,
+  GIT_REPO_REQUIRED_MESSAGE,
+  listControlResumes,
+  optionalSkillSpawn,
+  protectedIncidentMessage,
+  resolveSkillDir,
+  resumeRunIsLive,
+} from "./spawn.js";
+export { findLiveSpawn, frozenMessage, LIVE_MARKER_BASENAME, RESUME_BASENAME } from "./live-spawn.js";
+export {
+  isProtectedPath,
+  PROTECTED_INLINE_MAX_BYTES,
+  restoreProtected,
+  snapshotProtected,
+} from "./protected.js";
+export type { ProtectedRestoreResult, ProtectedSnapshot } from "./protected.js";
+export { listRetainedQuarantines, QUARANTINE_MANIFEST } from "./quarantine.js";
+export type { QuarantineManifestEntry, RetainedQuarantine } from "./quarantine.js";
 export {
   WIREFRAME_PALETTE,
   assertWireframeHtml,

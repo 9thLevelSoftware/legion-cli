@@ -14,7 +14,12 @@ import {
   hashSkillTree,
   listResolvedSkillCatalog,
 } from "@9thlevelsoftware/legion-cli-agents";
-import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import {
+  argvSummarySafe,
+  createLegionEngine,
+  findSkillsDir,
+  listRetainedQuarantines,
+} from "@9thlevelsoftware/legion-cli-core";
 import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
   isGitRepo,
@@ -585,6 +590,36 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     warnings.push(`wiki secret scan: ${secrets.length} hit(s)`);
   }
 
+  // Retained quarantines (KD-1, R-40): outside the project, never deleted by the engine. Each
+  // manifest is checked against the sha256 recorded in the protected audit log.
+  const auditedManifests = new Map<string, string>();
+  try {
+    for (const event of await readAuditEvents(opts.project)) {
+      if (event.type !== "quarantine_created") continue;
+      const dir = event.data.dir;
+      const sha = event.data.manifestSha256;
+      if (typeof dir === "string" && typeof sha === "string") auditedManifests.set(dir.toLowerCase(), sha);
+    }
+  } catch {
+    // unreadable audit log: every quarantine reads as unaudited below
+  }
+  const quarantines = (await listRetainedQuarantines(opts.project)).map((entry) => {
+    const audited = auditedManifests.get(entry.dir.toLowerCase());
+    const integrity =
+      entry.manifestSha256 === null
+        ? "MANIFEST.json missing"
+        : audited === undefined
+          ? "not in the audit log"
+          : audited === entry.manifestSha256
+            ? "intact"
+            : "MANIFEST.json does not match the audited hash";
+    if (integrity !== "intact") warnings.push(`quarantine ${entry.dir}: ${integrity}`);
+    return { ...entry, integrity };
+  });
+  const quarantineLines = quarantines.map(
+    (entry) => `  ${entry.runId}  ${entry.files} file(s), ${entry.bytes} bytes  ${entry.integrity}  ${entry.dir}`,
+  );
+
   const schemaVersions = Object.values(SCHEMA_VERSION);
 
   const extraLabels = Object.fromEntries(
@@ -643,6 +678,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     },
     secrets: secrets.map((hit) => ({ name: hit.name, file: hit.file })),
     overlays: overlayLines.map((line) => line.trim()),
+    quarantine: quarantines,
     ...(metrics
       ? {
           metrics: {
@@ -697,6 +733,9 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     ...(overlayLines.length > 0 ? ["", "Overlays (pin vs packaged)", ...overlayLines] : []),
     "",
     secrets.length === 0 ? "Secrets     none" : `Secrets     ${secrets.length} hit(s)`,
+    ...(quarantineLines.length > 0
+      ? ["", "Quarantine (retained; never deleted by Legion)", ...quarantineLines]
+      : []),
   ];
   if (warnings.length > 0) {
     lines.push("", "Warnings");

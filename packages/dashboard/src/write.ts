@@ -171,7 +171,8 @@ export async function dispatchEngineWrite(
       throw new EngineWriteError(409, { error: err.message, next: HINT.status });
     }
     if (err instanceof LegionRefuseError) {
-      const conflict = /in_progress/i.test(err.message);
+      // "…is in_progress" (a live execute) or the freeze's "an agent run (…) is in progress".
+      const conflict = /in[_ ]progress/i.test(err.message);
       throw new EngineWriteError(conflict ? 409 : 400, { error: err.message, next: err.nextHint });
     }
     throw err;

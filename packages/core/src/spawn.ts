@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { glob, mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { glob, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   AgentError,
@@ -26,7 +26,15 @@ import {
   type ResolvedSkillDir,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
-import { isPidAlive, tryGitHead, type LegionReader } from "@9thlevelsoftware/legion-cli-persist";
+import {
+  controlDirPath,
+  controlProjectDirPath,
+  ensureControlDir,
+  isPidAlive,
+  ownProcessStartedAt,
+  tryGitHead,
+  type LegionReader,
+} from "@9thlevelsoftware/legion-cli-persist";
 import {
   assertExecuteSandbox,
   materializeJail,
@@ -44,15 +52,34 @@ import {
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
-import { hasGitSegment, isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
+import {
+  admitsNewTasks,
+  hasGitSegment,
+  isAllowedPath,
+  NEW_TASK_FILE_PATTERN,
+  SKILL_CONTRACTS,
+  skillContract,
+} from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
 import { createHttpToolHost } from "./http-host.js";
+import {
+  endOwnedSpawn,
+  liveMarkerFor,
+  registerOwnedSpawn,
+  RESUME_BASENAME,
+  writeLiveMarker,
+} from "./live-spawn.js";
+import {
+  restoreProtected,
+  serializeProtectedSnapshot,
+  snapshotProtected,
+  type ProtectedRestoreResult,
+  type ProtectedSnapshot,
+} from "./protected.js";
 import {
   recordPreSpawnRef,
   revertExtras,
   snapshotDirtyPaths,
-  snapshotGitPolicy,
-  snapshotChatSessions,
   snapshotPaths,
   type RevertResult,
 } from "./revert.js";
@@ -67,56 +94,11 @@ export async function resolveSkillDir(opts: {
   return resolveOverlaySkillDir(opts);
 }
 
-type LiveSpawnMarker = { enginePid: number; skillId: SkillId; runId: string };
-
-function liveSpawnPath(projectRoot: string): string {
-  return join(projectRoot, ".legion-cli", "cache", "live-spawn.json");
-}
-
-export async function writeLiveSpawnMarker(
-  projectRoot: string,
-  skillId: SkillId,
-  runId: string,
-): Promise<void> {
-  await mkdir(join(projectRoot, ".legion-cli", "cache"), { recursive: true });
-  await writeFile(
-    liveSpawnPath(projectRoot),
-    `${JSON.stringify({ enginePid: process.pid, skillId, runId })}\n`,
-    "utf8",
-  );
-}
-
-export async function clearLiveSpawnMarker(projectRoot: string, runId?: string): Promise<void> {
-  try {
-    if (runId) {
-      const raw = await readFile(liveSpawnPath(projectRoot), "utf8");
-      const parsed = JSON.parse(raw) as LiveSpawnMarker;
-      if (parsed.runId !== runId) return;
-    }
-    await unlink(liveSpawnPath(projectRoot));
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-}
-
-export async function readLiveSpawnMarker(projectRoot: string): Promise<LiveSpawnMarker | null> {
-  try {
-    const parsed = JSON.parse(await readFile(liveSpawnPath(projectRoot), "utf8")) as LiveSpawnMarker;
-    if (typeof parsed?.enginePid !== "number" || typeof parsed.skillId !== "string") return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export async function refuseIfLiveSkillSpawn(projectRoot: string, action: string): Promise<void> {
-  const live = await readLiveSpawnMarker(projectRoot);
-  if (!live) return;
-  if (!isPidAlive(live.enginePid)) {
-    await clearLiveSpawnMarker(projectRoot);
-    return;
-  }
-  refuse(`${action} is refused while ${live.skillId} is running`, HINT.status);
+/** SkillContract roots a jail may copy `.legion-cli` paths out to (R-3), plus new task files (R-2). */
+function sandboxContractRoots(skillId: SkillId, allowedRoots: readonly string[]): string[] {
+  const roots = allowedRoots.filter((root) => root.toLowerCase().startsWith(".legion-cli/"));
+  if (admitsNewTasks(skillId)) roots.push(NEW_TASK_FILE_PATTERN);
+  return roots;
 }
 
 function skillMissingHint(skillId: SkillId): string {
@@ -178,17 +160,26 @@ export type SkillSpawnOpts = {
   onWait?: () => Promise<void>;
   handlePid?: number;
   allowNoSandbox?: boolean;
+  /** Engine writes that belong to this spawn, run just before the protected-set snapshot (KD-15). */
+  beforeSnapshot?: (ctx: { sandbox?: SandboxHandle }) => Promise<void>;
+  /** Engine audit sink for finish events (`protected_restored`, `quarantine_created`). */
+  audit?: SpawnAudit;
 };
+
+export type SpawnAudit = (type: string, data: Record<string, unknown>) => Promise<void>;
 
 type SpawnRevertCtx = {
   projectRoot: string;
+  runId: string;
+  skillId: SkillId;
   preSpawnRef: string | null;
   allowedRoots: string[];
   filesForbidden: readonly string[] | undefined;
   snapshot: Awaited<ReturnType<typeof snapshotPaths>> | undefined;
-  gitPolicy: Awaited<ReturnType<typeof snapshotGitPolicy>>;
   dirtyAtStart: ReturnType<typeof snapshotDirtyPaths>;
-  chatSessions: Awaited<ReturnType<typeof snapshotChatSessions>>;
+  /** P, held in memory: the finish path never trusts disk (KD-2). */
+  protectedSnapshot: ProtectedSnapshot;
+  audit?: SpawnAudit;
 };
 
 export type StartedSkillSpawn =
@@ -271,6 +262,10 @@ async function sandboxAllowedWrites(opts: {
         // glob optional; copy-out still matches the pattern
       }
     }
+  }
+  if (admitsNewTasks(opts.skillId) && !SKILL_CONTRACTS[opts.skillId].includes(".legion-cli/tasks/**")) {
+    // New fix-task files may be copied out; the finish admits or quarantines them (R-2).
+    out.push(NEW_TASK_FILE_PATTERN);
   }
   if (opts.contract) out.push(...opts.contract.filesAllowed, ...opts.contract.expectedArtifacts);
   return out;
@@ -483,14 +478,14 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   // unioning raw `git status --ignored` (that would revert pre-existing ignored files).
   const snapshot = await snapshotPaths(opts.projectRoot);
   const dirtyAtStart = snapshotDirtyPaths(opts.projectRoot, preSpawnRef);
-  const gitPolicy = await snapshotGitPolicy(opts.projectRoot);
-  const chatSessions = await snapshotChatSessions(opts.projectRoot);
-  const resumeDir = join(opts.projectRoot, ".legion-cli", "cache", "runs", runId);
-  await mkdir(resumeDir, { recursive: true });
+  // Control records live outside the project (KD-2, R-15): the agent's own run cache holds
+  // nothing the engine trusts.
+  const controlDir = await ensureControlDir(opts.projectRoot, runId);
+  const startedAt = new Date().toISOString();
 
   const writeResume = async (pid: number | null) => {
     await writeFile(
-      join(resumeDir, "resume.json"),
+      join(controlDir, RESUME_BASENAME),
       `${JSON.stringify(
         {
           schemaVersion: SCHEMA_VERSION.resume,
@@ -498,9 +493,11 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
           taskId: opts.taskId ?? null,
           skillId: opts.skillId,
           preSpawnRef: preSpawnRef ?? "UNBORN",
-          startedAt: new Date().toISOString(),
+          startedAt,
+          timeoutMs: DEFAULT_TIMEOUT_MS,
           pid,
           enginePid: process.pid,
+          engineStartedAt: ownProcessStartedAt(),
           adapterId: resolution.id,
           binary: tmpl.binary,
           argvSummary,
@@ -552,11 +549,31 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         opts.config.sandbox.allowCopyJail ||
         !opts.config.sandbox.requireHardened,
       credentialKeys: Object.keys(filtered),
+      contractRoots: sandboxContractRoots(opts.skillId, allowedRoots),
     });
   }
 
+  // KD-15: every spawn-related engine write (e.g. execute's sandbox_start audit, which needs the
+  // backend chosen above) happens before the protected-set snapshot.
+  try {
+    await opts.beforeSnapshot?.({ sandbox });
+  } catch (err) {
+    await sandbox?.destroy().catch(() => undefined);
+    throw err;
+  }
+
+  // From here until the finish restores P, engine writes are frozen (KD-2) and this process's
+  // audit events are buffered (KD-15). The snapshot is the last step before the spawn.
+  registerOwnedSpawn({ projectRoot: opts.projectRoot, runId, skillId: opts.skillId, controlDir });
+  let protectedSnapshot: ProtectedSnapshot;
   let handle: AgentHandle;
   try {
+    await writeLiveMarker(controlDir, liveMarkerFor(runId, opts.skillId, DEFAULT_TIMEOUT_MS));
+    protectedSnapshot = await snapshotProtected(opts.projectRoot);
+    await writeFile(join(controlDir, "protected-snapshot.json"), serializeProtectedSnapshot(protectedSnapshot), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
     const spawnOpts = sandbox?.spawnOpts();
     const env: Record<string, string> = spawnOpts
       ? Object.fromEntries(Object.entries(spawnOpts.env).filter((entry): entry is [string, string] => entry[1] !== undefined))
@@ -584,31 +601,35 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         : {}),
     });
   } catch (err) {
+    await endOwnedSpawn(opts.projectRoot, runId).catch(() => undefined);
     await sandbox?.destroy().catch(() => undefined);
     throw err;
   }
   await writeResume(handle.pid);
-  await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, runId);
-  return {
+  const started: LiveStarted = {
     spawned: true,
     runId,
     handle,
     started: Date.now(),
     revertCtx: {
       projectRoot: opts.projectRoot,
+      runId,
+      skillId: opts.skillId,
       preSpawnRef,
       allowedRoots,
       filesForbidden,
       snapshot,
-      gitPolicy,
       dirtyAtStart,
-      chatSessions,
+      protectedSnapshot,
+      audit: opts.audit,
     },
     resolution,
     binary: tmpl.binary,
     argvSummary,
     sandbox,
   };
+  unfinished.set(runId, started);
+  return started;
 }
 
 export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spawned: true }>): Promise<WaitedSkillSpawn> {
@@ -624,55 +645,129 @@ export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spa
   return { error, timedOut, durationMs: Date.now() - started.started };
 }
 
-export async function finishStartedSpawn(
-  started: Extract<StartedSkillSpawn, { spawned: true }>,
-): Promise<RevertResult> {
+type LiveStarted = Extract<StartedSkillSpawn, { spawned: true }>;
+
+/** Started spawns not finished yet, and each finish's single result (finish runs exactly once). */
+const unfinished = new Map<string, LiveStarted>();
+const finishes = new WeakMap<LiveStarted, Promise<RevertResult>>();
+
+/**
+ * Finish a spawn: copy-out, protected-set restore, revert, unfreeze. Idempotent: a second call
+ * returns the first call's result.
+ */
+export function finishStartedSpawn(started: LiveStarted): Promise<RevertResult> {
+  let pending = finishes.get(started);
+  if (!pending) {
+    pending = finishOnce(started).finally(() => unfinished.delete(started.runId));
+    finishes.set(started, pending);
+  }
+  return pending;
+}
+
+/**
+ * Make sure a started spawn is finished even when the verb's post-wait section refused or could
+ * not take the lock: otherwise P would stay unrestored and the freeze would never lift.
+ */
+export async function settleStartedSpawn(runId: string): Promise<void> {
+  const started = unfinished.get(runId);
+  if (started) await finishStartedSpawn(started).catch(() => undefined);
+}
+
+async function finishOnce(started: LiveStarted): Promise<RevertResult> {
+  const ctx = started.revertCtx;
   let copied: string[] = [];
   let dropped: string[] = [];
-  const resumePath = join(
-    started.revertCtx.projectRoot,
-    ".legion-cli",
-    "cache",
-    "runs",
-    started.runId,
-    "resume.json",
-  );
-  let resumeRaw: string | undefined;
+  let protectedResult: ProtectedRestoreResult | undefined;
   try {
     if (started.sandbox) {
-      try {
-        resumeRaw = await readFile(resumePath, "utf8");
-      } catch {
-        resumeRaw = undefined;
-      }
       const out = await started.sandbox.copyOut();
       copied = out.copied;
       dropped = out.dropped;
     }
-    const revert = await revertExtras(started.revertCtx);
+    // KD-1: P is compared and restored before any engine git call, from the in-memory snapshot.
+    try {
+      protectedResult = await restoreProtected(ctx.protectedSnapshot, {
+        runId: ctx.runId,
+        allowedRoots: ctx.allowedRoots,
+        admitNewTasks: admitsNewTasks(ctx.skillId),
+      });
+    } catch (err) {
+      // Fail closed: an unexpected error is an incident, never a silent pass.
+      protectedResult = {
+        changed: [],
+        unrestorable: [`protected set (${err instanceof Error ? err.message : String(err)})`],
+        admittedTaskIds: [],
+        rewrittenTaskIds: [],
+        rejectedTaskFiles: [],
+        incident: true,
+        quarantine: null,
+      };
+    }
+    const revert = await revertExtras(ctx);
     const extrasReverted = new Set(revert.extrasReverted);
-    let incident = revert.incident;
+    let otherIncident = revert.incident;
     if (started.sandbox) {
       for (const rel of dropped) {
-        if (hasGitSegment(rel)) incident = true;
-        if (isAllowedPath(rel, started.revertCtx.allowedRoots)) continue;
+        if (hasGitSegment(rel)) otherIncident = true;
+        if (isAllowedPath(rel, ctx.allowedRoots)) continue;
         extrasReverted.add(rel);
       }
     }
     return {
       ...revert,
       extrasReverted: [...extrasReverted],
-      incident,
+      incident: otherIncident || protectedResult.incident,
+      otherIncident,
+      protected: protectedResult,
       sandboxCopied: copied,
       sandboxDropped: dropped,
     };
   } finally {
-    if (resumeRaw !== undefined) {
-      await writeFile(resumePath, resumeRaw, "utf8").catch(() => undefined);
-    }
     await started.sandbox?.destroy().catch(() => undefined);
-    await clearLiveSpawnMarker(started.revertCtx.projectRoot, started.runId);
+    // After the restore: unfreeze, then flush buffered and deferred audit events (KD-15, R-41).
+    await endOwnedSpawn(ctx.projectRoot, ctx.runId).catch(() => undefined);
+    await rm(join(controlDirPath(ctx.projectRoot, ctx.runId), "protected-snapshot.json"), { force: true }).catch(
+      () => undefined,
+    );
+    if (protectedResult && ctx.audit) {
+      if (protectedResult.quarantine) {
+        await ctx
+          .audit("quarantine_created", {
+            runId: ctx.runId,
+            dir: protectedResult.quarantine.dir,
+            manifestSha256: protectedResult.quarantine.manifestSha256,
+            entries: protectedResult.quarantine.entries,
+          })
+          .catch(() => undefined);
+      }
+      if (protectedResult.changed.length > 0 || protectedResult.unrestorable.length > 0 || protectedResult.rejectedTaskFiles.length > 0) {
+        await ctx
+          .audit("protected_restored", {
+            runId: ctx.runId,
+            skillId: ctx.skillId,
+            changed: protectedResult.changed,
+            unrestorable: protectedResult.unrestorable,
+            rejectedTaskFiles: protectedResult.rejectedTaskFiles,
+            incident: protectedResult.incident,
+            quarantine: protectedResult.quarantine?.dir ?? null,
+          })
+          .catch(() => undefined);
+      }
+    }
   }
+}
+
+/** One-line incident description for refusals and task notes. */
+export function protectedIncidentMessage(revert: Pick<RevertResult, "protected" | "incident">): string {
+  const prot = revert.protected;
+  if (!prot || (prot.changed.length === 0 && prot.unrestorable.length === 0)) {
+    return "inspect .git — spawn touched .git/";
+  }
+  const parts = [`the agent changed protected files (${prot.changed.join(", ") || "none"})`];
+  if (prot.unrestorable.length > 0) parts.push(`NOT restored: ${prot.unrestorable.join("; ")}`);
+  else parts.push("they were restored");
+  if (prot.quarantine) parts.push(`the agent's versions are in quarantine at ${prot.quarantine.dir}`);
+  return parts.join("; ");
 }
 
 export async function optionalSkillSpawn(opts: SkillSpawnOpts): Promise<OptionalSpawnResult> {
@@ -717,8 +812,9 @@ export function resumeRunIsLive(resume: Pick<ResumeFile, "pid" | "enginePid" | "
   return resumePidIsLive(resume) || resumeEngineIsLive(resume);
 }
 
-export async function listCacheResumes(projectRoot: string): Promise<ResumeFile[]> {
-  const runsDir = join(projectRoot, ".legion-cli", "cache", "runs");
+/** Resume records from the project's control dir (`<userStateDir>/control/<projectHash>/`, KD-2). */
+export async function listControlResumes(projectRoot: string): Promise<ResumeFile[]> {
+  const runsDir = controlProjectDirPath(projectRoot);
   let names: string[];
   try {
     names = await readdir(runsDir);
@@ -729,7 +825,7 @@ export async function listCacheResumes(projectRoot: string): Promise<ResumeFile[
   const out: ResumeFile[] = [];
   for (const name of names) {
     try {
-      const raw = await readFile(join(runsDir, name, "resume.json"), "utf8");
+      const raw = await readFile(join(runsDir, name, RESUME_BASENAME), "utf8");
       const parsed = ResumeFileSchema.safeParse(JSON.parse(raw));
       if (parsed.success) out.push(parsed.data);
     } catch {
@@ -740,7 +836,7 @@ export async function listCacheResumes(projectRoot: string): Promise<ResumeFile[
 }
 
 export async function findLatestTaskResume(projectRoot: string, taskId: string): Promise<ResumeFile | null> {
-  const matches = (await listCacheResumes(projectRoot)).filter((resume) => resume.taskId === taskId);
+  const matches = (await listControlResumes(projectRoot)).filter((resume) => resume.taskId === taskId);
   if (matches.length === 0) return null;
   matches.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   return matches[matches.length - 1] ?? null;

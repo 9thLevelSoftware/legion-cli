@@ -1,8 +1,40 @@
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LegionStore } from "@9thlevelsoftware/legion-cli-persist";
+
+/** Control records go to a throwaway per-user state dir (KD-2), never the real profile. */
+if (!process.env.LEGION_CLI_STATE_DIR) {
+  const stateDir = mkdtempSync(join(tmpdir(), "legion-state-"));
+  process.env.LEGION_CLI_STATE_DIR = stateDir;
+  process.once("exit", () => {
+    try {
+      rmSync(stateDir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  });
+}
+
+/** A child process that stays alive until `stop()`: another engine running an agent. */
+export function spawnSleeper() {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  return {
+    pid: child.pid,
+    stop: () =>
+      new Promise((done) => {
+        if (child.exitCode !== null || child.signalCode !== null) return done();
+        child.once("exit", () => done());
+        child.kill();
+      }),
+  };
+}
 
 const persistFixtures = join(
   dirname(fileURLToPath(import.meta.url)),

@@ -5,13 +5,16 @@ export const SKILL_CONTRACTS: Record<SkillId, readonly string[]> = {
   interview: [".legion-cli/wiki/product/**", ".legion-cli/specs/*/prd.md", ".legion-cli/cache/runs/<id>/**"],
   discuss: [".legion-cli/discuss/**", ".legion-cli/decisions/**", ".legion-cli/cache/runs/<id>/**"],
   spec: [".legion-cli/specs/<activeSpecId>/**", ".legion-cli/cache/runs/<id>/**"],
-  ingest: [".legion-cli/wiki/**", ".legion-cli/audit/**", ".legion-cli/cache/runs/<id>/**"],
+  // No audit/**: the audit log is protected so an agent can't forge it (KD-1, F-046).
+  ingest: [".legion-cli/wiki/**", ".legion-cli/cache/runs/<id>/**"],
   plan: [".legion-cli/plans/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
   execute: [".legion-cli/cache/runs/<id>/**"],
-  verify: [".legion-cli/qa/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
-  // tasks/** is for filing new fix tasks; mutating existing TSK-*.md still FAILs review.
-  review: [".legion-cli/qa/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
-  qa: [".legion-cli/qa/**", ".legion-cli/cache/runs/<id>/**"],
+  // F-025, F-047, R-2: verify/review write only their notes. They may still file NEW fix tasks
+  // (`.legion-cli/tasks/TSK-*.md`, validated and admitted at finish); existing task files, QA
+  // scores and the checklist stay byte-protected.
+  verify: [".legion-cli/qa/verify.md", ".legion-cli/qa/verify/*.md", ".legion-cli/cache/runs/<id>/**"],
+  review: [".legion-cli/qa/review.md", ".legion-cli/cache/runs/<id>/**"],
+  qa: [".legion-cli/cache/runs/<id>/**"],
   map: [".legion-cli/map/ARCHITECTURE.md", ".legion-cli/cache/runs/<id>/**"],
   wireframe: [".legion-cli/specs/<activeSpecId>/wireframes/**", ".legion-cli/cache/runs/<id>/**"],
   chat: [".legion-cli/cache/runs/<id>/**"],
@@ -25,14 +28,22 @@ const IMPLICIT_FORBIDDEN = [
   ".legion-cli/index/**",
 ];
 
-/** Cache/index/worktrees/audit/sandbox are engine-owned; never revert them as extras. chat/** is not — spawn-planted sessions must revert. */
+/**
+ * Engine runtime areas outside the protected set and the revert walk: cache, index, worktrees,
+ * sandbox jails and serve.json. Not an agent write root: an agent may write only its own run's
+ * cache (`cache/runs/<id>/**`, in every SkillContract). `audit/**` is NOT here: it is protected
+ * (KD-1), so an agent can't forge audit lines (F-046).
+ */
 const ENGINE_OWNED = [
   ".legion-cli/cache/**",
   ".legion-cli/index/**",
   ".legion-cli/worktrees/**",
-  ".legion-cli/audit/**",
   ".legion-cli/sandbox/**",
+  ".legion-cli/serve.json",
 ];
+
+/** New fix-task files plan/review/verify may create (validated and admitted at finish, R-2). */
+export const NEW_TASK_FILE_PATTERN = ".legion-cli/tasks/TSK-*.md";
 
 export function skillContract(skillId: SkillId, opts: { runId: string; specId?: string }): SkillContract {
   const roots = SKILL_CONTRACTS[skillId].map((root) =>
@@ -106,6 +117,15 @@ export function isEngineOwned(posixPath: string): boolean {
 
 export function isAllowedPath(posixPath: string, allowedRoots: readonly string[]): boolean {
   if (isImplicitForbidden(posixPath)) return false;
-  if (isEngineOwned(posixPath)) return true;
+  // `.legion-cli` paths match only in their canonical spelling (a contract root is lowercase).
+  const lower = posixPath.toLowerCase();
+  if ((lower === ".legion-cli" || lower.startsWith(".legion-cli/")) && !posixPath.startsWith(".legion-cli")) {
+    return false;
+  }
   return allowedRoots.some((root) => matchesGlob(root, posixPath));
+}
+
+/** plan, review and verify may create new task files (R-2). */
+export function admitsNewTasks(skillId: SkillId): boolean {
+  return skillId === "plan" || skillId === "review" || skillId === "verify";
 }

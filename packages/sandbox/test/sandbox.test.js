@@ -981,6 +981,52 @@ test("copy-out matches glob SkillContract write paths", async () => {
   });
 });
 
+test("R-3: copy-out takes contract roots: permitted .legion-cli paths copy out, others (and .LEGION-CLI) are dropped", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await mkdir(join(dir, ".legion-cli", "qa"), { recursive: true });
+    const handle = await materializeJail(
+      policy(dir, {
+        allowedWrites: ["src/main.ts", ".legion-cli/qa/review.md", ".legion-cli/tasks/TSK-*.md"],
+        contractRoots: [".legion-cli/qa/review.md", ".legion-cli/tasks/TSK-*.md"],
+      }),
+    );
+    try {
+      const jailLegion = join(handle.jailRoot, ".legion-cli");
+      await mkdir(join(jailLegion, "qa"), { recursive: true });
+      await mkdir(join(jailLegion, "tasks"), { recursive: true });
+      await writeFile(join(jailLegion, "qa", "review.md"), "Verdict: PASS\n", "utf8");
+      await writeFile(join(jailLegion, "tasks", "TSK-0007.md"), "new task\n", "utf8");
+      await writeFile(join(jailLegion, "qa", "checklist.json"), "{}\n", "utf8");
+      await writeFile(join(jailLegion, "STATE.md"), "forged\n", "utf8");
+      const result = await handle.copyOut();
+      assert.ok(result.copied.includes(".legion-cli/qa/review.md"));
+      assert.ok(result.copied.includes(".legion-cli/tasks/TSK-0007.md"));
+      assert.ok(result.dropped.includes(".legion-cli/qa/checklist.json"));
+      assert.ok(result.dropped.includes(".legion-cli/STATE.md"));
+      assert.equal(await readFile(join(dir, ".legion-cli", "qa", "review.md"), "utf8"), "Verdict: PASS\n");
+      assert.equal(existsSync(join(dir, ".legion-cli", "qa", "checklist.json")), false);
+    } finally {
+      await handle.destroy();
+    }
+    // A contract root in a non-canonical case never copies out (F-060).
+    const upper = await materializeJail(
+      policy(dir, {
+        allowedWrites: ["src/main.ts", ".LEGION-CLI/qa/review.md"],
+        contractRoots: [".legion-cli/qa/review.md"],
+      }),
+    );
+    try {
+      await mkdir(join(upper.jailRoot, ".LEGION-CLI", "qa"), { recursive: true });
+      await writeFile(join(upper.jailRoot, ".LEGION-CLI", "qa", "review.md"), "Verdict: FORGED\n", "utf8");
+      const result = await upper.copyOut();
+      assert.equal(result.copied.some((rel) => rel.toLowerCase().startsWith(".legion-cli/")), false);
+    } finally {
+      await upper.destroy();
+    }
+  });
+});
+
 test("assertExecuteSandbox fails when config pins copy with requireHardened", () => {
   assert.throws(
     () => assertExecuteSandbox(makeConfig({ backend: "copy", requireHardened: true, allowCopyJail: false }), {}),

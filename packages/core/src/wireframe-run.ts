@@ -10,6 +10,7 @@ import type { Spec } from "@9thlevelsoftware/legion-cli-schema";
 import { HINT, refuse } from "./errors.js";
 import { clearSkipWireframesNote } from "./spec-build.js";
 import type { RevertResult } from "./revert.js";
+import { protectedIncidentMessage } from "./spawn.js";
 import type { WireframeOptions, WireframeResult } from "./types.js";
 import {
   assertWireframeHtml,
@@ -446,7 +447,7 @@ export async function finishWireframe(
       await restoreTree(dir, snapshot);
     }
     if (spawned.revert?.incident) {
-      refuse("inspect .git — spawn touched .git/", HINT.wireframe);
+      refuse(protectedIncidentMessage(spawned.revert), HINT.wireframe);
     }
     if (spawned.revert && spawned.revert.extrasReverted.length > 0) {
       refuse(

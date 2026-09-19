@@ -1,10 +1,24 @@
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+
+/** Control records and quarantine go to a throwaway per-user state dir (KD-2), inherited by the CLI. */
+if (!process.env.LEGION_CLI_STATE_DIR) {
+  const stateDir = mkdtempSync(join(tmpdir(), "legion-state-"));
+  process.env.LEGION_CLI_STATE_DIR = stateDir;
+  process.once("exit", () => {
+    try {
+      rmSync(stateDir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  });
+}
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const bin = join(pkgRoot, "dist", "bin.js");

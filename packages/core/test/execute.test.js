@@ -19,6 +19,7 @@ import {
 } from "../dist/index.js";
 import { snapshotGitPolicy } from "../dist/revert.js";
 import {
+  controlDir,
   git,
   gitHead,
   initGitRepo,
@@ -76,7 +77,7 @@ async function seedExecute(store, opts = {}) {
 }
 
 async function readResume(dir, runId) {
-  return JSON.parse(await readFile(join(dir, ".legion-cli", "cache", "runs", runId, "resume.json"), "utf8"));
+  return JSON.parse(await readFile(join(controlDir(dir, runId), "resume.json"), "utf8"));
 }
 
 test("execute writes local duration audit events", async () => {
@@ -222,7 +223,7 @@ test("a task stuck in verifying with a dead run is demoted to blocked on the nex
         { ...(await store.readState()).data, phase: "executing", currentTaskId: "TSK-0001" },
         "Current task: TSK-0001.\n",
       );
-      const runDir = join(dir, ".legion-cli", "cache", "runs", "execute-crashed");
+      const runDir = controlDir(dir, "execute-crashed");
       await mkdir(runDir, { recursive: true });
       await writeFile(
         join(runDir, "resume.json"),

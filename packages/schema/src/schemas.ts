@@ -427,16 +427,33 @@ export type AuditEvent = z.infer<typeof AuditEventSchema>;
 export const AdapterResolutionSourceSchema = z.enum(["cli", "task", "route", "default"]);
 export type AdapterResolutionSource = z.infer<typeof AdapterResolutionSourceSchema>;
 
+/** Upper bound for an agent spawn's timeout (the adapter default, 20 minutes). */
+export const MAX_SPAWN_TIMEOUT_MS = 20 * 60 * 1000;
+
+/** Clock skew tolerated before a `startedAt` in the future makes a control record invalid. */
+const RESUME_FUTURE_SKEW_MS = 60_000;
+
 export const ResumeFileSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.resume),
   runId: z.string().min(1),
   taskId: z.string().min(1).nullable().optional(),
   skillId: SkillIdSchema,
   preSpawnRef: z.string().min(1),
-  startedAt: z.string().min(1),
+  /** Never in the future (R-15): a forged future start would wedge recovery. */
+  startedAt: z
+    .string()
+    .min(1)
+    .refine((value) => {
+      const ms = Date.parse(value);
+      return Number.isFinite(ms) && ms <= Date.now() + RESUME_FUTURE_SKEW_MS;
+    }, "startedAt must be a timestamp that is not in the future"),
+  /** Spawn timeout, bounded by MAX_SPAWN_TIMEOUT_MS (R-15). */
+  timeoutMs: z.number().int().positive().max(MAX_SPAWN_TIMEOUT_MS).optional(),
   pid: z.number().int().positive().nullable().optional(),
   /** Legion CLI process that owns the run. Live after wait() while post-wait still runs. */
   enginePid: z.number().int().positive().optional(),
+  /** Start time (epoch ms) of the engine process, to detect PID reuse. */
+  engineStartedAt: z.number().optional(),
   adapterId: AdapterIdSchema.optional(),
   binary: z.string().min(1).optional(),
   argvSummary: z.string().optional(),

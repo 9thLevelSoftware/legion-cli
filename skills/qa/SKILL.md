@@ -23,8 +23,9 @@ The scorer is in-process (`packages/qa/src/score.ts`). This skill is optional fi
 
 Allowed roots:
 
-- `.legion-cli/qa/**`
 - `.legion-cli/cache/runs/<id>/**`
+
+Write findings to the run cache. `.legion-cli/qa/**` (scores, checklist) is protected: the engine restores any change after the spawn and quarantines the agent's version.
 
 Do not write anything else. Do not `git add` or `git commit`.
 

@@ -336,10 +336,13 @@ async function writeSessionFile(engine: LegionEngine, session: ChatSessionFile):
 }
 
 export async function saveChatSession(engine: LegionEngine, session: ChatSessionFile): Promise<void> {
+  // `.legion-cli/chat/` is protected: no session write while an agent run is live (KD-2, KD-15).
+  await engine.assertNoLiveAgentRun();
   await engine.store.withLock(() => writeSessionFile(engine, session));
 }
 
 export async function resumeOrCreateChatSession(engine: LegionEngine): Promise<ChatSessionFile> {
+  await engine.assertNoLiveAgentRun();
   await ensureGitignore(engine.projectRoot);
   return engine.store.withLock(async () => {
     const dir = engine.store.paths.chatDir;

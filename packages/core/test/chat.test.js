@@ -331,7 +331,7 @@ test("rewritten existing chat session is restored and not resumed", async () => 
         () => held.spawnChatSkill("Reply with a ChatAction JSON object."),
         (err) => {
           assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /outside SkillContract/);
+          assert.match(err.message, /protected files [(]\.legion-cli\/chat\/[^)]*[)]; they were restored/);
           return true;
         },
       );
@@ -370,7 +370,7 @@ test("spawn-planted chat session JSON is reverted and not resumed", async () => 
         () => held.spawnChatSkill("Reply with a ChatAction JSON object."),
         (err) => {
           assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /outside SkillContract/);
+          assert.match(err.message, /protected files [(]\.legion-cli\/chat\/pwn\.json[)]; they were restored/);
           return true;
         },
       );

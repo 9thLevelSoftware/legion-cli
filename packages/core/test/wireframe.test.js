@@ -431,9 +431,11 @@ test("nested spawn html and non-html extras are removed; SPEC.md restored when d
           },
         ],
       });
+      // SPEC.md is outside the wireframe contract, so the rewrite is a protected-set incident
+      // (quarantined and restored); the HTML checks still remove the nested extras.
       await assert.rejects(
         () => spawning.wireframe({ spawn: true }),
-        (err) => isRefuse(err, /<script>/, /wireframe/),
+        (err) => isRefuse(err, /protected files [(]\.legion-cli\/specs\/spec-checkin\/SPEC\.md[)]/, /wireframe/),
       );
       assert.equal(existsSync(join(store.paths.specsDir, "spec-checkin", "wireframes", "evil", "pwn.html")), false);
       assert.equal(existsSync(join(store.paths.specsDir, "spec-checkin", "wireframes", "payload.svg")), false);
