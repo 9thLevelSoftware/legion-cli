@@ -1,15 +1,6 @@
 import { SCHEMA_VERSION, type Packet } from "@9thlevelsoftware/legion-cli-schema";
 import type { NewPacket } from "./types.js";
 
-export function nextPacketId(existing: readonly string[]): string {
-  let max = 0;
-  for (const id of existing) {
-    const match = /^PKT-(\d+)$/.exec(id);
-    if (match) max = Math.max(max, Number(match[1]));
-  }
-  return `PKT-${String(max + 1).padStart(4, "0")}`;
-}
-
 export function packetFromInput(
   id: string,
   input: NewPacket,

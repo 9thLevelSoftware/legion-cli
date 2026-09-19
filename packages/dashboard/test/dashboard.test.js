@@ -8,6 +8,7 @@ import test from "node:test";
 import { ServeFileSchema } from "@9thlevelsoftware/legion-cli-schema";
 import {
   ENGINE_WRITE_METHODS,
+  loadSnapshot,
   startDashboard,
   WEBMCP_SCRIPT,
   WEBMCP_SCRIPT_PATH,
@@ -337,6 +338,48 @@ test("POST /engine/* requires token and origin; ticket/wikiTrust/qaChecklist mut
       );
       assert.equal(checklist.specId, "spec-checkin");
       assert.deepEqual(checklist.ticks, ["AC-01"]);
+    });
+  });
+});
+
+test("5 parallel POST /engine/ticket on one server give 5 tasks with distinct ids", async () => {
+  await withStore(async ({ dir, store }) => {
+    await withServer(dir, async ({ handle }) => {
+      const responses = await Promise.all(
+        Array.from({ length: 5 }, (_, i) =>
+          enginePost(handle, "/engine/ticket", { title: `double click ${i}` }, { token: handle.token }),
+        ),
+      );
+      const ids = [];
+      for (const res of responses) {
+        assert.equal(res.status, 200, await res.clone().text());
+        ids.push((await res.json()).id);
+      }
+      assert.equal(new Set(ids).size, 5, ids.join(","));
+      for (const [i, id] of ids.entries()) {
+        assert.equal((await store.readTask(id)).data.title, `double click ${i}`);
+      }
+    });
+  });
+});
+
+test("snapshot lists invalid task files and an unreadable STATE.md instead of hiding them", async () => {
+  await withStore(async ({ dir, store }) => {
+    await writeFile(join(store.paths.tasksDir, "TSK-0042.md"), "---\nschemaVersion: legion-cli-task/v1\nid: TSK-0042\n", "utf8");
+    const withInvalid = await loadSnapshot(dir, { rebuild: false });
+    assert.deepEqual(
+      withInvalid.invalidTasks.map((entry) => entry.file),
+      ["TSK-0042.md"],
+    );
+    assert.ok(withInvalid.blockers.some((item) => item.kind === "invalid" && /TSK-0042\.md is not a valid task/.test(item.detail)));
+    assert.equal(withInvalid.stateError, null);
+
+    await writeFile(store.paths.stateMd, "---\nphase: [unterminated\n", "utf8");
+    const unreadable = await loadSnapshot(dir, { rebuild: false });
+    assert.equal(unreadable.stateError, "state unreadable (retrying)");
+    await withServer(dir, async ({ handle }) => {
+      const html = await (await fetch(handle.url)).text();
+      assert.match(html, /state unreadable \(retrying\)/);
     });
   });
 });

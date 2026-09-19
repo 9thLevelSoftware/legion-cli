@@ -10,6 +10,7 @@ import {
   skillCatalogPath,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { createLegionEngine, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionStore } from "@9thlevelsoftware/legion-cli-persist";
 import { SkillIdSchema, type SkillId } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeErr, writeJson, writeOut } from "./io.js";
@@ -159,16 +160,19 @@ export async function runSkillsInstall(opts: CliOpts, source: string, flags: Ski
     }
   }
   try {
-    const installed = await installSkillOverlay({
-      projectRoot: opts.project,
-      source: src,
-      unsigned: Boolean(flags.unsigned),
-      skillId,
-      integritySha256,
-      cwd: process.cwd(),
-      trustKeys,
-      ttyWarn: ttyWarn(),
-    });
+    // The overlay lives under .legion-cli/: replace it under engine.lock (FP-3).
+    const installed = await createLegionStore(opts.project).withLock(() =>
+      installSkillOverlay({
+        projectRoot: opts.project,
+        source: src,
+        unsigned: Boolean(flags.unsigned),
+        skillId,
+        integritySha256,
+        cwd: process.cwd(),
+        trustKeys,
+        ttyWarn: ttyWarn(),
+      }),
+    );
     if (opts.json) {
       writeJson({
         ok: true,

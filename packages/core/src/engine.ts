@@ -38,7 +38,11 @@ import {
   parseMarkdownDocument,
   PathEscapeError,
   EngineLockedError,
+  invalidTaskMessage,
+  listTaskFiles,
+  nextFileId,
   PersistError,
+  releaseFileId,
   ensureGitignore,
   commitPaths,
   gitAdd,
@@ -152,8 +156,8 @@ import {
   regressionTestPath,
   regressionVerifyCommand,
 } from "./fix.js";
-import { nextPacketId, packetFromInput, packetMarkdownBody } from "./packets.js";
-import { defaultTicketContract, nextTaskId, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
+import { packetFromInput, packetMarkdownBody } from "./packets.js";
+import { defaultTicketContract, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
 import {
   displayStagedRoots,
   ghAvailable,
@@ -299,7 +303,7 @@ async function listMarkdownFiles(dir: string): Promise<string[]> {
 
 type LoadedTask =
   | { ok: true; task: Task }
-  | { ok: false; id: string; specId?: string; filesAllowed?: string[] };
+  | { ok: false; id: string; file: string; error: string; specId?: string; filesAllowed?: string[] };
 
 function peekTaskFrontmatter(frontmatter: unknown): { specId?: string; filesAllowed?: string[] } {
   if (!frontmatter || typeof frontmatter !== "object") return {};
@@ -488,22 +492,29 @@ export class LegionEngine {
       } catch {
         refuse(`unknown spec ${specId}`, HINT.spec);
       }
-      if (spec.status !== "draft") {
+      // STATE.md is written last. A crash after the spec froze but before STATE moved on leaves
+      // `frozen` + `spec_draft`; approving again completes the missing writes (F-015).
+      const resuming = spec.status === "frozen";
+      if (spec.status !== "draft" && !resuming) {
         refuse(`spec ${specId} is ${spec.status}, not draft`, HINT.specApprove);
       }
-      const answers = await this.#loadIntentAnswers();
-      if (await isBrandViolationBlockingFreeze(this.projectRoot, spec, answers.mapped.screens)) {
-        refuse("brand violation blocks spec freeze for UI work", HINT.designGenerate);
+      if (!resuming) {
+        const answers = await this.#loadIntentAnswers();
+        if (await isBrandViolationBlockingFreeze(this.projectRoot, spec, answers.mapped.screens)) {
+          refuse("brand violation blocks spec freeze for UI work", HINT.designGenerate);
+        }
+        const frozen: Spec = {
+          ...spec,
+          status: "frozen",
+          frozenAt: nowIso(),
+          frozenBy: actor.id,
+        };
+        await this.store.writeSpec(frozen, specBody);
       }
-      const frozen: Spec = {
-        ...spec,
-        status: "frozen",
-        frozenAt: nowIso(),
-        frozenBy: actor.id,
-      };
-      await this.store.writeSpec(frozen, specBody);
       const project = await this.store.readProject();
-      await this.store.writeProject({ ...project.data, activeSpecId: specId }, project.body);
+      if (project.data.activeSpecId !== specId) {
+        await this.store.writeProject({ ...project.data, activeSpecId: specId }, project.body);
+      }
       await this.#writeState({
         ...state,
         phase: "spec_frozen",
@@ -1061,7 +1072,7 @@ export class LegionEngine {
     } catch {
       // uninitialized / missing config
     }
-    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
     return readyTasks({
       phase: state.phase,
       controlMode,
@@ -1164,7 +1175,7 @@ export class LegionEngine {
       if (!opts?.untilBlocked) break;
       const ready = await this.#withLockOrRefuse(async () => {
         const state = await this.#readState();
-        const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+        const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
         return pickNextTask({
           phase: state.phase,
           controlMode: config?.control_mode ?? "guarded",
@@ -1267,7 +1278,7 @@ export class LegionEngine {
     await this.#withLockOrRefuse(async () => {
       await this.#assertNoLiveInProgress("review");
       const state = await this.#readState();
-      const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+      const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
       this.#assertCanReview(state, slice);
       specId = state.activeSpecId ?? undefined;
       if (!specId) {
@@ -1363,7 +1374,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       await this.#assertNoLiveInProgress("qa");
       const state = await this.#readState();
-      const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+      const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
       this.#assertCanQa(state, slice);
       const specId = state.activeSpecId;
       if (!specId) {
@@ -2275,7 +2286,7 @@ export class LegionEngine {
   }
 
   async #resolveExecuteTask(taskId: string | "auto", state: StateFile, config: LegionConfig): Promise<Task> {
-    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
     if (taskId === "auto") {
       const picked = pickNextTask({
         phase: state.phase,
@@ -2501,33 +2512,40 @@ export class LegionEngine {
         parentAdapter = parent.adapter;
       }
     }
-    const id = nextTaskId(tasks.map((task) => task.id));
-    let ticket = ticketFromInput(id, specId, {
-      ...input,
-      title,
-      parentId,
-      adapter: input.adapter ?? parentAdapter,
-    });
-    const contractInvalid =
-      filesAllowedFailsPlan(ticket.contract.filesAllowed) ||
-      expectedArtifactsFailsPlan(ticket.contract.filesAllowed, ticket.contract.expectedArtifacts);
-    const live = tasks.filter((task) => task.status !== "done" && task.status !== "compacted");
-    const overlaps = overlappingFilesAllowed([ticket, ...live]);
+    // From file names (valid or not) with O_EXCL, so a corrupt file's id is never reused (F-004).
+    const id = await nextFileId(this.store.paths.tasksDir, "TSK", 4);
+    let ticket: Task;
     let coerced = false;
-    if (contractInvalid || overlaps.length > 0) {
-      if (!input.fromAgent) {
-        if (contractInvalid) {
-          refuse("File paths must be concrete (no * or **)", HINT.concretePaths);
+    try {
+      ticket = ticketFromInput(id, specId, {
+        ...input,
+        title,
+        parentId,
+        adapter: input.adapter ?? parentAdapter,
+      });
+      const contractInvalid =
+        filesAllowedFailsPlan(ticket.contract.filesAllowed) ||
+        expectedArtifactsFailsPlan(ticket.contract.filesAllowed, ticket.contract.expectedArtifacts);
+      const live = tasks.filter((task) => task.status !== "done" && task.status !== "compacted");
+      const overlaps = overlappingFilesAllowed([ticket, ...live]);
+      if (contractInvalid || overlaps.length > 0) {
+        if (!input.fromAgent) {
+          if (contractInvalid) {
+            refuse("File paths must be concrete (no * or **)", HINT.concretePaths);
+          }
+          refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.ticket(parentId ?? "TSK-x"));
         }
-        refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.ticket(parentId ?? "TSK-x"));
+        ticket = {
+          ...ticket,
+          contract: defaultTicketContract(id),
+        };
+        coerced = true;
       }
-      ticket = {
-        ...ticket,
-        contract: defaultTicketContract(id),
-      };
-      coerced = true;
+      await this.store.writeTask(ticket, taskMarkdownBody(ticket));
+    } catch (err) {
+      await releaseFileId(this.store.paths.tasksDir, id);
+      throw err;
     }
-    await this.store.writeTask(ticket, taskMarkdownBody(ticket));
     if (parentId) {
       const parentDoc = await this.store.readTask(parentId);
       if (!parentDoc.data.blocks.includes(id)) {
@@ -2551,12 +2569,17 @@ export class LegionEngine {
     if (state.phase === "uninitialized") {
       refuse("packet new is refused until init", HINT.init);
     }
-    const id = nextPacketId((await this.#listPackets()).map((packet) => packet.id));
+    const id = await nextFileId(this.store.paths.packetsDir, "PKT", 4);
     const packet = packetFromInput(id, { ...input, title }, {
       specId: state.activeSpecId,
       createdAt: nowIso(),
     });
-    await this.store.writePacket(packet, packetMarkdownBody(packet));
+    try {
+      await this.store.writePacket(packet, packetMarkdownBody(packet));
+    } catch (err) {
+      await releaseFileId(this.store.paths.packetsDir, id);
+      throw err;
+    }
     return { packet, path: packetPath(id), tickets: [] };
   }
 
@@ -2746,10 +2769,8 @@ export class LegionEngine {
       ...side.blockingLines.map((statement) => ({ statement, blocking: true })),
     ];
     if (lines.length === 0) return;
-    let n = (await this.#listAssumptions()).length;
     for (const line of lines) {
-      n += 1;
-      const id = `ASM-${String(n).padStart(4, "0")}`;
+      const id = await nextFileId(this.store.paths.assumptionsDir, "ASM", 4);
       const assumption: Assumption = {
         schemaVersion: SCHEMA_VERSION.assumption,
         id,
@@ -2759,7 +2780,12 @@ export class LegionEngine {
         escalatesTo: "user",
         createdIn: "intent",
       };
-      await this.store.writeAssumption(assumption, `${line.statement}\n`);
+      try {
+        await this.store.writeAssumption(assumption, `${line.statement}\n`);
+      } catch (err) {
+        await releaseFileId(this.store.paths.assumptionsDir, id);
+        throw err;
+      }
     }
   }
 
@@ -2791,7 +2817,8 @@ export class LegionEngine {
         const spec = (await this.store.readSpec(id)).data;
         if (spec.status === "draft") return id;
       } catch {
-        return id;
+        // An unreadable SPEC.md keeps its id: never allocate over it (F-061).
+        continue;
       }
     }
     return `${base}-${Date.now()}`;
@@ -2937,31 +2964,32 @@ export class LegionEngine {
   }
 
   async #loadTaskEntries(): Promise<LoadedTask[]> {
-    const files = await listMarkdownFiles(this.store.paths.tasksDir);
-    const entries: LoadedTask[] = [];
-    for (const file of files) {
-      const id = file.replace(/\.md$/i, "");
-      try {
-        entries.push({ ok: true, task: (await this.store.readTask(id)).data });
-      } catch {
-        let specId: string | undefined;
-        let filesAllowed: string[] | undefined;
-        try {
-          const raw = await readFile(join(this.store.paths.tasksDir, file), "utf8");
-          const peeked = peekTaskFrontmatter(parseMarkdownDocument(raw).frontmatter);
-          specId = peeked.specId;
-          filesAllowed = peeked.filesAllowed;
-        } catch {
-          // unreadable even as frontmatter
-        }
-        entries.push({ ok: false, id, specId, filesAllowed });
-      }
-    }
-    return entries;
+    return (await listTaskFiles(this.projectRoot)).map((entry): LoadedTask =>
+      entry.ok
+        ? { ok: true, task: entry.task }
+        : { ok: false, id: entry.id, file: entry.file, error: entry.error, ...peekTaskFrontmatter(entry.frontmatter) },
+    );
   }
 
+  /** Valid tasks only. Gates use {@link #listGateTasks}, which refuses on an invalid file. */
   async #listTasks(): Promise<Task[]> {
     return (await this.#loadTaskEntries())
+      .filter((entry): entry is { ok: true; task: Task } => entry.ok)
+      .map((entry) => entry.task)
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /**
+   * Fail closed (FP-1): review, qa, ship, execute and next refuse while any file under tasks/ is
+   * not a valid task, instead of computing the gate over the tasks that happened to parse.
+   */
+  async #listGateTasks(): Promise<Task[]> {
+    const entries = await this.#loadTaskEntries();
+    const bad = entries.find((entry): entry is Extract<LoadedTask, { ok: false }> => !entry.ok);
+    if (bad) {
+      refuse(invalidTaskMessage({ ok: false, file: bad.file, id: bad.id, error: bad.error }), HINT.status);
+    }
+    return entries
       .filter((entry): entry is { ok: true; task: Task } => entry.ok)
       .map((entry) => entry.task)
       .sort((a, b) => a.id.localeCompare(b.id));
@@ -3024,7 +3052,7 @@ export class LegionEngine {
   }
 
   async #assertReadyToShip(state: StateFile): Promise<void> {
-    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
     if (state.lastReview !== "PASS") {
       refuse("Review must PASS before shipping", HINT.review);
     }
@@ -3041,7 +3069,7 @@ export class LegionEngine {
     if (state.lastReview !== "PASS") {
       refuse("Review must PASS before shipping", HINT.review);
     }
-    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
     if (p0TasksNotDone(slice).length > 0) {
       refuse("A P0 task is not done yet", HINT.blockers);
     }
@@ -3068,7 +3096,7 @@ export class LegionEngine {
   }
 
   async #stageShipLocked(state: StateFile): Promise<ShipPreview> {
-    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
     const allowedFiles = unionDoneFilesAllowed(slice);
     const allowedSet = new Set(allowedFiles);
     const empty: ShipPreview = {

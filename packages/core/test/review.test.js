@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -100,6 +100,54 @@ test("review spawn with zero new tasks is PASS and stays executing", async () =>
     );
   });
 });
+
+for (const [label, corrupt] of [
+  ["a bad status", (raw) => raw.replace("status: ready", "status: Ready")],
+  ["a truncated file", (raw) => raw.slice(0, Math.floor(raw.length / 3))],
+]) {
+  test(`an invalid P0 task (${label}) makes review refuse by name, and its id is not reused`, async () => {
+    await withFakeAdapter(async () => {
+      await withEngine(
+        async ({ engine, store }) => {
+          await initProject(engine);
+          await seedPlanReady(store, {
+            phase: "executing",
+            task: { status: "done", priority: "P1" },
+            extraTasks: [
+              makeTask({
+                id: "TSK-0002",
+                title: "unrun P0",
+                status: "ready",
+                priority: "P0",
+                contract: { filesAllowed: ["src/p0.ts"], expectedArtifacts: ["src/p0.ts"] },
+              }),
+            ],
+          });
+          const abs = join(store.paths.tasksDir, "TSK-0002.md");
+          const corrupted = corrupt(await readFile(abs, "utf8"));
+          await writeFile(abs, corrupted, "utf8");
+          // Before the fix the gate ran over the tasks that parsed: review PASSed.
+          await assert.rejects(
+            () => engine.review(),
+            (err) => {
+              assert.equal(err instanceof LegionRefuseError, true);
+              assert.match(err.message, /^TSK-0002\.md is not a valid task: .+\. Fix the file, then re-run\.$/);
+              return true;
+            },
+          );
+          await assert.rejects(() => engine.nextTasks(), /TSK-0002\.md is not a valid task/);
+          const ticket = await engine.fileTicket({
+            title: "new ticket",
+            contract: { filesAllowed: ["src/new.ts"], expectedArtifacts: ["src/new.ts"] },
+          });
+          assert.equal(ticket.id, "TSK-0003");
+          assert.equal(await readFile(abs, "utf8"), corrupted, "the corrupt file is evidence; keep it");
+        },
+        { skillsDir },
+      );
+    });
+  });
+}
 
 test("review spawn that files a task is lastReview FAIL", async () => {
   await withFakeAdapter(async () => {

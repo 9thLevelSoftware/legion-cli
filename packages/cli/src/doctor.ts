@@ -660,6 +660,13 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     `Sandbox     ${detectedSandbox.backend} hardened=${detectedSandbox.hardened}`,
     `Playwright  ${playwrightDetail}`,
     `Lock        ${lockPresent ? "present" : "absent"}`,
+    ...(lockPresent
+      ? [
+          "            held by a running legion-cli, or left by one that crashed. A dead holder's lock is",
+          "            cleared on the next verb; a live one is never stolen. If no legion-cli is running,",
+          "            delete .legion-cli/index/engine.lock.",
+        ]
+      : []),
     "schemaVersions",
     ...schemaVersions.map((version) => `  ${version}`),
     "",

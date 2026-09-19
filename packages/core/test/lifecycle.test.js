@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -336,6 +336,43 @@ test("approveSpec freezes a draft and moves to spec_frozen", async () => {
     assert.equal(spec.data.frozenBy, "human");
     assert.equal((await engine.getState()).phase, "spec_frozen");
     assert.equal((await engine.getState()).activeSpecId, "spec-checkin");
+  });
+});
+
+test("re-approving a frozen spec while the phase is still spec_draft completes the missing writes", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    // A crash after the spec write, before PROJECT.md and STATE.md moved on.
+    await writeSpec(store, makeSpec({ status: "frozen", frozenAt: "2026-09-01T12:00:00.000Z", frozenBy: "human" }));
+    await patchState(store, { phase: "spec_draft" });
+    await engine.approveSpec("spec-checkin", { id: "human" });
+    const state = await engine.getState();
+    assert.equal(state.phase, "spec_frozen");
+    assert.equal(state.activeSpecId, "spec-checkin");
+    assert.equal((await store.readProject()).data.activeSpecId, "spec-checkin");
+    assert.equal((await store.readSpec("spec-checkin")).data.frozenAt, "2026-09-01T12:00:00.000Z");
+  });
+});
+
+test("10 concurrent fileTicket calls on one engine give 10 distinct ids and 10 files", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
+    const tickets = await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        engine.fileTicket({
+          title: `parallel ticket ${i}`,
+          contract: { filesAllowed: [`src/parallel-${i}.ts`], expectedArtifacts: [`src/parallel-${i}.ts`] },
+        }),
+      ),
+    );
+    const ids = tickets.map((ticket) => ticket.id);
+    assert.equal(new Set(ids).size, 10, ids.join(","));
+    const files = (await readdir(store.paths.tasksDir)).filter((name) => /^TSK-\d+\.md$/.test(name));
+    assert.equal(files.length, 11);
+    for (const ticket of tickets) {
+      assert.equal((await store.readTask(ticket.id)).data.title, ticket.title);
+    }
   });
 });
 
