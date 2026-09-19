@@ -160,6 +160,9 @@ export function nextStepFor(
       return run.execute ? `legion-cli brownfield pr-plan ${id}` : `legion-cli run promote ${id}`;
     case "execute":
       if (!dag?.present) return `legion-cli brownfield pr-plan ${id}`;
+      if (dag.done && dag.completed === 0) {
+        return `no PR completed; skip verify: legion-cli brownfield state ${id} phase=complete`;
+      }
       if (dag.done) return `verify the combined result, then legion-cli brownfield state ${id} phase=verify`;
       return dag.ready.length > 0
         ? `legion-cli brownfield worktree ${id} ${dag.ready[0]} (ready: ${dag.ready.join(", ")})`
@@ -271,7 +274,7 @@ export async function stateRun(
   let dag: BrownfieldStateResult["dag"] = null;
   if (artifacts.dag) {
     const summary = summarizeDag(await readDag(store.projectRoot, runId));
-    dag = { present: true, done: summary.done, ready: summary.ready };
+    dag = { present: true, done: summary.done, ready: summary.ready, completed: summary.counts.completed ?? 0 };
   }
   return {
     kind: "state",

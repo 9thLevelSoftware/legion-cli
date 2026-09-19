@@ -733,6 +733,32 @@ test("gitWorktreeAdd never clears .git or a path outside .legion-cli/worktrees",
   });
 });
 
+test("gitWorktreeAdd refuses when .legion-cli/worktrees links outside the project", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "README.md"), "app\n", "utf8");
+    initGitRepo(dir);
+    const outside = await mkdtemp(join(tmpdir(), "legion-outside-"));
+    try {
+      await mkdir(join(outside, "r", "pr-1"), { recursive: true });
+      await writeFile(join(outside, "r", "pr-1", "keep.txt"), "keep\n", "utf8");
+      await mkdir(join(dir, ".legion-cli"), { recursive: true });
+      try {
+        await symlink(outside, join(dir, ".legion-cli", "worktrees"), process.platform === "win32" ? "junction" : "dir");
+      } catch (err) {
+        if (err?.code === "EPERM" || err?.code === "EACCES") return;
+        throw err;
+      }
+      assert.throws(
+        () => gitWorktreeAdd(dir, join(dir, ".legion-cli", "worktrees", "r", "pr-1"), "brownfield/r/pr-1-x"),
+        (err) => err instanceof PersistError && /resolves outside the project/.test(err.message),
+      );
+      assert.equal(await readFile(join(outside, "r", "pr-1", "keep.txt"), "utf8"), "keep\n");
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+
 test("gitWorktreeRemove removes the checkout and keeps the branch", async () => {
   await withTempDir(async (dir) => {
     await writeFile(join(dir, "README.md"), "app\n", "utf8");

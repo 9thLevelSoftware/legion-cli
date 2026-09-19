@@ -136,8 +136,9 @@ for agent ids, e.g. `meta.writer="a1b2"`). Effort can't change after init.
 Phases: `intent → plan → analysis → assumptions → design → review → present → execute → verify → complete`.
 `roster` moves `intent → plan`, `merge` sets `assumptions`, and `pr-plan` sets `execute`; you set
 the rest. There is no ordering table (design ↔ review loops and `present → complete` are fine), but
-`execute` and `verify` refuse without `reviews/design-review.md`, and `verify` refuses while no DAG
-node is `completed`.
+`execute` and `verify` (including `pr-plan`'s move to `execute`) refuse without
+`reviews/design-review.md`, and `verify` refuses while no DAG node is `completed`; `next` then
+says `phase=complete`.
 
 ## Resuming
 

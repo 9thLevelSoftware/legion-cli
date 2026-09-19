@@ -174,7 +174,9 @@ test("brownfield subcommands drive roster → merge → review-status → pr-pla
     assert.equal(removed.removed, true);
     assert.equal(await exists(wtAbs), false);
 
-    // No PR completed: verify is refused and the skill's "skip verify" path (phase=complete) works.
+    // No PR completed: `next` says skip verify, verify is refused, and phase=complete works.
+    const stuck = cliJson(["brownfield", "state", "bbbbbbbb", "--project", dir]);
+    assert.match(stuck.next, /skip verify: legion-cli brownfield state bbbbbbbb phase=complete/);
     const verify = runCli(["brownfield", "state", "bbbbbbbb", "phase=verify", "--project", dir, "--json"]);
     assert.equal(verify.status, 1);
     assert.match(verify.stdout + verify.stderr, /phase=verify needs at least one completed DAG node/);
@@ -199,6 +201,7 @@ test("brownfield dag cannot point a worktree at .git, and a hand-edited path is 
     await seedBrownfield(dir);
     cliJson(["brownfield", "init", "--project", dir, "--run-id", "cccccccc", "--execute", "audit"]);
     await seedRunFile(dir, "cccccccc", "design.md", DESIGN);
+    await seedRunFile(dir, "cccccccc", "reviews/design-review.md", "# Design Review\n");
     cliJson(["brownfield", "pr-plan", "cccccccc", "--project", dir]);
 
     const set = runCli(["brownfield", "dag", "cccccccc", "pr-1", "worktree=.git", "--project", dir, "--json"]);

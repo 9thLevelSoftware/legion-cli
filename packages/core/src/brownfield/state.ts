@@ -151,10 +151,16 @@ async function completedNodeCount(projectRoot: string, runId: string): Promise<n
  * No ordering table (the skill loops design ↔ review, skips execute, re-enters on resume); only
  * two hard refusals: execute/verify need a design review, and verify needs a completed PR.
  */
-export async function assertPhaseAllowed(projectRoot: string, runId: string, phase: string, hint: string): Promise<void> {
+export async function assertPhaseAllowed(
+  projectRoot: string,
+  runId: string,
+  phase: string,
+  hint: string,
+  action = "brownfield state",
+): Promise<void> {
   if (phase !== "execute" && phase !== "verify") return;
   if (!existsSync(runAbs(projectRoot, runId, "reviews", "design-review.md"))) {
-    refuse(`brownfield state: phase=${phase} needs reviews/design-review.md (run the design review first)`, hint);
+    refuse(`${action}: phase=${phase} needs reviews/design-review.md (run the design review first)`, hint);
   }
   if (phase === "verify" && (await completedNodeCount(projectRoot, runId)) === 0) {
     refuse(

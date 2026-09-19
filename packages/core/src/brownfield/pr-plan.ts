@@ -12,7 +12,7 @@ import type { BrownfieldPrPlanResult } from "../types.js";
 import { writeDag } from "./dag.js";
 import { section, splitBlocks } from "./markdown.js";
 import { DAG_FILE, runAbs, runArtifactPaths } from "./paths.js";
-import { assertBrownfieldReady, readRun, writeRun } from "./state.js";
+import { assertBrownfieldReady, assertPhaseAllowed, readRun, writeRun } from "./state.js";
 
 export function slugify(title: string): string {
   const slug = title
@@ -120,19 +120,28 @@ export function parsePrPlan(designMarkdown: string, runId: string, rootBase: str
   return { ok: true, nodes: out, levels: Math.max(...out.map((node) => node.level)) + 1 };
 }
 
-/** Nodes of an existing dag.json that carry progress (non-pending status or a recorded commit). */
-async function nodesWithProgress(projectRoot: string, runId: string): Promise<BrownfieldDagNode[]> {
+/**
+ * What rebuilding an existing dag.json would lose: nodes with progress (non-pending status or a
+ * recorded commit), or a note that it can't be read (fail closed: it may still hold progress).
+ */
+async function existingProgress(projectRoot: string, runId: string): Promise<string[]> {
   const abs = runAbs(projectRoot, runId, DAG_FILE);
   if (!existsSync(abs)) return [];
   let raw: unknown;
   try {
     raw = JSON.parse(await readFile(abs, "utf8"));
-  } catch {
-    return [];
+  } catch (err) {
+    return [`dag.json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`];
   }
   const parsed = BrownfieldDagSchema.safeParse(raw);
-  if (!parsed.success) return [];
-  return parsed.data.nodes.filter((node) => node.status !== "pending" || node.commit !== null);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    return [`dag.json failed schema validation at ${issue?.path.join(".") || "root"}: ${issue?.message ?? "schema"}`];
+  }
+  if (parsed.data.runId !== runId) return [`dag.json belongs to run ${parsed.data.runId}`];
+  return parsed.data.nodes
+    .filter((node) => node.status !== "pending" || node.commit !== null)
+    .map((node) => `${node.id} ${node.status}${node.commit ? ` @${node.commit.slice(0, 12)}` : ""}`);
 }
 
 export async function prPlanRun(
@@ -153,12 +162,11 @@ export async function prPlanRun(
   if (!parsed.ok) {
     refuse(`brownfield pr-plan: ${parsed.error}`, HINT.brownfieldDesign(runId));
   }
+  await assertPhaseAllowed(store.projectRoot, runId, "execute", HINT.brownfieldState(runId), "brownfield pr-plan");
   if (!opts.force) {
-    const progressed = await nodesWithProgress(store.projectRoot, runId);
+    const progressed = await existingProgress(store.projectRoot, runId);
     if (progressed.length > 0) {
-      const list = progressed
-        .map((node) => `${node.id} ${node.status}${node.commit ? ` @${node.commit.slice(0, 12)}` : ""}`)
-        .join(", ");
+      const list = progressed.join(", ");
       refuse(
         `brownfield pr-plan would reset DAG progress (${list}); continue with dag, or pass --force to rebuild`,
         HINT.brownfieldDag(runId),

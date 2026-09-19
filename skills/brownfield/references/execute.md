@@ -33,8 +33,8 @@ current tip of the branch, so later commits on main can't slip unaudited code in
 dependent is based on its first dependency's branch and merges the others in. It refuses on missing
 dependencies, cycles, duplicate PR numbers, or a missing section — if it does, SendMessage the
 writer to fix the PR plan, re-run the design review's `review-status`, and try again. It also
-refuses once `dag.json` has progress (any node not `pending`, or a recorded `commit`) and lists those
-nodes: on resume, continue with `dag` instead. `pr-plan <id> --force` rebuilds the DAG and resets
+refuses without `reviews/design-review.md`, and once `dag.json` has progress (any node not
+`pending`, or a recorded `commit`) or can't be read, listing those nodes or the parse error: on resume, continue with `dag` instead. `pr-plan <id> --force` rebuilds the DAG and resets
 every node to `pending`; use it only when the user wants the plan re-executed from scratch.
 
 Report: `Executing PR plan: N PRs in L levels, concurrency C, effort E.`

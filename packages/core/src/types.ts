@@ -129,7 +129,7 @@ export type BrownfieldStateResult = {
   paths: BrownfieldArtifactPaths;
   artifacts: Record<string, boolean>;
   analysisOutputs: Record<string, BrownfieldAnalysisOutputStatus>;
-  dag: { present: boolean; done: boolean; ready: string[] } | null;
+  dag: { present: boolean; done: boolean; ready: string[]; completed: number } | null;
   next: string;
 };
 
