@@ -15,12 +15,14 @@ export const DEFAULT_FILES_FORBIDDEN = [
 
 /** Plan-time FileContract SoT (KD-11 gate 1). Tasks do not own `.legion-cli/**`. */
 export function isEngineSoTPath(posixPath: string): boolean {
-  return posixPath === ".legion-cli" || posixPath.startsWith(".legion-cli/");
+  // Case-insensitive: NTFS and APFS alias `.LEGION-CLI/` onto `.legion-cli/` (F-060, F-087).
+  const lower = posixPath.toLowerCase();
+  return lower === ".legion-cli" || lower.startsWith(".legion-cli/");
 }
 
 /** Plan-time FileContract denylist. Broader than DEFAULT_FILES_FORBIDDEN. */
 export function isImplicitForbiddenPath(posixPath: string): boolean {
-  if (posixPath === ".git" || posixPath.startsWith(".git/")) return true;
+  if (posixPath.split("/").some((part) => part.toLowerCase() === ".git")) return true;
   if (isEngineSoTPath(posixPath)) return true;
   if (
     posixPath.split("/").some((part) => {

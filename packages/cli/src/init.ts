@@ -5,8 +5,9 @@ import {
   HttpAdapterConfigSchema,
   type AdapterId,
 } from "@9thlevelsoftware/legion-cli-schema";
+import { tryGitHead } from "@9thlevelsoftware/legion-cli-persist";
 import type { CliOpts } from "./io.js";
-import { writeJson, writeOut } from "./io.js";
+import { writeErr, writeJson, writeOut } from "./io.js";
 import { promptIfTty } from "./prompt.js";
 
 export type InitFlags = {
@@ -108,6 +109,12 @@ export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> 
   const engine = createLegionEngine(opts.project);
   await engine.init({ name, adapter, generic, http, mode });
   const next = mode === "brownfield" ? "legion-cli brownfield" : "legion-cli intent";
+  if (tryGitHead(opts.project) === null) {
+    // KD-3: agent runs (plan, execute, review, …) are refused until the repo has a commit.
+    writeErr(
+      `Note: Legion needs a git repository with at least one commit to protect your files during agent runs.\nNext: ${HINT.spawnGitRepo}`,
+    );
+  }
 
   if (opts.json) {
     writeJson({

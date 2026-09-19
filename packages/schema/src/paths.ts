@@ -7,7 +7,7 @@ const GLOB_OR_BACKSLASH = /[*?[\\]/;
  * no absolute or drive-letter paths. Used by Zod and emitted JSON Schema.
  */
 export const CONCRETE_POSIX_PATH_REGEX =
-  /^(?![A-Za-z]:)(?!\/)(?:(?!\.git(?:\/|$))(?!\.(?:\/|$))(?!\.\.(?:\/|$))[^\\*?[\]/]+)(?:\/(?!\.git(?:\/|$))(?!\.(?:\/|$))(?!\.\.(?:\/|$))[^\\*?[\]/]+)*$/;
+  /^(?![A-Za-z]:)(?!\/)(?:(?!\.[Gg][Ii][Tt](?:\/|$))(?!\.(?:\/|$))(?!\.\.(?:\/|$))[^\\*?[\]/]+)(?:\/(?!\.[Gg][Ii][Tt](?:\/|$))(?!\.(?:\/|$))(?!\.\.(?:\/|$))[^\\*?[\]/]+)*$/;
 
 /**
  * v0 FileContract.filesAllowed: concrete POSIX repo-relative paths only.
@@ -19,7 +19,12 @@ export function isConcretePosixRepoRelativePath(path: string): boolean {
   if (/^[A-Za-z]:/.test(path)) return false;
   if (GLOB_OR_BACKSLASH.test(path)) return false;
   const segments = path.split("/");
-  if (segments.some((segment) => segment === "" || segment === "." || segment === ".." || segment === ".git")) {
+  // `.GIT` is `.git` on NTFS/APFS (F-060): compare the segment case-insensitively.
+  if (
+    segments.some(
+      (segment) => segment === "" || segment === "." || segment === ".." || segment.toLowerCase() === ".git",
+    )
+  ) {
     return false;
   }
   return true;

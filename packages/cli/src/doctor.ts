@@ -17,8 +17,10 @@ import {
 import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
 import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
+  isGitRepo,
   readAuditEvents,
   summarizeAuditMetrics,
+  tryGitHead,
   type LocalMetrics,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
@@ -355,6 +357,17 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     ok: git.ok,
     label: "git",
     detail: git.detail.replace(/^git version\s+/i, ""),
+  });
+
+  // KD-3: every agent spawn needs a repo with at least one commit.
+  const repo = isGitRepo(opts.project);
+  const head = repo ? tryGitHead(opts.project) : null;
+  checks.push({
+    ok: head !== null,
+    label: "git repository",
+    detail: head
+      ? "yes"
+      : `${repo ? "no commit yet" : "not a git repository"}; next: git init && git add -A && git commit -m "start"`,
   });
 
   const legionCliPaths = listOnPath(["legion-cli", "legion-cli.cmd", "legion-cli.exe"]);

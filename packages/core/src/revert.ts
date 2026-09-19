@@ -11,7 +11,7 @@ import {
   tryGitHead,
 } from "@9thlevelsoftware/legion-cli-persist";
 import { atomicWriteFile } from "./atomic-write.js";
-import { isAllowedPath, isEngineOwned, matchesGlob } from "./contracts.js";
+import { hasGitSegment, isAllowedPath, isEngineOwned, matchesGlob } from "./contracts.js";
 
 export const HEAD_MOVED_WARNING =
   "agent committed; Legion CLI did not `reset`. `legion-cli ship` is the human commit gate.";
@@ -139,7 +139,7 @@ async function walk(root: string, rel: string, out: Set<string>): Promise<void> 
   }
   for (const entry of entries) {
     const posix = toPosixPath(rel ? `${rel}/${entry.name}` : entry.name);
-    if (posix === ".git" || posix.startsWith(".git/")) continue;
+    if (hasGitSegment(posix)) continue;
     // Walk dist/node_modules too: gitignored extras there must still revert.
     if (isEngineOwned(posix)) continue;
     if (entry.isDirectory()) {
@@ -232,7 +232,7 @@ export async function revertExtras(opts: {
   let incident = incidents.length > 0;
 
   for (const posix of candidates) {
-    if (posix.startsWith(".git/") || posix === ".git") {
+    if (hasGitSegment(posix)) {
       incident = true;
       continue;
     }

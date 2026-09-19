@@ -26,7 +26,7 @@ import {
   type ResolvedSkillDir,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
-import { isPidAlive, type LegionReader } from "@9thlevelsoftware/legion-cli-persist";
+import { isPidAlive, tryGitHead, type LegionReader } from "@9thlevelsoftware/legion-cli-persist";
 import {
   assertExecuteSandbox,
   materializeJail,
@@ -44,7 +44,7 @@ import {
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
-import { isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
+import { hasGitSegment, isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
 import { createHttpToolHost } from "./http-host.js";
 import {
@@ -362,6 +362,14 @@ async function assembleSpawnPrompt(opts: {
   return { body, skipDesignAppend };
 }
 
+export const GIT_REPO_REQUIRED_MESSAGE =
+  "Legion needs a git repository with at least one commit to protect your files during agent runs";
+
+/** KD-3: every agent spawn needs a repo with a commit (non-git and unborn repos are refused). */
+export function assertSpawnGitRepo(projectRoot: string): void {
+  if (tryGitHead(projectRoot) === null) refuse(GIT_REPO_REQUIRED_MESSAGE, HINT.spawnGitRepo);
+}
+
 export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkillSpawn> {
   const runId = `${opts.skillId}-${Date.now().toString(36)}`;
   const resolution = resolveAdapterId({
@@ -417,6 +425,10 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     }
     return { spawned: false, runId, resolution };
   }
+
+  // Checked once a spawn would really happen: an optional skill with no spawnable adapter
+  // still skips quietly, but no agent ever runs outside a repo with a commit.
+  assertSpawnGitRepo(opts.projectRoot);
 
   const adapter = resolveAdapter(opts.config, {
     id: resolution.id,
@@ -642,7 +654,7 @@ export async function finishStartedSpawn(
     let incident = revert.incident;
     if (started.sandbox) {
       for (const rel of dropped) {
-        if (rel === ".git" || rel.startsWith(".git/")) incident = true;
+        if (hasGitSegment(rel)) incident = true;
         if (isAllowedPath(rel, started.revertCtx.allowedRoots)) continue;
         extrasReverted.add(rel);
       }

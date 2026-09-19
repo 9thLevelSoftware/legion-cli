@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { LegionEngine } from "../dist/index.js";
 
 export function quoteArg(value) {
@@ -86,14 +87,42 @@ export async function withFakeAdapter(fn) {
   }
 }
 
-export async function initProject(engine, opts = {}) {
-  await engine.init({ name: "Checkin", adapter: "fake", ...opts });
-  if (opts.keepSandbox) return;
-  const config = await engine.store.readConfig();
-  await engine.store.writeConfig({
-    ...config,
-    sandbox: { ...config.sandbox, allowCopyJail: true },
+/**
+ * A git repo with one commit that does NOT contain `.legion-cli/` (the realistic state, F-013).
+ * `commitLegion: true` also commits `.legion-cli/` (the old, forgery-hiding setup); `git: false`
+ * leaves the folder without a repo. An existing repo is left alone.
+ */
+export function ensureGitRepo(dir, opts = {}) {
+  const inside = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    cwd: dir,
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
   });
+  const top = inside.status === 0 ? inside.stdout.trim() : "";
+  const own = top && resolvePath(top).toLowerCase() === resolvePath(realpathSync.native(dir)).toLowerCase();
+  if (!own) {
+    git(dir, ["init"]);
+    git(dir, ["config", "user.name", "9thLevelSoftware"]);
+    git(dir, ["config", "user.email", "engineering@9thlevelsoftware.com"]);
+  }
+  if (opts.commitLegion) git(dir, ["add", "-A"]);
+  else git(dir, ["add", "-A", "--", ".", ":(exclude).legion-cli"]);
+  git(dir, ["commit", "--allow-empty", "-m", opts.commitLegion ? "initial (with .legion-cli)" : "initial"]);
+  return gitHead(dir);
+}
+
+export async function initProject(engine, opts = {}) {
+  const { git: withGit = true, commitLegion = false, keepSandbox, ...initOpts } = opts;
+  await engine.init({ name: "Checkin", adapter: "fake", ...initOpts });
+  if (!keepSandbox) {
+    const config = await engine.store.readConfig();
+    await engine.store.writeConfig({
+      ...config,
+      sandbox: { ...config.sandbox, allowCopyJail: true },
+    });
+  }
+  if (withGit) ensureGitRepo(engine.projectRoot, { commitLegion });
 }
 
 /** Grok on PATH is still unspawnable when args omit {{pointer}}. */

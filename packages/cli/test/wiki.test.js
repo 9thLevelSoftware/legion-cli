@@ -31,7 +31,7 @@ test("ingest without git refuses unless --no-commit", async () => {
     assert.equal(result.status, 1);
     assert.match(normalize(result.stderr), /git repository/);
     assert.match(normalize(result.stderr), /--no-commit/);
-  });
+  }, { git: false });
 });
 
 test("search omits untrusted bodies; brief omits injection; wiki trust then show", async () => {

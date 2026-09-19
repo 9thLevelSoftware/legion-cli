@@ -10,6 +10,7 @@ export class LegionRefuseError extends Error {
 
 export const HINT = {
   init: "legion-cli init",
+  spawnGitRepo: 'git init && git add -A && git commit -m "start"',
   spec: "legion-cli spec or legion-cli spec approve",
   specApprove: "legion-cli spec approve",
   plan: "legion-cli plan",

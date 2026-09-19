@@ -47,9 +47,11 @@ export {
   gitCheckIgnore,
   gitCommitIndex,
   gitDiffCached,
+  gitDiffRevision,
   gitDiscoverChanges,
   gitHasStaged,
   gitHead,
+  gitLsFiles,
   gitPathExistsAtRef,
   gitPathTracked,
   gitPorcelainPaths,
@@ -64,11 +66,13 @@ export {
   gitWorktreeRemove,
   isGitRepo,
   listGitWorktrees,
+  resolveGitBinary,
+  runGit,
   sameWorktreePath,
   tryGitBranch,
   tryGitHead,
 } from "./git.js";
-export type { GitWorktree } from "./git.js";
+export type { GitKind, GitWorktree } from "./git.js";
 export { ensureGitignore, GITIGNORE_ENTRIES, GITIGNORE_TEMPLATE } from "./gitignore.js";
 export { ingestDocumentStorePath, ingestFiles } from "./ingest.js";
 export type { IngestDocument } from "./ingest.js";

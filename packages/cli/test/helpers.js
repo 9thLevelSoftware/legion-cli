@@ -47,9 +47,25 @@ export function sanitizeDoctor(text) {
     .replace(/\nWarnings\n(?:  .+\n?)*(?:\n)?/g, "\n");
 }
 
-export async function withTempDir(fn) {
+function gitIn(dir, args) {
+  const result = spawnSync("git", args, { cwd: dir, encoding: "utf8", windowsHide: true, shell: false });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${(result.stderr || result.stdout).trim()}`);
+  return result.stdout.trim();
+}
+
+/** A git repo with one empty commit: agent spawns need a repo with a commit (KD-3, F-013). */
+export function initEmptyGitRepo(dir) {
+  gitIn(dir, ["init"]);
+  gitIn(dir, ["config", "user.name", "9thLevelSoftware"]);
+  gitIn(dir, ["config", "user.email", "engineering@9thlevelsoftware.com"]);
+  gitIn(dir, ["commit", "--allow-empty", "-m", "initial"]);
+}
+
+/** Temp project dir. By default it is a git repo with one empty commit; `{ git: false }` opts out. */
+export async function withTempDir(fn, opts = {}) {
   const dir = await mkdtemp(join(tmpdir(), "legion-cli-"));
   try {
+    if (opts.git !== false) initEmptyGitRepo(dir);
     return await fn(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });

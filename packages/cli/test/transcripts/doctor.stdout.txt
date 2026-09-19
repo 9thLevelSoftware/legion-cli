@@ -4,6 +4,7 @@ Supported command: pnpm exec legion-cli
 ok    Node >= 22 (<version>)
 ok    pnpm (<version>)
 ok    git (<version>)
+ok    git repository (yes)
 ok    adapter.default (fake)
 ok    adapter spawnable (yes)
 ok    sandbox (<backend>)

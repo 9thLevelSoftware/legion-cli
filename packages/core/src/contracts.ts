@@ -84,16 +84,24 @@ export function isEnvBasename(name: string): boolean {
   return lower === ".env" || lower.startsWith(".env.");
 }
 
+/** True when any segment is `.git`, in any case (NTFS/APFS alias `.GIT` onto `.git`). */
+export function hasGitSegment(posixPath: string): boolean {
+  return posixPath.split("/").some((part) => part.toLowerCase() === ".git");
+}
+
 export function isImplicitForbidden(posixPath: string): boolean {
-  if (posixPath === ".git" || posixPath.startsWith(".git/")) return true;
-  if (posixPath === ".legion-cli/config.yaml") return true;
-  if (posixPath.startsWith(".legion-cli/index/") || posixPath === ".legion-cli/index") return true;
+  // Case-insensitive (F-060, F-087): `.LEGION-CLI/config.yaml` is the same file on win32/darwin.
+  const lower = posixPath.toLowerCase();
+  if (hasGitSegment(posixPath)) return true;
+  if (lower === ".legion-cli/config.yaml") return true;
+  if (lower.startsWith(".legion-cli/index/") || lower === ".legion-cli/index") return true;
   if (posixPath.split("/").some((part) => isEnvBasename(part))) return true;
-  return IMPLICIT_FORBIDDEN.some((pattern) => matchesGlob(pattern, posixPath));
+  return IMPLICIT_FORBIDDEN.some((pattern) => matchesGlob(pattern, lower));
 }
 
 export function isEngineOwned(posixPath: string): boolean {
-  return ENGINE_OWNED.some((pattern) => matchesGlob(pattern, posixPath));
+  const lower = posixPath.toLowerCase();
+  return ENGINE_OWNED.some((pattern) => matchesGlob(pattern, lower));
 }
 
 export function isAllowedPath(posixPath: string, allowedRoots: readonly string[]): boolean {

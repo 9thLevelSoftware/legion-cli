@@ -321,7 +321,7 @@ test("brownfield defaults to effort 2 and refuses bad input", async () => {
     await assertRefuses(engine.brownfield({}), /until init/);
   });
   await withEngine(async ({ engine }) => {
-    await initProject(engine, { mode: "brownfield" });
+    await initProject(engine, { mode: "brownfield", git: false });
     await assertRefuses(engine.brownfield({}), /git repository/);
   });
   await withEngine(async (ctx) => {
@@ -339,7 +339,7 @@ test("brownfield defaults to effort 2 and refuses bad input", async () => {
 
 test("brownfield --execute without a commit refuses", async () => {
   await withEngine(async ({ dir, engine }) => {
-    await initProject(engine, { mode: "brownfield" });
+    await initProject(engine, { mode: "brownfield", git: false });
     git(dir, ["init"]);
     await assertRefuses(engine.brownfield({ execute: true }), /HEAD/);
   });

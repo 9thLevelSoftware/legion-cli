@@ -1,22 +1,127 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, realpathSync, rmSync, unlinkSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { accessSync, constants as fsConstants, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { PersistError } from "./errors.js";
 import { toPosixPath } from "./paths.js";
 
-function runGit(cwd: string, args: string[]): { status: number; stdout: string; stderr: string } {
-  const result = spawnSync("git", args, {
+/**
+ * `read` (status, ls-files, diff, cat-file, rev-parse, restore, worktree, …) runs with the
+ * repository's fsmonitor, hooks, ext-diff and attributes file switched off. `commit` (the user's
+ * own commits: ship, ingest auto-commit) runs the user's hooks. Both ignore replace refs.
+ */
+export type GitKind = "read" | "commit";
+
+let resolvedGit: { path: string; binary: string | null } | undefined;
+
+/**
+ * Absolute path of the git executable, resolved once from PATH (absolute entries only). Spawning
+ * the bare name `git` would let Windows pick up a `git.exe` planted in the child's cwd.
+ */
+export function resolveGitBinary(): string | null {
+  const pathVar = process.env.PATH ?? process.env.Path ?? "";
+  if (resolvedGit && resolvedGit.path === pathVar) return resolvedGit.binary;
+  const names = process.platform === "win32" ? ["git.exe"] : ["git"];
+  let binary: string | null = null;
+  for (const dir of pathVar.split(delimiter)) {
+    const trimmed = dir.trim().replace(/^"(.*)"$/, "$1");
+    if (!trimmed || !isAbsolute(trimmed)) continue;
+    for (const name of names) {
+      const candidate = join(trimmed, name);
+      try {
+        if (!statSync(candidate).isFile()) continue;
+        if (process.platform !== "win32") accessSync(candidate, fsConstants.X_OK);
+        binary = candidate;
+        break;
+      } catch {
+        // not here
+      }
+    }
+    if (binary) break;
+  }
+  resolvedGit = { path: pathVar, binary };
+  return binary;
+}
+
+let hardening: { hooksPath: string; attributesFile: string } | undefined;
+
+/** An empty hooks directory and an empty attributes file, outside every project. */
+function hardeningPaths(): { hooksPath: string; attributesFile: string } {
+  if (hardening) return hardening;
+  const dir = mkdtempSync(join(tmpdir(), "legion-cli-git-"));
+  const hooksPath = join(dir, "hooks");
+  const attributesFile = join(dir, "attributes");
+  mkdirSync(hooksPath);
+  writeFileSync(attributesFile, "");
+  process.once("exit", () => {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  });
+  hardening = { hooksPath, attributesFile };
+  return hardening;
+}
+
+function gitArgv(args: readonly string[], kind: GitKind): string[] {
+  if (kind === "commit") return [...args];
+  const paths = hardeningPaths();
+  const sub = args[0] === "diff" ? ["diff", "--no-ext-diff", ...args.slice(1)] : [...args];
+  return [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    `core.hooksPath=${paths.hooksPath}`,
+    "-c",
+    "core.quotePath=false",
+    "-c",
+    `core.attributesFile=${paths.attributesFile}`,
+    ...sub,
+  ];
+}
+
+/** Every engine git spawn goes through here. */
+export function runGit(
+  cwd: string,
+  args: readonly string[],
+  opts: { kind?: GitKind; maxBuffer?: number } = {},
+): { status: number; stdout: string; stderr: string } {
+  const binary = resolveGitBinary();
+  if (!binary) {
+    return { status: 1, stdout: "", stderr: "git executable not found on PATH" };
+  }
+  const rel = relative(resolve(cwd), binary);
+  if (rel && !rel.startsWith("..") && !isAbsolute(rel)) {
+    return { status: 1, stdout: "", stderr: `refusing to run git from inside the project (${binary})` };
+  }
+  const result = spawnSync(binary, gitArgv(args, opts.kind ?? "read"), {
     cwd,
     encoding: "utf8",
     windowsHide: true,
     shell: false,
+    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
+    ...(opts.maxBuffer ? { maxBuffer: opts.maxBuffer } : {}),
   });
   return {
     status: result.status ?? 1,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? result.error?.message ?? "",
   };
+}
+
+/** `git ls-files -z` (tracked paths), or null when git fails. */
+export function gitLsFiles(cwd: string): string[] | null {
+  const result = runGit(cwd, ["ls-files", "-z"], { maxBuffer: 64 * 1024 * 1024 });
+  if (result.status !== 0) return null;
+  return result.stdout.split("\0").filter(Boolean);
+}
+
+/** `git diff <revision>` text; the revision can never be read as an option. Null on failure. */
+export function gitDiffRevision(cwd: string, revision: string): string | null {
+  const result = runGit(cwd, ["diff", "--end-of-options", revision], { maxBuffer: 64 * 1024 * 1024 });
+  return result.status === 0 ? result.stdout : null;
 }
 
 function gitLines(cwd: string, args: string[]): string[] {
@@ -98,7 +203,7 @@ export function commitPaths(cwd: string, paths: string[], message: string): bool
   }
   const status = gitStatusPorcelain(cwd, paths);
   if (status.trim() === "") return false;
-  const commit = runGit(cwd, ["commit", "-m", message, "--", ...paths]);
+  const commit = runGit(cwd, ["commit", "-m", message, "--", ...paths], { kind: "commit" });
   if (commit.status !== 0) {
     throw new PersistError(`git commit failed: ${commit.stderr.trim() || commit.stdout.trim()}`);
   }
@@ -474,7 +579,7 @@ export function gitRestoreStaged(cwd: string, paths: string[]): void {
 }
 
 export function gitCommitIndex(cwd: string, message: string): string {
-  const commit = runGit(cwd, ["commit", "-m", message]);
+  const commit = runGit(cwd, ["commit", "-m", message], { kind: "commit" });
   if (commit.status !== 0) {
     throw new PersistError(`git commit failed: ${commit.stderr.trim() || commit.stdout.trim()}`);
   }

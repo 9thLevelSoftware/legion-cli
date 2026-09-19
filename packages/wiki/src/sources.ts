@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import {
   assertInsideProject,
+  gitDiffRevision,
   MAX_INGEST_FILE_BYTES,
   resolveProjectPath,
   toStorePath,
@@ -67,13 +67,9 @@ export async function materializeIngestSources(opts: {
   }
 
   if (opts.diff) {
-    const result = spawnSync("git", ["diff", opts.diff], {
-      cwd: opts.projectRoot,
-      encoding: "utf8",
-      windowsHide: true,
-      shell: false,
-    });
-    const body = result.status === 0 ? result.stdout : "";
+    // Through persist's runGit: resolved binary, hardened config, and --end-of-options so a
+    // revision like `--output=…` is never read as an option (F-096).
+    const body = gitDiffRevision(opts.projectRoot, opts.diff) ?? "";
     documents.push({
       source: `diff:${opts.diff}`,
       title: `git diff ${opts.diff}`,

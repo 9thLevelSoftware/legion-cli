@@ -134,6 +134,7 @@ import {
   type TaskFileSnapshot,
 } from "./revert.js";
 import {
+  assertSpawnGitRepo,
   findLatestTaskResume,
   findSkillsDir,
   finishStartedSpawn,
@@ -2445,6 +2446,8 @@ export class LegionEngine {
     if (!(await isResolvedAdapterSpawnable(config, resolution.id))) {
       refuse(spawnableAdapterRefuseMessage(skillId, resolution), HINT.doctor);
     }
+    // KD-3, before any state write: a refused precondition must not block the task.
+    assertSpawnGitRepo(this.projectRoot);
     const skillsDir = this.#skillsDir ?? findSkillsDir();
     const hint = skillId === "execute" ? HINT.execute : skillId === "review" ? HINT.review : HINT.plan;
     const resolved = await resolveSkillDir({
