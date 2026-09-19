@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { lstatSync, realpathSync, rmSync, unlinkSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { PersistError } from "./errors.js";
 import { toPosixPath } from "./paths.js";
@@ -190,6 +190,32 @@ function sameAbsPath(a: string, b: string): boolean {
   return left === right || left.toLowerCase() === right.toLowerCase();
 }
 
+/** realpath of the longest existing prefix of `path`, with the missing remainder appended. */
+function realPrefix(path: string): string {
+  const tail: string[] = [];
+  let head = resolve(path);
+  for (;;) {
+    try {
+      return join(realpathSync.native(head), ...tail.reverse());
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return resolve(path);
+      tail.push(basename(head));
+      head = parent;
+    }
+  }
+}
+
+/**
+ * Compare a worktree path with one git recorded. Git stores realpaths, so a project reached
+ * through a link (junction, symlinked --project) must be resolved first. The last segment is not
+ * followed: a link at the worktree path itself must never match the checkout it points at.
+ */
+export function sameWorktreePath(a: string, b: string): boolean {
+  const canonical = (path: string) => join(realPrefix(dirname(resolve(path))), basename(resolve(path)));
+  return sameAbsPath(canonical(a), canonical(b));
+}
+
 export function listGitWorktrees(cwd: string): GitWorktree[] {
   const result = runGit(cwd, ["worktree", "list", "--porcelain"]);
   if (result.status !== 0) {
@@ -299,7 +325,7 @@ function assertRemovableWorktreePath(cwd: string, worktreeAbs: string): void {
 
 function dropStaleWorktree(cwd: string, worktreeAbs: string): void {
   assertRemovableWorktreePath(cwd, worktreeAbs);
-  const listed = listGitWorktrees(cwd).find((wt) => sameAbsPath(wt.path, worktreeAbs));
+  const listed = listGitWorktrees(cwd).find((wt) => sameWorktreePath(wt.path, worktreeAbs));
   if (listed) {
     const removed = runGit(cwd, ["worktree", "remove", "--force", listed.path]);
     if (removed.status !== 0) gitWorktreePrune(cwd);
@@ -322,7 +348,7 @@ function dropStaleWorktree(cwd: string, worktreeAbs: string): void {
 /** Reuse only a registered worktree of `cwd` that is a real directory and its own checkout top level. */
 function isReusableWorktree(cwd: string, abs: string): boolean {
   if (!pathPresent(abs) || lstatSync(abs).isSymbolicLink()) return false;
-  if (!listGitWorktrees(cwd).some((wt) => sameAbsPath(wt.path, abs))) return false;
+  if (!listGitWorktrees(cwd).some((wt) => sameWorktreePath(wt.path, abs))) return false;
   return isOwnCheckout(abs);
 }
 
@@ -355,7 +381,7 @@ export function gitWorktreeRemove(cwd: string, worktreePath: string, opts: { for
     throw new PersistError("git worktree remove requires a git repository");
   }
   const abs = resolve(worktreePath);
-  const listed = listGitWorktrees(cwd).find((wt) => sameAbsPath(wt.path, abs));
+  const listed = listGitWorktrees(cwd).find((wt) => sameWorktreePath(wt.path, abs));
   if (!listed) {
     gitWorktreePrune(cwd);
     return false;

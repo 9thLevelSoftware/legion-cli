@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 import {
   gitBranchExists,
   gitRevParse,
@@ -7,6 +6,7 @@ import {
   gitWorktreeRemove,
   listGitWorktrees,
   PersistError,
+  sameWorktreePath,
   worktreeNodeStorePath,
   worktreeStorePath,
   type LegionStore,
@@ -16,12 +16,6 @@ import type { BrownfieldWorktreeOptions, BrownfieldWorktreeResult } from "../typ
 import { readDag, writeDag } from "./dag.js";
 import { storeAbs } from "./paths.js";
 import { assertBrownfieldReady, readRun } from "./state.js";
-
-function samePath(a: string, b: string): boolean {
-  const left = resolve(a);
-  const right = resolve(b);
-  return left === right || left.toLowerCase() === right.toLowerCase();
-}
 
 /**
  * Per-PR isolated checkout: `.legion-cli/worktrees/<runId>/<nodeId>` on the node's branch.
@@ -46,7 +40,7 @@ export async function worktreeRun(
   // Always derived: a stored `worktree` (hand-edited dag.json) is never trusted as a path.
   const storePath = worktreeNodeStorePath(runId, node.id);
   const abs = storeAbs(root, storePath);
-  const registered = () => listGitWorktrees(root).some((wt) => samePath(wt.path, abs));
+  const registered = () => listGitWorktrees(root).some((wt) => sameWorktreePath(wt.path, abs));
   let mainCheckoutDirty = false;
   try {
     mainCheckoutDirty = gitStatusPorcelain(root).trim().length > 0;
@@ -82,7 +76,7 @@ export async function worktreeRun(
   }
 
   const legacyAbs = storeAbs(root, worktreeStorePath(runId));
-  if (listGitWorktrees(root).some((wt) => samePath(wt.path, legacyAbs))) {
+  if (listGitWorktrees(root).some((wt) => sameWorktreePath(wt.path, legacyAbs))) {
     refuse(
       `brownfield run ${runId} has a legacy single worktree at ${worktreeStorePath(runId)}; per-PR worktrees would nest inside it`,
       `git worktree remove ${worktreeStorePath(runId)}`,

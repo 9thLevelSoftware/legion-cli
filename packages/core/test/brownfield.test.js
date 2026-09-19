@@ -12,6 +12,7 @@ import {
 } from "@9thlevelsoftware/legion-cli-schema";
 import {
   computeRoster,
+  LegionEngine,
   LegionRefuseError,
   mergeSpecialists,
   normSeverity,
@@ -694,6 +695,35 @@ test("worktree never reuses a leftover directory or a link into the main checkou
     assert.equal(git(dir, ["branch", "--show-current"]), mainBranch);
     assert.equal(git(dir, ["rev-parse", "HEAD"]), head);
     assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "export const n = 1;\n");
+  });
+});
+
+test("worktree resume and remove work when the project is reached through a link", async () => {
+  await withEngine(async ({ dir, engine: real }) => {
+    await setupProject({ dir, engine: real });
+    const linkParent = await mkdtemp(join(tmpdir(), "legion-link-"));
+    try {
+      const linked = join(linkParent, "project");
+      try {
+        await symlink(dir, linked, process.platform === "win32" ? "junction" : "dir");
+      } catch (err) {
+        if (err?.code === "EPERM" || err?.code === "EACCES") return;
+        throw err;
+      }
+      const engine = new LegionEngine(linked);
+      await engine.brownfield({ runId: "1e1e1e1e", execute: true });
+      await seedReady(linked, "1e1e1e1e");
+      await engine.brownfieldPrPlan("1e1e1e1e");
+      const first = await engine.brownfieldWorktree("1e1e1e1e", "pr-1");
+      assert.equal(first.created, true);
+      const again = await engine.brownfieldWorktree("1e1e1e1e", "pr-1");
+      assert.equal(again.created, false);
+      const removed = await engine.brownfieldWorktree("1e1e1e1e", "pr-1", { remove: true });
+      assert.equal(removed.removed, true);
+      assert.equal(existsSync(join(dir, ".legion-cli", "worktrees", "1e1e1e1e", "pr-1")), false);
+    } finally {
+      await rm(linkParent, { recursive: true, force: true });
+    }
   });
 });
 

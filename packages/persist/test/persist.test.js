@@ -759,6 +759,36 @@ test("gitWorktreeAdd refuses when .legion-cli/worktrees links outside the projec
   });
 });
 
+test("gitWorktreeAdd reuses and removes a worktree when the project is reached through a link", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "README.md"), "app\n", "utf8");
+    initGitRepo(dir);
+    const linkParent = await mkdtemp(join(tmpdir(), "legion-link-"));
+    try {
+      const linked = join(linkParent, "project");
+      try {
+        await symlink(dir, linked, process.platform === "win32" ? "junction" : "dir");
+      } catch (err) {
+        if (err?.code === "EPERM" || err?.code === "EACCES") return;
+        throw err;
+      }
+      const worktree = join(linked, ".legion-cli", "worktrees", "eeeeeeee", "pr-1");
+      assert.equal(gitWorktreeAdd(linked, worktree, "brownfield/eeeeeeee/pr-1-x"), resolve(worktree));
+      const tip = git(worktree, ["rev-parse", "HEAD"]);
+      await writeFile(join(worktree, "wip.txt"), "wip\n", "utf8");
+      // Second call: reuse the registered worktree (git lists it under the real path).
+      assert.equal(gitWorktreeAdd(linked, worktree, "brownfield/eeeeeeee/pr-1-x"), resolve(worktree));
+      assert.equal(await readFile(join(worktree, "wip.txt"), "utf8"), "wip\n");
+      assert.equal(git(worktree, ["rev-parse", "HEAD"]), tip);
+      assert.equal(gitWorktreeRemove(linked, worktree, { force: true }), true);
+      assert.equal(existsSync(worktree), false);
+      assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
+    } finally {
+      await rm(linkParent, { recursive: true, force: true });
+    }
+  });
+});
+
 test("gitWorktreeRemove removes the checkout and keeps the branch", async () => {
   await withTempDir(async (dir) => {
     await writeFile(join(dir, "README.md"), "app\n", "utf8");
