@@ -63,18 +63,30 @@ export async function processIdentity(pid: number): Promise<number | null> {
   return Number.isFinite(ms) ? ms : null;
 }
 
-let ownStartedAt: number | undefined;
+/**
+ * This process's start time, fixed when the module loads (not at the first lock, which in a
+ * long-lived dashboard can be hours later, after a sleep or a clock step). Linux reads the
+ * kernel's value; win32/macOS estimate `now - uptime` while the two clocks still agree.
+ */
+const OWN_STARTED_AT: number =
+  (process.platform === "linux" ? linuxStartedAt(process.pid) : null) ??
+  Math.round(Date.now() - process.uptime() * 1000);
 
 /** This process's start time, on the same clock {@link processIdentity} reports. Cheap. */
 export function ownProcessStartedAt(): number {
-  if (ownStartedAt === undefined) {
-    ownStartedAt =
-      (process.platform === "linux" ? linuxStartedAt(process.pid) : null) ??
-      Math.round(Date.now() - process.uptime() * 1000);
-  }
-  return ownStartedAt;
+  return OWN_STARTED_AT;
 }
 
 export function sameProcessStart(a: number, b: number): boolean {
   return Math.abs(a - b) <= PROCESS_START_TOLERANCE_MS;
+}
+
+/**
+ * PID reuse, one-sided: a process that reuses a PID always started *after* the recorded holder.
+ * A sleep that pauses the uptime clock only makes the recorded start look later than the OS
+ * value, which never steals; the estimate is taken at module load, so a later clock step
+ * cannot skew it either.
+ */
+export function startedAfterRecorded(actualStartedAt: number, recordedStartedAt: number): boolean {
+  return actualStartedAt > recordedStartedAt + PROCESS_START_TOLERANCE_MS;
 }

@@ -14,12 +14,13 @@ export {
   retryFsOp,
   RETRY_FS_OP_TOTAL_MS,
 } from "./atomic-write.js";
-export { nextFileId, releaseFileId } from "./ids.js";
+export { nextFileId } from "./ids.js";
 export {
   ownProcessStartedAt,
   PROCESS_START_TOLERANCE_MS,
   processIdentity,
   sameProcessStart,
+  startedAfterRecorded,
 } from "./process-identity.js";
 export { invalidTaskMessage, listTaskFiles } from "./tasks-list.js";
 export type { TaskFileEntry } from "./tasks-list.js";

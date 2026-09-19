@@ -5,12 +5,13 @@ import {
   generateFromBrief,
   importOpenDesign,
   install,
+  isGithubColonSource,
   parseWcag,
   showDesignSystem,
   splitWorkAndPlatforms,
   type GenerateBrief,
 } from "@9thlevelsoftware/legion-cli-design-system";
-import { createLegionStore } from "@9thlevelsoftware/legion-cli-persist";
+import { installWithLock } from "./install-lock.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { isYes, readLine, slurpStdin } from "./prompt.js";
@@ -72,14 +73,16 @@ export async function runDesignSystemInstall(
       throw new DesignSystemError("github: branch install cancelled", DS_HINT.localOnly);
     }
   }
-  // Installs write under .legion-cli/: take engine.lock like every other SoT write (FP-3).
-  const result = await createLegionStore(opts.project).withLock(() =>
+  // Installs write under .legion-cli/: take engine.lock like every other SoT write (FP-3), but
+  // download a github: source before taking it.
+  const result = await installWithLock(opts.project, isGithubColonSource(source), (fetchZipball) =>
     install({
       projectRoot: opts.project,
       source,
       cwd: process.cwd(),
       integrity: flags.integrity,
       allowBranch: flags.allowBranch,
+      ...(fetchZipball ? { fetchZipball } : {}),
     }),
   );
   if (opts.json) {
@@ -92,7 +95,7 @@ export async function runDesignSystemInstall(
 }
 
 export async function runDesignSystemImportOd(opts: CliOpts, dir: string): Promise<number> {
-  const result = await createLegionStore(opts.project).withLock(() =>
+  const result = await installWithLock(opts.project, false, () =>
     importOpenDesign({ projectRoot: opts.project, source: dir, cwd: process.cwd() }),
   );
   if (opts.json) {

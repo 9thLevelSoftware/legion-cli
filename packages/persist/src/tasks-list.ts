@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { TaskSchema, type Task } from "@9thlevelsoftware/legion-cli-schema";
 import { ZodError } from "zod";
@@ -33,6 +33,14 @@ function describeError(err: unknown): string {
   return String(cause);
 }
 
+async function isEmptyFile(abs: string): Promise<boolean> {
+  try {
+    return (await stat(abs)).size === 0;
+  } catch {
+    return false;
+  }
+}
+
 async function peekFrontmatter(abs: string): Promise<unknown> {
   try {
     return parseMarkdownDocument(await readFile(abs, "utf8")).frontmatter;
@@ -64,11 +72,12 @@ export async function listTaskFiles(projectRoot: string): Promise<TaskFileEntry[
       entries.push({ ok: true, file, id, task: doc.data });
     } catch (err) {
       const frontmatter = await peekFrontmatter(abs);
+      const empty = await isEmptyFile(abs);
       entries.push({
         ok: false,
         file,
         id,
-        error: describeError(err),
+        error: empty ? "the file is empty (an interrupted write?); restore it from git or delete it" : describeError(err),
         ...(frontmatter !== undefined ? { frontmatter } : {}),
       });
     }

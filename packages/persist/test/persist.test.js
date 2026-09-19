@@ -18,6 +18,7 @@ import {
   parseMarkdownDocument,
   processIdentity,
   sameProcessStart,
+  startedAfterRecorded,
   writeTextFile,
   GITIGNORE_ENTRIES,
   GITIGNORE_TEMPLATE,
@@ -304,20 +305,30 @@ const LOCK_HOLDER_SCRIPT = `
 import { readFileSync, writeFileSync, utimesSync } from "node:fs";
 const { acquireEngineLock } = await import(process.argv[1]);
 const lockPath = process.argv[2];
+const mode = process.argv[3] ?? "aged";
 await acquireEngineLock(lockPath, { timeoutMs: 5000 });
 const held = JSON.parse(readFileSync(lockPath, "utf8"));
 // Pretend the lock has been held for a day: the old rule stole by age.
-writeFileSync(lockPath, JSON.stringify({ ...held, acquiredAt: "2000-01-01T00:00:00.000Z" }) + "\\n");
+const payload = { ...held, acquiredAt: "2000-01-01T00:00:00.000Z" };
+// A lock written by an older legion-cli: no pidStartedAt, createdAt instead of acquiredAt.
+if (mode === "legacy") {
+  delete payload.pidStartedAt;
+  delete payload.acquiredAt;
+  payload.createdAt = "2000-01-01T00:00:00.000Z";
+}
+// The holder's own start estimate ran late (macOS sleep): recorded later than the OS value.
+if (mode === "late-estimate") payload.pidStartedAt = Date.now() + 3_600_000;
+writeFileSync(lockPath, JSON.stringify(payload) + "\\n");
 const old = new Date(Date.now() - 86_400_000);
 utimesSync(lockPath, old, old);
 process.stdout.write("ready\\n");
 setInterval(() => {}, 1000);
 `;
 
-function spawnLockHolder(lockPath) {
+function spawnLockHolder(lockPath, mode = "aged") {
   const child = spawn(
     process.execPath,
-    ["--input-type=module", "-e", LOCK_HOLDER_SCRIPT, pathToFileURL(join(pkgRoot, "dist", "index.js")).href, lockPath],
+    ["--input-type=module", "-e", LOCK_HOLDER_SCRIPT, pathToFileURL(join(pkgRoot, "dist", "index.js")).href, lockPath, mode],
     { stdio: ["ignore", "pipe", "inherit"], windowsHide: true },
   );
   const ready = new Promise((resolveReady, reject) => {
@@ -400,6 +411,97 @@ test("a lock whose pidStartedAt differs from the live PID's start time is stolen
   });
 });
 
+for (const [mode, pattern] of [
+  ["legacy", /Its start time could not be read, so the lock was not cleared/],
+  ["late-estimate", /another legion-cli is running/],
+]) {
+  test(`a live holder's lock is not stolen (${mode} start time)`, async () => {
+    await withTempDir(async (dir) => {
+      const store = new LegionStore(dir);
+      await mkdir(store.paths.indexDir, { recursive: true });
+      const { child, ready } = spawnLockHolder(store.paths.lock, mode);
+      try {
+        await ready;
+        const before = await readFile(store.paths.lock, "utf8");
+        await assert.rejects(
+          () => store.acquireLock({ timeoutMs: 300 }),
+          (err) => {
+            assert.equal(err instanceof EngineLockedError, true);
+            assert.match(err.message, pattern);
+            assert.match(err.message, new RegExp(`pid ${child.pid}`));
+            return true;
+          },
+        );
+        assert.equal(await readFile(store.paths.lock, "utf8"), before);
+      } finally {
+        await killAndWait(child);
+      }
+    });
+  });
+}
+
+test("PID reuse is one-sided: only a process that started after the recorded start steals", () => {
+  assert.equal(startedAfterRecorded(1_000_000 + 60_000, 1_000_000), true);
+  assert.equal(startedAfterRecorded(1_000_000, 1_000_000 + 60_000), false, "a late estimate never steals");
+  assert.equal(startedAfterRecorded(1_000_000 + 1_000, 1_000_000), false, "within tolerance");
+});
+
+test("an out-of-range pid is an unparseable lock with a recovery hint, never a TypeError", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LegionStore(dir);
+    await mkdir(store.paths.indexDir, { recursive: true });
+    const crafted = `${JSON.stringify({ pid: 4_294_967_296, acquiredAt: "\u001b[31mred\u001b[0m" })}\n`;
+    await writeFile(store.paths.lock, crafted, "utf8");
+    await assert.rejects(
+      () => store.acquireLock({ timeoutMs: 200 }),
+      (err) => {
+        assert.equal(err instanceof EngineLockedError, true, String(err));
+        assert.match(err.message, /empty or unreadable/);
+        assert.match(err.message, /delete .*engine\.lock/);
+        assert.doesNotMatch(err.message, /\u001b/);
+        return true;
+      },
+    );
+    const old = new Date(Date.now() - EMPTY_LOCK_STALE_MS - 5_000);
+    await utimes(store.paths.lock, old, old);
+    await store.acquireLock({ timeoutMs: 200 });
+    assert.equal(JSON.parse(await readFile(store.paths.lock, "utf8")).pid, process.pid);
+    await store.releaseLock();
+  });
+});
+
+test("two contenders stealing the same stale lock never hold it at the same time", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.indexDir, { recursive: true });
+    for (let round = 0; round < 5; round += 1) {
+      await writeFile(
+        paths.lock,
+        `${JSON.stringify({ pid: 2_000_000_000, pidStartedAt: 1, acquiredAt: new Date().toISOString(), token: "dead" })}\n`,
+        "utf8",
+      );
+      let inside = 0;
+      let overlap = false;
+      await Promise.all(
+        Array.from({ length: 4 }, async () => {
+          const store = new LegionStore(dir);
+          await store.withLock(
+            async () => {
+              inside += 1;
+              if (inside > 1) overlap = true;
+              await new Promise((done) => setTimeout(done, 20));
+              inside -= 1;
+            },
+            { timeoutMs: 5_000 },
+          );
+        }),
+      );
+      assert.equal(overlap, false, `round ${round}`);
+      assert.deepEqual((await readdir(paths.indexDir)).filter((name) => name.endsWith(".steal")), []);
+    }
+  });
+});
+
 test("processIdentity reports this process's start time within tolerance", async () => {
   const actual = await processIdentity(process.pid);
   assert.equal(typeof actual, "number");
@@ -441,7 +543,7 @@ test("a write that throws midway leaves the previous STATE.md intact and no temp
       yield "---\nschemaVersion: legion-cli-state/v1\nphase: exec";
       throw new Error("crash mid-write");
     }
-    await assert.rejects(() => writeTextFile(store.paths.stateMd, tornBody()), /crash mid-write/);
+    await assert.rejects(() => writeTextFile(store.paths.stateMd, tornBody(), { root: dir }), /crash mid-write/);
     assert.equal(await readFile(store.paths.stateMd, "utf8"), before);
     assert.deepEqual(
       (await readdir(dirname(store.paths.stateMd))).filter((name) => name.endsWith(".tmp")),
@@ -531,16 +633,16 @@ test("listTaskFiles lists invalid task files instead of dropping them", async ()
   });
 });
 
-test("nextFileId allocates from file names, valid or not, with O_EXCL", async () => {
+test("nextFileId allocates from file names, valid or not, and leaves no placeholder", async () => {
   await withTempDir(async (dir) => {
     const tasks = join(dir, "tasks");
+    assert.equal(await nextFileId(tasks, "TSK", 4), "TSK-0001");
     await mkdir(tasks, { recursive: true });
     await writeFile(join(tasks, "TSK-0001.md"), "ok", "utf8");
     await writeFile(join(tasks, "TSK-0007.md"), "not a task", "utf8");
-    const ids = await Promise.all(Array.from({ length: 5 }, () => nextFileId(tasks, "TSK", 4)));
-    assert.equal(new Set(ids).size, 5);
-    assert.deepEqual([...ids].sort(), ["TSK-0008", "TSK-0009", "TSK-0010", "TSK-0011", "TSK-0012"]);
-    for (const id of ids) assert.equal(existsSync(join(tasks, `${id}.md`)), true);
+    await writeFile(join(tasks, "PKT-0042.md"), "other prefix", "utf8");
+    assert.equal(await nextFileId(tasks, "TSK", 4), "TSK-0008");
+    assert.equal(existsSync(join(tasks, "TSK-0008.md")), false, "no empty reservation file");
   });
 });
 

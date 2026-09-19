@@ -42,7 +42,6 @@ import {
   listTaskFiles,
   nextFileId,
   PersistError,
-  releaseFileId,
   ensureGitignore,
   commitPaths,
   gitAdd,
@@ -509,7 +508,9 @@ export class LegionEngine {
       }
       // STATE.md is written last. A crash after the spec froze but before STATE moved on leaves
       // `frozen` + `spec_draft`; approving again completes the missing writes (F-015).
-      const resuming = spec.status === "frozen";
+      // Only the approve that crashed resumes: the spec this draft phase is about.
+      const resuming =
+        spec.status === "frozen" && (state.activeSpecId == null || state.activeSpecId === specId);
       if (spec.status !== "draft" && !resuming) {
         refuse(`spec ${specId} is ${spec.status}, not draft`, HINT.specApprove);
       }
@@ -1858,6 +1859,7 @@ export class LegionEngine {
       await writeTextFile(
         toFsPath(this.projectRoot, receiptPath),
         abandonReceiptBody({ specId, abandonedAt, message: reason, phase: state.phase }),
+        { root: this.projectRoot },
       );
       await this.#writeState({ ...state, phase: "abandoned", currentTaskId: null });
       await this.#audit("abandon", "abandoned", "user", {
@@ -2564,40 +2566,35 @@ export class LegionEngine {
         parentAdapter = parent.adapter;
       }
     }
-    // From file names (valid or not) with O_EXCL, so a corrupt file's id is never reused (F-004).
+    // From file names (valid or not), under engine.lock, so a corrupt file's id is never
+    // reused (F-004).
     const id = await nextFileId(this.store.paths.tasksDir, "TSK", 4);
-    let ticket: Task;
+    let ticket = ticketFromInput(id, specId, {
+      ...input,
+      title,
+      parentId,
+      adapter: input.adapter ?? parentAdapter,
+    });
+    const contractInvalid =
+      filesAllowedFailsPlan(ticket.contract.filesAllowed) ||
+      expectedArtifactsFailsPlan(ticket.contract.filesAllowed, ticket.contract.expectedArtifacts);
+    const live = tasks.filter((task) => task.status !== "done" && task.status !== "compacted");
+    const overlaps = overlappingFilesAllowed([ticket, ...live]);
     let coerced = false;
-    try {
-      ticket = ticketFromInput(id, specId, {
-        ...input,
-        title,
-        parentId,
-        adapter: input.adapter ?? parentAdapter,
-      });
-      const contractInvalid =
-        filesAllowedFailsPlan(ticket.contract.filesAllowed) ||
-        expectedArtifactsFailsPlan(ticket.contract.filesAllowed, ticket.contract.expectedArtifacts);
-      const live = tasks.filter((task) => task.status !== "done" && task.status !== "compacted");
-      const overlaps = overlappingFilesAllowed([ticket, ...live]);
-      if (contractInvalid || overlaps.length > 0) {
-        if (!input.fromAgent) {
-          if (contractInvalid) {
-            refuse("File paths must be concrete (no * or **)", HINT.concretePaths);
-          }
-          refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.ticket(parentId ?? "TSK-x"));
+    if (contractInvalid || overlaps.length > 0) {
+      if (!input.fromAgent) {
+        if (contractInvalid) {
+          refuse("File paths must be concrete (no * or **)", HINT.concretePaths);
         }
-        ticket = {
-          ...ticket,
-          contract: defaultTicketContract(id),
-        };
-        coerced = true;
+        refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.ticket(parentId ?? "TSK-x"));
       }
-      await this.store.writeTask(ticket, taskMarkdownBody(ticket));
-    } catch (err) {
-      await releaseFileId(this.store.paths.tasksDir, id);
-      throw err;
+      ticket = {
+        ...ticket,
+        contract: defaultTicketContract(id),
+      };
+      coerced = true;
     }
+    await this.store.writeTask(ticket, taskMarkdownBody(ticket));
     if (parentId) {
       const parentDoc = await this.store.readTask(parentId);
       if (!parentDoc.data.blocks.includes(id)) {
@@ -2626,12 +2623,7 @@ export class LegionEngine {
       specId: state.activeSpecId,
       createdAt: nowIso(),
     });
-    try {
-      await this.store.writePacket(packet, packetMarkdownBody(packet));
-    } catch (err) {
-      await releaseFileId(this.store.paths.packetsDir, id);
-      throw err;
-    }
+    await this.store.writePacket(packet, packetMarkdownBody(packet));
     return { packet, path: packetPath(id), tickets: [] };
   }
 
@@ -2832,12 +2824,7 @@ export class LegionEngine {
         escalatesTo: "user",
         createdIn: "intent",
       };
-      try {
-        await this.store.writeAssumption(assumption, `${line.statement}\n`);
-      } catch (err) {
-        await releaseFileId(this.store.paths.assumptionsDir, id);
-        throw err;
-      }
+      await this.store.writeAssumption(assumption, `${line.statement}\n`);
     }
   }
 
@@ -3217,7 +3204,9 @@ export class LegionEngine {
       phase: "shipped",
       currentTaskId: null,
     });
-    await writeTextFile(toFsPath(this.projectRoot, receiptPath), shipReceiptBody(receipt));
+    await writeTextFile(toFsPath(this.projectRoot, receiptPath), shipReceiptBody(receipt), {
+      root: this.projectRoot,
+    });
     await this.#audit("ship", "shipped", actor, {
       specId,
       qaMode,

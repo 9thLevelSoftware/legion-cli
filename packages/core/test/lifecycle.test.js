@@ -354,6 +354,23 @@ test("re-approving a frozen spec while the phase is still spec_draft completes t
   });
 });
 
+test("a frozen spec that is not the active draft is not resumed by approve", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await writeSpec(store, makeSpec({ status: "frozen", frozenAt: "2026-09-01T12:00:00.000Z", frozenBy: "human" }));
+    await patchState(store, { phase: "spec_draft", activeSpecId: "spec-other" });
+    await assert.rejects(
+      () => engine.approveSpec("spec-checkin", { id: "human" }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /spec spec-checkin is frozen, not draft/);
+        return true;
+      },
+    );
+    assert.equal((await engine.getState()).phase, "spec_draft");
+  });
+});
+
 test("10 concurrent fileTicket calls on one engine give 10 distinct ids and 10 files", async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);

@@ -69,13 +69,16 @@ export async function readTextFile(absPath: string): Promise<string> {
 }
 
 export type WriteTextOpts = {
-  /** Project root: every directory between it and the target is checked for links. */
-  root?: string;
+  /**
+   * Project root (required): every directory between it and the target is checked for links,
+   * so no caller can silently get the weaker target-and-parent check (KD-8).
+   */
+  root: string;
 };
 
 /** Atomic (temp + fsync + rename) and link-refusing; see {@link atomicWriteFile}. */
-export async function writeTextFile(absPath: string, contents: string, opts?: WriteTextOpts): Promise<void> {
-  await atomicWriteFile(absPath, contents, opts?.root ? { root: opts.root } : undefined);
+export async function writeTextFile(absPath: string, contents: string, opts: WriteTextOpts): Promise<void> {
+  await atomicWriteFile(absPath, contents, { root: opts.root });
 }
 
 export const SOT_READ_ATTEMPTS = 5;
@@ -126,7 +129,7 @@ export async function writeMarkdownFile(
   absPath: string,
   frontmatter: unknown,
   body: string,
-  opts?: WriteTextOpts,
+  opts: WriteTextOpts,
 ): Promise<void> {
   await writeTextFile(absPath, formatMarkdownDocument(frontmatter, body), opts);
 }
@@ -139,6 +142,6 @@ export async function readYamlFile<T>(
   return readParsed(absPath, (raw) => parseWithSchema(storePath, schema, parseYamlDocument(raw)));
 }
 
-export async function writeYamlFile(absPath: string, data: unknown, opts?: WriteTextOpts): Promise<void> {
+export async function writeYamlFile(absPath: string, data: unknown, opts: WriteTextOpts): Promise<void> {
   await writeTextFile(absPath, formatYamlDocument(data), opts);
 }
