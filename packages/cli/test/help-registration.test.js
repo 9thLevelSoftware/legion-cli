@@ -7,6 +7,23 @@ import { normalize, runCli } from "./helpers.js";
 // `brownfield init` is an alias of bare `brownfield`; help documents it on the `brownfield` row.
 const UNLISTED_ALIASES = new Set(["brownfield init"]);
 
+// Group verbs with no row of their own: bare invocation only prints `requires <sub>` + `Next:`
+// (cli.ts requireSub), except `design-system`, whose bare form runs `show` (the
+// `design-system show` row). Every other registered path, including parents that act on
+// their own such as `spec` and `qa`, must have its own row.
+const PARENT_ONLY = new Set([
+  "wiki",
+  "index",
+  "assume",
+  "packet",
+  "ticket",
+  "task",
+  "run",
+  "design-system",
+  "skills",
+  "context",
+]);
+
 /** Every registered command path, e.g. "spec approve", with whether it has subcommands. */
 function registeredCommands() {
   const paths = new Map();
@@ -69,14 +86,24 @@ test("every registered command appears in help --all", () => {
   const listed = new Set([...rows.map((row) => row.path), ...brownfieldSubcommandsListed(rows)]);
   const commands = registeredCommands();
   const missing = [];
-  for (const [path, { isParent }] of commands) {
-    if (UNLISTED_ALIASES.has(path) || listed.has(path)) continue;
-    // Pure parent verbs (wiki, ticket, skills, ...) only print `requires <sub>`; their
-    // subcommands carry the rows. A parent with no listed subcommand is still missing.
-    if (isParent && [...listed].some((entry) => entry.startsWith(`${path} `))) continue;
+  for (const path of commands.keys()) {
+    if (UNLISTED_ALIASES.has(path) || PARENT_ONLY.has(path) || listed.has(path)) continue;
     missing.push(path);
   }
   assert.deepEqual(missing, [], `registered but missing from help-all.ts: ${missing.join(", ")}`);
+});
+
+test("PARENT_ONLY verbs are registered groups with at least one listed subcommand", () => {
+  const rows = helpAllRows();
+  const listed = [...rows.map((row) => row.path), ...brownfieldSubcommandsListed(rows)];
+  const commands = registeredCommands();
+  for (const parent of PARENT_ONLY) {
+    assert.equal(commands.get(parent)?.isParent, true, `${parent} is not a registered group command`);
+    assert.ok(
+      listed.some((entry) => entry.startsWith(`${parent} `)),
+      `${parent} has no listed subcommand in help-all.ts`,
+    );
+  }
 });
 
 test("every help --all and layer-1 help entry is a registered command", () => {

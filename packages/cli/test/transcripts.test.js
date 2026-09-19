@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import { allowCopyJail, allowCopyJailIn, normalize, readGolden, runCli, sanitizeDoctor, withTempDir } from "./helpers.js";
 
 function quoteArg(value) {
@@ -187,6 +188,33 @@ test("doctor after init with fake adapter (golden)", async () => {
   });
 });
 
+test("doctor on the untouched init config follows detectSandbox (ok when hardened, FAIL otherwise)", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const config = await createLegionEngine(dir).store.readConfig();
+    assert.equal(config.sandbox.backend, "auto");
+    assert.equal(config.sandbox.requireHardened, true);
+    assert.equal(config.sandbox.allowCopyJail, false);
+    const result = runCli(["doctor", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    const out = normalize(result.stdout);
+    const detected = detectSandbox();
+    if (detected.hardened) {
+      // Linux CI (bwrap installed) and macOS (seatbelt).
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.match(out, new RegExp(`^ok    sandbox \\(${detected.backend}, hardened=true\\)$`, "m"));
+      assert.match(out, /Doctor passed/);
+    } else {
+      // Windows, or Linux without a runnable bwrap: the default refuses the copy jail.
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(out, /^FAIL  sandbox \(hardened sandbox required/m);
+      assert.match(out, /Doctor failed/);
+    }
+  });
+});
+
 test("doctor fails sandbox on every OS when copy is forced without the opt-in", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
@@ -359,7 +387,7 @@ test("doctor fails when fake adapter is not spawnable", async () => {
     });
     assert.equal(result.status, 1);
     assert.match(normalize(result.stdout), /Doctor failed/);
-    assert.match(normalize(result.stdout), /adapter spawnable/);
+    assert.match(normalize(result.stdout), /^FAIL  adapter spawnable/m);
   });
 });
 
