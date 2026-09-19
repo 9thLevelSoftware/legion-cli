@@ -1,5 +1,5 @@
-import { resolve } from "node:path";
 import {
+  canonicalizePath,
   gitBranchExists,
   gitRevParse,
   gitStatusPorcelain,
@@ -17,9 +17,10 @@ import { readDag, writeDag } from "./dag.js";
 import { storeAbs } from "./paths.js";
 import { assertBrownfieldReady, readRun } from "./state.js";
 
+/** Compare against `git worktree list` output, which is long-form: canonicalize (8.3 short names). */
 function samePath(a: string, b: string): boolean {
-  const left = resolve(a);
-  const right = resolve(b);
+  const left = canonicalizePath(a);
+  const right = canonicalizePath(b);
   return left === right || left.toLowerCase() === right.toLowerCase();
 }
 
