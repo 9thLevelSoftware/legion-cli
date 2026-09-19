@@ -550,6 +550,46 @@ test("project containment compares canonical realpaths", async () => {
   });
 });
 
+/** Windows 8.3 alias of `abs` (e.g. `…\LEGION~1`), or null when none is available. */
+function shortPathOf(abs) {
+  if (process.platform !== "win32") return null;
+  const result = spawnSync("cmd.exe", ["/d", "/s", "/c", `"for %I in ("${abs}") do @echo %~sI"`], {
+    encoding: "utf8",
+    windowsHide: true,
+    windowsVerbatimArguments: true,
+  });
+  const short = result.status === 0 ? result.stdout.trim() : "";
+  return short && short.toLowerCase() !== abs.toLowerCase() ? short : null;
+}
+
+test("8.3 short project paths canonicalize like ingest's realpath (RUNNER~1 TEMP)", async (t) => {
+  await withTempDir(async (dir) => {
+    const long = join(dir, "legion-long-project");
+    await mkdir(long, { recursive: true });
+    const short = shortPathOf(long);
+    if (!short) {
+      t.skip("needs a Windows 8.3 short-name alias (non-Windows, or 8dot3 names disabled on this volume)");
+      return;
+    }
+    await writeFile(join(long, "README.md"), "app\n", "utf8");
+    initGitRepo(long);
+    const worktree = join(short, ".legion-cli", "worktrees", "dddddddd", "pr-1");
+    gitWorktreeAdd(short, worktree, "brownfield/dddddddd/pr-1-x");
+    assert.equal(gitWorktreeRemove(short, worktree), true);
+    assert.equal(existsSync(worktree), false);
+
+    await copyFixtureProject(long);
+    await mkdir(join(long, "docs"), { recursive: true });
+    const file = join(long, "docs", "notes.md");
+    await writeFile(file, "# Office notes\n\nDurable fact.\n", "utf8");
+    assert.equal(toProjectRelativePosix(short, file), "docs/notes.md");
+    assert.equal(toProjectRelativePosix(long, join(short, "docs", "notes.md")), "docs/notes.md");
+    const store = new LegionStore(short);
+    const receipt = await store.ingest(["docs/notes.md"], { noCommit: true });
+    assert.equal(receipt.pagesCreated[0], ".legion-cli/wiki/ingested/docs/notes.md");
+  });
+});
+
 test("redactSecrets covers the documented secret patterns", () => {
   const leaked = [
     "AKIAIOSFODNN7EXAMPLE",

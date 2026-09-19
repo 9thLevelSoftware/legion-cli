@@ -3,7 +3,7 @@ import { existsSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { PersistError } from "./errors.js";
-import { toPosixPath } from "./paths.js";
+import { canonicalizePath, toPosixPath } from "./paths.js";
 
 function runGit(cwd: string, args: string[]): { status: number; stdout: string; stderr: string } {
   const result = spawnSync("git", args, {
@@ -185,8 +185,9 @@ export type GitWorktree = {
 };
 
 function sameAbsPath(a: string, b: string): boolean {
-  const left = resolve(a);
-  const right = resolve(b);
+  // Canonicalize so a Windows 8.3 short path (RUNNER~1) matches git's long form.
+  const left = canonicalizePath(a);
+  const right = canonicalizePath(b);
   return left === right || left.toLowerCase() === right.toLowerCase();
 }
 
