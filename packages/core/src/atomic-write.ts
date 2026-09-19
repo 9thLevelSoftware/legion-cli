@@ -1,58 +1,30 @@
-import { randomBytes } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import {
+  atomicWriteFile as persistAtomicWriteFile,
+  assertNotSymlink as persistAssertNotSymlink,
+  SymlinkRefusedError,
+} from "@9thlevelsoftware/legion-cli-persist";
 import { HINT, refuse } from "./errors.js";
 
-export async function assertNotSymlink(abs: string, message = "path is a symlink"): Promise<void> {
+export { retryFsOp } from "@9thlevelsoftware/legion-cli-persist";
+
+async function refuseLinks<T>(op: () => Promise<T>): Promise<T> {
   try {
-    const st = await lstat(abs);
-    if (st.isSymbolicLink()) {
-      refuse(message, HINT.chat);
-    }
+    return await op();
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    if (err instanceof SymlinkRefusedError) refuse(err.message, HINT.chat);
+    throw err;
   }
 }
 
-/** Write `abs` via tmp + rename. Refuses if `abs` or its parent is a symlink. */
+export async function assertNotSymlink(abs: string, message = "path is a symlink"): Promise<void> {
+  await refuseLinks(() => persistAssertNotSymlink(abs, message));
+}
+
+/** The persist atomic writer (temp + fsync + rename, win32 retry); a link refuses. */
 export async function atomicWriteFile(
   abs: string,
   body: string | Buffer,
-  opts?: { symlinkMessage?: string },
+  opts?: { symlinkMessage?: string; root?: string },
 ): Promise<void> {
-  const dir = dirname(abs);
-  await mkdir(dir, { recursive: true });
-  const message = opts?.symlinkMessage ?? "path is a symlink";
-  await assertNotSymlink(dir, message);
-  await assertNotSymlink(abs, message);
-  const tmp = join(dir, `.${randomBytes(8).toString("hex")}.tmp`);
-  const flags =
-    fsConstants.O_WRONLY |
-    fsConstants.O_CREAT |
-    fsConstants.O_EXCL |
-    (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0);
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(tmp, flags);
-    await handle.writeFile(body);
-    await handle.close();
-    handle = undefined;
-    await assertNotSymlink(abs, message);
-    await rename(tmp, abs);
-  } catch (err) {
-    if (handle) {
-      try {
-        await handle.close();
-      } catch {
-        // already closed
-      }
-    }
-    try {
-      await unlink(tmp);
-    } catch {
-      // tmp may not exist
-    }
-    throw err;
-  }
+  await refuseLinks(() => persistAtomicWriteFile(abs, body, opts));
 }

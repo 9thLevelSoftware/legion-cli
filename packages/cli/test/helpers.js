@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const bin = join(pkgRoot, "dist", "bin.js");
 export const transcriptsDir = join(pkgRoot, "test", "transcripts");
@@ -71,6 +73,15 @@ export async function allowCopyJail(store) {
     ...config,
     sandbox: { ...config.sandbox, allowCopyJail: true },
   });
+}
+
+/**
+ * Seed `sandbox.allowCopyJail: true` in an initialized project so doctor's sandbox
+ * check passes on hosts without bwrap/seatbelt (Windows). Use it in doctor tests whose
+ * subject is not the sandbox; the sandbox FAIL path has its own deterministic test.
+ */
+export async function allowCopyJailIn(dir) {
+  await allowCopyJail(createLegionEngine(dir).store);
 }
 
 export function withNamedAdapter(config, name, id) {

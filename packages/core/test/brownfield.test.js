@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -568,6 +569,46 @@ test("worktree refuses to nest inside a legacy single-run worktree", async () =>
     git(dir, ["worktree", "add", "-b", "brownfield/16161616", join(dir, ".legion-cli", "worktrees", "16161616")]);
     await assertRefuses(engine.brownfieldWorktree("16161616", "pr-1"), /legacy single worktree/);
   });
+});
+
+/** Windows 8.3 alias of `abs` (e.g. `…\LEGION~1`), or null when none is available. */
+function shortPathOf(abs) {
+  if (process.platform !== "win32") return null;
+  const result = spawnSync("cmd.exe", ["/d", "/s", "/c", `"for %I in ("${abs}") do @echo %~sI"`], {
+    encoding: "utf8",
+    windowsHide: true,
+    windowsVerbatimArguments: true,
+  });
+  const short = result.status === 0 ? result.stdout.trim() : "";
+  return short && short.toLowerCase() !== abs.toLowerCase() ? short : null;
+}
+
+test("per-PR worktrees match git's long-form paths from an 8.3 short project root (RUNNER~1 TEMP)", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "legion-core-"));
+  try {
+    const long = join(parent, "legion-long-project");
+    await mkdir(long, { recursive: true });
+    const dir = shortPathOf(long);
+    if (!dir) {
+      t.skip("needs a Windows 8.3 short-name alias (non-Windows, or 8dot3 names disabled on this volume)");
+      return;
+    }
+    const engine = new LegionEngine(dir);
+    await setupProject({ dir, engine });
+    await engine.brownfield({ runId: "18181818", execute: true });
+    await seedReady(dir, "18181818");
+    await engine.brownfieldPrPlan("18181818");
+    assert.equal((await engine.brownfieldWorktree("18181818", "pr-1")).created, true);
+    assert.equal((await engine.brownfieldWorktree("18181818", "pr-1")).created, false);
+
+    await engine.brownfield({ runId: "19191919", execute: true });
+    await seedReady(dir, "19191919");
+    await engine.brownfieldPrPlan("19191919");
+    git(dir, ["worktree", "add", "-b", "brownfield/19191919", join(dir, ".legion-cli", "worktrees", "19191919")]);
+    await assertRefuses(engine.brownfieldWorktree("19191919", "pr-1"), /legacy single worktree/);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
 });
 
 test("pr-plan roots use the audited SHA when HEAD was detached", async () => {

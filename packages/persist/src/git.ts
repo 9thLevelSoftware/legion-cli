@@ -184,6 +184,12 @@ export type GitWorktree = {
   branch: string | null;
 };
 
+/**
+ * Lexical, case-insensitive comparison only. Callers canonicalize first (with the native
+ * realpath, so Windows 8.3 short names such as RUNNER~1 match git's long form) and decide
+ * whether the last segment may be followed. Never realpath here: that would follow a link at a
+ * worktree node path and make it match the checkout it points at.
+ */
 function sameAbsPath(a: string, b: string): boolean {
   const left = resolve(a);
   const right = resolve(b);

@@ -1,6 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { parseCommandLine, runCommand as runArgv, splitCommand } from "@9thlevelsoftware/legion-cli-agents";
 import type { QAScore, Spec } from "@9thlevelsoftware/legion-cli-schema";
 import { extractJsonPayload, reportFailClosed } from "./reports.js";
 import { scoreSpecReports, type QaMode } from "./score.js";
@@ -10,68 +10,69 @@ export const DEFAULT_UNIT_COMMAND = "pnpm test -- --reporter=json";
 export const DEFAULT_PLAYWRIGHT_COMMAND = "pnpm exec playwright test --reporter=json";
 export const DEFAULT_QA_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 
-export function splitCommand(command: string): string[] {
-  const out: string[] = [];
-  const re = /"((?:\\"|[^"])*)"|'((?:\\'|[^'])*)'|(\S+)/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(command)) !== null) {
-    const raw = match[1] ?? match[2] ?? match[3] ?? "";
-    out.push(raw.replaceAll('\\"', '"').replaceAll("\\'", "'"));
-  }
-  return out;
-}
+export { splitCommand };
 
 export type CommandCapture = {
   command: string;
   status: number | null;
   stdout: string;
   stderr: string;
+  /** False when the command never ran (not found, argv-only refusal, spawn error). */
   started: boolean;
+  error?: string;
+  timedOut?: boolean;
 };
 
-function spawnArgv(argv: string[], cwd: string, timeoutMs = DEFAULT_QA_COMMAND_TIMEOUT_MS): ReturnType<typeof spawnSync> {
-  const env = { ...process.env };
-  delete env.NODE_TEST_CONTEXT;
-  return spawnSync(argv[0], argv.slice(1), {
-    cwd,
-    encoding: "utf8",
-    windowsHide: true,
-    shell: false,
-    env,
-    timeout: timeoutMs,
-    killSignal: "SIGKILL",
-  });
+export type QaCommandOptions = {
+  timeoutMs?: number;
+  /** Configured `adapter.*.apiKeyEnv` names, scrubbed on top of the KD-4 pattern. */
+  secretEnvNames?: readonly string[];
+  /** Where stdout/stderr logs go; defaults to `<cwd>/.legion-cli/cache/qa`. */
+  logDir?: string;
+  /** Log file stem, e.g. `unit`. */
+  name?: string;
+};
+
+async function readLog(abs: string): Promise<string> {
+  try {
+    return await readFile(abs, "utf8");
+  } catch {
+    return "";
+  }
 }
 
-export function runCommand(cwd: string, command: string): CommandCapture {
-  const argv = splitCommand(command);
-  if (argv.length === 0) {
-    return { command, status: null, stdout: "", stderr: "empty command", started: false };
+/**
+ * Run a QA command through the shared agents runner: argv-only, PATHEXT/.cmd-shim aware,
+ * non-blocking, with API keys and tokens scrubbed from the environment (KD-4). Output is
+ * streamed to log files and read back, so a chatty suite cannot overflow a buffer.
+ */
+export async function runCommand(cwd: string, command: string, opts?: QaCommandOptions): Promise<CommandCapture> {
+  const parsed = parseCommandLine(command);
+  if ("error" in parsed) {
+    return { command, status: null, stdout: "", stderr: parsed.error, started: false, error: parsed.error };
   }
-  let result = spawnArgv(argv, cwd);
-  if (result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT" && process.platform === "win32") {
-    const exe = argv[0].toLowerCase();
-    if (!exe.endsWith(".cmd") && !exe.endsWith(".exe")) {
-      result = spawnArgv([`${argv[0]}.cmd`, ...argv.slice(1)], cwd);
-    }
-  }
-  const stdout = String(result.stdout ?? "");
-  const stderr = String(result.stderr ?? "");
-  if (result.error) {
-    return {
-      command,
-      status: null,
-      stdout,
-      stderr: stderr || result.error.message,
-      started: (result.error as NodeJS.ErrnoException).code !== "ENOENT",
-    };
+  const logDir = opts?.logDir ?? join(cwd, ".legion-cli", "cache", "qa");
+  const name = opts?.name ?? "command";
+  const stdoutPath = join(logDir, `${name}.stdout.log`);
+  const stderrPath = join(logDir, `${name}.stderr.log`);
+  const result = await runArgv(parsed.argv, {
+    cwd,
+    timeoutMs: opts?.timeoutMs ?? DEFAULT_QA_COMMAND_TIMEOUT_MS,
+    logPath: stdoutPath,
+    stderrPath,
+    secretEnvNames: opts?.secretEnvNames,
+  });
+  if (!result.started) {
+    const error = result.error ?? "did not start";
+    return { command, status: null, stdout: "", stderr: error, started: false, error };
   }
   return {
     command,
-    status: result.status,
-    stdout,
-    stderr,
+    status: result.exitCode,
+    stdout: await readLog(stdoutPath),
+    stderr: await readLog(stderrPath),
     started: true,
+    ...(result.timedOut ? { timedOut: true } : {}),
   };
 }
 
@@ -83,12 +84,18 @@ export type RunProjectQaOptions = {
   playwrightCommand?: string;
   id?: string;
   createdAt?: string;
+  /** Configured `adapter.*.apiKeyEnv` names to scrub from the commands' environment. */
+  secretEnvNames?: readonly string[];
+  /** Per-command timeout; defaults to {@link DEFAULT_QA_COMMAND_TIMEOUT_MS}. */
+  commandTimeoutMs?: number;
 };
 
 export type ProjectQaResult = {
   score: QAScore;
   evidencePaths: string[];
   playwrightRan: boolean;
+  /** e.g. "unit command did not start: pnpm: not found on PATH" */
+  warnings: string[];
 };
 
 async function writeEvidence(abs: string, capture: CommandCapture): Promise<unknown> {
@@ -107,7 +114,19 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
   await mkdir(qaDir, { recursive: true });
   const evidencePaths: string[] = [];
 
-  const unitCapture = runCommand(opts.projectRoot, opts.unitCommand?.trim() || DEFAULT_UNIT_COMMAND);
+  const warnings: string[] = [];
+  const timeoutMs = opts.commandTimeoutMs ?? DEFAULT_QA_COMMAND_TIMEOUT_MS;
+  const commandOpts = { secretEnvNames: opts.secretEnvNames, timeoutMs };
+  const unitCapture = await runCommand(opts.projectRoot, opts.unitCommand?.trim() || DEFAULT_UNIT_COMMAND, {
+    ...commandOpts,
+    name: "unit",
+  });
+  if (!unitCapture.started) {
+    // Scored P0 failed below (failClosed); say why instead of "your tests failed".
+    warnings.push(`unit command did not start: ${unitCapture.error ?? "unknown error"}`);
+  } else if (unitCapture.timedOut) {
+    warnings.push(`unit command timed out after ${timeoutMs} ms and was stopped`);
+  }
   const unitAbs = join(qaDir, "unit.json");
   const unitReport = await writeEvidence(unitAbs, unitCapture);
   evidencePaths.push(".legion-cli/qa/unit.json");
@@ -116,7 +135,16 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
   let playwrightReport: unknown;
   let playwrightRan = false;
   if (needsPlaywright) {
-    const pwCapture = runCommand(opts.projectRoot, opts.playwrightCommand?.trim() || DEFAULT_PLAYWRIGHT_COMMAND);
+    const pwCapture = await runCommand(
+      opts.projectRoot,
+      opts.playwrightCommand?.trim() || DEFAULT_PLAYWRIGHT_COMMAND,
+      { ...commandOpts, name: "playwright" },
+    );
+    if (!pwCapture.started) {
+      warnings.push(`playwright command did not start: ${pwCapture.error ?? "unknown error"}`);
+    } else if (pwCapture.timedOut) {
+      warnings.push(`playwright command timed out after ${timeoutMs} ms and was stopped`);
+    }
     const pwAbs = join(qaDir, "playwright.json");
     playwrightReport = await writeEvidence(pwAbs, pwCapture);
     evidencePaths.push(".legion-cli/qa/playwright.json");
@@ -135,5 +163,5 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
     evidencePaths,
     failClosed,
   });
-  return { score, evidencePaths, playwrightRan };
+  return { score, evidencePaths, playwrightRan, warnings };
 }

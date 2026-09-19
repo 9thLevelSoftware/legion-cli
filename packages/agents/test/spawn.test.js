@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { lstatSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -269,6 +269,36 @@ test("unwrapCmdShim resolves npm .cmd shims to node + JS entry", () => {
   assert.equal(unwrapped.prefixArgs.length, 1);
   assert.match(unwrapped.prefixArgs[0].replaceAll("\\", "/"), /\/echo-argv\.js$/);
   assert.equal(unwrapCmdShim(join(fixturesDir, "not-a-shim.cmd")), null);
+});
+
+test("unwrapCmdShim never resolves %_prog% or node against the current directory", async () => {
+  await withTempDir(async (dir) => {
+    const shimDir = join(dir, "global-bin");
+    const repo = join(dir, "audited-repo");
+    await mkdir(join(shimDir, "node_modules", "tool"), { recursive: true });
+    await mkdir(repo, { recursive: true });
+    await writeFile(join(shimDir, "node_modules", "tool", "cli.js"), "", "utf8");
+    const shim = join(shimDir, "tool.cmd");
+    await writeFile(
+      shim,
+      '@SET "_prog=node"\r\n@"%_prog%"  "%dp0%\\node_modules\\tool\\cli.js" %*\r\n@"node"  "%dp0%\\node_modules\\tool\\cli.js" %*\r\n',
+      "utf8",
+    );
+    // Files a hostile repo could plant, named like the symbolic tokens.
+    await writeFile(join(repo, "%_prog%"), "planted", "utf8");
+    await writeFile(join(repo, "node"), "planted", "utf8");
+    const previous = process.cwd();
+    process.chdir(repo);
+    try {
+      const unwrapped = unwrapCmdShim(shim);
+      assert.ok(unwrapped);
+      assert.equal(unwrapped.command, process.execPath);
+      assert.equal(unwrapped.command.startsWith(repo), false);
+      assert.match(unwrapped.prefixArgs[0].replaceAll("\\", "/"), /global-bin\/node_modules\/tool\/cli\.js$/);
+    } finally {
+      process.chdir(previous);
+    }
+  });
 });
 
 test("windows .cmd shim receives the full multiline pointer", { skip: process.platform !== "win32" }, async () => {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 
-import { normalize, runCli, withTempDir } from "./helpers.js";
+import { allowCopyJailIn, normalize, runCli, withTempDir } from "./helpers.js";
 
 async function writeLegionCliStub(dir) {
   const name = process.platform === "win32" ? "legion-cli.cmd" : "legion-cli";
@@ -24,6 +24,7 @@ function pathEnvWith(dirs) {
 test("doctor warns on multiple legion-cli binaries on PATH", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const a = await mkdtemp(join(tmpdir(), "legion-cli-a-"));
     const b = await mkdtemp(join(tmpdir(), "legion-cli-b-"));
     await writeLegionCliStub(a);
@@ -52,6 +53,7 @@ test("doctor fails spawnable when extra adapter args drop the vendor prefix", as
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "grok"]);
     assert.equal(init.status, 0, init.stderr);
+    await allowCopyJailIn(dir);
     const grokDir = await mkdtemp(join(tmpdir(), "legion-grok-"));
     const grokName = process.platform === "win32" ? "grok.cmd" : "grok";
     const grokBody = process.platform === "win32" ? "@echo off\r\necho stub\r\n" : "#!/bin/sh\necho stub\n";
@@ -83,6 +85,7 @@ test("doctor fails spawnable when extra adapter args omit {{pointer}}", async ()
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "grok"]);
     assert.equal(init.status, 0, init.stderr);
+    await allowCopyJailIn(dir);
     const configPath = join(dir, ".legion-cli", "config.yaml");
     const config = await readFile(configPath, "utf8");
     const patched = config.replace(
@@ -113,6 +116,7 @@ test("doctor fails spawnable when extra adapter args omit {{pointer}}", async ()
 test("doctor scans wiki for leftover secret patterns", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     await mkdir(join(dir, ".legion-cli", "wiki", "ingested"), { recursive: true });
     await writeFile(
       join(dir, ".legion-cli", "wiki", "ingested", "leaked.md"),

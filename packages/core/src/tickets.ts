@@ -8,15 +8,6 @@ import {
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { NewTicket } from "./types.js";
 
-export function nextTaskId(existing: readonly string[]): string {
-  let max = 0;
-  for (const id of existing) {
-    const match = /^TSK-(\d+)$/.exec(id);
-    if (match) max = Math.max(max, Number(match[1]));
-  }
-  return `TSK-${String(max + 1).padStart(4, "0")}`;
-}
-
 export function defaultTicketContract(id: string, partial?: Partial<FileContract>): FileContract {
   const filesAllowed =
     partial?.filesAllowed && partial.filesAllowed.length > 0 ? [...partial.filesAllowed] : [`notes/${id}.md`];

@@ -71,7 +71,20 @@ export { FakeAdapter, FAKE_WAIT_READY_ENV, FAKE_WAIT_RELEASE_ENV, holdWaitFromEn
 export { ClaudeAdapter } from "./adapters/claude.js";
 export { GenericAdapter } from "./adapters/generic.js";
 export { ExtraAdapter } from "./adapters/extra.js";
-export { isSpawnableBinary, resolveBinary, unwrapCmdShim } from "./which.js";
+export {
+  cmdExePath,
+  cmdScriptLaunch,
+  isSpawnableBinary,
+  listOnPath,
+  quoteCmdArgForSpawn,
+  resolveBinary,
+  runTool,
+  unwrapCmdShim,
+  whichAll,
+} from "./which.js";
+export { isSecretEnvName, scrubSecretsEnv, SECRET_ENV_NAME } from "./env-scrub.js";
+export { ARGV_ONLY_MESSAGE, parseCommandLine, runCommand, splitCommand } from "./run-command.js";
+export type { RunCommandOptions, RunCommandResult } from "./run-command.js";
 export type { StageSkillOptions } from "./stage.js";
 export type { RunCachePaths } from "./paths.js";
 export type {

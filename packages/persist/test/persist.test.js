@@ -1,15 +1,25 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { appendFile, cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdtemp, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 import {
   DEFAULT_LOCK_TIMEOUT_MS,
+  EMPTY_LOCK_STALE_MS,
   EngineLockedError,
+  SymlinkRefusedError,
+  listTaskFiles,
+  nextFileId,
+  ownProcessStartedAt,
+  parseMarkdownDocument,
+  processIdentity,
+  sameProcessStart,
+  startedAfterRecorded,
+  writeTextFile,
   GITIGNORE_ENTRIES,
   GITIGNORE_TEMPLATE,
   LegionStore,
@@ -256,7 +266,7 @@ test("engine.lock is single-writer and times out", async () => {
   });
 });
 
-test("empty or invalid engine.lock files wait rather than steal", async () => {
+test("fresh empty or invalid engine.lock files wait rather than steal", async () => {
   await withTempDir(async (dir) => {
     const store = new LegionStore(dir);
     await mkdir(store.paths.indexDir, { recursive: true });
@@ -270,6 +280,424 @@ test("empty or invalid engine.lock files wait rather than steal", async () => {
 
     await writeFile(store.paths.lock, JSON.stringify({ pid: "nope" }), "utf8");
     await assert.rejects(() => store.acquireLock({ timeoutMs: 200 }), EngineLockedError);
+  });
+});
+
+// Inverted from "empty or invalid engine.lock files wait rather than steal" (F-051, F-059):
+// a crash between create and write left an empty lock that hung every verb forever.
+test("an empty or unparseable engine.lock older than 10 s is stolen", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LegionStore(dir);
+    await mkdir(store.paths.indexDir, { recursive: true });
+    const old = new Date(Date.now() - EMPTY_LOCK_STALE_MS - 5_000);
+    for (const payload of ["", "not-json\n", JSON.stringify({ pid: "nope" })]) {
+      await writeFile(store.paths.lock, payload, "utf8");
+      await utimes(store.paths.lock, old, old);
+      await store.acquireLock({ timeoutMs: 200 });
+      const held = JSON.parse(await readFile(store.paths.lock, "utf8"));
+      assert.equal(held.pid, process.pid, `payload ${JSON.stringify(payload)} was not stolen`);
+      await store.releaseLock();
+    }
+  });
+});
+
+const LOCK_HOLDER_SCRIPT = `
+import { readFileSync, writeFileSync, utimesSync } from "node:fs";
+const { acquireEngineLock } = await import(process.argv[1]);
+const lockPath = process.argv[2];
+const mode = process.argv[3] ?? "aged";
+await acquireEngineLock(lockPath, { timeoutMs: 5000 });
+const held = JSON.parse(readFileSync(lockPath, "utf8"));
+// Pretend the lock has been held for a day: the old rule stole by age.
+const payload = { ...held, acquiredAt: "2000-01-01T00:00:00.000Z" };
+// A lock written by an older legion-cli: no pidStartedAt, createdAt instead of acquiredAt.
+if (mode === "legacy") {
+  delete payload.pidStartedAt;
+  delete payload.acquiredAt;
+  payload.createdAt = "2000-01-01T00:00:00.000Z";
+}
+// The holder's own start estimate ran late (macOS sleep): recorded later than the OS value.
+if (mode === "late-estimate") payload.pidStartedAt = Date.now() + 3_600_000;
+writeFileSync(lockPath, JSON.stringify(payload) + "\\n");
+const old = new Date(Date.now() - 86_400_000);
+utimesSync(lockPath, old, old);
+process.stdout.write("ready\\n");
+setInterval(() => {}, 1000);
+`;
+
+function spawnLockHolder(lockPath, mode = "aged") {
+  const child = spawn(
+    process.execPath,
+    ["--input-type=module", "-e", LOCK_HOLDER_SCRIPT, pathToFileURL(join(pkgRoot, "dist", "index.js")).href, lockPath, mode],
+    { stdio: ["ignore", "pipe", "inherit"], windowsHide: true },
+  );
+  const ready = new Promise((resolveReady, reject) => {
+    let out = "";
+    child.stdout.on("data", (chunk) => {
+      out += chunk;
+      if (out.includes("ready")) resolveReady();
+    });
+    child.once("exit", (code) => reject(new Error(`lock holder exited early (${code})`)));
+  });
+  return { child, ready };
+}
+
+async function killAndWait(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((done) => child.once("exit", done));
+  child.kill("SIGKILL");
+  await exited;
+}
+
+test("a lock held by a live process is never stolen by age", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LegionStore(dir);
+    await mkdir(store.paths.indexDir, { recursive: true });
+    const { child, ready } = spawnLockHolder(store.paths.lock);
+    try {
+      await ready;
+      const before = await readFile(store.paths.lock, "utf8");
+      assert.equal(JSON.parse(before).pid, child.pid);
+      await assert.rejects(
+        () => store.acquireLock({ timeoutMs: 300 }),
+        (err) => {
+          assert.equal(err instanceof EngineLockedError, true);
+          assert.match(err.message, /another legion-cli is running/);
+          assert.match(err.message, new RegExp(`pid ${child.pid}`));
+          assert.match(err.message, /delete .*engine\.lock/);
+          return true;
+        },
+      );
+      assert.equal(await readFile(store.paths.lock, "utf8"), before, "live holder's lock must survive");
+    } finally {
+      await killAndWait(child);
+    }
+    // Once the holder is dead the lock is stale.
+    await store.acquireLock({ timeoutMs: 2_000 });
+    assert.equal(JSON.parse(await readFile(store.paths.lock, "utf8")).pid, process.pid);
+    await store.releaseLock();
+  });
+});
+
+test("a lock whose pidStartedAt differs from the live PID's start time is stolen (PID reuse)", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LegionStore(dir);
+    await mkdir(store.paths.indexDir, { recursive: true });
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    try {
+      assert.ok(child.pid);
+      await writeFile(
+        store.paths.lock,
+        `${JSON.stringify({
+          pid: child.pid,
+          pidStartedAt: Date.now() - 10 * 86_400_000,
+          acquiredAt: new Date().toISOString(),
+          token: "reused",
+        })}\n`,
+        "utf8",
+      );
+      await store.acquireLock({ timeoutMs: 200 });
+      const held = JSON.parse(await readFile(store.paths.lock, "utf8"));
+      assert.equal(held.pid, process.pid);
+      assert.equal(typeof held.pidStartedAt, "number");
+      assert.equal(typeof held.acquiredAt, "string");
+      await store.releaseLock();
+    } finally {
+      await killAndWait(child);
+    }
+  });
+});
+
+for (const [mode, pattern] of [
+  ["legacy", /Its start time could not be read, so the lock was not cleared/],
+  ["late-estimate", /another legion-cli is running/],
+]) {
+  test(`a live holder's lock is not stolen (${mode} start time)`, async () => {
+    await withTempDir(async (dir) => {
+      const store = new LegionStore(dir);
+      await mkdir(store.paths.indexDir, { recursive: true });
+      const { child, ready } = spawnLockHolder(store.paths.lock, mode);
+      try {
+        await ready;
+        const before = await readFile(store.paths.lock, "utf8");
+        await assert.rejects(
+          () => store.acquireLock({ timeoutMs: 300 }),
+          (err) => {
+            assert.equal(err instanceof EngineLockedError, true);
+            assert.match(err.message, pattern);
+            assert.match(err.message, new RegExp(`pid ${child.pid}`));
+            return true;
+          },
+        );
+        assert.equal(await readFile(store.paths.lock, "utf8"), before);
+      } finally {
+        await killAndWait(child);
+      }
+    });
+  });
+}
+
+test("PID reuse is one-sided: only a process that started after the recorded start steals", () => {
+  assert.equal(startedAfterRecorded(1_000_000 + 60_000, 1_000_000), true);
+  assert.equal(startedAfterRecorded(1_000_000, 1_000_000 + 60_000), false, "a late estimate never steals");
+  assert.equal(startedAfterRecorded(1_000_000 + 1_000, 1_000_000), false, "within tolerance");
+});
+
+test("an out-of-range pid is an unparseable lock with a recovery hint, never a TypeError", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LegionStore(dir);
+    await mkdir(store.paths.indexDir, { recursive: true });
+    const crafted = `${JSON.stringify({ pid: 4_294_967_296, acquiredAt: "\u001b[31mred\u001b[0m" })}\n`;
+    await writeFile(store.paths.lock, crafted, "utf8");
+    await assert.rejects(
+      () => store.acquireLock({ timeoutMs: 200 }),
+      (err) => {
+        assert.equal(err instanceof EngineLockedError, true, String(err));
+        assert.match(err.message, /empty or unreadable/);
+        assert.match(err.message, /delete .*engine\.lock/);
+        assert.doesNotMatch(err.message, /\u001b/);
+        return true;
+      },
+    );
+    const old = new Date(Date.now() - EMPTY_LOCK_STALE_MS - 5_000);
+    await utimes(store.paths.lock, old, old);
+    await store.acquireLock({ timeoutMs: 200 });
+    assert.equal(JSON.parse(await readFile(store.paths.lock, "utf8")).pid, process.pid);
+    await store.releaseLock();
+  });
+});
+
+test("two contenders stealing the same stale lock never hold it at the same time", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.indexDir, { recursive: true });
+    for (let round = 0; round < 5; round += 1) {
+      await writeFile(
+        paths.lock,
+        `${JSON.stringify({ pid: 2_000_000_000, pidStartedAt: 1, acquiredAt: new Date().toISOString(), token: "dead" })}\n`,
+        "utf8",
+      );
+      let inside = 0;
+      let overlap = false;
+      await Promise.all(
+        Array.from({ length: 4 }, async () => {
+          const store = new LegionStore(dir);
+          await store.withLock(
+            async () => {
+              inside += 1;
+              if (inside > 1) overlap = true;
+              await new Promise((done) => setTimeout(done, 20));
+              inside -= 1;
+            },
+            { timeoutMs: 5_000 },
+          );
+        }),
+      );
+      assert.equal(overlap, false, `round ${round}`);
+      assert.deepEqual((await readdir(paths.indexDir)).filter((name) => name.endsWith(".steal")), []);
+    }
+  });
+});
+
+test("a leftover steal guard makes acquisition wait and time out, then clear once stale or future-dated", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    const guard = `${paths.lock}.steal`;
+    await mkdir(paths.indexDir, { recursive: true });
+    const deadLock = `${JSON.stringify({ pid: 2_000_000_000, pidStartedAt: 1, acquiredAt: new Date().toISOString(), token: "dead" })}\n`;
+    await writeFile(paths.lock, deadLock, "utf8");
+    // A stealer that crashed a moment ago: fresh guard. The old loop spun here until it aged out.
+    await writeFile(guard, "", "utf8");
+    const store = new LegionStore(dir);
+    const started = Date.now();
+    await assert.rejects(
+      () => store.acquireLock({ timeoutMs: 300 }),
+      (err) => {
+        assert.equal(err instanceof EngineLockedError, true);
+        assert.match(err.message, /engine\.lock\.steal is held/);
+        return true;
+      },
+    );
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 250 && elapsed < 5_000, `timed out after ${elapsed} ms`);
+    assert.equal(await readFile(paths.lock, "utf8"), deadLock);
+
+    for (const [label, when] of [
+      ["aged out", new Date(Date.now() - 11_000)],
+      ["future-dated", new Date(Date.now() + 3_600_000)],
+    ]) {
+      await writeFile(paths.lock, deadLock, "utf8");
+      await writeFile(guard, "", "utf8");
+      await utimes(guard, when, when);
+      await store.acquireLock({ timeoutMs: 2_000 });
+      assert.equal(JSON.parse(await readFile(paths.lock, "utf8")).pid, process.pid, label);
+      await store.releaseLock();
+      assert.equal(existsSync(guard), false, label);
+    }
+  });
+});
+
+test("processIdentity reports this process's start time within tolerance", async () => {
+  const actual = await processIdentity(process.pid);
+  assert.equal(typeof actual, "number");
+  assert.ok(sameProcessStart(actual, ownProcessStartedAt()), `${actual} vs ${ownProcessStartedAt()}`);
+  assert.equal(await processIdentity(-1), null);
+});
+
+test("one store serializes concurrent withLock callers; nested calls re-enter", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LegionStore(dir);
+    let inside = 0;
+    let maxInside = 0;
+    const order = [];
+    await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        store.withLock(async () => {
+          inside += 1;
+          maxInside = Math.max(maxInside, inside);
+          await new Promise((done) => setTimeout(done, 5));
+          // Re-entrant: the same async chain must not wait on itself.
+          await store.withLock(async () => order.push(i));
+          inside -= 1;
+        }),
+      ),
+    );
+    assert.equal(maxInside, 1);
+    assert.equal(order.length, 6);
+    assert.equal(existsSync(store.paths.lock), false);
+  });
+});
+
+test("a write that throws midway leaves the previous STATE.md intact and no temp file", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    const store = new LegionStore(dir);
+    const before = await readFile(store.paths.stateMd, "utf8");
+    // Yields one chunk, then fails: an in-place writeFile would already have truncated the file.
+    async function* tornBody() {
+      yield "---\nschemaVersion: legion-cli-state/v1\nphase: exec";
+      throw new Error("crash mid-write");
+    }
+    await assert.rejects(() => writeTextFile(store.paths.stateMd, tornBody(), { root: dir }), /crash mid-write/);
+    assert.equal(await readFile(store.paths.stateMd, "utf8"), before);
+    assert.deepEqual(
+      (await readdir(dirname(store.paths.stateMd))).filter((name) => name.endsWith(".tmp")),
+      [],
+    );
+    await store.readState();
+  });
+});
+
+test("writer vs reader: no torn reads and no failed writes", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    const store = new LegionStore(dir);
+    const base = await store.readState();
+    const initial = await readFile(store.paths.stateMd, "utf8");
+    const body = "x".repeat(64 * 1024);
+    const complete = (raw) => raw === initial || (raw.includes(body) && /x\n\d+\n$/.test(raw));
+    let done = false;
+    let tornReads = 0;
+    let failedReads = 0;
+    let reads = 0;
+    const reader = (async () => {
+      while (!done) {
+        try {
+          const raw = await readFile(store.paths.stateMd, "utf8");
+          reads += 1;
+          if (!complete(raw)) tornReads += 1;
+        } catch {
+          // win32: ENOENT/EPERM while the rename lands; the store's reader retries these.
+        }
+        try {
+          await store.readState();
+        } catch {
+          failedReads += 1;
+        }
+      }
+    })();
+    let failedWrites = 0;
+    for (let i = 0; i < 200; i += 1) {
+      const data = { ...base.data, currentTaskId: `TSK-${String(i).padStart(4, "0")}` };
+      try {
+        await store.writeState(data, `${body}\n${i}\n`);
+      } catch {
+        failedWrites += 1;
+      }
+    }
+    done = true;
+    await reader;
+    assert.ok(reads > 0);
+    assert.equal(tornReads, 0);
+    assert.equal(failedReads, 0);
+    assert.equal(failedWrites, 0);
+  });
+});
+
+test("a UTF-8 BOM before the frontmatter parses", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    const store = new LegionStore(dir);
+    const raw = await readFile(store.paths.stateMd, "utf8");
+    await writeFile(store.paths.stateMd, `﻿${raw}`, "utf8");
+    const state = await store.readState();
+    assert.equal(typeof state.data.phase, "string");
+    assert.deepEqual(parseMarkdownDocument(`﻿---\na: 1\n---\nbody\n`), { frontmatter: { a: 1 }, body: "body\n" });
+  });
+});
+
+test("listTaskFiles lists invalid task files instead of dropping them", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    const store = new LegionStore(dir);
+    const good = await readFile(join(store.paths.tasksDir, "TSK-0002.md"), "utf8");
+    await writeFile(join(store.paths.tasksDir, "TSK-0003.md"), good.replace(/status: \w+/, "status: Ready"), "utf8");
+    await writeFile(join(store.paths.tasksDir, "TSK-0004.md"), good.slice(0, Math.floor(good.length / 3)), "utf8");
+    const entries = await listTaskFiles(dir);
+    assert.deepEqual(
+      entries.map((entry) => [entry.file, entry.ok]),
+      [
+        ["TSK-0002.md", true],
+        ["TSK-0003.md", false],
+        ["TSK-0004.md", false],
+      ],
+    );
+    assert.match(entries[1].error, /^status: /);
+    assert.equal(entries[1].frontmatter.status, "Ready");
+    assert.ok(entries[2].error.length > 0);
+  });
+});
+
+test("nextFileId allocates from file names, valid or not, and leaves no placeholder", async () => {
+  await withTempDir(async (dir) => {
+    const tasks = join(dir, "tasks");
+    assert.equal(await nextFileId(tasks, "TSK", 4), "TSK-0001");
+    await mkdir(tasks, { recursive: true });
+    await writeFile(join(tasks, "TSK-0001.md"), "ok", "utf8");
+    await writeFile(join(tasks, "TSK-0007.md"), "not a task", "utf8");
+    await writeFile(join(tasks, "PKT-0042.md"), "other prefix", "utf8");
+    assert.equal(await nextFileId(tasks, "TSK", 4), "TSK-0008");
+    assert.equal(existsSync(join(tasks, "TSK-0008.md")), false, "no empty reservation file");
+  });
+});
+
+test("store writes refuse a junction or symlink between the project root and the target", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    const store = new LegionStore(dir);
+    const outside = await mkdtemp(join(tmpdir(), "legion-persist-outside-"));
+    try {
+      const task = await store.readTask("TSK-0002");
+      await rm(store.paths.tasksDir, { recursive: true, force: true });
+      await symlink(outside, store.paths.tasksDir, process.platform === "win32" ? "junction" : "dir");
+      await assert.rejects(() => store.writeTask(task.data, task.body), SymlinkRefusedError);
+      assert.deepEqual(await readdir(outside), []);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });
 
@@ -545,6 +973,46 @@ test("project containment compares canonical realpaths", async () => {
     }
     assert.equal(toProjectRelativePosix(alias, file), "docs/notes.md");
     const store = new LegionStore(alias);
+    const receipt = await store.ingest(["docs/notes.md"], { noCommit: true });
+    assert.equal(receipt.pagesCreated[0], ".legion-cli/wiki/ingested/docs/notes.md");
+  });
+});
+
+/** Windows 8.3 alias of `abs` (e.g. `…\LEGION~1`), or null when none is available. */
+function shortPathOf(abs) {
+  if (process.platform !== "win32") return null;
+  const result = spawnSync("cmd.exe", ["/d", "/s", "/c", `"for %I in ("${abs}") do @echo %~sI"`], {
+    encoding: "utf8",
+    windowsHide: true,
+    windowsVerbatimArguments: true,
+  });
+  const short = result.status === 0 ? result.stdout.trim() : "";
+  return short && short.toLowerCase() !== abs.toLowerCase() ? short : null;
+}
+
+test("8.3 short project paths canonicalize like ingest's realpath (RUNNER~1 TEMP)", async (t) => {
+  await withTempDir(async (dir) => {
+    const long = join(dir, "legion-long-project");
+    await mkdir(long, { recursive: true });
+    const short = shortPathOf(long);
+    if (!short) {
+      t.skip("needs a Windows 8.3 short-name alias (non-Windows, or 8dot3 names disabled on this volume)");
+      return;
+    }
+    await writeFile(join(long, "README.md"), "app\n", "utf8");
+    initGitRepo(long);
+    const worktree = join(short, ".legion-cli", "worktrees", "dddddddd", "pr-1");
+    gitWorktreeAdd(short, worktree, "brownfield/dddddddd/pr-1-x");
+    assert.equal(gitWorktreeRemove(short, worktree), true);
+    assert.equal(existsSync(worktree), false);
+
+    await copyFixtureProject(long);
+    await mkdir(join(long, "docs"), { recursive: true });
+    const file = join(long, "docs", "notes.md");
+    await writeFile(file, "# Office notes\n\nDurable fact.\n", "utf8");
+    assert.equal(toProjectRelativePosix(short, file), "docs/notes.md");
+    assert.equal(toProjectRelativePosix(long, join(short, "docs", "notes.md")), "docs/notes.md");
+    const store = new LegionStore(short);
     const receipt = await store.ingest(["docs/notes.md"], { noCommit: true });
     assert.equal(receipt.pagesCreated[0], ".legion-cli/wiki/ingested/docs/notes.md");
   });
