@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { SkillIdSchema } from "@9thlevelsoftware/legion-cli-schema";
-import { normalize, runCli, withTempDir } from "./helpers.js";
+import { allowCopyJailIn, normalize, runCli, withTempDir } from "./helpers.js";
 
 const REQUIRED_SKILL_IDS = ["plan", "execute", "review"];
 const ALL_SKILL_IDS = [...SkillIdSchema.options];
@@ -63,6 +63,7 @@ for (const skillId of REQUIRED_SKILL_IDS) {
   test(`doctor fails closed on invalid ${skillId} frontmatter (other required stay ok)`, async () => {
     await withTempDir(async (dir) => {
       runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+      await allowCopyJailIn(dir);
       const skillsDir = join(dir, "skills");
       await writeSkillTree(skillsDir, { invalidId: skillId });
       const result = runCli(["doctor", "--project", dir], { env: doctorEnv(skillsDir) });
@@ -80,6 +81,7 @@ for (const skillId of REQUIRED_SKILL_IDS) {
 test("doctor warns on invalid optional skill and still passes", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const skillsDir = join(dir, "skills");
     await writeSkillTree(skillsDir, { raw: { qa: "# qa\nno frontmatter\n" } });
     const result = runCli(["doctor", "--project", dir], { env: doctorEnv(skillsDir) });
@@ -96,6 +98,7 @@ test("doctor warns on invalid optional skill and still passes", async () => {
 test("doctor warns when SKILL.md body exceeds 20k and does not refuse", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const skillsDir = join(dir, "skills");
     const body = `# execute\n${"x".repeat(20_001)}\n`;
     await writeSkillTree(skillsDir, { bodyFor: { execute: body } });
@@ -111,6 +114,7 @@ test("doctor warns when SKILL.md body exceeds 20k and does not refuse", async ()
 test("doctor does not warn on unpackaged optional SKILL.md", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const result = runCli(["doctor", "--project", dir], { env: doctorEnv(repoSkills) });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const out = normalize(result.stdout);

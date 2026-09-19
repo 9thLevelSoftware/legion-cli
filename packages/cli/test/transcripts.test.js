@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import { allowCopyJail, normalize, readGolden, runCli, sanitizeDoctor, withTempDir } from "./helpers.js";
+import { allowCopyJail, allowCopyJailIn, normalize, readGolden, runCli, sanitizeDoctor, withTempDir } from "./helpers.js";
 
 function quoteArg(value) {
   return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
@@ -177,12 +177,41 @@ test("doctor after init with fake adapter (golden)", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(init.status, 0, init.stderr);
+    await allowCopyJailIn(dir);
     const result = runCli(["doctor", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const expected = await readGolden("doctor.stdout.txt");
     assert.equal(sanitizeDoctor(result.stdout), expected);
+  });
+});
+
+test("doctor fails sandbox on every OS when copy is forced without the opt-in", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const engine = createLegionEngine(dir);
+    const config = await engine.store.readConfig();
+    await engine.store.writeConfig({
+      ...config,
+      sandbox: { ...config.sandbox, backend: "copy", requireHardened: true, allowCopyJail: false },
+    });
+    const result = runCli(["doctor", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout);
+    assert.match(out, /^FAIL  sandbox \(hardened sandbox required/m);
+    assert.match(out, /sandbox config cannot satisfy requireHardened \(copy\)/);
+    assert.match(out, /Doctor failed/);
+
+    await allowCopyJail(engine.store);
+    const optedIn = runCli(["doctor", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(optedIn.status, 0, `${optedIn.stdout}\n${optedIn.stderr}`);
+    assert.match(normalize(optedIn.stdout), /^ok    sandbox \(/m);
   });
 });
 
@@ -324,6 +353,7 @@ test("status omits compact hint when slice tasks are compacted rather than done"
 test("doctor fails when fake adapter is not spawnable", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const result = runCli(["doctor", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "" },
     });
@@ -336,6 +366,7 @@ test("doctor fails when fake adapter is not spawnable", async () => {
 test("doctor stderr does not contain DEP0190", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const result = runCli(["doctor", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
@@ -346,6 +377,7 @@ test("doctor stderr does not contain DEP0190", async () => {
 test("doctor PATH listing names legion-cli and legion", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const result = runCli(["doctor", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
@@ -359,6 +391,7 @@ test("doctor PATH listing names legion-cli and legion", async () => {
 test("doctor --json includes routed default", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const result = runCli(["doctor", "--json", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
@@ -378,6 +411,7 @@ for (const skill of ["plan", "execute", "review"]) {
   test(`doctor fails closed when routes.${skill} grok args omit {{pointer}} even if grok is on PATH`, async () => {
     await withTempDir(async (dir) => {
       runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+      await allowCopyJailIn(dir);
       await patchAdapter(dir, {
         routes: { [skill]: "grok" },
         grok: { binary: process.execPath, args: ["--model", "grok-4"] },
@@ -422,6 +456,7 @@ for (const skill of ["plan", "execute", "review"]) {
 test("doctor passes with trust warning when required-route extra args include {{pointer}}", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     await patchAdapter(dir, {
       routes: { plan: "grok" },
       grok: { binary: process.execPath, args: ["--model", "grok-4", "{{pointer}}"] },
@@ -458,6 +493,7 @@ test("doctor passes with trust warning when required-route extra args include {{
 test("doctor warns but passes when optional-skill route is unspawnable", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     await patchAdapter(dir, {
       routes: { interview: "grok" },
       grok: { binary: process.execPath, args: ["--model", "grok-4"] },
@@ -476,6 +512,7 @@ test("doctor warns but passes when optional-skill route is unspawnable", async (
 test("doctor warns but passes when named adapter target is unspawnable", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     await patchAdapter(dir, {
       named: { ui: "grok" },
       grok: { binary: process.execPath, args: ["--model", "grok-4"] },
@@ -493,6 +530,7 @@ test("doctor warns but passes when named adapter target is unspawnable", async (
 test("doctor warns on unspawnable Task.adapter in the active spec slice only", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const engine = await patchAdapter(dir, {
       grok: { binary: process.execPath, args: ["--model", "grok-4"] },
     });
@@ -532,6 +570,7 @@ test("doctor fails closed when adapter.default is missing", async () => {
 test("doctor --metrics reads local audit and honors DO_NOT_TRACK", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const execute = runCli(["execute", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     assert.equal(execute.status, 1, execute.stderr);
     const none = runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
@@ -567,6 +606,7 @@ test("doctor --metrics reads local audit and honors DO_NOT_TRACK", async () => {
 test("doctor --metrics falls back to QA score files", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const scoresDir = join(dir, ".legion-cli", "qa", "scores");
     await mkdir(scoresDir, { recursive: true });
     await writeFile(

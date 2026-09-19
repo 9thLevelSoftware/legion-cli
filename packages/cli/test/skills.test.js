@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { overlaySkillDir } from "@9thlevelsoftware/legion-cli-agents";
-import { normalize, runCli, withTempDir } from "./helpers.js";
+import { allowCopyJailIn, normalize, runCli, withTempDir } from "./helpers.js";
 
 const repoExecuteSkill = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills", "execute", "SKILL.md");
 
@@ -120,6 +120,7 @@ test("skills install github:evil.com/foo is refused by allowlist", async () => {
 test("doctor prints overlay pin vs packaged", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const src = join(dir, "execute");
     await mkdir(src, { recursive: true });
     await writeFile(join(src, "SKILL.md"), skillMarkdown("execute", { description: "overlay execute for doctor" }), "utf8");
@@ -138,6 +139,7 @@ test("doctor prints overlay pin vs packaged", async () => {
 test("doctor overlay body warning uses overlay path", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const src = join(dir, "execute");
     await mkdir(src, { recursive: true });
     const body = `# execute\n${"x".repeat(20_001)}\n`;
@@ -159,6 +161,7 @@ test("doctor overlay body warning uses overlay path", async () => {
 test("doctor overlay lines distinguish digest mismatch from unreadable pin", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const overlay = overlaySkillDir(dir, "execute");
     await mkdir(overlay, { recursive: true });
     await writeFile(join(overlay, "SKILL.md"), skillMarkdown("execute", { description: "tampered overlay" }), "utf8");
