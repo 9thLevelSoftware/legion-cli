@@ -43,6 +43,16 @@ export function whichAll(name: string): string[] {
         .filter(Boolean),
     );
   }
+
+  // Minimal images ship without `which`; the shell builtin still answers.
+  const command = spawnSync("sh", ["-lc", 'command -v -- "$1"', "sh", name], {
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+  });
+  if (command.status === 0 && command.stdout.trim()) {
+    return [command.stdout.trim()];
+  }
   return [];
 }
 
@@ -147,7 +157,17 @@ export function resolveBinary(binary: string): string | null {
     return existsSync(binary) ? binary : null;
   }
   const names = process.platform === "win32" ? [binary, `${binary}.cmd`, `${binary}.exe`] : [binary];
-  return listOnPath(names)[0] ?? null;
+  const found = listOnPath(names);
+  if (process.platform === "win32") {
+    // `where npm` lists the extensionless POSIX shell script first; CreateProcess can't run it.
+    const pathext = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+      .split(";")
+      .map((ext) => ext.trim().toLowerCase())
+      .filter(Boolean);
+    const runnable = found.find((abs) => pathext.some((ext) => abs.toLowerCase().endsWith(ext)));
+    if (runnable) return runnable;
+  }
+  return found[0] ?? null;
 }
 
 export function versionOf(binary: string): string | undefined {

@@ -232,7 +232,7 @@ import {
   type MapOptions,
   type MapResult,
 } from "./map.js";
-import { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands } from "./verify.js";
+import { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands, verificationFailureReason } from "./verify.js";
 import { palettePresent } from "./wireframes.js";
 import { finishWireframe, prepareWireframe, screenPagesFor, writeWireframeFiles } from "./wireframe-run.js";
 
@@ -305,6 +305,20 @@ type LoadedTask =
   | { ok: true; task: Task }
   | { ok: false; id: string; file: string; error: string; specId?: string; filesAllowed?: string[] };
 
+/** Every configured `apiKeyEnv` (adapter.http and any named adapter): scrubbed from commands. */
+function configuredApiKeyEnvNames(config: unknown): string[] {
+  const names = new Set<string>();
+  const walk = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      if (key === "apiKeyEnv" && typeof nested === "string") names.add(nested);
+      else walk(nested);
+    }
+  };
+  walk((config as { adapter?: unknown } | undefined)?.adapter);
+  return [...names];
+}
+
 function peekTaskFrontmatter(frontmatter: unknown): { specId?: string; filesAllowed?: string[] } {
   if (!frontmatter || typeof frontmatter !== "object") return {};
   const rec = frontmatter as { specId?: unknown; contract?: { filesAllowed?: unknown } };
@@ -327,6 +341,7 @@ export class LegionEngine {
   readonly #fakeHandlePid?: number;
   readonly #verificationTimeoutMs: number;
   #lastPlanReport: ReadinessReport | null = null;
+  #lastQaWarnings: string[] = [];
 
   constructor(projectRoot: string, store?: LegionStore, options?: LegionEngineOptions) {
     this.store = store ?? createLegionStore(projectRoot);
@@ -1064,6 +1079,11 @@ export class LegionEngine {
     return this.#lastPlanReport;
   }
 
+  /** Warnings from the last `qa()` run in this engine, e.g. "unit command did not start: …". */
+  getLastQaWarnings(): string[] {
+    return [...this.#lastQaWarnings];
+  }
+
   async nextTasks(): Promise<Task[]> {
     const state = await this.#readState();
     let controlMode: ControlMode = "guarded";
@@ -1389,16 +1409,21 @@ export class LegionEngine {
           refuse("no-browser qa requires legion-cli qa checklist", HINT.qaChecklist);
         }
       }
-      const score = opts.score
-        ? QAScoreSchema.parse(opts.score)
-        : (
-            await runProjectQa({
-              projectRoot: this.projectRoot,
-              spec,
-              mode,
-              unitCommand: config.qa.unitCommand,
-            })
-          ).score;
+      this.#lastQaWarnings = [];
+      let score: QAScore;
+      if (opts.score) {
+        score = QAScoreSchema.parse(opts.score);
+      } else {
+        const run = await runProjectQa({
+          projectRoot: this.projectRoot,
+          spec,
+          mode,
+          unitCommand: config.qa.unitCommand,
+          secretEnvNames: configuredApiKeyEnvNames(config),
+        });
+        score = run.score;
+        this.#lastQaWarnings = run.warnings;
+      }
       await this.#writeQaScore(score);
       const next: StateFile = {
         ...state,
@@ -1413,6 +1438,7 @@ export class LegionEngine {
         total: score.total,
         mode: score.mode,
         id: score.id,
+        ...(this.#lastQaWarnings.length > 0 ? { warnings: this.#lastQaWarnings } : {}),
       });
       return score;
     });
@@ -1473,7 +1499,10 @@ export class LegionEngine {
         refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.fix);
       }
       await ensureRegressionTest(this.projectRoot, testPath, title);
-      const red = runVerificationCommands(this.projectRoot, [verifyCmd]);
+      const red = await runVerificationCommands(this.projectRoot, [verifyCmd], {
+        runId: `fix-${Date.now()}`,
+        secretEnvNames: configuredApiKeyEnvNames(await this.#readConfig()),
+      });
       if (red[0]?.ok) {
         refuse("this does not reproduce", HINT.fix);
       }
@@ -2180,7 +2209,14 @@ export class LegionEngine {
           "execute",
           current.phase,
           "agent",
-          { durationMs, timedOut, status: outcome.status, runId, ...spawnAudit },
+          {
+            durationMs,
+            timedOut,
+            status: outcome.status,
+            runId,
+            ...spawnAudit,
+            ...(outcome.reason ? { reason: outcome.reason } : {}),
+          },
           outcome.taskId,
         );
         if (timedOut) {
@@ -2253,11 +2289,26 @@ export class LegionEngine {
 
       await this.#transitionTaskTo(lockedTask.id, "verifying");
 
-      const verification = runVerificationCommands(this.projectRoot, lockedTask.contract.verificationCommands, {
-        timeoutMs: this.#verificationTimeoutMs,
-      });
-      const verificationPass = verification.length > 0 && verification.every((run) => run.ok);
-
+      // Any exception from here on moves the task to blocked: nothing may leave it in
+      // `verifying`, which no verb can move on from (F-002, F-008).
+      let verificationPass = false;
+      let reason: string | undefined;
+      try {
+        const verification = await runVerificationCommands(
+          this.projectRoot,
+          lockedTask.contract.verificationCommands,
+          {
+            timeoutMs: this.#verificationTimeoutMs,
+            runId,
+            secretEnvNames: configuredApiKeyEnvNames(lockedConfig),
+          },
+        );
+        verificationPass = verification.length > 0 && verification.every((run) => run.ok);
+        reason = verificationFailureReason(verification);
+      } catch (err) {
+        verificationPass = false;
+        reason = `verification failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
       if (verificationPass) {
         await this.#transitionTaskTo(lockedTask.id, "done");
         await this.#promoteReadyTasks(lockedTask.specId, "executing", lockedConfig.control_mode);
@@ -2279,6 +2330,7 @@ export class LegionEngine {
         incident,
         headMoved,
         verificationPass,
+        ...(reason ? { reason } : {}),
       });
     });
 
@@ -3299,12 +3351,23 @@ export class LegionEngine {
     let current = state.currentTaskId ?? null;
     let changedCurrent = false;
     for (const task of tasks) {
-      if (task.status !== "in_progress") continue;
+      if (task.status !== "in_progress" && task.status !== "verifying") continue;
       const resume = await findLatestTaskResume(this.projectRoot, task.id);
       // Child pid is dead after wait(); enginePid live means this process is still finishing.
+      // Verification runs under engine.lock, which we now hold, so a `verifying` task whose run
+      // is dead was interrupted (Ctrl-C, crash) and would otherwise be stuck forever.
       if (resume && resumeRunIsLive(resume)) continue;
       const isCurrent = current === task.id;
       if (!resume && !isCurrent) continue;
+      if (task.status === "verifying") {
+        await this.#audit(
+          "recover",
+          state.phase,
+          "cli",
+          { from: "verifying", to: "blocked", reason: "verification was interrupted" },
+          task.id,
+        );
+      }
       await this.#transitionTaskTo(task.id, "blocked");
       if (isCurrent) {
         current = null;

@@ -309,6 +309,8 @@ export type ExecuteTaskResult = {
   headMoved: boolean;
   ticketId?: string;
   verificationPass?: boolean;
+  /** Why the task was blocked by verification, e.g. "verification command did not start: …". */
+  reason?: string;
   adapterId?: AdapterId;
   resolutionSource?: AdapterResolutionSource;
 };

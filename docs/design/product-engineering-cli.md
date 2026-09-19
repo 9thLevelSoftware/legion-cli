@@ -780,7 +780,7 @@ sequenceDiagram
    - Do **not** `git clean -fd`. Do **not** `git reset --hard`.
 7. If any extra was reverted: contract failure (execute: task `blocked` + ticket `type: scope`; plan/review: command FAIL). Do not run `verificationCommands` as success.
 8. If no extras remain — i.e. `git diff --name-only <preSpawnRef>` (plus leftover porcelain/untracked) is a **subset of `allowed`** — then:
-   - **execute:** run `verificationCommands` (`cwd` = project, `shell: false`) even if `HEAD != preSpawnRef`. Missing executable → engine bug. On PASS, mark task `done`. HEAD may still point at the agent commit; that is fine. `legion-cli ship` is the human commit gate.
+   - **execute:** run `verificationCommands` (`cwd` = project, `shell: false`) even if `HEAD != preSpawnRef`. verificationCommands and the QA unit command are trusted code run on your machine, outside the sandbox, with API keys and tokens removed from the environment. They go through one non-blocking runner: `argv[0]` resolves through PATH/PATHEXT (npm `.cmd` shims are unwrapped, so `pnpm test` works on Windows), output streams to `.legion-cli/cache/runs/<runId>/verify-<n>.log`, and a timeout kills the process tree. Commands are argv-only (`a && b` is refused). A command that can't start (missing binary, shell operator), a non-zero exit, a timeout, or any exception blocks the task with the reason ("verification command did not start: …"); nothing leaves a task in `verifying`, and the next verb demotes a `verifying` task whose run is dead to `blocked`. On PASS, mark task `done`. HEAD may still point at the agent commit; that is fine. `legion-cli ship` is the human commit gate.
    - **other skills:** command succeeds (review then applies the lastReview rule in §2.1).
 
 PR-11 goldens:
@@ -1737,6 +1737,7 @@ Execute does not `git commit`. `legion-cli ship` stages `filesAllowed` unions of
 | Path traversal in ingest | **Med** | realpath stays in workspace |
 | Writes to `.git/` | **High** | Always forbidden; incident path; no recursive delete of `.git` |
 | Concurrent CLI writers | **Med** | `engine.lock` |
+| Agent-written code run by `verificationCommands` and QA's unit command | **High** | Accepted by design (A-004): these are trusted code run on your machine, outside the sandbox, as you. One runner (`agents` `runCommand`) removes API keys and tokens from their environment (names ending in TOKEN, KEY, APIKEY, SECRET, PASSWORD, PASSWD, PAT, AUTH, AUTHTOKEN, CREDENTIAL(S), CONNECTION_STRING; `npm_config_*_auth*`; `AWS_ACCESS_KEY_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `SSH_AUTH_SOCK`; every configured `apiKeyEnv`). Other settings such as `DATABASE_URL` are kept. Commands are argv-only: no shell, and `&&`, pipes, redirects, `;`, backticks and `$(` are refused. |
 
 ### Auth
 

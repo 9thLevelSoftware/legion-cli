@@ -90,7 +90,7 @@ export async function runExecute(
     if (outcome.status === "done") {
       writeOut(`Verification PASS. ${outcome.taskId} done.`);
     } else {
-      writeOut(`${outcome.taskId} blocked.`);
+      writeOut(outcome.reason ? `${outcome.taskId} blocked: ${outcome.reason}` : `${outcome.taskId} blocked.`);
     }
   }
   for (const warning of result.warnings) writeOut(warning);

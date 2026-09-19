@@ -24,7 +24,9 @@ import {
   initGitRepo,
   initProject,
   makeTask,
+  failingVerificationCommand,
   passingVerificationCommand,
+  quoteArg,
   readLatestRunPrompt,
   seedPlanReady,
   withEngine,
@@ -92,6 +94,141 @@ test("execute writes local duration audit events", async () => {
       assert.match(jsonl, /"resolutionSource":"default"/);
       assert.equal(result.tasks[0].adapterId, "fake");
       assert.equal(result.tasks[0].resolutionSource, "default");
+    });
+  });
+});
+
+test("a failing verification ends blocked, never done", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store, { verify: [failingVerificationCommand()] });
+      initGitRepo(dir);
+      const result = await engine.execute("auto");
+      assert.equal(result.status, "blocked");
+      assert.equal(result.tasks[0].verificationPass, false);
+      assert.match(result.tasks[0].reason, /verification command failed with exit 1/);
+      assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+    });
+  });
+});
+
+for (const [label, command, pattern] of [
+  ["a missing binary", "legion-no-such-binary-xyz --version", /verification command did not start: .*not found on PATH/],
+  ["a shell operator", `${passingVerificationCommand()} && ${passingVerificationCommand()}`, /verificationCommands are argv-only; split it into separate commands/],
+]) {
+  test(`verification with ${label} blocks with a reason instead of wedging in verifying`, async () => {
+    await withFakeAdapter(async () => {
+      await withEngine(async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store, { verify: [command] });
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.match(result.tasks[0].reason, pattern);
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+        const jsonl = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
+        assert.match(jsonl, /"reason":"verification command/);
+      });
+    });
+  });
+}
+
+test("a bare `npm --version` verification passes (Windows .cmd shim)", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store, { verify: ["npm --version"] });
+      initGitRepo(dir);
+      const result = await engine.execute("auto");
+      assert.equal(result.status, "done", result.tasks[0].reason);
+      const runId = result.tasks[0].runId;
+      assert.match(
+        await readFile(join(dir, ".legion-cli", "cache", "runs", runId, "verify-1.log"), "utf8"),
+        /^\d+\.\d+\.\d+/m,
+      );
+    });
+  });
+});
+
+test("secrets and the configured apiKeyEnv do not reach verification; DATABASE_URL does", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      const config = await store.readConfig();
+      await store.writeConfig({
+        ...config,
+        adapter: {
+          ...config.adapter,
+          http: { baseUrl: "https://api.example.com/v1", model: "m", apiKeyEnv: "LEGION_TEST_PROVIDER_VAR", allowLoopback: false },
+        },
+      });
+      const script = join(dir, "dump-env.js");
+      await writeFile(script, "require('node:fs').writeFileSync('env-out.json', JSON.stringify(process.env))\n");
+      await seedExecute(store, { verify: [`${quoteArg(process.execPath)} ${quoteArg(script)}`] });
+      initGitRepo(dir);
+      const secrets = {
+        FOO_TOKEN: "a",
+        SENDGRID_APIKEY: "b",
+        GH_PAT: "c",
+        npm_config__authToken: "d",
+        LEGION_TEST_PROVIDER_VAR: "e",
+      };
+      const previous = Object.fromEntries(
+        [...Object.keys(secrets), "DATABASE_URL"].map((key) => [key, process.env[key]]),
+      );
+      Object.assign(process.env, secrets, { DATABASE_URL: "postgres://fixture" });
+      try {
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "done", result.tasks[0].reason);
+      } finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+      const seen = JSON.parse(await readFile(join(dir, "env-out.json"), "utf8"));
+      const names = Object.keys(seen).map((key) => key.toUpperCase());
+      for (const name of Object.keys(secrets)) assert.equal(names.includes(name.toUpperCase()), false, name);
+      assert.equal(seen.DATABASE_URL, "postgres://fixture");
+    });
+  });
+});
+
+test("a task stuck in verifying with a dead run is demoted to blocked on the next verb", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store, { task: { status: "verifying" } });
+      await store.writeState(
+        { ...(await store.readState()).data, phase: "executing", currentTaskId: "TSK-0001" },
+        "Current task: TSK-0001.\n",
+      );
+      const runDir = join(dir, ".legion-cli", "cache", "runs", "execute-crashed");
+      await mkdir(runDir, { recursive: true });
+      await writeFile(
+        join(runDir, "resume.json"),
+        `${JSON.stringify({
+          schemaVersion: "legion-cli-resume/v1",
+          runId: "execute-crashed",
+          taskId: "TSK-0001",
+          skillId: "execute",
+          preSpawnRef: "UNBORN",
+          startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+          pid: 2_000_000_000,
+          enginePid: 2_000_000_001,
+          adapterId: "fake",
+          binary: "(in-process)",
+          argvSummary: "{{pointer}}",
+          resolutionSource: "default",
+        })}\n`,
+        "utf8",
+      );
+      await engine.setControlMode("guarded");
+      assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+      assert.equal((await store.readState()).data.currentTaskId, null);
+      const jsonl = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
+      assert.match(jsonl, /verification was interrupted/);
     });
   });
 });
