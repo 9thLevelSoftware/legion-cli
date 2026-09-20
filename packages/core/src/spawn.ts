@@ -384,7 +384,9 @@ export function assertSpawnGitRepo(projectRoot: string): void {
 export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkillSpawn> {
   // Random suffix: two spawns of one skill in the same millisecond must not share a control dir,
   // a quarantine prefix or a finish token (R-23).
-  const runId = `${opts.skillId}-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+  // 64 bits of suffix (R-34): the run id names the agent's own cache root, so a guessable one
+  // would let an agent pre-plant `cache/runs/<guess>/extra.json` for a later run to adopt.
+  const runId = `${opts.skillId}-${Date.now().toString(36)}-${randomBytes(8).toString("hex")}`;
   const resolution = resolveAdapterId({
     config: opts.config,
     skillId: opts.skillId,

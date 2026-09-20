@@ -193,18 +193,26 @@ export type TreeSnapshot = {
   takenAt: string;
 };
 
-/** `.legion-cli` children the walk prunes by name: engine runtime, never agent work (F-035). */
-const PRUNED_LEGION_CHILDREN = new Set(["cache", "index", "sandbox", "worktrees"]);
+/** `.legion-cli` children the walk prunes wholesale: engine runtime, never agent work (F-035). */
+const PRUNED_LEGION_CHILDREN = new Set(["index", "sandbox", "worktrees"]);
 const LEGION = ".legion-cli";
 
-function prunedDir(posix: string): boolean {
+/**
+ * `.git` and the engine's own runtime areas are pruned. Of `cache/`, only **this run's** subtrees
+ * are — the agent's prompt, logs and staged skill. Another run's cache is still walked, so PR 4's
+ * R-33 detection survives (it is reported, never restored: KD-2 means the engine trusts nothing
+ * there, so it is not worth a backup or an incident).
+ */
+function prunedDir(posix: string, runId?: string): boolean {
   const parts = posix.split("/");
   if (parts.some((part) => part.toLowerCase() === ".git")) return true;
-  return (
-    parts.length === 2 &&
-    (parts[0] ?? "").toLowerCase() === LEGION &&
-    PRUNED_LEGION_CHILDREN.has((parts[1] ?? "").toLowerCase())
-  );
+  if ((parts[0] ?? "").toLowerCase() !== LEGION) return false;
+  const child = (parts[1] ?? "").toLowerCase();
+  if (parts.length === 2 && PRUNED_LEGION_CHILDREN.has(child)) return true;
+  if (!runId || parts.length !== 4 || child !== "cache") return false;
+  const area = (parts[2] ?? "").toLowerCase();
+  if (area !== "runs" && area !== "skills") return false;
+  return (parts[3] ?? "").toLowerCase() === runId.toLowerCase();
 }
 
 function kindOf(st: { isSymbolicLink(): boolean; isDirectory(): boolean; isFile(): boolean }): TreeKind {
@@ -259,7 +267,11 @@ type WalkResult = {
  * their top-level entries only. `.legion-cli` is always walked, even though `init` gitignores it,
  * so another run's cache stays observable (R-33 from PR 4; R-9/R-34/R-46 here).
  */
-async function walkTree(projectRoot: string, ignoredDirKeys: ReadonlySet<string>): Promise<WalkResult> {
+async function walkTree(
+  projectRoot: string,
+  ignoredDirKeys: ReadonlySet<string>,
+  runId?: string,
+): Promise<WalkResult> {
   const entries = new Map<string, TreeStat & { path: string }>();
   const ignoredDirs = new Map<string, string>();
   const ignoredDirTop = new Map<string, Map<string, TreeStat & { name: string }>>();
@@ -274,7 +286,7 @@ async function walkTree(projectRoot: string, ignoredDirKeys: ReadonlySet<string>
     }
     for (const dirent of dirents) {
       const posix = toPosixPath(rel ? `${rel}/${dirent.name}` : dirent.name);
-      if (prunedDir(posix)) continue;
+      if (prunedDir(posix, runId)) continue;
       const key = foldKey(posix);
       const st = await statEntry(join(abs, dirent.name));
       if (!st) continue;
@@ -386,7 +398,7 @@ export async function snapshotTree(opts: {
   // Fail closed and cheap: no walk, no backups, nothing under the lock (R-7, R-17).
   if (!classified.ok) return snapshot;
 
-  const walked = await walkTree(projectRoot, classified.ignoredDirKeys);
+  const walked = await walkTree(projectRoot, classified.ignoredDirKeys, opts.runId);
   for (const [key, stat] of walked.entries) {
     const underUntrackedDir = classified.untrackedPrefixes.some((prefix) => key.startsWith(prefix));
     // R-1: only a path git actually tracks can be restored from git. Everything else — including
@@ -689,7 +701,7 @@ export async function revertTree(opts: RevertTreeOpts): Promise<RevertTreeResult
 
   // Walk with the PRE-spawn ignored directories: a directory the agent newly ignored must still
   // be enumerated, or it would be an escape hatch (R-27).
-  const after = await walkTree(projectRoot, new Set(snapshot.ignoredDirs.keys()));
+  const after = await walkTree(projectRoot, new Set(snapshot.ignoredDirs.keys()), opts.runId);
 
   /* --- collect candidates ------------------------------------------- */
   const candidates: Candidate[] = [];
@@ -807,6 +819,14 @@ export async function revertTree(opts: RevertTreeOpts): Promise<RevertTreeResult
     const display = candidate.after?.path ?? candidate.before?.path ?? "";
     if (handled.some((done) => candidate.key.startsWith(`${done}/`))) continue;
     if (!candidate.before && candidate.after?.kind === "dir") continue;
+
+    // Another run's engine cache (R-33): reported so a planted or rewritten one is visible, but
+    // never restored — KD-2 means the engine trusts nothing there, so it is not agent output
+    // worth a backup and not worth blocking a task over.
+    if (isEngineRuntimePath(display)) {
+      result.warnings.push(`${display} (another run's engine cache changed; left in place)`);
+      continue;
+    }
 
     // Ignored-path policy (KD-16, R-7, R-27), decided by the PRE-run rules.
     if (!candidate.before && (ignoredFileKeys.has(candidate.key) || underPrefix(candidate.key, ignoredDirKeys))) {
