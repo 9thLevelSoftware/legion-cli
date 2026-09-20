@@ -7,6 +7,8 @@ import { mkdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promise
 
 import { restoreProtected, snapshotProtected } from "../dist/index.js";
 import {
+  commitAll,
+  gitHead,
   initGitRepo,
   initProject,
   passingVerificationCommand,
@@ -83,6 +85,48 @@ test("a user edit outside the jail is reverted, blocks the task, and files no TS
         fakeArtifacts: [{ path: "src/main.ts", content: "export const ok = true;\n" }],
         fakeOnWait: async () => {
           await writeFile(join(projectDir, "README.md"), "the operator typed this mid-run\n", "utf8");
+        },
+      },
+    );
+  });
+});
+
+// R-20: an adapter that commits an out-of-contract edit blocks the task, and the sha is recorded
+// in STATE.quarantinedCommits — which is in the protected set, so a later agent cannot erase it.
+test("a commit made during the run blocks the task and lands in STATE.quarantinedCommits", async () => {
+  await withFakeAdapter(async () => {
+    let projectDir;
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        projectDir = dir;
+        await initProject(engine);
+        await seedPlanReady(store, {
+          task: {
+            contract: {
+              filesAllowed: ["src/main.ts"],
+              expectedArtifacts: ["src/main.ts"],
+              verificationCommands: [passingVerificationCommand()],
+            },
+          },
+        });
+        await writeFile(join(dir, "README.md"), "my readme\n", "utf8");
+        initGitRepo(dir);
+        const pre = gitHead(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.equal(result.tasks[0].incident, true);
+        assert.equal(await readFile(join(dir, "README.md"), "utf8"), "my readme\n");
+        const state = await engine.getState();
+        assert.ok(Array.isArray(state.quarantinedCommits), JSON.stringify(state));
+        assert.equal(state.quarantinedCommits.length, 1);
+        assert.notEqual(state.quarantinedCommits[0], pre);
+        assert.match(result.tasks[0].reason ?? "", /git reset/);
+      },
+      {
+        fakeArtifacts: [{ path: "src/main.ts", content: "export const ok = true;\n" }],
+        fakeOnWait: async () => {
+          await writeFile(join(projectDir, "README.md"), "committed by the agent\n", "utf8");
+          commitAll(projectDir, "agent commit");
         },
       },
     );
