@@ -32,3 +32,13 @@ export class MinisignError extends PersistError {
     this.name = "MinisignError";
   }
 }
+
+/** A write target, or a directory between the project root and it, is a symlink or junction. */
+export class SymlinkRefusedError extends PersistError {
+  readonly path: string;
+  constructor(message: string, path: string) {
+    super(message);
+    this.name = "SymlinkRefusedError";
+    this.path = path;
+  }
+}

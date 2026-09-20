@@ -38,6 +38,9 @@ import {
   parseMarkdownDocument,
   PathEscapeError,
   EngineLockedError,
+  invalidTaskMessage,
+  listTaskFiles,
+  nextFileId,
   PersistError,
   ensureGitignore,
   commitPaths,
@@ -152,8 +155,8 @@ import {
   regressionTestPath,
   regressionVerifyCommand,
 } from "./fix.js";
-import { nextPacketId, packetFromInput, packetMarkdownBody } from "./packets.js";
-import { defaultTicketContract, nextTaskId, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
+import { packetFromInput, packetMarkdownBody } from "./packets.js";
+import { defaultTicketContract, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
 import {
   displayStagedRoots,
   ghAvailable,
@@ -228,7 +231,7 @@ import {
   type MapOptions,
   type MapResult,
 } from "./map.js";
-import { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands } from "./verify.js";
+import { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands, verificationFailureReason } from "./verify.js";
 import { palettePresent } from "./wireframes.js";
 import { finishWireframe, prepareWireframe, screenPagesFor, writeWireframeFiles } from "./wireframe-run.js";
 
@@ -299,7 +302,21 @@ async function listMarkdownFiles(dir: string): Promise<string[]> {
 
 type LoadedTask =
   | { ok: true; task: Task }
-  | { ok: false; id: string; specId?: string; filesAllowed?: string[] };
+  | { ok: false; id: string; file: string; error: string; specId?: string; filesAllowed?: string[] };
+
+/** Every configured `apiKeyEnv` (adapter.http and any named adapter): scrubbed from commands. */
+function configuredApiKeyEnvNames(config: unknown): string[] {
+  const names = new Set<string>();
+  const walk = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      if (key === "apiKeyEnv" && typeof nested === "string") names.add(nested);
+      else walk(nested);
+    }
+  };
+  walk((config as { adapter?: unknown } | undefined)?.adapter);
+  return [...names];
+}
 
 function peekTaskFrontmatter(frontmatter: unknown): { specId?: string; filesAllowed?: string[] } {
   if (!frontmatter || typeof frontmatter !== "object") return {};
@@ -320,9 +337,11 @@ export class LegionEngine {
   readonly #fakeTimedOut: boolean;
   readonly #fakeHoldWait?: LegionEngineOptions["fakeHoldWait"];
   readonly #fakeOnWait?: () => Promise<void>;
+  readonly #fakeVerificationError?: string;
   readonly #fakeHandlePid?: number;
   readonly #verificationTimeoutMs: number;
   #lastPlanReport: ReadinessReport | null = null;
+  #lastQaWarnings: string[] = [];
 
   constructor(projectRoot: string, store?: LegionStore, options?: LegionEngineOptions) {
     this.store = store ?? createLegionStore(projectRoot);
@@ -332,6 +351,7 @@ export class LegionEngine {
     this.#fakeTimedOut = Boolean(options?.fakeTimedOut);
     this.#fakeHoldWait = options?.fakeHoldWait;
     this.#fakeOnWait = options?.fakeOnWait;
+    this.#fakeVerificationError = options?.fakeVerificationError;
     this.#fakeHandlePid = options?.fakeHandlePid;
     this.#verificationTimeoutMs = options?.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   }
@@ -488,22 +508,31 @@ export class LegionEngine {
       } catch {
         refuse(`unknown spec ${specId}`, HINT.spec);
       }
-      if (spec.status !== "draft") {
+      // STATE.md is written last. A crash after the spec froze but before STATE moved on leaves
+      // `frozen` + `spec_draft`; approving again completes the missing writes (F-015).
+      // Only the approve that crashed resumes: the spec this draft phase is about.
+      const resuming =
+        spec.status === "frozen" && (state.activeSpecId == null || state.activeSpecId === specId);
+      if (spec.status !== "draft" && !resuming) {
         refuse(`spec ${specId} is ${spec.status}, not draft`, HINT.specApprove);
       }
-      const answers = await this.#loadIntentAnswers();
-      if (await isBrandViolationBlockingFreeze(this.projectRoot, spec, answers.mapped.screens)) {
-        refuse("brand violation blocks spec freeze for UI work", HINT.designGenerate);
+      if (!resuming) {
+        const answers = await this.#loadIntentAnswers();
+        if (await isBrandViolationBlockingFreeze(this.projectRoot, spec, answers.mapped.screens)) {
+          refuse("brand violation blocks spec freeze for UI work", HINT.designGenerate);
+        }
+        const frozen: Spec = {
+          ...spec,
+          status: "frozen",
+          frozenAt: nowIso(),
+          frozenBy: actor.id,
+        };
+        await this.store.writeSpec(frozen, specBody);
       }
-      const frozen: Spec = {
-        ...spec,
-        status: "frozen",
-        frozenAt: nowIso(),
-        frozenBy: actor.id,
-      };
-      await this.store.writeSpec(frozen, specBody);
       const project = await this.store.readProject();
-      await this.store.writeProject({ ...project.data, activeSpecId: specId }, project.body);
+      if (project.data.activeSpecId !== specId) {
+        await this.store.writeProject({ ...project.data, activeSpecId: specId }, project.body);
+      }
       await this.#writeState({
         ...state,
         phase: "spec_frozen",
@@ -1053,6 +1082,11 @@ export class LegionEngine {
     return this.#lastPlanReport;
   }
 
+  /** Warnings from the last `qa()` run in this engine, e.g. "unit command did not start: …". */
+  getLastQaWarnings(): string[] {
+    return [...this.#lastQaWarnings];
+  }
+
   async nextTasks(): Promise<Task[]> {
     const state = await this.#readState();
     let controlMode: ControlMode = "guarded";
@@ -1061,7 +1095,7 @@ export class LegionEngine {
     } catch {
       // uninitialized / missing config
     }
-    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
     return readyTasks({
       phase: state.phase,
       controlMode,
@@ -1164,7 +1198,7 @@ export class LegionEngine {
       if (!opts?.untilBlocked) break;
       const ready = await this.#withLockOrRefuse(async () => {
         const state = await this.#readState();
-        const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+        const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
         return pickNextTask({
           phase: state.phase,
           controlMode: config?.control_mode ?? "guarded",
@@ -1267,7 +1301,7 @@ export class LegionEngine {
     await this.#withLockOrRefuse(async () => {
       await this.#assertNoLiveInProgress("review");
       const state = await this.#readState();
-      const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+      const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
       this.#assertCanReview(state, slice);
       specId = state.activeSpecId ?? undefined;
       if (!specId) {
@@ -1363,7 +1397,7 @@ export class LegionEngine {
     return this.#mutate(async () => {
       await this.#assertNoLiveInProgress("qa");
       const state = await this.#readState();
-      const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+      const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
       this.#assertCanQa(state, slice);
       const specId = state.activeSpecId;
       if (!specId) {
@@ -1378,16 +1412,21 @@ export class LegionEngine {
           refuse("no-browser qa requires legion-cli qa checklist", HINT.qaChecklist);
         }
       }
-      const score = opts.score
-        ? QAScoreSchema.parse(opts.score)
-        : (
-            await runProjectQa({
-              projectRoot: this.projectRoot,
-              spec,
-              mode,
-              unitCommand: config.qa.unitCommand,
-            })
-          ).score;
+      this.#lastQaWarnings = [];
+      let score: QAScore;
+      if (opts.score) {
+        score = QAScoreSchema.parse(opts.score);
+      } else {
+        const run = await runProjectQa({
+          projectRoot: this.projectRoot,
+          spec,
+          mode,
+          unitCommand: config.qa.unitCommand,
+          secretEnvNames: configuredApiKeyEnvNames(config),
+        });
+        score = run.score;
+        this.#lastQaWarnings = run.warnings;
+      }
       await this.#writeQaScore(score);
       const next: StateFile = {
         ...state,
@@ -1402,6 +1441,7 @@ export class LegionEngine {
         total: score.total,
         mode: score.mode,
         id: score.id,
+        ...(this.#lastQaWarnings.length > 0 ? { warnings: this.#lastQaWarnings } : {}),
       });
       return score;
     });
@@ -1462,7 +1502,10 @@ export class LegionEngine {
         refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.fix);
       }
       await ensureRegressionTest(this.projectRoot, testPath, title);
-      const red = runVerificationCommands(this.projectRoot, [verifyCmd]);
+      const red = await runVerificationCommands(this.projectRoot, [verifyCmd], {
+        runId: `fix-${Date.now()}`,
+        secretEnvNames: configuredApiKeyEnvNames(await this.#readConfig()),
+      });
       if (red[0]?.ok) {
         refuse("this does not reproduce", HINT.fix);
       }
@@ -1818,6 +1861,7 @@ export class LegionEngine {
       await writeTextFile(
         toFsPath(this.projectRoot, receiptPath),
         abandonReceiptBody({ specId, abandonedAt, message: reason, phase: state.phase }),
+        { root: this.projectRoot },
       );
       await this.#writeState({ ...state, phase: "abandoned", currentTaskId: null });
       await this.#audit("abandon", "abandoned", "user", {
@@ -2169,7 +2213,14 @@ export class LegionEngine {
           "execute",
           current.phase,
           "agent",
-          { durationMs, timedOut, status: outcome.status, runId, ...spawnAudit },
+          {
+            durationMs,
+            timedOut,
+            status: outcome.status,
+            runId,
+            ...spawnAudit,
+            ...(outcome.reason ? { reason: outcome.reason } : {}),
+          },
           outcome.taskId,
         );
         if (timedOut) {
@@ -2242,23 +2293,58 @@ export class LegionEngine {
 
       await this.#transitionTaskTo(lockedTask.id, "verifying");
 
-      const verification = runVerificationCommands(this.projectRoot, lockedTask.contract.verificationCommands, {
-        timeoutMs: this.#verificationTimeoutMs,
-      });
-      const verificationPass = verification.length > 0 && verification.every((run) => run.ok);
-
-      if (verificationPass) {
-        await this.#transitionTaskTo(lockedTask.id, "done");
-        await this.#promoteReadyTasks(lockedTask.specId, "executing", lockedConfig.control_mode);
-      } else {
-        await this.#transitionTaskTo(lockedTask.id, "blocked");
+      // Any exception from here on (the runner, the done/blocked transition, promotion, the
+      // STATE write) blocks the task with the reason: nothing may leave it in `verifying`,
+      // which no verb can move on from (F-002, F-008).
+      let verificationPass = false;
+      let reason: string | undefined;
+      const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+      try {
+        if (this.#fakeVerificationError) throw new Error(this.#fakeVerificationError);
+        const verification = await runVerificationCommands(
+          this.projectRoot,
+          lockedTask.contract.verificationCommands,
+          {
+            timeoutMs: this.#verificationTimeoutMs,
+            runId,
+            secretEnvNames: configuredApiKeyEnvNames(lockedConfig),
+          },
+        );
+        verificationPass = verification.length > 0 && verification.every((run) => run.ok);
+        reason = verificationFailureReason(verification);
+      } catch (err) {
+        verificationPass = false;
+        reason = `verification failed: ${describe(err)}`;
+      }
+      try {
+        if (verificationPass) {
+          await this.#transitionTaskTo(lockedTask.id, "done");
+          await this.#promoteReadyTasks(lockedTask.specId, "executing", lockedConfig.control_mode);
+        } else {
+          await this.#transitionTaskTo(lockedTask.id, "blocked");
+        }
+      } catch (err) {
+        reason = `${reason ? `${reason}; ` : ""}after verification: ${describe(err)}`;
+        try {
+          const status = (await this.store.readTask(lockedTask.id)).data.status;
+          verificationPass = status === "done";
+          if (status === "verifying") await this.#transitionTaskTo(lockedTask.id, "blocked");
+        } catch (inner) {
+          // Left for #recoverDeadInProgressLocked on the next verb; say so.
+          verificationPass = false;
+          reason = `${reason}; could not move ${lockedTask.id} out of verifying: ${describe(inner)}`;
+        }
       }
 
-      await this.#writeState({
-        ...(await this.#readState()),
-        phase: "executing",
-        currentTaskId: lockedTask.id,
-      });
+      try {
+        await this.#writeState({
+          ...(await this.#readState()),
+          phase: "executing",
+          currentTaskId: lockedTask.id,
+        });
+      } catch (err) {
+        reason = `${reason ? `${reason}; ` : ""}STATE.md not updated: ${describe(err)}`;
+      }
 
       return finish({
         taskId: lockedTask.id,
@@ -2268,6 +2354,7 @@ export class LegionEngine {
         incident,
         headMoved,
         verificationPass,
+        ...(reason ? { reason } : {}),
       });
     });
 
@@ -2275,7 +2362,7 @@ export class LegionEngine {
   }
 
   async #resolveExecuteTask(taskId: string | "auto", state: StateFile, config: LegionConfig): Promise<Task> {
-    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
     if (taskId === "auto") {
       const picked = pickNextTask({
         phase: state.phase,
@@ -2501,7 +2588,9 @@ export class LegionEngine {
         parentAdapter = parent.adapter;
       }
     }
-    const id = nextTaskId(tasks.map((task) => task.id));
+    // From file names (valid or not), under engine.lock, so a corrupt file's id is never
+    // reused (F-004).
+    const id = await nextFileId(this.store.paths.tasksDir, "TSK", 4);
     let ticket = ticketFromInput(id, specId, {
       ...input,
       title,
@@ -2551,7 +2640,7 @@ export class LegionEngine {
     if (state.phase === "uninitialized") {
       refuse("packet new is refused until init", HINT.init);
     }
-    const id = nextPacketId((await this.#listPackets()).map((packet) => packet.id));
+    const id = await nextFileId(this.store.paths.packetsDir, "PKT", 4);
     const packet = packetFromInput(id, { ...input, title }, {
       specId: state.activeSpecId,
       createdAt: nowIso(),
@@ -2746,10 +2835,8 @@ export class LegionEngine {
       ...side.blockingLines.map((statement) => ({ statement, blocking: true })),
     ];
     if (lines.length === 0) return;
-    let n = (await this.#listAssumptions()).length;
     for (const line of lines) {
-      n += 1;
-      const id = `ASM-${String(n).padStart(4, "0")}`;
+      const id = await nextFileId(this.store.paths.assumptionsDir, "ASM", 4);
       const assumption: Assumption = {
         schemaVersion: SCHEMA_VERSION.assumption,
         id,
@@ -2791,7 +2878,8 @@ export class LegionEngine {
         const spec = (await this.store.readSpec(id)).data;
         if (spec.status === "draft") return id;
       } catch {
-        return id;
+        // An unreadable SPEC.md keeps its id: never allocate over it (F-061).
+        continue;
       }
     }
     return `${base}-${Date.now()}`;
@@ -2937,31 +3025,32 @@ export class LegionEngine {
   }
 
   async #loadTaskEntries(): Promise<LoadedTask[]> {
-    const files = await listMarkdownFiles(this.store.paths.tasksDir);
-    const entries: LoadedTask[] = [];
-    for (const file of files) {
-      const id = file.replace(/\.md$/i, "");
-      try {
-        entries.push({ ok: true, task: (await this.store.readTask(id)).data });
-      } catch {
-        let specId: string | undefined;
-        let filesAllowed: string[] | undefined;
-        try {
-          const raw = await readFile(join(this.store.paths.tasksDir, file), "utf8");
-          const peeked = peekTaskFrontmatter(parseMarkdownDocument(raw).frontmatter);
-          specId = peeked.specId;
-          filesAllowed = peeked.filesAllowed;
-        } catch {
-          // unreadable even as frontmatter
-        }
-        entries.push({ ok: false, id, specId, filesAllowed });
-      }
-    }
-    return entries;
+    return (await listTaskFiles(this.projectRoot)).map((entry): LoadedTask =>
+      entry.ok
+        ? { ok: true, task: entry.task }
+        : { ok: false, id: entry.id, file: entry.file, error: entry.error, ...peekTaskFrontmatter(entry.frontmatter) },
+    );
   }
 
+  /** Valid tasks only. Gates use {@link #listGateTasks}, which refuses on an invalid file. */
   async #listTasks(): Promise<Task[]> {
     return (await this.#loadTaskEntries())
+      .filter((entry): entry is { ok: true; task: Task } => entry.ok)
+      .map((entry) => entry.task)
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /**
+   * Fail closed (FP-1): review, qa, ship, execute and next refuse while any file under tasks/ is
+   * not a valid task, instead of computing the gate over the tasks that happened to parse.
+   */
+  async #listGateTasks(): Promise<Task[]> {
+    const entries = await this.#loadTaskEntries();
+    const bad = entries.find((entry): entry is Extract<LoadedTask, { ok: false }> => !entry.ok);
+    if (bad) {
+      refuse(invalidTaskMessage({ ok: false, file: bad.file, id: bad.id, error: bad.error }), HINT.status);
+    }
+    return entries
       .filter((entry): entry is { ok: true; task: Task } => entry.ok)
       .map((entry) => entry.task)
       .sort((a, b) => a.id.localeCompare(b.id));
@@ -3024,7 +3113,7 @@ export class LegionEngine {
   }
 
   async #assertReadyToShip(state: StateFile): Promise<void> {
-    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
     if (state.lastReview !== "PASS") {
       refuse("Review must PASS before shipping", HINT.review);
     }
@@ -3041,7 +3130,7 @@ export class LegionEngine {
     if (state.lastReview !== "PASS") {
       refuse("Review must PASS before shipping", HINT.review);
     }
-    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
     if (p0TasksNotDone(slice).length > 0) {
       refuse("A P0 task is not done yet", HINT.blockers);
     }
@@ -3068,7 +3157,7 @@ export class LegionEngine {
   }
 
   async #stageShipLocked(state: StateFile): Promise<ShipPreview> {
-    const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+    const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
     const allowedFiles = unionDoneFilesAllowed(slice);
     const allowedSet = new Set(allowedFiles);
     const empty: ShipPreview = {
@@ -3137,7 +3226,9 @@ export class LegionEngine {
       phase: "shipped",
       currentTaskId: null,
     });
-    await writeTextFile(toFsPath(this.projectRoot, receiptPath), shipReceiptBody(receipt));
+    await writeTextFile(toFsPath(this.projectRoot, receiptPath), shipReceiptBody(receipt), {
+      root: this.projectRoot,
+    });
     await this.#audit("ship", "shipped", actor, {
       specId,
       qaMode,
@@ -3271,12 +3362,23 @@ export class LegionEngine {
     let current = state.currentTaskId ?? null;
     let changedCurrent = false;
     for (const task of tasks) {
-      if (task.status !== "in_progress") continue;
+      if (task.status !== "in_progress" && task.status !== "verifying") continue;
       const resume = await findLatestTaskResume(this.projectRoot, task.id);
       // Child pid is dead after wait(); enginePid live means this process is still finishing.
+      // Verification runs under engine.lock, which we now hold, so a `verifying` task whose run
+      // is dead was interrupted (Ctrl-C, crash) and would otherwise be stuck forever.
       if (resume && resumeRunIsLive(resume)) continue;
       const isCurrent = current === task.id;
       if (!resume && !isCurrent) continue;
+      if (task.status === "verifying") {
+        await this.#audit(
+          "recover",
+          state.phase,
+          "cli",
+          { from: "verifying", to: "blocked", reason: "verification was interrupted" },
+          task.id,
+        );
+      }
       await this.#transitionTaskTo(task.id, "blocked");
       if (isCurrent) {
         current = null;

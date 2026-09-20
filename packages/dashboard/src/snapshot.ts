@@ -4,8 +4,11 @@ import { sliceTasks } from "@9thlevelsoftware/legion-cli-core";
 import { unresolvedBlockers } from "@9thlevelsoftware/legion-cli-graph";
 import {
   createLegionStore,
+  invalidTaskMessage,
+  listTaskFiles,
   toFsPath,
   type LegionStore,
+  type TaskFileEntry,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   AuditEventSchema,
@@ -71,7 +74,11 @@ export type DashboardSnapshot = {
   path: { steps: Phase[]; current: Phase };
   currentTask: DashboardTask | null;
   tasks: DashboardTask[];
-  blockers: Array<{ kind: "task" | "readiness" | "review"; id?: string; detail: string }>;
+  blockers: Array<{ kind: "task" | "readiness" | "review" | "invalid"; id?: string; detail: string }>;
+  /** Set when STATE.md exists but could not be read even after retries; phase is then a placeholder. */
+  stateError: string | null;
+  /** Task files that are not valid tasks: listed, never dropped (fail closed). */
+  invalidTasks: Array<{ file: string; error: string }>;
   graph: { nodes: string[]; edges: Array<{ from: string; to: string }> };
   audit: AuditEvent[];
   spec: { id: string; title: string; status: Spec["status"]; body: string } | null;
@@ -111,27 +118,23 @@ export async function readOptionalConfig(store: LegionStore): Promise<LegionConf
   }
 }
 
-async function readState(store: LegionStore): Promise<StateFile> {
-  if (!(await store.pathExists(".legion-cli/STATE.md"))) return UNINITIALIZED;
+export const STATE_UNREADABLE = "state unreadable (retrying)";
+
+/** The store's reader already retries; a failure here is shown, not mistaken for "uninitialized". */
+async function readState(store: LegionStore): Promise<{ state: StateFile; error: string | null }> {
+  if (!(await store.pathExists(".legion-cli/STATE.md"))) return { state: UNINITIALIZED, error: null };
   try {
-    return (await store.readState()).data;
+    return { state: (await store.readState()).data, error: null };
   } catch {
-    return UNINITIALIZED;
+    return { state: UNINITIALIZED, error: STATE_UNREADABLE };
   }
 }
 
-async function listTasks(store: LegionStore): Promise<Task[]> {
-  const files = await listMarkdown(store.paths.tasksDir);
-  const tasks: Task[] = [];
-  for (const file of files) {
-    const id = file.replace(/\.md$/i, "");
-    try {
-      tasks.push((await store.readTask(id)).data);
-    } catch {
-      continue;
-    }
-  }
-  return tasks.sort((a, b) => a.id.localeCompare(b.id));
+function validTasks(entries: readonly TaskFileEntry[]): Task[] {
+  return entries
+    .filter((entry): entry is Extract<TaskFileEntry, { ok: true }> => entry.ok)
+    .map((entry) => entry.task)
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function toDashboardTask(task: Task, all: readonly Task[]): DashboardTask {
@@ -151,8 +154,12 @@ function toDashboardTask(task: Task, all: readonly Task[]): DashboardTask {
 function collectBlockers(
   state: StateFile,
   tasks: readonly DashboardTask[],
+  invalid: readonly Extract<TaskFileEntry, { ok: false }>[],
 ): DashboardSnapshot["blockers"] {
   const blockers: DashboardSnapshot["blockers"] = [];
+  for (const entry of invalid) {
+    blockers.push({ kind: "invalid", id: entry.id, detail: invalidTaskMessage(entry) });
+  }
   if (state.lastReadiness === "FAIL") {
     blockers.push({ kind: "readiness", detail: "readiness FAIL" });
   }
@@ -262,9 +269,11 @@ export async function loadSnapshot(
     }
   }
 
-  const state = await readState(store);
+  const { state, error: stateError } = await readState(store);
   const project = state.phase === "uninitialized" ? null : await readOptionalProject(store);
-  const allTasks = await listTasks(store);
+  const entries = await listTaskFiles(store.projectRoot);
+  const invalid = entries.filter((entry): entry is Extract<TaskFileEntry, { ok: false }> => !entry.ok);
+  const allTasks = validTasks(entries);
   const shown = sliceTasks(allTasks, state.activeSpecId);
   const tasks = shown.map((task) => toDashboardTask(task, shown));
   const current = tasks.find((task) => task.id === state.currentTaskId) ?? null;
@@ -288,7 +297,9 @@ export async function loadSnapshot(
     path: { steps: LIFECYCLE_PATH, current: state.phase },
     currentTask: current,
     tasks,
-    blockers: collectBlockers(state, tasks),
+    blockers: collectBlockers(state, tasks, invalid),
+    stateError,
+    invalidTasks: invalid.map((entry) => ({ file: entry.file, error: entry.error })),
     graph: { nodes: tasks.map((task) => task.id), edges },
     audit: await loadAuditEvents(store, state.phase),
     ...specView,

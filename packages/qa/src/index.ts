@@ -15,7 +15,7 @@ export {
   runProjectQa,
   splitCommand,
 } from "./run.js";
-export type { CommandCapture, ProjectQaResult, RunProjectQaOptions } from "./run.js";
+export type { CommandCapture, ProjectQaResult, QaCommandOptions, RunProjectQaOptions } from "./run.js";
 export { formatQaScore, QA_NO_BROWSER_CAP, scoreQa, scoreSpecReports } from "./score.js";
 export type { QaMode, ScoreQaInput } from "./score.js";
 export { isUiAcceptance, isVisualTitle, priorityFromTitle, specHasUi, tagFromPriority } from "./tags.js";

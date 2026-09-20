@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve, win32 } from "node:path";
 
 function uniquePaths(paths: string[]): string[] {
   const seen = new Set<string>();
@@ -42,6 +42,16 @@ export function whichAll(name: string): string[] {
         .map((line) => line.trim())
         .filter(Boolean),
     );
+  }
+
+  // Minimal images ship without `which`; the shell builtin still answers.
+  const command = spawnSync("sh", ["-lc", 'command -v -- "$1"', "sh", name], {
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+  });
+  if (command.status === 0 && command.stdout.trim()) {
+    return [command.stdout.trim()];
   }
   return [];
 }
@@ -85,10 +95,46 @@ function spawnDirect(command: string, args: string[], cwd?: string): SpawnText {
   );
 }
 
+/**
+ * cmd.exe itself: an absolute `%ComSpec%`, else `%SystemRoot%\System32\cmd.exe`. Never a bare
+ * `cmd.exe`, which the process search would look up in the child's cwd (the project) first.
+ */
+export function cmdExePath(): string {
+  const comspec = process.env.ComSpec;
+  if (comspec && win32.isAbsolute(comspec)) return comspec;
+  return win32.join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32", "cmd.exe");
+}
+
+/** cmd.exe acts on these even inside quotes (`%VAR%`, `^`), or splits the line on them. */
+const CMD_UNSAFE = /[&|<>^%\r\n]/;
+
+export type CmdScriptLaunch = { command: string; args: string[]; verbatim: true } | { error: string };
+
+/**
+ * The one way Legion runs a `.cmd`/`.bat` that is not an npm shim (F-096): `cmd.exe /d /v:off
+ * /s /c ""<script>" <args>"`. AutoRun and delayed expansion are off; the script path is always
+ * quoted; the whole line is quoted once more because `/s` strips exactly the outer pair; and a
+ * script path or argument containing `& | < > ^ %` or a newline is refused, not escaped.
+ */
+export function cmdScriptLaunch(script: string, args: readonly string[]): CmdScriptLaunch {
+  if (CMD_UNSAFE.test(script) || script.includes('"')) {
+    return { error: `${script}: a .cmd/.bat path containing & | < > ^ % or quotes is not run through cmd.exe` };
+  }
+  const unsafe = args.find((arg) => CMD_UNSAFE.test(arg));
+  if (unsafe !== undefined) {
+    return {
+      error: `${script} is a .cmd/.bat script; argument ${JSON.stringify(unsafe)} contains & | < > ^ % or a newline`,
+    };
+  }
+  const line = [`"${script}"`, ...args.map(quoteCmdArg)].join(" ");
+  return { command: cmdExePath(), args: ["/d", "/v:off", "/s", "/c", `"${line}"`], verbatim: true };
+}
+
 function spawnCmdFile(command: string, args: string[], cwd?: string): SpawnText {
-  const line = [command, ...args].map(quoteCmdArg).join(" ");
+  const launch = cmdScriptLaunch(command, args);
+  if ("error" in launch) return { error: new Error(launch.error), status: null, stdout: "", stderr: launch.error };
   return asText(
-    spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", line], {
+    spawnSync(launch.command, launch.args, {
       cwd,
       encoding: "utf8",
       windowsHide: true,
@@ -141,13 +187,23 @@ export function isSpawnableBinary(binary: string): boolean {
   return listOnPath(names).length > 0;
 }
 
+const LAUNCHABLE_EXT = /\.(exe|com|cmd|bat)$/i;
+
 export function resolveBinary(binary: string): string | null {
   if (!binary) return null;
   if (binary.includes("/") || binary.includes("\\") || /^[A-Za-z]:/.test(binary)) {
     return existsSync(binary) ? binary : null;
   }
   const names = process.platform === "win32" ? [binary, `${binary}.cmd`, `${binary}.exe`] : [binary];
-  return listOnPath(names)[0] ?? null;
+  const found = listOnPath(names);
+  if (process.platform === "win32") {
+    // `where npm` lists the extensionless POSIX shell script first; CreateProcess can't run it.
+    // Prefer, in PATH order, what spawn (.exe/.com) or the .cmd/.bat path can launch — not
+    // PATHEXT's .js/.vbs/.wsf, which need a script host.
+    const runnable = found.find((abs) => LAUNCHABLE_EXT.test(abs));
+    if (runnable) return runnable;
+  }
+  return found[0] ?? null;
 }
 
 export function versionOf(binary: string): string | undefined {
@@ -170,6 +226,10 @@ function expandShimVars(value: string, dp0: string): string {
   let out = value.replaceAll("%~dp0", trailing).replaceAll("%dp0%", dp0);
   if (process.platform !== "win32") out = out.replaceAll("\\", "/");
   return out;
+}
+
+function isShimAnchored(raw: string): boolean {
+  return /^%~?dp0%?/i.test(raw);
 }
 
 function isNodeBinaryToken(value: string): boolean {
@@ -201,12 +261,15 @@ export function unwrapCmdShim(cmdPath: string): UnwrappedCmdShim | null {
     let script: string | undefined;
     let nodeFromShim: string | undefined;
     for (const raw of quoted) {
-      const expanded = resolve(expandShimVars(raw, dp0));
-      if (isNodeBinaryToken(raw) || isNodeBinaryToken(expanded)) {
-        if (!nodeFromShim) nodeFromShim = expanded;
+      // Only a token anchored at the shim's directory, or already absolute, names a file.
+      // `%_prog%`, `node` and other bare tokens are symbolic: resolving them would pick up a
+      // file planted in the current directory (the audited repo) and run it as "node".
+      const anchored = isShimAnchored(raw) ? expandShimVars(raw, dp0) : isAbsolute(raw) ? raw : null;
+      if (isNodeBinaryToken(raw) || (anchored !== null && isNodeBinaryToken(anchored))) {
+        if (!nodeFromShim && anchored !== null) nodeFromShim = resolve(anchored);
         continue;
       }
-      if (existsSync(expanded)) script = expanded;
+      if (anchored !== null && existsSync(resolve(anchored))) script = resolve(anchored);
     }
     if (!script) continue;
 

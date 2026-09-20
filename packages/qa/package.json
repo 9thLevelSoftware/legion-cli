@@ -44,6 +44,7 @@
     "playwright"
   ],
   "dependencies": {
+    "@9thlevelsoftware/legion-cli-agents": "workspace:*",
     "@9thlevelsoftware/legion-cli-schema": "workspace:*"
   }
 }

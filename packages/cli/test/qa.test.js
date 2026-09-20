@@ -108,6 +108,47 @@ test("qa scores in-process JSON and prints the visual bucket", async () => {
   });
 });
 
+test("qa with an unstartable unit command prints why, in text and --json", async () => {
+  await withTempDir(async (dir) => {
+    await seedQaReady(dir, { unitCommand: "legion-no-such-binary-xyz test" });
+    const human = runCli(["qa", "--project", dir]);
+    assert.equal(human.status, 1, `${human.stdout}\n${human.stderr}`);
+    assert.match(normalize(human.stdout), /unit command did not start: legion-no-such-binary-xyz: not found on PATH/);
+    const json = runCli(["qa", "--json", "--project", dir]);
+    assert.equal(json.status, 1);
+    const parsed = JSON.parse(json.stdout);
+    assert.equal(parsed.ok, false);
+    assert.ok(parsed.warnings.some((line) => /^unit command did not start: /.test(line)), json.stdout);
+  });
+});
+
+test("the configured apiKeyEnv and other secrets do not reach QA's unit command; DATABASE_URL does", async () => {
+  await withTempDir(async (dir) => {
+    const report = [
+      "const names = Object.keys(process.env).map((key) => key.toUpperCase());",
+      "const leaked = ['LEGION_TEST_PROVIDER_VAR','FOO_TOKEN','GH_PAT'].filter((name) => names.includes(name));",
+      "const ok = leaked.length === 0 && process.env.DATABASE_URL === 'postgres://fixture';",
+      "process.stdout.write(JSON.stringify({ tests: [{ title: 'health @p0', status: ok ? 'passed' : 'failed' }], leaked }));",
+    ].join(" ");
+    const engine = await seedQaReady(dir, { unitCommand: `${quoteArg(process.execPath)} -e ${quoteArg(report)}` });
+    const config = await engine.store.readConfig();
+    await engine.store.writeConfig({
+      ...config,
+      adapter: {
+        ...config.adapter,
+        http: { baseUrl: "https://api.example.com/v1", model: "m", apiKeyEnv: "LEGION_TEST_PROVIDER_VAR", allowLoopback: false },
+      },
+    });
+    const result = runCli(["qa", "--json", "--project", dir], {
+      env: { LEGION_TEST_PROVIDER_VAR: "k", FOO_TOKEN: "t", GH_PAT: "p", DATABASE_URL: "postgres://fixture" },
+    });
+    const parsed = JSON.parse(result.stdout);
+    assert.deepEqual(parsed.warnings, []);
+    assert.equal(parsed.score.buckets.p0.failed, 0, result.stdout);
+    assert.equal(parsed.ok, true, result.stdout);
+  });
+});
+
 test("qa --mode no-browser requires checklist and cannot pass", async () => {
   await withTempDir(async (dir) => {
     await seedQaReady(dir);

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { access } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -27,13 +28,14 @@ import type {
   Task,
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { ZodType } from "zod";
-import { PersistError } from "./errors.js";
+import { EngineLockedError, PersistError } from "./errors.js";
 import { commitIngest, isGitRepo } from "./git.js";
 import { ingestFiles, type IngestDocument } from "./ingest.js";
 import {
   assumptionPath,
   decisionPath,
   ingestReceiptPath,
+  DEFAULT_LOCK_TIMEOUT_MS,
   legionPaths,
   packetPath,
   specPath,
@@ -70,43 +72,93 @@ export interface LegionReader {
   readWikiPage(storePath: string): Promise<MarkdownDoc<WikiPage>>;
 }
 
+type Hold = { lock: HeldLock; releaseMutex: () => void };
+
 export class LegionStore implements LegionReader {
   readonly projectRoot: string;
   readonly paths: LegionPaths;
-  #lock: HeldLock | null = null;
-  #lockDepth = 0;
+  /** Tail of the in-process queue: each holder resolves its link when it releases. */
+  #tail: Promise<void> = Promise.resolve();
+  /** The current holder; nested `withLock` in the same async chain re-enters it. */
+  #hold: Hold | null = null;
+  #context = new AsyncLocalStorage<Hold>();
+  /** Holds taken with bare `acquireLock()` (no async scope to re-enter), released LIFO. */
+  #bare: Hold[] = [];
 
   constructor(projectRoot: string) {
     this.projectRoot = resolve(projectRoot);
     this.paths = legionPaths(this.projectRoot);
   }
 
-  async acquireLock(opts?: { timeoutMs?: number }): Promise<void> {
-    // Reentrancy is depth counting only — nested withLock does not drop engine.lock.
-    if (this.#lockDepth > 0) {
-      this.#lockDepth += 1;
-      return;
+  /** True inside `withLock` on this store, in the same async chain that took the lock. */
+  holdsLock(): boolean {
+    const hold = this.#context.getStore();
+    return hold !== undefined && hold === this.#hold;
+  }
+
+  /**
+   * One writer per process (promise-chain mutex), then one per project (engine.lock).
+   * A waiter here counts against the same `timeoutMs` as the file lock.
+   */
+  async #take(opts?: { timeoutMs?: number }): Promise<Hold> {
+    const timeoutMs = opts?.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+    const started = Date.now();
+    const previous = this.#tail;
+    let releaseMutex!: () => void;
+    const mine = new Promise<void>((done) => {
+      releaseMutex = done;
+    });
+    this.#tail = previous.then(() => mine);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const turn = await Promise.race([
+      previous.then(() => true),
+      new Promise<false>((done) => {
+        timer = setTimeout(() => done(false), timeoutMs);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!turn) {
+      releaseMutex();
+      throw new EngineLockedError();
     }
-    this.#lock = await acquireEngineLock(this.paths.lock, opts);
-    this.#lockDepth = 1;
+    try {
+      const remaining = Math.max(0, timeoutMs - (Date.now() - started));
+      const lock = await acquireEngineLock(this.paths.lock, { timeoutMs: remaining });
+      const hold = { lock, releaseMutex };
+      this.#hold = hold;
+      return hold;
+    } catch (err) {
+      releaseMutex();
+      throw err;
+    }
+  }
+
+  async #give(hold: Hold): Promise<void> {
+    if (this.#hold === hold) this.#hold = null;
+    try {
+      await hold.lock.release();
+    } finally {
+      hold.releaseMutex();
+    }
+  }
+
+  /** Low-level: take the lock outside `withLock`. Pair with {@link releaseLock}. */
+  async acquireLock(opts?: { timeoutMs?: number }): Promise<void> {
+    this.#bare.push(await this.#take(opts));
   }
 
   async releaseLock(): Promise<void> {
-    if (this.#lockDepth === 0) return;
-    this.#lockDepth -= 1;
-    if (this.#lockDepth === 0 && this.#lock) {
-      const lock = this.#lock;
-      this.#lock = null;
-      await lock.release();
-    }
+    const hold = this.#bare.pop();
+    if (hold) await this.#give(hold);
   }
 
   async withLock<T>(fn: () => Promise<T>, opts?: { timeoutMs?: number }): Promise<T> {
-    await this.acquireLock(opts);
+    if (this.holdsLock()) return fn();
+    const hold = await this.#take(opts);
     try {
-      return await fn();
+      return await this.#context.run(hold, fn);
     } finally {
-      await this.releaseLock();
+      await this.#give(hold);
     }
   }
 
@@ -124,7 +176,9 @@ export class LegionStore implements LegionReader {
   }
 
   writeMarkdown(storePath: string, data: unknown, body: string): Promise<void> {
-    return this.withLock(() => writeMarkdownFile(toFsPath(this.projectRoot, storePath), data, body));
+    return this.withLock(() =>
+      writeMarkdownFile(toFsPath(this.projectRoot, storePath), data, body, { root: this.projectRoot }),
+    );
   }
 
   readYaml<T>(storePath: string, schema: ZodType<T>): Promise<T> {
@@ -132,7 +186,9 @@ export class LegionStore implements LegionReader {
   }
 
   writeYaml(storePath: string, data: unknown): Promise<void> {
-    return this.withLock(() => writeYamlFile(toFsPath(this.projectRoot, storePath), data));
+    return this.withLock(() =>
+      writeYamlFile(toFsPath(this.projectRoot, storePath), data, { root: this.projectRoot }),
+    );
   }
 
   readProject(): Promise<MarkdownDoc<ProjectFile>> {
@@ -255,9 +311,9 @@ export class LegionStore implements LegionReader {
           }
         },
         writeWikiPage: (storePath, data, body) =>
-          writeMarkdownFile(toFsPath(this.projectRoot, storePath), data, body),
+          writeMarkdownFile(toFsPath(this.projectRoot, storePath), data, body, { root: this.projectRoot }),
         writeReceipt: (storePath, data, body) =>
-          writeMarkdownFile(toFsPath(this.projectRoot, storePath), data, body),
+          writeMarkdownFile(toFsPath(this.projectRoot, storePath), data, body, { root: this.projectRoot }),
       });
       await rebuildIndex(this.projectRoot);
       if (!opts?.noCommit) {

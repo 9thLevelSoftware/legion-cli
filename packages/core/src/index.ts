@@ -58,7 +58,13 @@ export {
   regressionTestSource,
   regressionVerifyCommand,
 } from "./fix.js";
-export { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands, splitCommand } from "./verify.js";
+export {
+  DEFAULT_VERIFICATION_TIMEOUT_MS,
+  runVerificationCommands,
+  splitCommand,
+  verificationFailureReason,
+} from "./verify.js";
+export type { VerificationRun } from "./verify.js";
 export { argvSummarySafe, findSkillsDir, optionalSkillSpawn, resolveSkillDir, resumeRunIsLive } from "./spawn.js";
 export {
   WIREFRAME_PALETTE,

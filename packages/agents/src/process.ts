@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { AgentError } from "./errors.js";
 import { ABORT_GRACE_MS, DEFAULT_TIMEOUT_MS, type AgentHandle, type AgentJob, type AgentResult } from "./types.js";
-import { quoteCmdArgForSpawn, resolveBinary, unwrapCmdShim } from "./which.js";
+import { cmdScriptLaunch, resolveBinary, unwrapCmdShim } from "./which.js";
 
 function openWrite(path: string): Promise<WriteStream> {
   const stream = createWriteStream(path);
@@ -73,8 +73,9 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
         `Windows .cmd/.bat cannot receive multiline argv (${resolved}); expected an npm node shim`,
       );
     }
-    const line = [resolved, ...args].map(quoteCmdArgForSpawn).join(" ");
-    return spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", line], {
+    const launch = cmdScriptLaunch(resolved, args);
+    if ("error" in launch) throw new AgentError(launch.error);
+    return spawn(launch.command, launch.args, {
       ...common,
       stdio: ["ignore", stdout, stderr],
       detached: false,

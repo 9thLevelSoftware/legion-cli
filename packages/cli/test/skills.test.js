@@ -188,4 +188,33 @@ test("doctor overlay lines distinguish digest mismatch from unreadable pin", asy
   });
 });
 
+test("a github: install downloads without engine.lock and writes under it", async () => {
+  const { installWithLock } = await import("../dist/install-lock.js");
+  const { createLegionStore } = await import("@9thlevelsoftware/legion-cli-persist");
+  const { existsSync } = await import("node:fs");
+  await withTempDir(async (dir) => {
+    const lockPath = createLegionStore(dir).paths.lock;
+    const seen = [];
+    const result = await installWithLock(
+      dir,
+      true,
+      async (fetchZip) => {
+        const { body } = await fetchZip("github:acme/skills@v1");
+        seen.push({ phase: "write", locked: existsSync(lockPath), body: body.toString() });
+        return "installed";
+      },
+      async () => {
+        seen.push({ phase: "download", locked: existsSync(lockPath) });
+        return { body: Buffer.from("zip-bytes") };
+      },
+    );
+    assert.equal(result, "installed");
+    assert.deepEqual(seen, [
+      { phase: "download", locked: false },
+      { phase: "write", locked: true, body: "zip-bytes" },
+    ]);
+    assert.equal(existsSync(lockPath), false);
+  });
+});
+
 

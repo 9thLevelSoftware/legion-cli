@@ -257,7 +257,7 @@ async function restoreOne(
 ): Promise<void> {
   const abs = toFsPath(projectRoot, posix);
   if (chatBody !== undefined) {
-    await atomicWriteFile(abs, chatBody, { symlinkMessage: "chat session path is a symlink" });
+    await atomicWriteFile(abs, chatBody, { symlinkMessage: "chat session path is a symlink", root: projectRoot });
     return;
   }
   if (preSpawnRef && gitPathExistsAtRef(projectRoot, preSpawnRef, posix)) {

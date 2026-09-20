@@ -332,7 +332,7 @@ async function writeSessionFile(engine: LegionEngine, session: ChatSessionFile):
   const parsed = ChatSessionFileSchema.parse(session);
   const abs = toFsPath(engine.projectRoot, chatSessionPath(parsed.id));
   const body = redactSecrets(`${JSON.stringify(parsed, null, 2)}\n`);
-  await atomicWriteFile(abs, body, { symlinkMessage: "chat session path is a symlink" });
+  await atomicWriteFile(abs, body, { symlinkMessage: "chat session path is a symlink", root: engine.projectRoot });
 }
 
 export async function saveChatSession(engine: LegionEngine, session: ChatSessionFile): Promise<void> {

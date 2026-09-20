@@ -9,7 +9,6 @@ export {
   renderDocsMd,
   parseAuditNames,
   pathIsInside,
-  quoteCmdArg,
   renderSecurityMd,
   renderTestsMd,
   resolveAuditBin,

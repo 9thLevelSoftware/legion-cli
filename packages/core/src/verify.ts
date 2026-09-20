@@ -1,75 +1,79 @@
-import { spawnSync } from "node:child_process";
+import { join } from "node:path";
+import { parseCommandLine, runCommand, splitCommand } from "@9thlevelsoftware/legion-cli-agents";
+
+export { splitCommand };
 
 /** Minutes, not hours — hung verify must not hold the lock for process lifetime. */
 export const DEFAULT_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 export type VerificationRun = {
   command: string;
+  /** started && exit 0 && !timedOut */
   ok: boolean;
+  started: boolean;
   status: number | null;
   timedOut?: boolean;
+  error?: string;
+  /** Project-relative POSIX path of the combined stdout/stderr log. */
+  logPath?: string;
 };
-
-export function splitCommand(command: string): string[] {
-  const out: string[] = [];
-  const re = /"((?:\\"|[^"])*)"|'((?:\\'|[^'])*)'|(\S+)/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(command)) !== null) {
-    const raw = match[1] ?? match[2] ?? match[3] ?? "";
-    out.push(raw.replaceAll('\\"', '"').replaceAll("\\'", "'"));
-  }
-  return out;
-}
 
 export type VerificationOpts = {
   timeoutMs?: number;
+  /** Log directory name under `.legion-cli/cache/runs/`; defaults to `verify-<timestamp>`. */
+  runId?: string;
+  /** Configured `adapter.*.apiKeyEnv` names, scrubbed on top of the KD-4 pattern. */
+  secretEnvNames?: readonly string[];
 };
 
-/** `cwd` = project, `shell: false`. Missing executable is an engine bug. */
-export function runVerificationCommands(
+/**
+ * Run each `verificationCommands` entry (argv-only, no shell) from the project root with the
+ * credential-scrubbed environment, stopping at the first failure. Never throws for a command
+ * that cannot start: that is a failed run with `started: false` (KD-4).
+ */
+export async function runVerificationCommands(
   cwd: string,
   commands: readonly string[],
   opts?: VerificationOpts,
-): VerificationRun[] {
+): Promise<VerificationRun[]> {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
+  const runId = opts?.runId || `verify-${Date.now()}`;
   const runs: VerificationRun[] = [];
-  for (const command of commands) {
-    const argv = splitCommand(command);
-    if (argv.length === 0) {
-      throw new Error("verificationCommands entry is empty (engine bug)");
+  for (const [index, command] of commands.entries()) {
+    const parsed = parseCommandLine(command);
+    if ("error" in parsed) {
+      runs.push({ command, ok: false, started: false, status: null, error: parsed.error });
+      break;
     }
-    const env = { ...process.env };
-    // Nested `node --test` inherits this and exits 0 without running the file.
-    delete env.NODE_TEST_CONTEXT;
-    const result = spawnSync(argv[0], argv.slice(1), {
+    const logStore = `.legion-cli/cache/runs/${runId}/verify-${index + 1}.log`;
+    const result = await runCommand(parsed.argv, {
       cwd,
-      encoding: "utf8",
-      windowsHide: true,
-      shell: false,
-      env,
-      timeout: timeoutMs,
-      killSignal: "SIGKILL",
+      timeoutMs,
+      logPath: join(cwd, ...logStore.split("/")),
+      secretEnvNames: opts?.secretEnvNames,
     });
-    if (result.error) {
-      const code = (result.error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
-        throw new Error(`verificationCommands executable missing: ${argv[0]} (engine bug)`);
-      }
-      if (code === "ETIMEDOUT") {
-        runs.push({ command, ok: false, status: result.status, timedOut: true });
-        break;
-      }
-      throw result.error;
-    }
-    const timedOut = result.signal === "SIGKILL" && result.status === null;
     const run: VerificationRun = {
       command,
-      ok: result.status === 0 && !timedOut,
-      status: result.status,
-      ...(timedOut ? { timedOut: true } : {}),
+      ok: result.started && result.exitCode === 0 && !result.timedOut,
+      started: result.started,
+      status: result.exitCode,
+      logPath: logStore,
+      ...(result.timedOut ? { timedOut: true } : {}),
+      ...(result.error ? { error: result.error } : {}),
     };
     runs.push(run);
     if (!run.ok) break;
   }
   return runs;
+}
+
+/** One line for the user: why verification did not pass, or undefined when it did. */
+export function verificationFailureReason(runs: readonly VerificationRun[]): string | undefined {
+  if (runs.length === 0) return "no verificationCommands ran";
+  const failed = runs.find((run) => !run.ok);
+  if (!failed) return undefined;
+  if (!failed.started) return `verification command did not start: ${failed.command}: ${failed.error ?? "unknown error"}`;
+  if (failed.timedOut) return `verification command timed out: ${failed.command}`;
+  const where = failed.logPath ? ` (log: ${failed.logPath})` : "";
+  return `verification command failed with exit ${failed.status ?? "?"}: ${failed.command}${where}`;
 }
