@@ -1,4 +1,4 @@
-import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, describeLiveSpawn } from "@9thlevelsoftware/legion-cli-core";
 import { EXPOSE_BIND, LOOPBACK_BIND, readLiveServe } from "@9thlevelsoftware/legion-cli-dashboard";
 import type { AdapterId, LegionConfig, ProjectFile, StateFile } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
@@ -122,6 +122,8 @@ export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknow
   const { viewer, live: viewerLive } = await liveViewer(opts.project);
   const code = statusExitCode(state.lastReadiness, slice);
   const currentTaskAdapter = await readCurrentTaskAdapter(engine, state.currentTaskId);
+  // The freeze's own next step is `status`, so it has to say what is holding it (R-6, R-19).
+  const agentRun = await engine.liveAgentRun();
 
   if (opts.json) {
     writeJson({
@@ -137,16 +139,39 @@ export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknow
       blockers,
       viewer,
       viewerLive,
+      agentRun: agentRun
+        ? {
+            runId: agentRun.runId,
+            skillId: agentRun.skillId,
+            state: agentRun.state,
+            owned: agentRun.owned,
+            enginePid: agentRun.marker?.enginePid ?? null,
+            startedAt: agentRun.marker?.startedAt ?? null,
+            expiresAt: agentRun.expiresAt ? new Date(agentRun.expiresAt).toISOString() : null,
+            detail: agentRun.detail ?? null,
+            controlDir: agentRun.controlDir,
+          }
+        : null,
       ...jsonExtra,
     });
     return code;
   }
 
   if (opts.plain) {
-    writeOut(formatPlain({ project, state, next, blockers, currentTaskAdapter }));
+    const plain = formatPlain({ project, state, next, blockers, currentTaskAdapter });
+    writeOut(agentRun ? `${plain}\nagentRun\t${describeLiveSpawn(agentRun)}` : plain);
     return code;
   }
 
+  if (agentRun) {
+    writeOut(
+      [
+        `Agent run   ${describeLiveSpawn(agentRun)}`,
+        "            engine writes are frozen until it finishes (reads keep working)",
+        "",
+      ].join("\n"),
+    );
+  }
   writeOut(
     formatHuman({
       project,

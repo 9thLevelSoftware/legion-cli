@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { PersistError } from "./errors.js";
 import { canonicalizePath } from "./paths.js";
 
@@ -88,8 +88,21 @@ export async function ensureOwnerDir(abs: string): Promise<string> {
   return target;
 }
 
-export async function ensureControlDir(projectRoot: string, runId: string): Promise<string> {
-  return ensureOwnerDir(controlDirPath(projectRoot, runId));
+/**
+ * The run's control dir. `exclusive` creates it with a plain `mkdir`, so two runs can never share
+ * one set of control records (R-23); the heartbeat re-creates it non-exclusively.
+ */
+export async function ensureControlDir(
+  projectRoot: string,
+  runId: string,
+  opts: { exclusive?: boolean } = {},
+): Promise<string> {
+  const target = controlDirPath(projectRoot, runId);
+  if (opts.exclusive) {
+    await ensureOwnerDir(dirname(target));
+    await mkdir(target, { mode: 0o700 });
+  }
+  return ensureOwnerDir(target);
 }
 
 export async function ensureQuarantineRoot(projectRoot: string): Promise<string> {

@@ -15,6 +15,7 @@ import {
   rmdir,
   symlink,
   unlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -27,16 +28,27 @@ import {
   quarantineRootPath,
   readAuditEvents,
 } from "@9thlevelsoftware/legion-cli-persist";
-import { LegionEngine, LegionRefuseError, listRetainedQuarantines } from "../dist/index.js";
+import {
+  LegionEngine,
+  LegionRefuseError,
+  listRetainedQuarantines,
+  restoreProtected,
+  snapshotProtected,
+} from "../dist/index.js";
+import { finishStartedSpawn } from "../dist/spawn.js";
+import { moveFileNoOverwrite } from "../dist/quarantine.js";
 import {
   git,
+  holdPaths,
   initProject,
   makeTask,
   passingVerificationCommand,
   seedFrozenSpec,
   seedPlanReady,
+  spawnSleeper,
   withEngine,
   withFakeAdapter,
+  writeControlRecords,
 } from "./helpers.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -86,6 +98,19 @@ function sha256(text) {
   return createHash("sha256").update(text).digest("hex");
 }
 
+/** Engine writes attempted from a real second process (KD-2 liveness comes from disk there). */
+function runFreezeProbe(dir) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [freezeProbe, dir], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
+    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+    child.once("error", reject);
+    child.once("exit", (code) => (code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr))));
+  });
+}
+
 async function seedExecute(store, opts = {}) {
   return seedPlanReady(store, {
     task: {
@@ -131,10 +156,13 @@ test("(a) F-001: an agent that marks a sibling task done and forges lastReview P
       const statePath = join(dir, ".legion-cli", "STATE.md");
       let forgedTask = "";
       let forgedState = "";
+      let beforeState;
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
         // An unjailed agent running as the user writes engine state by absolute path.
         fakeOnWait: async () => {
+          // Nothing writes STATE.md between the snapshot and here, so this is the snapshot's bytes.
+          beforeState = await readFile(statePath);
           forgedTask = (await readFile(siblingPath, "utf8")).replace("status: ready", "status: done");
           await writeFile(siblingPath, forgedTask);
           forgedState = (await readFile(statePath, "utf8")).replace(/lastReview: .*/, "lastReview: PASS");
@@ -152,6 +180,8 @@ test("(a) F-001: an agent that marks a sibling task done and forges lastReview P
       assert.match(result.tasks[0].reason ?? "", /protected files/);
       assert.deepEqual(await readFile(siblingPath), beforeTask);
       assert.equal((await store.readTask("TSK-0002")).data.status, "ready");
+      // Byte-identical, not merely "some earlier STATE.md" (R-27).
+      assert.deepEqual(await readFile(statePath), beforeState);
       assert.notEqual((await store.readState()).data.lastReview, "PASS");
       assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
 
@@ -243,8 +273,7 @@ test("(c) R-22: an agent that plants core.fsmonitor in .git/config never gets it
 test("(d) R-41: writes from a second process during a held spawn are refused, audited after the finish, and cause no incident", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ dir, store }) => {
-      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "d-ready");
-      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "d-release");
+      const { readyPath, releasePath } = holdPaths("d");
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
         fakeHoldWait: { readyPath, releasePath, timeoutMs: 60_000 },
@@ -255,23 +284,15 @@ test("(d) R-41: writes from a second process during a held spawn are refused, au
       const pending = engine.review();
       await waitUntil(() => existsSync(readyPath), 15_000, "review never reached wait()");
 
-      const probe = await new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [freezeProbe, dir], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-        let stdout = "";
-        let stderr = "";
-        child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
-        child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
-        child.once("error", reject);
-        child.once("exit", (code) => (code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr))));
-      });
+      const probe = await runFreezeProbe(dir);
       for (const [verb, outcome] of Object.entries(probe)) {
         assert.equal(outcome.refused, true, `${verb}: ${JSON.stringify(outcome)}`);
         assert.match(outcome.message, /an agent run [(]review [^)]*[)] is in progress/, verb);
       }
-      // Starting and stopping `serve` mid-run: serve.json is outside the protected set.
+      // A `serve` started mid-run is still running at the finish, so serve.json stays in place:
+      // it must not be an incident (R-31, R-41).
       const serveJson = join(dir, ".legion-cli", "serve.json");
       await writeFile(serveJson, '{"pid":1}\n');
-      await unlink(serveJson);
       // Nothing of the refusals is in the project audit log while the run is live.
       const during = await readAuditEvents(dir);
       assert.equal(during.filter((event) => event.type === "refuse").length, 0);
@@ -284,25 +305,41 @@ test("(d) R-41: writes from a second process during a held spawn are refused, au
         (event) => event.type === "refuse" && /agent run [(]review/.test(String(event.data.message)),
       );
       assert.equal(after.length, 4);
+      // Drained events are never engine events (R-18).
+      for (const event of after) {
+        assert.equal(event.actor, "deferred");
+        assert.equal(event.data.deferred, true);
+      }
       assert.equal((await readAuditEvents(dir)).some((event) => event.type === "protected_restored"), false);
+      assert.equal(existsSync(serveJson), true);
+      await unlink(serveJson);
     });
   });
 });
 
-test("(e) R-15: deleting the control record mid-run does not lift the freeze for a second engine", async () => {
+test("(e) R-15/R-17: deleting the control record mid-run does not lift the freeze for another process", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ dir, store }) => {
-      let refusal;
+      let probe;
+      let sameProcess;
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
         fakeOnWait: async () => {
           const control = controlProjectDirPath(dir);
           for (const name of await readdir(control)) await rm(join(control, name), { recursive: true, force: true });
+          // The owner re-asserts its marker (heartbeat), so the deletion window is bounded.
+          await waitUntil(
+            async () => (await readdir(control).catch(() => [])).length > 0,
+            10_000,
+            "the owner never re-asserted its control record",
+          );
+          // A real second process: the in-memory `owned` map cannot answer for it (R-24).
+          probe = await runFreezeProbe(dir);
           const second = new LegionEngine(dir, undefined, { skillsDir });
           try {
             await second.qaChecklist(["AC-1"]);
           } catch (err) {
-            refusal = err;
+            sameProcess = err;
           }
         },
       });
@@ -310,9 +347,51 @@ test("(e) R-15: deleting the control record mid-run does not lift the freeze for
       await seedReview(store);
       const review = await engine.review();
       assert.equal(review.verdict, "PASS");
-      assert.ok(refusal instanceof LegionRefuseError, String(refusal));
-      assert.match(refusal.message, /an agent run [(]review [^)]*[)] is in progress/);
+      assert.ok(sameProcess instanceof LegionRefuseError, String(sameProcess));
+      for (const [verb, outcome] of Object.entries(probe)) {
+        assert.equal(outcome.refused, true, `${verb}: ${JSON.stringify(outcome)}`);
+        assert.match(outcome.message, /is in progress/, verb);
+      }
     });
+  });
+});
+
+test("R-17: a control dir whose live marker was deleted still freezes another process until it ages out", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    const other = spawnSleeper();
+    try {
+      const control = await writeControlRecords(
+        dir,
+        {
+          schemaVersion: "legion-cli-resume/v1",
+          runId: "review-deleted",
+          taskId: null,
+          skillId: "review",
+          preSpawnRef: "UNBORN",
+          startedAt: new Date().toISOString(),
+          pid: other.pid,
+          enginePid: other.pid,
+        },
+        { enginePid: other.pid, engineStartedAt: Date.now() },
+      );
+      await rm(join(control, "live.json"), { force: true });
+      const live = await engine.liveAgentRun();
+      assert.ok(live, "a markerless run dir still freezes");
+      assert.equal(live.state, "unreadable");
+      assert.match(live.detail, /live marker was removed while the run's process was still alive/);
+      await assert.rejects(() => engine.qaChecklist(["AC-1"]), /is in progress/);
+      // Past the run's own timeout plus grace it stops freezing: a deletion cannot wedge a project.
+      const started = new Date(Date.now() - (21 + 11) * 60_000);
+      const resumePath = join(control, "resume.json");
+      const record = JSON.parse(await readFile(resumePath, "utf8"));
+      await writeFile(resumePath, `${JSON.stringify({ ...record, startedAt: started.toISOString() })}\n`);
+      for (const name of await readdir(control)) await utimes(join(control, name), started, started);
+      await utimes(control, started, started);
+      assert.equal(await engine.liveAgentRun(), null);
+    } finally {
+      await other.stop();
+    }
   });
 });
 
@@ -459,7 +538,9 @@ test("(i) R-17: tasks/ replaced by a junction to an outside folder: the outside 
   }
 });
 
-test("(j) R-17: a planted junction at the quarantine root is never used; the forged file is not restored over (fail closed)", { skip: process.platform !== "win32" && "junctions are win32" }, async () => {
+// R-26: the "quarantine first, restore only if that succeeded" ordering must be covered on both
+// platforms, so the planted link is a junction on win32 and a symlink elsewhere.
+test("(j) R-17: a planted link at the quarantine root is never used; the forged file is not restored over (fail closed)", async () => {
   const outside = await mkdtemp(join(tmpdir(), "legion-planted-"));
   try {
     await withFakeAdapter(async () => {
@@ -469,7 +550,7 @@ test("(j) R-17: a planted junction at the quarantine root is never used; the for
           await seedReview(store);
           const root = quarantineRootPath(dir);
           await mkdir(dirname(root), { recursive: true });
-          await symlink(outside, root, "junction");
+          await symlink(outside, root, process.platform === "win32" ? "junction" : "dir");
           const checklist = join(dir, ".legion-cli", "qa", "checklist.json");
           await mkdir(dirname(checklist), { recursive: true });
           await writeFile(checklist, '{"ticks":[]}\n');
@@ -481,7 +562,9 @@ test("(j) R-17: a planted junction at the quarantine root is never used; the for
           // Never lose the current bytes: without a quarantine, nothing is overwritten.
           assert.equal(await readFile(checklist, "utf8"), '{"ticks":["AC-forged"]}\n');
           assert.equal((await store.readState()).data.lastReview, "FAIL");
-          await rmdir(root); // the junction only, never its target
+          // The link only, never its target.
+          if (process.platform === "win32") await rmdir(root);
+          else await unlink(root);
         },
         { skillsDir, fakeArtifacts: [{ path: ".legion-cli/qa/checklist.json", content: '{"ticks":["AC-forged"]}\n' }] },
       );
@@ -560,6 +643,190 @@ test("(l) R-22: in a linked worktree (.git is a file), an agent edit to the comm
     }
   } finally {
     await rm(main, { recursive: true, force: true });
+  }
+});
+
+test("R-1: a throwing jail copy-out still restores the protected set and is an incident (fail closed)", async () => {
+  await withEngine(async ({ engine, dir }) => {
+    await initProject(engine);
+    const statePath = join(dir, ".legion-cli", "STATE.md");
+    const before = await readFile(statePath);
+    const snapshot = await snapshotProtected(dir);
+    await writeFile(statePath, "forged by the agent\n");
+    const events = [];
+    const started = {
+      spawned: true,
+      runId: "execute-copyout",
+      handle: { pid: process.pid, async wait() {}, async abort() {} },
+      started: Date.now(),
+      revertCtx: {
+        projectRoot: dir,
+        runId: "execute-copyout",
+        skillId: "execute",
+        preSpawnRef: null,
+        allowedRoots: [],
+        filesForbidden: undefined,
+        snapshot: undefined,
+        dirtyAtStart: new Set(),
+        protectedSnapshot: snapshot,
+        audit: async (type, data) => {
+          events.push({ type, data });
+        },
+      },
+      resolution: { id: "fake", source: "default" },
+      binary: "(in-process)",
+      argvSummary: "{{pointer}}",
+      sandbox: {
+        backend: "copy",
+        hardened: false,
+        jailRoot: join(dir, ".legion-cli", "sandbox", "execute-copyout"),
+        spawnOpts: () => ({ cwd: dir, env: {} }),
+        async copyOut() {
+          throw Object.assign(new Error("EPERM: operation not permitted, scandir"), { code: "EPERM" });
+        },
+        async destroy() {},
+      },
+    };
+    const revert = await finishStartedSpawn(started);
+    assert.equal(revert.incident, true);
+    assert.deepEqual(await readFile(statePath), before);
+    assert.ok(revert.protected.unrestorable.some((entry) => /jail copy-out failed/.test(entry)));
+    assert.ok(events.some((event) => event.type === "protected_restored"));
+  });
+});
+
+test("R-29: a protected file over 4 MiB is quarantined, left in place and reported as unrestorable", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ dir, store }) => {
+      const big = join(dir, ".legion-cli", "wiki", "big.md");
+      const engine = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeOnWait: async () => {
+          await appendFile(big, "APPENDED BY THE AGENT\n");
+        },
+      });
+      await initProject(engine);
+      await seedReview(store);
+      await mkdir(dirname(big), { recursive: true });
+      await writeFile(big, "x".repeat(5 * 1024 * 1024));
+      await assert.rejects(
+        () => engine.review(),
+        (err) => err instanceof LegionRefuseError && /over 4 MiB/.test(err.message) && /NOT restored/.test(err.message),
+      );
+      // Never truncated: the agent's version stays, and a copy of it is in quarantine.
+      const live = await readFile(big, "utf8");
+      assert.match(live, /APPENDED BY THE AGENT/);
+      const [q] = await quarantines(dir);
+      assert.match(await storedBytes(q, ".legion-cli/wiki/big.md"), /APPENDED BY THE AGENT/);
+      assert.equal((await store.readState()).data.lastReview, "FAIL");
+    });
+  });
+});
+
+test("R-3: a new task file with a bad id is quarantined and FAILs normally, not an incident", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedReview(store);
+        await assert.rejects(
+          () => engine.review(),
+          (err) =>
+            err instanceof LegionRefuseError &&
+            /invalid task files: \.legion-cli\/tasks\/TSK-abc\.md/.test(err.message) &&
+            !/protected files/.test(err.message),
+        );
+        assert.equal((await store.readState()).data.lastReview, "FAIL");
+        assert.deepEqual((await readdir(join(dir, ".legion-cli", "tasks"))).sort(), ["TSK-0001.md"]);
+        const [q] = await quarantines(dir);
+        assert.match(await storedBytes(q, ".legion-cli/tasks/TSK-abc.md"), /not a task/);
+        const restored = (await readAuditEvents(dir)).find((event) => event.type === "protected_restored");
+        assert.equal(restored?.data.incident, false);
+      },
+      { skillsDir, fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-abc.md", content: "---\nnot a task\n---\n" }] },
+    );
+  });
+});
+
+test("R-25: findLiveSpawn fail-closed and liveness branches", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    const control = await writeControlRecords(
+      dir,
+      {
+        schemaVersion: "legion-cli-resume/v1",
+        runId: "review-garbage",
+        taskId: null,
+        skillId: "review",
+        preSpawnRef: "UNBORN",
+        startedAt: new Date().toISOString(),
+        pid: null,
+      },
+      { enginePid: 2_000_000_001, engineStartedAt: Date.now() },
+    );
+    // 1. An unreadable marker counts as live (fail closed).
+    await writeFile(join(control, "live.json"), "{ garbage");
+    const garbage = await engine.liveAgentRun();
+    assert.equal(garbage?.state, "unreadable");
+    await assert.rejects(() => engine.qaChecklist(["AC-1"]), /is in progress/);
+
+    // 2. Past max timeout + grace it stops freezing (and a future mtime cannot wedge it, R-19).
+    const old = new Date(Date.now() - (21 + 11) * 60_000);
+    await utimes(join(control, "live.json"), old, old);
+    for (const name of await readdir(control)) await utimes(join(control, name), old, old);
+    await utimes(control, old, old);
+    assert.equal(await engine.liveAgentRun(), null);
+
+    const future = new Date(Date.now() + 365 * 24 * 3_600_000);
+    await writeFile(join(control, "live.json"), "{ garbage");
+    await utimes(join(control, "live.json"), future, future);
+    const wedged = await engine.liveAgentRun();
+    assert.equal(wedged?.state, "unreadable");
+    assert.ok(wedged.expiresAt <= Date.now() + 21 * 60_000 + 11 * 60_000, "a future mtime still ages out");
+
+    // 3. A valid marker whose engine PID is dead does not freeze.
+    await writeControlRecords(
+      dir,
+      {
+        schemaVersion: "legion-cli-resume/v1",
+        runId: "review-dead",
+        taskId: null,
+        skillId: "review",
+        preSpawnRef: "UNBORN",
+        startedAt: new Date().toISOString(),
+        pid: null,
+      },
+      { enginePid: 2_000_000_001, engineStartedAt: Date.now() },
+    );
+    await rm(control, { recursive: true, force: true });
+    assert.equal(await engine.liveAgentRun(), null);
+    // The marker proven dead is cleaned up, so the next command does not re-check it (R-16).
+    assert.equal(existsSync(join(controlProjectDirPath(dir), "review-dead", "live.json")), false);
+  });
+});
+
+test("R-28: the cross-volume quarantine move (copy, verify, delete) and non-overwriting moves", async () => {
+  const alt = process.env.LEGION_CLI_TEST_ALT_VOLUME;
+  const root = await mkdtemp(join(alt ?? tmpdir(), "legion-move-"));
+  try {
+    const src = join(root, "src.txt");
+    const dest = join(root, "dest.txt");
+    await writeFile(src, "payload\n");
+    const sha = await moveFileNoOverwrite(src, dest);
+    assert.equal(await readFile(dest, "utf8"), "payload\n");
+    assert.equal(existsSync(src), false);
+    assert.match(sha, /^[0-9a-f]{64}$/);
+    // Never overwrite an existing quarantine entry.
+    await writeFile(src, "second\n");
+    await assert.rejects(() => moveFileNoOverwrite(src, dest), (err) => err.code === "EEXIST");
+    assert.equal(await readFile(dest, "utf8"), "payload\n");
+    assert.equal(existsSync(src), true, "a refused move keeps the source");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+  if (!alt) {
+    // The fallback (EXDEV) path needs a second volume; set LEGION_CLI_TEST_ALT_VOLUME to cover it.
+    assert.ok(true, "skipped: set LEGION_CLI_TEST_ALT_VOLUME to a path on another volume");
   }
 });
 

@@ -15,7 +15,7 @@ import {
   routeChatTurn,
   sanitizeChatAction,
 } from "../dist/index.js";
-import { initProject, patchState, withEngine, withFakeAdapter } from "./helpers.js";
+import { holdPaths, initProject, patchState, withEngine, withFakeAdapter } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
 
@@ -282,8 +282,7 @@ test("chat spawn wait is outside mutate", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ dir, engine }) => {
       await initProject(engine);
-      const readyPath = join(dir, ".legion-cli", "cache", "chat-wait-ready");
-      const releasePath = join(dir, ".legion-cli", "cache", "chat-wait-release");
+      const { readyPath, releasePath } = holdPaths("chat");
       const held = new LegionEngine(dir, undefined, {
         skillsDir,
         fakeHoldWait: { readyPath, releasePath },

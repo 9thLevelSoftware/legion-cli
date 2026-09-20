@@ -102,6 +102,23 @@ export async function writeControlRecords(dir, resume, live) {
   return target;
 }
 
+/**
+ * Ready/release paths for `fakeHoldWait`, outside the project: the engine-runtime exemption is
+ * scoped to *this run's* cache now (R-33), so a hold file inside `.legion-cli/cache/` would be an
+ * extra like any other agent write.
+ */
+export function holdPaths(name) {
+  const dir = mkdtempSync(join(tmpdir(), `legion-hold-${name}-`));
+  process.once("exit", () => {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  });
+  return { readyPath: join(dir, "ready"), releasePath: join(dir, "release") };
+}
+
 /** A child process that stays alive until `stop()` (an "agent" or "engine" of another process). */
 export function spawnSleeper() {
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)"], {

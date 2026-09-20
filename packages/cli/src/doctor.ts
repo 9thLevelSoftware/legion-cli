@@ -17,6 +17,7 @@ import {
 import {
   argvSummarySafe,
   createLegionEngine,
+  describeLiveSpawn,
   findSkillsDir,
   listRetainedQuarantines,
 } from "@9thlevelsoftware/legion-cli-core";
@@ -596,6 +597,9 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   try {
     for (const event of await readAuditEvents(opts.project)) {
       if (event.type !== "quarantine_created") continue;
+      // Deferred events are written by whatever could reach the control dir, so they never count
+      // as integrity evidence (R-18).
+      if (event.actor === "deferred" || event.data.deferred === true) continue;
       const dir = event.data.dir;
       const sha = event.data.manifestSha256;
       if (typeof dir === "string" && typeof sha === "string") auditedManifests.set(dir.toLowerCase(), sha);
@@ -616,6 +620,16 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     if (integrity !== "intact") warnings.push(`quarantine ${entry.dir}: ${integrity}`);
     return { ...entry, integrity };
   });
+  // The freeze must never be invisible: say which run holds it and when it lifts (R-6, R-19).
+  const agentRun = await engine.liveAgentRun();
+  if (agentRun) {
+    warnings.push(
+      agentRun.state === "live"
+        ? `an agent run is in progress (${describeLiveSpawn(agentRun)}); engine writes are frozen`
+        : `a stale agent-run record is freezing engine writes (${describeLiveSpawn(agentRun)}); remove ${agentRun.controlDir} once you are sure no agent is running`,
+    );
+  }
+
   const quarantineLines = quarantines.map(
     (entry) => `  ${entry.runId}  ${entry.files} file(s), ${entry.bytes} bytes  ${entry.integrity}  ${entry.dir}`,
   );
@@ -679,6 +693,16 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     secrets: secrets.map((hit) => ({ name: hit.name, file: hit.file })),
     overlays: overlayLines.map((line) => line.trim()),
     quarantine: quarantines,
+    agentRun: agentRun
+      ? {
+          runId: agentRun.runId,
+          skillId: agentRun.skillId,
+          state: agentRun.state,
+          controlDir: agentRun.controlDir,
+          expiresAt: agentRun.expiresAt ? new Date(agentRun.expiresAt).toISOString() : null,
+          detail: agentRun.detail ?? null,
+        }
+      : null,
     ...(metrics
       ? {
           metrics: {
@@ -733,6 +757,7 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     ...(overlayLines.length > 0 ? ["", "Overlays (pin vs packaged)", ...overlayLines] : []),
     "",
     secrets.length === 0 ? "Secrets     none" : `Secrets     ${secrets.length} hit(s)`,
+    ...(agentRun ? ["", "Agent run", `  ${describeLiveSpawn(agentRun)}`] : []),
     ...(quarantineLines.length > 0
       ? ["", "Quarantine (retained; never deleted by Legion)", ...quarantineLines]
       : []),

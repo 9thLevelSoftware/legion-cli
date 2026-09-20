@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { mkdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 
-import { restoreChangedTaskFiles, snapshotTaskFiles } from "../dist/revert.js";
+import { restoreProtected, snapshotProtected } from "../dist/index.js";
 import {
   initGitRepo,
   initProject,
@@ -15,13 +15,15 @@ import {
   withFakeAdapter,
 } from "./helpers.js";
 
-test("restoreChangedTaskFiles recreates the tasks dir and replaces symlinks", async () => {
-  await withEngine(async ({ dir }) => {
-    const tasksDir = join(dir, "tasks");
+// KD-13: the pre-P task-file restore is gone; the protected set is what restores task bytes now.
+test("the protected-set restore replaces a symlinked task file without following the link", async () => {
+  await withEngine(async ({ engine, dir }) => {
+    await initProject(engine);
+    const tasksDir = join(dir, ".legion-cli", "tasks");
     await mkdir(tasksDir, { recursive: true });
     const taskPath = join(tasksDir, "TSK-0001.md");
     await writeFile(taskPath, "original\n");
-    const before = await snapshotTaskFiles(tasksDir);
+    const snapshot = await snapshotProtected(dir);
     await writeFile(join(dir, "evil.txt"), "pwned\n");
     await unlink(taskPath);
     let linked = false;
@@ -31,15 +33,19 @@ test("restoreChangedTaskFiles recreates the tasks dir and replaces symlinks", as
     } catch (err) {
       if (err?.code !== "EPERM") throw err;
     }
-    if (!linked) {
-      await rm(tasksDir, { recursive: true, force: true });
-    }
-    const ids = await restoreChangedTaskFiles(tasksDir, before);
-    assert.deepEqual(ids, ["TSK-0001"]);
+    const result = await restoreProtected(snapshot, {
+      runId: "review-test",
+      allowedRoots: [".legion-cli/qa/review.md"],
+      admitNewTasks: true,
+    });
+    assert.equal(result.incident, true);
+    assert.deepEqual(result.rewrittenTaskIds, ["TSK-0001"]);
+    assert.deepEqual(result.unrestorable, []);
     assert.equal(await readFile(taskPath, "utf8"), "original\n");
     if (linked) {
       assert.equal(await readFile(join(dir, "evil.txt"), "utf8"), "pwned\n");
       assert.equal((await lstat(taskPath)).isSymbolicLink(), false);
+      assert.ok(result.quarantine, "the link that replaced the task file is quarantined");
     }
   });
 });

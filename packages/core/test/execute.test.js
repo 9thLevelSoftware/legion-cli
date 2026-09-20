@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { installLocalDir } from "@9thlevelsoftware/legion-cli-design-system";
-import { readAuditEvents, summarizeAuditMetrics } from "@9thlevelsoftware/legion-cli-persist";
+import { controlProjectDirPath, readAuditEvents, summarizeAuditMetrics } from "@9thlevelsoftware/legion-cli-persist";
 import {
   argvSummarySafe,
   HEAD_MOVED_WARNING,
@@ -17,7 +17,7 @@ import {
   regressionTestPath,
   revertExtras,
 } from "../dist/index.js";
-import { snapshotGitPolicy } from "../dist/revert.js";
+import { restoreProtected, snapshotProtected } from "../dist/index.js";
 import {
   controlDir,
   git,
@@ -78,6 +78,17 @@ async function seedExecute(store, opts = {}) {
 
 async function readResume(dir, runId) {
   return JSON.parse(await readFile(join(controlDir(dir, runId), "resume.json"), "utf8"));
+}
+
+/**
+ * The control record of the run that is live right now. A clean finish removes the run's control
+ * dir (R-4), so spawn metadata is read while the agent is still running.
+ */
+async function readLiveResume(dir) {
+  const control = controlProjectDirPath(dir);
+  const [runId] = await readdir(control);
+  assert.ok(runId, "a live control record exists");
+  return JSON.parse(await readFile(join(control, runId, "resume.json"), "utf8"));
 }
 
 test("execute writes local duration audit events", async () => {
@@ -429,9 +440,12 @@ test("committed git mv of a tracked extra onto filesAllowed is still a deletion 
 });
 
 test("committed extra vs preSpawnRef is removed without reset --hard", async () => {
+  let resume;
+  let projectDir;
   await withFakeAdapter(async () => {
     await withEngine(
       async ({ engine, store, dir }) => {
+        projectDir = dir;
         await initProject(engine);
         await seedExecute(store);
         initGitRepo(dir);
@@ -442,13 +456,16 @@ test("committed extra vs preSpawnRef is removed without reset --hard", async () 
         assert.ok(result.tasks[0].extrasReverted.includes("src/secret.ts"));
         const head = gitHead(dir);
         assert.equal(head, pre, "jail git commit cannot move operator HEAD");
-        const resume = await readResume(dir, result.tasks[0].runId);
         assert.equal(resume.preSpawnRef, pre);
+        assert.equal(resume.runId, result.tasks[0].runId);
         assert.equal(head, git(dir, ["rev-parse", "HEAD"]));
         assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
       },
       {
         fakeArtifacts: [{ path: "src/secret.ts", content: "export const secret = true;\n", gitAdd: true }],
+        fakeOnWait: async () => {
+          resume = await readLiveResume(projectDir);
+        },
       },
     );
   });
@@ -489,30 +506,38 @@ test(".git/config change is an incident and does not delete .git", async () => {
   await withEngine(async ({ dir }) => {
     await writeFile(join(dir, "README.md"), "seed\n", "utf8");
     initGitRepo(dir);
-    const gitPolicy = await snapshotGitPolicy(dir);
-    const pre = gitHead(dir);
+    // Inverted for PR 4 (KD-13): `.git/config` is in the protected set now, so the change is an
+    // incident *and* the file is restored — `.git` itself is never deleted either way.
+    const snapshot = await snapshotProtected(dir);
     const configPath = join(dir, ".git", "config");
     const before = await readFile(configPath, "utf8");
     await writeFile(configPath, `${before}\n[alias]\n\tpwn = status\n`, "utf8");
-    const result = await revertExtras({
-      projectRoot: dir,
-      preSpawnRef: pre,
+    const result = await restoreProtected(snapshot, {
+      runId: "execute-test",
       allowedRoots: ["src/main.ts"],
-      gitPolicy,
+      admitNewTasks: false,
     });
     assert.equal(result.incident, true);
+    assert.deepEqual(result.unrestorable, []);
     assert.equal(existsSync(join(dir, ".git")), true);
     assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
-    assert.equal(existsSync(configPath), true);
-    assert.match(await readFile(configPath, "utf8"), /pwn = status/);
+    assert.equal(await readFile(configPath, "utf8"), before);
     assert.equal(git(dir, ["rev-parse", "--is-inside-work-tree"]), "true");
+    const quarantined = await readFile(
+      join(result.quarantine.dir, JSON.parse(await readFile(join(result.quarantine.dir, "MANIFEST.json"), "utf8")).entries[0].stored),
+      "utf8",
+    );
+    assert.match(quarantined, /pwn = status/);
   });
 });
 
 test("in-contract commit still runs verificationCommands and can mark done", async () => {
+  let resume;
+  let projectDir;
   await withFakeAdapter(async () => {
     await withEngine(
       async ({ engine, store, dir }) => {
+        projectDir = dir;
         await initProject(engine);
         await seedExecute(store);
         initGitRepo(dir);
@@ -527,7 +552,7 @@ test("in-contract commit still runs verificationCommands and can mark done", asy
         assert.equal(result.tasks[0].verificationPass, true);
         assert.equal(result.tasks[0].headMoved, false);
         assert.equal(result.tasks[0].incident, false, "HEAD movement alone is not a .git incident");
-        const resume = await readResume(dir, result.tasks[0].runId);
+        assert.equal(resume.runId, result.tasks[0].runId);
         assert.equal(resume.skillId, "execute");
         assert.equal(resume.taskId, "TSK-0001");
         assert.equal(resume.preSpawnRef, pre);
@@ -537,6 +562,9 @@ test("in-contract commit still runs verificationCommands and can mark done", asy
         assert.equal(resume.argvSummary, "");
       },
       {
+        fakeOnWait: async () => {
+          resume = await readLiveResume(projectDir);
+        },
         fakeArtifacts: [{ path: "src/main.ts", content: "export const ok = true;\n", gitAdd: true }],
       },
     );

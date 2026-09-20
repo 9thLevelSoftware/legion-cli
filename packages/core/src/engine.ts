@@ -1268,6 +1268,7 @@ export class LegionEngine {
         cliAdapter: opts?.adapter,
         taskAdapter: task?.adapter,
         audit: this.#spawnAudit(),
+        onRestored: this.#onProtectedRestored(),
       });
       if (result.runId) {
         await this.#fileExtrasFromRun(result.runId, specId, { type: "fix", parentId: task?.id });
@@ -1987,6 +1988,14 @@ export class LegionEngine {
    */
   async assertNoLiveAgentRun(): Promise<void> {
     await this.#assertNotFrozen();
+  }
+
+  /**
+   * The agent run that is freezing writes right now, if any — what `status` and `doctor` show so
+   * the freeze is never invisible (R-6, R-19). A read; it never writes.
+   */
+  async liveAgentRun(): Promise<LiveSpawn | null> {
+    return findLiveSpawn(this.projectRoot);
   }
 
   /** Start a brownfield run (or, with `resume`, report its state). The orchestrating agent does judgment. */
@@ -3381,6 +3390,22 @@ export class LegionEngine {
       onWait: this.#fakeOnWait,
       handlePid: this.#fakeHandlePid,
       audit: this.#spawnAudit(),
+      onRestored: this.#onProtectedRestored(),
+    };
+  }
+
+  /**
+   * A restore writes snapshot bytes straight to disk, so anything the index already read from the
+   * agent's versions is stale: rebuild it before the next read (R-14).
+   */
+  #onProtectedRestored(): (result: { changed: string[] }) => Promise<void> {
+    return async (result) => {
+      if (result.changed.length === 0) return;
+      try {
+        await this.store.rebuild();
+      } catch {
+        // the index is rebuildable; a failure here must not mask the incident
+      }
     };
   }
 
@@ -3535,6 +3560,7 @@ export class LegionEngine {
       timedOut: this.#fakeTimedOut,
       required: false,
       audit: this.#spawnAudit(),
+      onRestored: this.#onProtectedRestored(),
     });
     if (!result.spawned) {
       return { skipped: "skill unavailable", extraWikiPaths: [] };

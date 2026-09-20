@@ -11,6 +11,7 @@ import { HINT, LegionEngine, LegionRefuseError } from "../dist/index.js";
 import {
   controlDir,
   initGitRepo,
+  holdPaths,
   initProject,
   makeTask,
   passingVerificationCommand,
@@ -100,8 +101,7 @@ function exitedChildPid() {
 test("during a fake long spawn, status is in_progress and engine.lock is absent", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
-      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "ready");
-      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "release");
+      const { readyPath, releasePath } = holdPaths("ready");
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
         fakeHoldWait: { readyPath, releasePath, timeoutMs: 60_000 },
@@ -125,8 +125,7 @@ test("during a fake long spawn, status is in_progress and engine.lock is absent"
 test("two processes execute auto: second is refused and never two in_progress", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
-      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "child-ready");
-      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "child-release");
+      const { readyPath, releasePath } = holdPaths("child");
       const parent = new LegionEngine(dir, undefined, { skillsDir });
       await initProject(parent);
       await seedExecute(store);
@@ -179,8 +178,7 @@ test("two processes execute auto: second is refused and never two in_progress", 
 test("task amend is refused while review wait is live", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
-      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "review-ready");
-      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "review-release");
+      const { readyPath, releasePath } = holdPaths("review");
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
         fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
@@ -210,8 +208,7 @@ test("task amend is refused while review wait is live", async () => {
 test("ticket create is refused while execute wait is live", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
-      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "ticket-ready");
-      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "ticket-release");
+      const { readyPath, releasePath } = holdPaths("ticket");
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
         fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
@@ -240,8 +237,7 @@ test("ticket create is refused while execute wait is live", async () => {
 test("live resume pid is not demoted by recovery", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
-      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "live-ready");
-      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "live-release");
+      const { readyPath, releasePath } = holdPaths("live");
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
         fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
@@ -320,8 +316,7 @@ test("crash between CAS and wait: next execute recovers to blocked", async () =>
 test("amend and ship refuse while a fake long spawn is in_progress", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
-      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "amend-ready");
-      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "amend-release");
+      const { readyPath, releasePath } = holdPaths("amend");
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
         fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },

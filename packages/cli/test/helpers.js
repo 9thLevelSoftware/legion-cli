@@ -1,11 +1,12 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+import { controlDirPath } from "@9thlevelsoftware/legion-cli-persist";
 
 /** Control records and quarantine go to a throwaway per-user state dir (KD-2), inherited by the CLI. */
 if (!process.env.LEGION_CLI_STATE_DIR) {
@@ -65,6 +66,52 @@ function gitIn(dir, args) {
   const result = spawnSync("git", args, { cwd: dir, encoding: "utf8", windowsHide: true, shell: false });
   if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${(result.stderr || result.stdout).trim()}`);
   return result.stdout.trim();
+}
+
+/** A child process that stays alive until `stop()`: stands in for another engine's agent run. */
+export function spawnSleeper() {
+  const proc = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  return {
+    pid: proc.pid,
+    stop: () =>
+      new Promise((done) => {
+        if (proc.exitCode !== null || proc.signalCode !== null) return done();
+        proc.once("exit", () => done());
+        proc.kill();
+      }),
+  };
+}
+
+/** Control records of another process's live run (`<userStateDir>/control/<hash>/<runId>/`). */
+export async function writeLiveControlRecords(dir, runId, skillId, pid) {
+  const target = controlDirPath(dir, runId);
+  await mkdir(target, { recursive: true });
+  const startedAt = new Date().toISOString();
+  await writeFile(
+    join(target, "resume.json"),
+    `${JSON.stringify({
+      schemaVersion: "legion-cli-resume/v1",
+      runId,
+      taskId: null,
+      skillId,
+      preSpawnRef: "UNBORN",
+      startedAt,
+      timeoutMs: 1_200_000,
+      pid,
+      enginePid: pid,
+      engineStartedAt: Date.now(),
+    })}\n`,
+    "utf8",
+  );
+  await writeFile(
+    join(target, "live.json"),
+    `${JSON.stringify({ runId, skillId, enginePid: pid, engineStartedAt: Date.now(), startedAt, timeoutMs: 1_200_000 })}\n`,
+    "utf8",
+  );
+  return target;
 }
 
 /** A git repo with one empty commit: agent spawns need a repo with a commit (KD-3, F-013). */

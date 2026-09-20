@@ -8,6 +8,7 @@ import test from "node:test";
 import { HINT, LegionEngine, LegionRefuseError } from "../dist/index.js";
 import {
   initGitRepo,
+  holdPaths,
   initProject,
   passingVerificationCommand,
   seedPlanReady,
@@ -290,8 +291,7 @@ test("map spawn restore replaces a symlink ARCHITECTURE.md without reading the t
 test("map refuses while execute is in_progress (freeze)", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
-      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "map-ready");
-      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "map-release");
+      const { readyPath, releasePath } = holdPaths("map");
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
         fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },

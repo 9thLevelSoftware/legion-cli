@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { glob, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -63,9 +64,12 @@ import {
 import { HINT, refuse } from "./errors.js";
 import { createHttpToolHost } from "./http-host.js";
 import {
+  claimControlDir,
   endOwnedSpawn,
   liveMarkerFor,
+  releaseControlDir,
   registerOwnedSpawn,
+  rememberLiveMarker,
   RESUME_BASENAME,
   writeLiveMarker,
 } from "./live-spawn.js";
@@ -164,6 +168,8 @@ export type SkillSpawnOpts = {
   beforeSnapshot?: (ctx: { sandbox?: SandboxHandle }) => Promise<void>;
   /** Engine audit sink for finish events (`protected_restored`, `quarantine_created`). */
   audit?: SpawnAudit;
+  /** Called after a restore that changed protected files, so the engine can drop stale caches. */
+  onRestored?: (result: ProtectedRestoreResult) => Promise<void>;
 };
 
 export type SpawnAudit = (type: string, data: Record<string, unknown>) => Promise<void>;
@@ -180,6 +186,7 @@ type SpawnRevertCtx = {
   /** P, held in memory: the finish path never trusts disk (KD-2). */
   protectedSnapshot: ProtectedSnapshot;
   audit?: SpawnAudit;
+  onRestored?: (result: ProtectedRestoreResult) => Promise<void>;
 };
 
 export type StartedSkillSpawn =
@@ -366,7 +373,9 @@ export function assertSpawnGitRepo(projectRoot: string): void {
 }
 
 export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkillSpawn> {
-  const runId = `${opts.skillId}-${Date.now().toString(36)}`;
+  // Random suffix: two spawns of one skill in the same millisecond must not share a control dir,
+  // a quarantine prefix or a finish token (R-23).
+  const runId = `${opts.skillId}-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
   const resolution = resolveAdapterId({
     config: opts.config,
     skillId: opts.skillId,
@@ -480,7 +489,13 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   const dirtyAtStart = snapshotDirtyPaths(opts.projectRoot, preSpawnRef);
   // Control records live outside the project (KD-2, R-15): the agent's own run cache holds
   // nothing the engine trusts.
-  const controlDir = await ensureControlDir(opts.projectRoot, runId);
+  const controlDir = await ensureControlDir(opts.projectRoot, runId, { exclusive: true });
+  claimControlDir(controlDir);
+  /** A run that never reached its live marker leaves no record behind to freeze other processes. */
+  const abandonControlDir = async () => {
+    releaseControlDir(controlDir);
+    await rm(controlDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+  };
   const startedAt = new Date().toISOString();
 
   const writeResume = async (pid: number | null) => {
@@ -521,6 +536,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     try {
       assertExecuteSandbox(opts.config, { allowNoSandbox: opts.allowNoSandbox });
     } catch (err) {
+      await abandonControlDir();
       if (err instanceof SandboxError) refuse(err.message, HINT.allowNoSandbox);
       throw err;
     }
@@ -559,6 +575,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     await opts.beforeSnapshot?.({ sandbox });
   } catch (err) {
     await sandbox?.destroy().catch(() => undefined);
+    await abandonControlDir();
     throw err;
   }
 
@@ -567,8 +584,11 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   registerOwnedSpawn({ projectRoot: opts.projectRoot, runId, skillId: opts.skillId, controlDir });
   let protectedSnapshot: ProtectedSnapshot;
   let handle: AgentHandle;
+  let started: LiveStarted | undefined;
   try {
-    await writeLiveMarker(controlDir, liveMarkerFor(runId, opts.skillId, DEFAULT_TIMEOUT_MS));
+    const marker = liveMarkerFor(runId, opts.skillId, DEFAULT_TIMEOUT_MS);
+    rememberLiveMarker(opts.projectRoot, marker);
+    await writeLiveMarker(controlDir, marker);
     protectedSnapshot = await snapshotProtected(opts.projectRoot);
     await writeFile(join(controlDir, "protected-snapshot.json"), serializeProtectedSnapshot(protectedSnapshot), {
       encoding: "utf8",
@@ -600,35 +620,44 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
           }
         : {}),
     });
+    // Registered before any further await: from here the run can always be settled, so a later
+    // throw can never strand a running agent behind a permanent freeze (R-8).
+    started = {
+      spawned: true,
+      runId,
+      handle,
+      started: Date.now(),
+      revertCtx: {
+        projectRoot: opts.projectRoot,
+        runId,
+        skillId: opts.skillId,
+        preSpawnRef,
+        allowedRoots,
+        filesForbidden,
+        snapshot,
+        dirtyAtStart,
+        protectedSnapshot,
+        audit: opts.audit,
+        onRestored: opts.onRestored,
+      },
+      resolution,
+      binary: tmpl.binary,
+      argvSummary,
+      sandbox,
+    };
+    unfinished.set(runId, started);
+    await writeResume(handle.pid);
   } catch (err) {
-    await endOwnedSpawn(opts.projectRoot, runId).catch(() => undefined);
+    if (started) {
+      // The agent is already running: finish it (kill, restore P, unfreeze) instead of leaking it.
+      await finishStartedSpawn(started).catch(() => undefined);
+    } else {
+      await endOwnedSpawn(opts.projectRoot, runId).catch(() => undefined);
+      await abandonControlDir();
+    }
     await sandbox?.destroy().catch(() => undefined);
     throw err;
   }
-  await writeResume(handle.pid);
-  const started: LiveStarted = {
-    spawned: true,
-    runId,
-    handle,
-    started: Date.now(),
-    revertCtx: {
-      projectRoot: opts.projectRoot,
-      runId,
-      skillId: opts.skillId,
-      preSpawnRef,
-      allowedRoots,
-      filesForbidden,
-      snapshot,
-      dirtyAtStart,
-      protectedSnapshot,
-      audit: opts.audit,
-    },
-    resolution,
-    binary: tmpl.binary,
-    argvSummary,
-    sandbox,
-  };
-  unfinished.set(runId, started);
   return started;
 }
 
@@ -678,11 +707,20 @@ async function finishOnce(started: LiveStarted): Promise<RevertResult> {
   let copied: string[] = [];
   let dropped: string[] = [];
   let protectedResult: ProtectedRestoreResult | undefined;
+  let copyOutError: string | undefined;
   try {
+    // R-20: tear the agent's process tree down on every finish path, not just on timeout, so a
+    // detached grandchild cannot write after the compare. PR 6 still owns interrupt handling.
+    await started.handle.abort().catch(() => undefined);
     if (started.sandbox) {
-      const out = await started.sandbox.copyOut();
-      copied = out.copied;
-      dropped = out.dropped;
+      // R-1: a throwing copy-out must never skip the restore. Record it and carry on.
+      try {
+        const out = await started.sandbox.copyOut();
+        copied = out.copied;
+        dropped = out.dropped;
+      } catch (err) {
+        copyOutError = err instanceof Error ? err.message : String(err);
+      }
     }
     // KD-1: P is compared and restored before any engine git call, from the in-memory snapshot.
     try {
@@ -702,6 +740,10 @@ async function finishOnce(started: LiveStarted): Promise<RevertResult> {
         incident: true,
         quarantine: null,
       };
+    }
+    if (copyOutError) {
+      protectedResult.incident = true;
+      protectedResult.unrestorable.push(`jail copy-out failed (${copyOutError})`);
     }
     const revert = await revertExtras(ctx);
     const extrasReverted = new Set(revert.extrasReverted);
@@ -724,6 +766,10 @@ async function finishOnce(started: LiveStarted): Promise<RevertResult> {
     };
   } finally {
     await started.sandbox?.destroy().catch(() => undefined);
+    // The restore writes bytes straight to disk, so anything the index covers is now stale (R-14).
+    if (protectedResult && protectedResult.changed.length > 0 && ctx.onRestored) {
+      await ctx.onRestored(protectedResult).catch(() => undefined);
+    }
     // After the restore: unfreeze, then flush buffered and deferred audit events (KD-15, R-41).
     await endOwnedSpawn(ctx.projectRoot, ctx.runId).catch(() => undefined);
     await rm(join(controlDirPath(ctx.projectRoot, ctx.runId), "protected-snapshot.json"), { force: true }).catch(
@@ -767,6 +813,12 @@ export function protectedIncidentMessage(revert: Pick<RevertResult, "protected" 
   if (prot.unrestorable.length > 0) parts.push(`NOT restored: ${prot.unrestorable.join("; ")}`);
   else parts.push("they were restored");
   if (prot.quarantine) parts.push(`the agent's versions are in quarantine at ${prot.quarantine.dir}`);
+  // Any `.legion-cli/` change made while the run was live is treated the same way, including a
+  // person's own editor save (R-13), and the task needs reopening afterwards (R-12).
+  parts.push(
+    "any change to .legion-cli/ made while the run was live — including your own edits — is quarantined and reverted",
+  );
+  parts.push("inspect the quarantine, then reopen the task (legion-cli task retry, PR 6)");
   return parts.join("; ");
 }
 

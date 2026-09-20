@@ -6,7 +6,14 @@ import test from "node:test";
 
 import { appendAuditEvent, quarantineRootPath } from "@9thlevelsoftware/legion-cli-persist";
 
-import { allowCopyJailIn, normalize, runCli, withTempDir } from "./helpers.js";
+import {
+  allowCopyJailIn,
+  normalize,
+  runCli,
+  spawnSleeper,
+  withTempDir,
+  writeLiveControlRecords,
+} from "./helpers.js";
 
 test("KD-3: init outside a git repo prints the git next step; doctor reports the missing repository", async () => {
   await withTempDir(
@@ -55,6 +62,43 @@ test("R-40: doctor lists retained quarantines and flags a manifest that does not
     assert.ok(report.warnings.some((warning) => warning.includes(tampered)));
     const text = runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     assert.match(normalize(text.stdout), /Quarantine \(retained; never deleted by Legion\)/);
+  });
+});
+
+test("R-6/R-19: status and doctor name the agent run that is freezing writes", async (t) => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    await allowCopyJailIn(dir);
+    const other = spawnSleeper();
+    t.after(() => other.stop());
+    const control = await writeLiveControlRecords(dir, "review-live", "review", other.pid);
+
+    const status = runCli(["status", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.match(normalize(status.stdout), /Agent run {3}review review-live {2}live/);
+    assert.match(normalize(status.stdout), new RegExp(`engine pid ${other.pid}`));
+    assert.match(normalize(status.stdout), /engine writes are frozen/);
+    const statusJson = JSON.parse(
+      runCli(["status", "--project", dir, "--json"], { env: { LEGION_CLI_ADAPTER: "fake" } }).stdout,
+    );
+    assert.equal(statusJson.agentRun.runId, "review-live");
+    assert.equal(statusJson.agentRun.state, "live");
+    assert.equal(statusJson.agentRun.controlDir, control);
+
+    const doctor = runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.match(normalize(doctor.stdout), /Agent run\n {2}review review-live {2}live/);
+    const doctorJson = JSON.parse(
+      runCli(["doctor", "--project", dir, "--json"], { env: { LEGION_CLI_ADAPTER: "fake" } }).stdout,
+    );
+    assert.equal(doctorJson.agentRun.runId, "review-live");
+    assert.ok(doctorJson.warnings.some((warning) => warning.includes("an agent run is in progress")));
+
+    // A write from this second process is refused while that run holds the freeze.
+    const ticket = runCli(["ticket", "create", "--project", dir, "--title", "park"], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.notEqual(ticket.status, 0);
+    assert.match(normalize(ticket.stderr), /an agent run [(]review review-live[)] is in progress/);
   });
 });
 

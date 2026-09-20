@@ -35,12 +35,24 @@ const IMPLICIT_FORBIDDEN = [
  * (KD-1), so an agent can't forge audit lines (F-046).
  */
 const ENGINE_OWNED = [
-  ".legion-cli/cache/**",
   ".legion-cli/index/**",
   ".legion-cli/worktrees/**",
   ".legion-cli/sandbox/**",
   ".legion-cli/serve.json",
 ];
+
+/**
+ * Engine runtime areas the revert leaves alone: the engine's own index, worktrees, jails and
+ * `serve.json`, plus **this run's** cache (prompt, logs, `extra.json`, the staged skill). Another
+ * run's cache is not exempt (plan item 10, R-33).
+ */
+export function isEngineRuntimePath(posixPath: string, runId?: string): boolean {
+  const lower = posixPath.toLowerCase();
+  if (isEngineOwned(posixPath)) return true;
+  if (!runId) return lower.startsWith(".legion-cli/cache/");
+  const id = runId.toLowerCase();
+  return lower.startsWith(`.legion-cli/cache/runs/${id}/`) || lower.startsWith(`.legion-cli/cache/skills/${id}/`);
+}
 
 /** New fix-task files plan/review/verify may create (validated and admitted at finish, R-2). */
 export const NEW_TASK_FILE_PATTERN = ".legion-cli/tasks/TSK-*.md";

@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { AuditEventSchema, SCHEMA_VERSION, type AuditEvent, type Phase } from "@9thlevelsoftware/legion-cli-schema";
 import { abandonReceiptPath, auditDayPath, auditEventsPath, legionPaths, shipReceiptPath } from "./layout.js";
@@ -51,30 +51,80 @@ export async function appendDeferredAuditEvent(
   return parsed;
 }
 
-/** Append every deferred event (original timestamps kept) to the project audit log, then drop the file. */
+/**
+ * The only event a non-owning process produces while frozen is a refusal. Everything else in a
+ * deferred file was written by something that is not an engine verb — an agent runs as the user
+ * and can append to the control dir — so only refusals are drained (R-18).
+ */
+export const DEFERRABLE_AUDIT_TYPES = new Set(["refuse"]);
+
+/** Caps on a deferred file, so an agent cannot drown the audit log (R-18). */
+export const MAX_DEFERRED_AUDIT_BYTES = 256 * 1024;
+export const MAX_DEFERRED_AUDIT_EVENTS = 500;
+
+/**
+ * Append the deferred events to the project audit log, then drop the file.
+ *
+ * Deferred content is never trusted: the file sits in the control dir, which an unjailed agent can
+ * write. Every drained event is re-stamped as `actor: "deferred"` with `data.deferred: true` and
+ * the control dir it came from, its type must be one the freeze can legitimately produce, and an
+ * unparseable or future timestamp is replaced by the drain time. Doctor's integrity checks read
+ * only events the engine itself wrote (R-18).
+ */
 export async function drainDeferredAuditEvents(projectRoot: string, controlDir: string): Promise<number> {
-  const file = join(controlDir, DEFERRED_AUDIT_BASENAME);
-  let raw: string;
-  try {
-    raw = await readFile(file, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
-    throw err;
-  }
   let count = 0;
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim()) continue;
+  for (const name of await deferredFiles(controlDir)) {
+    const file = join(controlDir, name);
+    // Rename first: an append that lands after the read is then kept for the next drain, not
+    // deleted with the file (R-10).
+    const claimed = `${file}.${process.pid}.draining`;
     try {
-      const parsed = AuditEventSchema.safeParse(JSON.parse(line) as unknown);
-      if (!parsed.success) continue;
-      await appendAuditEvent(projectRoot, parsed.data);
-      count += 1;
+      await rename(file, claimed);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw err;
+    }
+    let raw: string;
+    try {
+      raw = await readFile(claimed, "utf8");
     } catch {
+      await unlink(claimed).catch(() => undefined);
       continue;
     }
+    if (raw.length > MAX_DEFERRED_AUDIT_BYTES) raw = raw.slice(0, MAX_DEFERRED_AUDIT_BYTES);
+    const now = Date.now();
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      if (count >= MAX_DEFERRED_AUDIT_EVENTS) break;
+      try {
+        const parsed = AuditEventSchema.safeParse(JSON.parse(line) as unknown);
+        if (!parsed.success) continue;
+        const event = parsed.data;
+        if (!DEFERRABLE_AUDIT_TYPES.has(event.type)) continue;
+        const ts = Date.parse(event.ts);
+        await appendAuditEvent(projectRoot, {
+          ...event,
+          ts: Number.isFinite(ts) && ts <= now ? event.ts : new Date(now).toISOString(),
+          actor: "deferred",
+          data: { ...event.data, deferred: true, controlDir },
+        });
+        count += 1;
+      } catch {
+        continue;
+      }
+    }
+    await unlink(claimed).catch(() => undefined);
   }
-  await unlink(file).catch(() => undefined);
   return count;
+}
+
+async function deferredFiles(controlDir: string): Promise<string[]> {
+  try {
+    return (await readdir(controlDir)).filter((name) => name.startsWith(DEFERRED_AUDIT_BASENAME));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
 }
 
 export function auditDayFromTs(ts: string): string {

@@ -62,8 +62,33 @@ export type ProtectedRestoreResult = {
 };
 
 const LEGION = ".legion-cli";
-const GIT_CONTROL_ROOTS = ["config", "config.worktree", "commondir", "hooks", "info", "objects/info/alternates"];
-const NEW_TASK_FILE = /^\.legion-cli\/tasks\/(TSK-\d{4,})\.md$/;
+const GIT_CONTROL_ROOTS = [
+  "config",
+  "config.worktree",
+  "commondir",
+  "hooks",
+  "info",
+  "objects/info/alternates",
+];
+
+/** Per-submodule control files: `git status` in the superproject reads them (R-21). */
+const SUBMODULE_CONTROL_ROOTS = ["config", "config.worktree", "hooks"];
+
+/** `modules/<name>/{config,config.worktree,hooks}` for each submodule git dir (one level). */
+async function submoduleControlRoots(gitDir: string): Promise<string[]> {
+  let names: string[];
+  try {
+    names = await readdir(join(gitDir, "modules"));
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => SUBMODULE_CONTROL_ROOTS.map((root) => `modules/${name}/${root}`));
+}
+/**
+ * A new task file the copy-out gate admits. The finish must accept exactly the same shape, so a
+ * badly named one is quarantined as an invalid task instead of becoming an incident (R-3).
+ */
+const NEW_TASK_FILE = /^\.legion-cli\/tasks\/(TSK-[^/]*)\.md$/i;
 
 function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -78,7 +103,7 @@ function absOf(scope: ProtectedScope, rel: string): string {
   return join(scope.base, ...rel.split("/"));
 }
 
-async function readEntry(abs: string): Promise<ProtectedEntry | null> {
+async function readEntry(abs: string, withBytes = true): Promise<ProtectedEntry | null> {
   let st;
   try {
     st = await lstat(abs);
@@ -89,18 +114,21 @@ async function readEntry(abs: string): Promise<ProtectedEntry | null> {
   if (st.isSymbolicLink()) return { kind: "link", target: await readlink(abs).catch(() => "") };
   if (st.isDirectory()) return { kind: "dir" };
   if (!st.isFile()) return { kind: "other" };
-  if (st.size <= PROTECTED_INLINE_MAX_BYTES) {
+  if (withBytes && st.size <= PROTECTED_INLINE_MAX_BYTES) {
     const bytes = await readFile(abs);
     return { kind: "file", size: bytes.length, sha256: sha256(bytes), bytes };
   }
   return { kind: "file", size: st.size, sha256: await sha256File(abs) };
 }
 
-/** lstat-only walk: a link is recorded as a link and never followed. */
-async function walkScope(scope: ProtectedScope): Promise<Map<string, ProtectedEntry>> {
+/**
+ * lstat-only walk: a link is recorded as a link and never followed. The after-walk only compares
+ * sizes and hashes, so it keeps no file bytes (R-5).
+ */
+async function walkScope(scope: ProtectedScope, withBytes = true): Promise<Map<string, ProtectedEntry>> {
   const out = new Map<string, ProtectedEntry>();
   const visit = async (rel: string, top: boolean): Promise<void> => {
-    const entry = await readEntry(absOf(scope, rel));
+    const entry = await readEntry(absOf(scope, rel), withBytes);
     if (!entry) return;
     out.set(rel, entry);
     if (entry.kind !== "dir") return;
@@ -144,14 +172,15 @@ export async function snapshotProtected(projectRoot: string): Promise<ProtectedS
     const key = process.platform === "win32" ? dir.toLowerCase() : dir;
     if (seen.has(key)) continue;
     seen.add(key);
+    const roots = [...GIT_CONTROL_ROOTS, ...(await submoduleControlRoots(dir))];
     if (isInside(root, dir)) {
       const relDir = toPosixPath(relative(root, dir));
-      projectScope.roots.push(...GIT_CONTROL_ROOTS.map((name) => `${relDir}/${name}`));
+      projectScope.roots.push(...roots.map((name) => `${relDir}/${name}`));
     } else {
       gitScopes.push({
         base: dir,
         label: (rel) => toPosixPath(join(dir, ...rel.split("/"))),
-        roots: [...GIT_CONTROL_ROOTS],
+        roots,
         contractScoped: false,
         entries: new Map(),
       });
@@ -226,7 +255,7 @@ export async function restoreProtected(
   for (const scope of snapshot.scopes) {
     let after: Map<string, ProtectedEntry>;
     try {
-      after = await walkScope(scope);
+      after = await walkScope(scope, false);
     } catch (err) {
       result.incident = true;
       result.unrestorable.push(`${scope.label(scope.roots[0] ?? "")} (walk failed: ${describe(err)})`);
@@ -260,7 +289,12 @@ export async function restoreProtected(
       try {
         await restoreOne(scope, rel, before, quarantine, display);
         if (now?.kind === "link" || (before?.kind === "dir" && now && now.kind !== "dir")) handled.push(rel);
-        if (before?.kind === "file" && !before.bytes) result.unrestorable.push(`${display} (over 4 MiB; quarantined, not restored)`);
+        if (before?.kind === "file" && !before.bytes) {
+          // Say what actually happened (R-11): the agent's version is still the live file.
+          result.unrestorable.push(
+            `${display} (over 4 MiB: the agent's version is still in place, a copy of it is in quarantine — restore the file yourself from git)`,
+          );
+        }
       } catch (err) {
         result.unrestorable.push(`${display} (${describe(err)})`);
       }
@@ -269,6 +303,33 @@ export async function restoreProtected(
 
   if (newTaskCandidates.length > 0) {
     await admitNewTasks(snapshot, newTaskCandidates, quarantine, result);
+  }
+
+  // Second pass (R-20): a process the agent left behind can write after the compare. Verify only —
+  // anything that differs now is reported as unrestorable instead of being restored in a loop.
+  for (const scope of snapshot.scopes) {
+    let after: Map<string, ProtectedEntry>;
+    try {
+      after = await walkScope(scope, false);
+    } catch (err) {
+      result.incident = true;
+      result.unrestorable.push(`${scope.label(scope.roots[0] ?? "")} (second walk failed: ${describe(err)})`);
+      continue;
+    }
+    for (const rel of new Set([...scope.entries.keys(), ...after.keys()])) {
+      if (sameEntry(scope.entries.get(rel), after.get(rel))) continue;
+      const display = scope.label(rel);
+      if (result.admittedTaskIds.some((id) => rel.toLowerCase() === `${LEGION}/tasks/${id.toLowerCase()}.md`)) continue;
+      if (scope.contractScoped && isProtectedLegionPath(rel) && isAllowedPath(rel, opts.allowedRoots)) continue;
+      if (result.rejectedTaskFiles.includes(display)) continue;
+      const before = scope.entries.get(rel);
+      // A directory the agent created is not work by itself (same rule as the first pass), and
+      // over-cap files are knowingly left in place and already reported.
+      if (!before && after.get(rel)?.kind === "dir") continue;
+      if (before?.kind === "file" && !before.bytes) continue;
+      result.incident = true;
+      result.unrestorable.push(`${display} (changed again after the restore)`);
+    }
   }
 
   try {

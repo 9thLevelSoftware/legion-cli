@@ -40,13 +40,7 @@ export {
   splitLines,
   splitMustNotAndOutOfScope,
 } from "./intent.js";
-export {
-  HEAD_MOVED_WARNING,
-  restoreChangedTaskFiles,
-  revertExtras,
-  snapshotTaskFiles,
-} from "./revert.js";
-export type { TaskFileSnapshot } from "./revert.js";
+export { HEAD_MOVED_WARNING, revertExtras } from "./revert.js";
 export {
   ensureRegressionTest,
   fixFilesAllowed,
@@ -75,7 +69,15 @@ export {
   resolveSkillDir,
   resumeRunIsLive,
 } from "./spawn.js";
-export { findLiveSpawn, frozenMessage, LIVE_MARKER_BASENAME, RESUME_BASENAME } from "./live-spawn.js";
+export {
+  describeLiveSpawn,
+  findLiveSpawn,
+  frozenMessage,
+  LIVE_MARKER_BASENAME,
+  LIVE_MARKER_HEARTBEAT_MS,
+  RESUME_BASENAME,
+} from "./live-spawn.js";
+export type { LiveSpawn } from "./live-spawn.js";
 export {
   isProtectedPath,
   PROTECTED_INLINE_MAX_BYTES,

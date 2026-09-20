@@ -26,8 +26,15 @@ export async function installWithLock<T>(
   const store = createLegionStore(projectRoot);
   // Installs write under `.legion-cli/` (protected): refused while an agent run is live (KD-2).
   const engine = createLegionEngine(projectRoot, undefined);
+  // Before the lock for a fast refusal, and again under it: a spawn starts with the lock free,
+  // so only the inner check keeps an install out of the spawn window (R-22).
   await engine.assertNoLiveAgentRun();
-  if (!remote) return store.withLock(() => run(undefined));
+  const locked = async <R>(fn: () => Promise<R>): Promise<R> =>
+    store.withLock(async () => {
+      await engine.assertNoLiveAgentRun();
+      return fn();
+    });
+  if (!remote) return locked(() => run(undefined));
   let body: Buffer | undefined;
   try {
     await run(async (source, opts) => {
@@ -39,5 +46,5 @@ export async function installWithLock<T>(
     if (!(err instanceof Prefetched)) throw err;
   }
   const downloaded = body as Buffer;
-  return store.withLock(() => run(async () => ({ body: downloaded })));
+  return locked(() => run(async () => ({ body: downloaded })));
 }
