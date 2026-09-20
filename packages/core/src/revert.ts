@@ -1034,13 +1034,14 @@ function ignoredDirWarnings(snapshot: TreeSnapshot, after: WalkResult, result: R
     for (const [name, stat] of afterTop) {
       const was = beforeTop.get(name);
       if (was && was.kind === stat.kind && was.size === stat.size && was.mtimeMs === stat.mtimeMs) continue;
-      // A secret-like path under an ignored directory is backed up at snapshot time and restored
-      // separately; anything else here is build output.
-      if (isSecretLikePath(`${spelling}/${stat.name}`)) continue;
+      // Only an entry `ignoredSecrets` actually enrolled is handled elsewhere. `ignoredSecrets`
+      // takes files only, so a secret-NAMED directory (`secrets/prod/`) must still be reported
+      // here rather than silently skipped for looking secret-like.
+      if (snapshot.ignoredSecrets.has(foldKey(`${spelling}/${stat.name}`))) continue;
       result.warnings.push(`${spelling}/${stat.name} (${was ? "changed" : "new"} ignored output; left in place)`);
     }
     for (const [name, stat] of beforeTop) {
-      if (afterTop.has(name) || isSecretLikePath(`${spelling}/${stat.name}`)) continue;
+      if (afterTop.has(name) || snapshot.ignoredSecrets.has(foldKey(`${spelling}/${stat.name}`))) continue;
       result.warnings.push(`${spelling}/${stat.name} (deleted ignored output; not restored)`);
     }
   }
@@ -1075,18 +1076,31 @@ async function confirmUnchanged(
     if (!before || !now || before.kind !== "file" || now.kind !== "file") continue;
     // A spelling difference that is only a normalization difference is still the same path (R-19).
     if (!sameSpelling(now.path, before.path)) continue;
+    // Identical bytes with a different mode is still a change — a `chmod +x` on an out-of-contract
+    // file is exactly the kind of thing the revert exists to undo. Only clear it when there is no
+    // source to put the mode back from, where a LOST line for a bare chmod would be noise.
+    if (now.mode !== before.mode && before.restoreFrom !== "none") continue;
     if (before.restoreFrom === "git") {
       trackedNow.push(candidate);
       continue;
     }
     let expected = before.sha256;
     if (!expected && before.backup && before.backupStat) {
-      // A hardlinked backup: the same inode means nothing was written at all.
-      if (now.ino !== "0" && now.ino === before.backupStat.ino && now.size === before.backupStat.size) {
+      // A hardlinked backup SHARES the inode with the project file, so "same inode" is not
+      // evidence of anything on its own — an in-place same-size rewrite (a sqlite page update,
+      // a fixed-width binary, a padded config) changes the file and the backup together and
+      // leaves the inode identical. The recorded stat of the shared inode is checked FIRST; only
+      // if it is still the pre-run one does the inode identity mean "nothing was written".
+      if (!(await backupIsIntact(before))) continue; // rewritten in place: the copy is stale
+      if (
+        now.ino !== "0" &&
+        now.ino === before.backupStat.ino &&
+        now.size === before.backupStat.size &&
+        now.mtimeMs === before.backupStat.mtimeMs
+      ) {
         unchanged.add(candidate.key);
         continue;
       }
-      if (!(await backupIsIntact(before))) continue; // rewritten in place: the copy is stale
       expected = await sha256File(before.backup).catch(() => undefined);
     }
     if (!expected) continue;
@@ -1147,7 +1161,7 @@ async function actOn(
     if (before.restoreFrom === "backup" && before.backup) {
       if (!(await backupIsIntact(before))) {
         throw new Error(
-          `${display} was rewritten in place, which also destroyed the hardlinked pre-run copy; the agent's version was left alone`,
+          "LOST: it was rewritten in place, which also destroyed the hardlinked pre-run copy; the agent's version was left in place, not restored",
         );
       }
       backupSha = before.sha256 ?? (await sha256File(before.backup));
@@ -1188,6 +1202,7 @@ async function actOn(
 
   if (before.kind === "dir") {
     await mkdir(abs, { recursive: true });
+    await applyMode(abs, before.mode);
     return null;
   }
   if (before.kind !== "file") {

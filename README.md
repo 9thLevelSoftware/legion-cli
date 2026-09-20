@@ -38,7 +38,7 @@ Two consequences worth knowing:
 
 What it does **not** promise, so you can judge when to leave a run unattended:
 
-- Files git can reproduce are restored from git. Everything else — dirty, untracked and gitignored files — is protected by a copy up to 4 MiB each and 256 MiB per run, and by a hardlink above that. A hardlink survives `rm`, `git clean` and the usual write-a-temp-then-rename, but **not** a program that truncates and rewrites the file in place; when that happens Legion says so rather than restoring stale bytes.
+- Files git can reproduce are restored from git. Everything else — dirty, untracked and gitignored files — is protected by a copy up to 4 MiB each and 256 MiB per run, and by a hardlink above that. A hardlink survives `rm`, `git clean` and the usual write-a-temp-then-rename, but **not** a program that rewrites the file in place; when that happens Legion names the file as `LOST:` and leaves the new version alone, rather than restoring stale bytes or claiming nothing changed.
 - The contents of gitignored directories (`node_modules/`, `dist/`) are reported at their **top level only** and never restored. Anything deeper is not tracked.
 - New build output in gitignored directories is reported and left in place, not reverted. Secret-like names (`.env*`, `id_rsa`, `*.pem`, `.npmrc`, …) are quarantined instead when they appear as new ignored files, and are backed up ahead of everything else when they already existed.
 - Detection is stat-first. It catches accidental and careless change reliably; an agent that deliberately forges a file's size, mtime, inode and change time at once is not detected outside the protected set, which is byte-compared.

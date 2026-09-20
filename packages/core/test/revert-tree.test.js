@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -176,6 +176,94 @@ test("with no hardlink available an over-cap ignored file is named as LOST and l
     assert.equal((await readFile(join(dir, "big.bin")))[0], 2);
   });
 });
+
+// R-31 (round 2): a hardlinked backup SHARES the inode with the project file, so "same inode"
+// proves nothing by itself. An in-place, same-size rewrite — a sqlite page update, a fixed-width
+// binary — changes both at once, and must not be waved through as unchanged.
+test("an in-place same-size rewrite of a hardlinked file is not mistaken for no change", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, ".gitignore"), "big.bin\n", "utf8");
+    initGitRepo(dir);
+    const original = Buffer.alloc(5 * 1024 * 1024, 1);
+    await writeFile(join(dir, "big.bin"), original);
+    const { result } = await roundTrip(dir, control, async () => {
+      // Open r+ and overwrite in place: same length, same inode, backup destroyed with it.
+      const handle = await open(join(dir, "big.bin"), "r+");
+      try {
+        await handle.write(Buffer.alloc(4096, 2), 0, 4096, 0);
+      } finally {
+        await handle.close();
+      }
+    });
+    assert.equal(result.incident, true, JSON.stringify(result));
+    assert.ok(
+      result.unrestorable.some((line) => line.startsWith("big.bin") && line.includes("rewritten in place")),
+      JSON.stringify(result.unrestorable),
+    );
+    // Fail-closed: the agent's version is still there and the loss is named, never silent.
+    assert.equal((await readFile(join(dir, "big.bin")))[0], 2);
+  });
+});
+
+// R-31 (round 2): the same shortcut must still clear a file nothing wrote to.
+test("an untouched hardlinked file is confirmed unchanged without hashing it", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, ".gitignore"), "big.bin\nother.txt\n", "utf8");
+    initGitRepo(dir);
+    await writeFile(join(dir, "big.bin"), Buffer.alloc(5 * 1024 * 1024, 1));
+    await writeFile(join(dir, "other.txt"), "unrelated\n", "utf8");
+    const { result } = await roundTrip(dir, control, async () => {
+      // Touch only the directory, so `big.bin` is stat-identical.
+      await writeFile(join(dir, "other.txt"), "changed\n", "utf8");
+    });
+    assert.equal(result.incident, false, JSON.stringify(result));
+    assert.equal(result.unrestorable.length, 0);
+    assert.equal(result.restoredIgnored.includes("big.bin"), false);
+  });
+});
+
+// Round 2: a secret-NAMED directory inside an ignored directory is not enrolled in
+// `ignoredSecrets` (which takes files), so it must still be reported.
+test("a secret-named directory inside an ignored directory is still reported", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, ".gitignore"), "build/\n", "utf8");
+    await mkdir(join(dir, "build", "secrets"), { recursive: true });
+    await writeFile(join(dir, "build", "secrets", "a.txt"), "one\n", "utf8");
+    initGitRepo(dir);
+    const { result } = await roundTrip(dir, control, async () => {
+      await writeFile(join(dir, "build", "secrets", "b.txt"), "two\n", "utf8");
+    });
+    assert.ok(
+      result.warnings.some((line) => line.startsWith("build/secrets")),
+      JSON.stringify(result.warnings),
+    );
+  });
+});
+
+// R-5 / round 2: the mode is part of a file's identity, so a bare `chmod +x` out of contract is
+// reverted rather than cleared by the content check, and a restored script stays executable.
+test(
+  "posix: a mode-only change is reverted and a restored script keeps its executable bit",
+  { skip: process.platform === "win32" ? "POSIX modes only" : false },
+  async () => {
+    await withProject(async ({ dir, control }) => {
+      await writeFile(join(dir, "run.sh"), "#!/bin/sh\necho hi\n", "utf8");
+      await chmod(join(dir, "run.sh"), 0o755);
+      await writeFile(join(dir, "plain.txt"), "plain\n", "utf8");
+      await chmod(join(dir, "plain.txt"), 0o644);
+      initGitRepo(dir);
+      const { result } = await roundTrip(dir, control, async () => {
+        await writeFile(join(dir, "run.sh"), "#!/bin/sh\necho pwned\n", "utf8");
+        await chmod(join(dir, "run.sh"), 0o755);
+        await chmod(join(dir, "plain.txt"), 0o777); // identical bytes, different mode
+      });
+      assert.equal((await read(dir, "run.sh")).replaceAll("\r\n", "\n"), "#!/bin/sh\necho hi\n");
+      assert.equal((await lstat(join(dir, "run.sh"))).mode & 0o777, 0o755);
+      assert.ok(result.reverted.includes("plain.txt"), JSON.stringify(result));
+      assert.equal((await lstat(join(dir, "plain.txt"))).mode & 0o777, 0o644);
+    });
+  },
+);
 
 // R-6/R-16: an over-cap file that was only TOUCHED must not block the run.
 test("touching an unbacked-up file without changing it is not an incident", async () => {
