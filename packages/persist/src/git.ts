@@ -3,7 +3,7 @@ import { lstatSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { PersistError } from "./errors.js";
-import { canonicalizePath, toPosixPath } from "./paths.js";
+import { toPosixPath } from "./paths.js";
 
 function runGit(cwd: string, args: string[]): { status: number; stdout: string; stderr: string } {
   const result = spawnSync("git", args, {
@@ -185,13 +185,16 @@ export type GitWorktree = {
 };
 
 function sameAbsPath(a: string, b: string): boolean {
-  // Canonicalize so a Windows 8.3 short path (RUNNER~1) matches git's long form.
-  const left = canonicalizePath(a);
-  const right = canonicalizePath(b);
+  const left = resolve(a);
+  const right = resolve(b);
   return left === right || left.toLowerCase() === right.toLowerCase();
 }
 
-/** realpath of the longest existing prefix of `path`, with the missing remainder appended. */
+/**
+ * realpath of the longest existing prefix of `path`, with the missing remainder appended.
+ * Native realpath expands Windows 8.3 names (RUNNER~1) on that prefix so they match git's
+ * long-form `worktree list` paths; the caller decides whether the last segment is followed.
+ */
 function realPrefix(path: string): string {
   const tail: string[] = [];
   let head = resolve(path);
@@ -211,6 +214,7 @@ function realPrefix(path: string): string {
  * Compare a worktree path with one git recorded. Git stores realpaths, so a project reached
  * through a link (junction, symlinked --project) must be resolved first. The last segment is not
  * followed: a link at the worktree path itself must never match the checkout it points at.
+ * Parent 8.3 short names are expanded by realPrefix; the trailing name stays as given.
  */
 export function sameWorktreePath(a: string, b: string): boolean {
   const canonical = (path: string) => join(realPrefix(dirname(resolve(path))), basename(resolve(path)));
