@@ -65,6 +65,39 @@ function hardeningPaths(): { hooksPath: string; attributesFile: string } {
   return hardening;
 }
 
+let preserved: string[] | undefined;
+
+/**
+ * Read calls ignore the system and global config (R-21), which would also drop two keys people
+ * legitimately set there: `safe.directory` (container and shared checkouts) and, on Windows,
+ * `core.longpaths`. Those two are read back from the system/global scopes only — never from the
+ * repository config, which an agent can write — and re-injected with `-c`.
+ */
+function preservedGlobalConfig(): string[] {
+  if (preserved) return preserved;
+  const out: string[] = [];
+  const binary = resolveGitBinary();
+  if (!binary) return (preserved = out);
+  const read = (scope: string, args: string[]): string[] => {
+    const result = spawnSync(binary, ["config", scope, ...args], {
+      encoding: "utf8",
+      windowsHide: true,
+      shell: false,
+      env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
+    });
+    if (result.status !== 0) return [];
+    return (result.stdout ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  };
+  for (const scope of ["--system", "--global"]) {
+    for (const dir of read(scope, ["--get-all", "safe.directory"])) out.push("-c", `safe.directory=${dir}`);
+    if (process.platform === "win32") {
+      for (const value of read(scope, ["--get", "core.longpaths"])) out.push("-c", `core.longpaths=${value}`);
+    }
+  }
+  preserved = out;
+  return out;
+}
+
 function gitArgv(args: readonly string[], kind: GitKind): string[] {
   if (kind === "commit") return [...args];
   const paths = hardeningPaths();
@@ -78,6 +111,7 @@ function gitArgv(args: readonly string[], kind: GitKind): string[] {
     "core.quotePath=false",
     "-c",
     `core.attributesFile=${paths.attributesFile}`,
+    ...preservedGlobalConfig(),
     ...sub,
   ];
 }
