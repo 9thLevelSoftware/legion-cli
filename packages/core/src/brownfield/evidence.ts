@@ -1,8 +1,7 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
-import { unwrapCmdShim } from "@9thlevelsoftware/legion-cli-agents";
+import { runCommand } from "@9thlevelsoftware/legion-cli-agents";
 import { FingerprintFileSchema, type FingerprintFile } from "@9thlevelsoftware/legion-cli-schema";
 import { gardenReport } from "@9thlevelsoftware/legion-cli-wiki";
 import {
@@ -370,13 +369,7 @@ export function resolveAuditBin(name: string, projectRoot: string): string | nul
   return null;
 }
 
-export function quoteCmdArg(arg: string): string {
-  if (arg.length === 0) return '""';
-  if (!/[\t\r\n "]/.test(arg)) return arg;
-  return `"${arg.replaceAll('"', '""')}"`;
-}
-
-function runLockfileAudit(projectRoot: string): { lines: string[]; ran: boolean } {
+async function runLockfileAudit(projectRoot: string, runId: string): Promise<{ lines: string[]; ran: boolean }> {
   const pnpmLock = existsSync(join(projectRoot, "pnpm-lock.yaml"));
   const npmLock = existsSync(join(projectRoot, "package-lock.json"));
   if (!pnpmLock && !npmLock) return { lines: ["no audit (no lockfile)"], ran: false };
@@ -385,42 +378,28 @@ function runLockfileAudit(projectRoot: string): { lines: string[]; ran: boolean 
   const argv = pnpmLock ? ["audit", "--json", "--ignore-pnpmfile"] : ["audit", "--json"];
   const resolved = resolveAuditBin(bin, projectRoot);
   if (!resolved) return { lines: formatAuditLines({ lockfile, bin, stdout: "", error: `${bin} not on PATH` }), ran: false };
-  const env: NodeJS.ProcessEnv = { ...process.env, NoDefaultCurrentDirectoryInExePath: "1", npm_config_ignore_scripts: "true" };
-  delete env.NODE_TEST_CONTEXT;
-  const spawnOpts = {
+  const logDir = join(projectRoot, ".legion-cli", "cache", "brownfield", runId);
+  const stdoutPath = join(logDir, "audit.stdout.log");
+  // The shared runner (KD-4). The user's own registry auth is needed, so the env is inherited.
+  const result = await runCommand([resolved, ...argv], {
     cwd: projectRoot,
-    encoding: "utf8" as const,
-    windowsHide: true,
-    shell: false,
-    timeout: AUDIT_TIMEOUT_MS,
-    killSignal: "SIGKILL" as const,
-    env,
-    maxBuffer: 8 * 1024 * 1024,
-  };
-  let result: ReturnType<typeof spawnSync>;
-  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
-    const unwrapped = unwrapCmdShim(resolved);
-    if (unwrapped) {
-      result = spawnSync(unwrapped.command, [...unwrapped.prefixArgs, ...argv], spawnOpts);
-    } else {
-      const line = [resolved, ...argv].map(quoteCmdArg).join(" ");
-      result = spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", line], {
-        ...spawnOpts,
-        windowsVerbatimArguments: true,
-      });
-    }
-  } else {
-    result = spawnSync(resolved, argv, spawnOpts);
+    env: "inherit",
+    envOverrides: { NoDefaultCurrentDirectoryInExePath: "1", npm_config_ignore_scripts: "true" },
+    timeoutMs: AUDIT_TIMEOUT_MS,
+    logPath: stdoutPath,
+    stderrPath: join(logDir, "audit.stderr.log"),
+  });
+  if (result.timedOut) return { lines: formatAuditLines({ lockfile, bin, stdout: "", timedOut: true }), ran: true };
+  if (!result.started) {
+    return { lines: formatAuditLines({ lockfile, bin, stdout: "", error: result.error ?? "did not start" }), ran: false };
   }
-  const timedOut =
-    (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ||
-    (result.signal === "SIGKILL" && result.status === null);
-  if (timedOut) return { lines: formatAuditLines({ lockfile, bin, stdout: "", timedOut: true }), ran: true };
-  if (result.error) {
-    const code = (result.error as NodeJS.ErrnoException).code ?? result.error.message;
-    return { lines: formatAuditLines({ lockfile, bin, stdout: "", error: code }), ran: false };
+  let stdout = "";
+  try {
+    stdout = await readFile(stdoutPath, "utf8");
+  } catch {
+    stdout = "";
   }
-  return { lines: formatAuditLines({ lockfile, bin, stdout: String(result.stdout ?? ""), status: result.status }), ran: true };
+  return { lines: formatAuditLines({ lockfile, bin, stdout, status: result.exitCode }), ran: true };
 }
 
 export function renderSecurityMd(findings: SecretFinding[], auditLines: string[], truncated = false): string {
@@ -539,7 +518,9 @@ export async function evidenceRun(
     sourceCount: evidence.sourceCount,
   });
   const secrets = await scanSecretFindings(root);
-  const audit = opts.skipAudit ? { lines: ["no audit (--skip-audit)"], ran: false } : runLockfileAudit(root);
+  const audit = opts.skipAudit
+    ? { lines: ["no audit (--skip-audit)"], ran: false }
+    : await runLockfileAudit(root, runId);
   const paths = runArtifactPaths(runId);
   await mkdir(runAbs(root, runId, "evidence"), { recursive: true });
   await writeFile(runAbs(root, runId, "evidence", "tests.md"), testsMd, "utf8");

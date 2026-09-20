@@ -84,7 +84,7 @@ test("runCommand captures JSON from node -e", async () => {
   const payload = { tests: [{ title: "health @p0", status: "passed" }] };
   const script = join(dir, "emit.js");
   await writeFile(script, `process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`, "utf8");
-  const capture = runCommand(dir, `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`);
+  const capture = await runCommand(dir, `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`);
   assert.equal(capture.started, true);
   assert.equal(capture.status, 0);
   assert.equal(JSON.parse(capture.stdout).tests[0].title, "health @p0");

@@ -1,7 +1,7 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { AuditEventSchema, SCHEMA_VERSION, type AuditEvent, type Phase } from "@9thlevelsoftware/legion-cli-schema";
 import { abandonReceiptPath, auditDayPath, auditEventsPath, legionPaths, shipReceiptPath } from "./layout.js";
-import { writeTextFile } from "./markdown.js";
 import { toFsPath } from "./paths.js";
 
 export { abandonReceiptPath, auditDayPath, auditEventsPath, shipReceiptPath };
@@ -36,18 +36,15 @@ async function appendAuditDay(projectRoot: string, event: AuditEvent): Promise<v
   const store = auditDayPath(day);
   const abs = toFsPath(projectRoot, store);
   const line = formatAuditDayLine(event);
-  let existing = "";
+  await mkdir(dirname(abs), { recursive: true });
   try {
-    existing = await readFile(abs, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-  if (existing === "") {
-    await writeTextFile(abs, `# ${day}\n\n${line}`);
+    // The header is written only by whoever creates the day file.
+    await writeFile(abs, `# ${day}\n\n${line}`, { encoding: "utf8", flag: "wx" });
     return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
-  const prefix = existing.endsWith("\n") ? existing : `${existing}\n`;
-  await writeTextFile(abs, `${prefix}${line}`);
+  await appendFile(abs, line, "utf8");
 }
 
 export function formatAuditDayLine(event: AuditEvent): string {

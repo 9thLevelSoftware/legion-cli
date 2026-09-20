@@ -4,7 +4,26 @@ export {
   PathEscapeError,
   PersistError,
   PersistValidationError,
+  SymlinkRefusedError,
 } from "./errors.js";
+export {
+  assertNoLinkInPath,
+  assertNotSymlink,
+  atomicWriteFile,
+  isWin32BusyError,
+  retryFsOp,
+  RETRY_FS_OP_TOTAL_MS,
+} from "./atomic-write.js";
+export { nextFileId } from "./ids.js";
+export {
+  ownProcessStartedAt,
+  PROCESS_START_TOLERANCE_MS,
+  processIdentity,
+  sameProcessStart,
+  startedAfterRecorded,
+} from "./process-identity.js";
+export { invalidTaskMessage, listTaskFiles } from "./tasks-list.js";
+export type { TaskFileEntry } from "./tasks-list.js";
 export {
   abandonReceiptBody,
   abandonReceiptPath,
@@ -79,7 +98,7 @@ export {
   worktreeStorePath,
 } from "./layout.js";
 export type { LegionPaths } from "./layout.js";
-export { acquireEngineLock, isPidAlive } from "./lock.js";
+export { acquireEngineLock, EMPTY_LOCK_STALE_MS, isPidAlive } from "./lock.js";
 export type { HeldLock } from "./lock.js";
 export {
   formatMarkdownDocument,
@@ -89,11 +108,13 @@ export {
   parseWithSchema,
   readMarkdownFile,
   readYamlFile,
+  SOT_READ_ATTEMPTS,
+  SOT_READ_RETRY_MS,
   writeMarkdownFile,
   writeTextFile,
   writeYamlFile,
 } from "./markdown.js";
-export type { MarkdownDoc } from "./markdown.js";
+export type { MarkdownDoc, WriteTextOpts } from "./markdown.js";
 export {
   assertInsideProject,
   assertResolvedInside,

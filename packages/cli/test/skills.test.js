@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { overlaySkillDir } from "@9thlevelsoftware/legion-cli-agents";
-import { normalize, runCli, withTempDir } from "./helpers.js";
+import { allowCopyJailIn, normalize, runCli, withTempDir } from "./helpers.js";
 
 const repoExecuteSkill = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills", "execute", "SKILL.md");
 
@@ -120,6 +120,7 @@ test("skills install github:evil.com/foo is refused by allowlist", async () => {
 test("doctor prints overlay pin vs packaged", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const src = join(dir, "execute");
     await mkdir(src, { recursive: true });
     await writeFile(join(src, "SKILL.md"), skillMarkdown("execute", { description: "overlay execute for doctor" }), "utf8");
@@ -138,6 +139,7 @@ test("doctor prints overlay pin vs packaged", async () => {
 test("doctor overlay body warning uses overlay path", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const src = join(dir, "execute");
     await mkdir(src, { recursive: true });
     const body = `# execute\n${"x".repeat(20_001)}\n`;
@@ -159,6 +161,7 @@ test("doctor overlay body warning uses overlay path", async () => {
 test("doctor overlay lines distinguish digest mismatch from unreadable pin", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const overlay = overlaySkillDir(dir, "execute");
     await mkdir(overlay, { recursive: true });
     await writeFile(join(overlay, "SKILL.md"), skillMarkdown("execute", { description: "tampered overlay" }), "utf8");
@@ -182,6 +185,35 @@ test("doctor overlay lines distinguish digest mismatch from unreadable pin", asy
     const unreadable = runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     assert.equal(unreadable.status, 1, `${unreadable.stdout}\n${unreadable.stderr}`);
     assert.match(normalize(unreadable.stdout), /unreadable overlay\.json/);
+  });
+});
+
+test("a github: install downloads without engine.lock and writes under it", async () => {
+  const { installWithLock } = await import("../dist/install-lock.js");
+  const { createLegionStore } = await import("@9thlevelsoftware/legion-cli-persist");
+  const { existsSync } = await import("node:fs");
+  await withTempDir(async (dir) => {
+    const lockPath = createLegionStore(dir).paths.lock;
+    const seen = [];
+    const result = await installWithLock(
+      dir,
+      true,
+      async (fetchZip) => {
+        const { body } = await fetchZip("github:acme/skills@v1");
+        seen.push({ phase: "write", locked: existsSync(lockPath), body: body.toString() });
+        return "installed";
+      },
+      async () => {
+        seen.push({ phase: "download", locked: existsSync(lockPath) });
+        return { body: Buffer.from("zip-bytes") };
+      },
+    );
+    assert.equal(result, "installed");
+    assert.deepEqual(seen, [
+      { phase: "download", locked: false },
+      { phase: "write", locked: true, body: "zip-bytes" },
+    ]);
+    assert.equal(existsSync(lockPath), false);
   });
 });
 

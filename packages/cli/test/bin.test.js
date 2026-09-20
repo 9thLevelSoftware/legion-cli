@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import { bin, normalize, runCli, withTempDir } from "./helpers.js";
+import { allowCopyJailIn, bin, normalize, runCli, withTempDir } from "./helpers.js";
 import { looksLikeLegionCliShim, RUN_BOUNDED_MAX_BUFFER, runBounded } from "../dist/which.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -336,6 +336,7 @@ function pathEnvWith(dir) {
 test("doctor warns when PATH legion --help matches the plugin installer", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const stubDir = join(dir, "installer-bin");
     await writeLegionHelpStub(stubDir, REAL_INSTALLER_HELP);
     const result = runCli(["doctor", "--project", dir, "--json"], {
@@ -360,6 +361,7 @@ test("doctor warns when PATH legion --help matches the plugin installer", async 
 test("doctor does not warn when PATH legion --help is Legion CLI", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const stubDir = join(dir, "pe-bin");
     await writeLegionHelpStub(stubDir, `${INVOCATION_LINES.join("\n")}\nProduct Engineering lifecycle engine\n`);
     const result = runCli(["doctor", "--project", dir, "--json"], {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -125,6 +126,34 @@ test("unzipZipball strips a single top-level folder", async () => {
   });
 });
 
+/** Windows 8.3 alias of `abs` (e.g. `…\LEGION~1`), or null when none is available. */
+function shortPathOf(abs) {
+  if (process.platform !== "win32") return null;
+  const result = spawnSync("cmd.exe", ["/d", "/s", "/c", `"for %I in ("${abs}") do @echo %~sI"`], {
+    encoding: "utf8",
+    windowsHide: true,
+    windowsVerbatimArguments: true,
+  });
+  const short = result.status === 0 ? result.stdout.trim() : "";
+  return short && short.toLowerCase() !== abs.toLowerCase() ? short : null;
+}
+
+test("unzipZipball accepts an 8.3 short destination path (RUNNER~1 TEMP)", async (t) => {
+  await withTempDir(async (dir) => {
+    const long = join(dir, "legion-long-destination");
+    await mkdir(long, { recursive: true });
+    const short = shortPathOf(long);
+    if (!short) {
+      t.skip("needs a Windows 8.3 short-name alias (non-Windows, or 8dot3 names disabled on this volume)");
+      return;
+    }
+    const dest = join(short, "out");
+    const files = await unzipZipball(makeZip([{ name: "brand-v1.0.0/README.md", data: "hello\n" }]), dest);
+    assert.deepEqual(files, ["README.md"]);
+    assert.equal(await readFile(join(long, "out", "README.md"), "utf8"), "hello\n");
+  });
+});
+
 test("unzipZipball refuses zip-slip .. entries", async () => {
   await withTempDir(async (dir) => {
     const zip = makeZip([{ name: "../../etc/passwd", data: "root:x:0:0:root:/root:/bin/sh\n" }]);
@@ -218,7 +247,7 @@ test("unzipZipball refuses a destDir or child directory that is a symlink", asyn
   });
 });
 
-test("unzipZipball allows POSIX colon names", { skip: process.platform === "win32" }, async () => {
+test("unzipZipball allows POSIX colon names", { skip: process.platform === "win32" && "Windows file names cannot contain ':'" }, async () => {
   await withTempDir(async (dir) => {
     const dest = join(dir, "out");
     const zip = makeZip([

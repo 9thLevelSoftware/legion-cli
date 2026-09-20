@@ -843,6 +843,11 @@ test("Task.blockedBy and blocks reject empty ids", () => {
   assert.equal(TaskSchema.safeParse({ ...task, blocks: [""] }).success, false);
 });
 
+// `pnpm test` no longer regenerates json/ (build is tsc only), so this compares the
+// committed files against the runtime schemas and catches an un-emitted schemas.ts edit.
+const EMIT_HINT =
+  "committed packages/schema/json is stale: run `pnpm --filter @9thlevelsoftware/legion-cli-schema run build && pnpm --filter @9thlevelsoftware/legion-cli-schema run emit` and commit the JSON";
+
 test("JSON Schema emit files match runtime schemas", () => {
   const jsonDir = join(pkgRoot, "json");
   const emitted = legionJsonSchemas();
@@ -850,11 +855,12 @@ test("JSON Schema emit files match runtime schemas", () => {
   assert.deepEqual(
     onDisk,
     [...JSON_SCHEMA_FILES].map((name) => `${name}.json`).sort(),
+    EMIT_HINT,
   );
 
   for (const name of JSON_SCHEMA_FILES) {
     const file = JSON.parse(readFileSync(join(jsonDir, `${name}.json`), "utf8"));
-    assert.deepEqual(file, emitted[name]);
+    assert.deepEqual(file, emitted[name], `${name}.json: ${EMIT_HINT}`);
     assert.ok(file.$schema || file.type || file.$defs || file.properties || file.enum);
   }
 });

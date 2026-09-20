@@ -1,9 +1,10 @@
+import { realpathSync } from "node:fs";
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { PathEscapeError, PersistError } from "./errors.js";
 import { MAX_ZIPBALL_BYTES, MAX_ZIPBALL_ENTRIES } from "./layout.js";
-import { assertResolvedInside, canonicalizePath, toFsPath } from "./paths.js";
+import { assertResolvedInside, toFsPath } from "./paths.js";
 
 const require = createRequire(import.meta.url);
 const yauzl = require("yauzl") as typeof import("yauzl");
@@ -181,7 +182,15 @@ async function assertNoSymlinkAncestors(root: string, abs: string): Promise<void
     try {
       const st = await lstat(current);
       if (st.isSymbolicLink()) throw new PathEscapeError(abs);
-      const real = canonicalizePath(current);
+      // JS realpathSync on purpose: it resolves symlinks/junctions per component but keeps
+      // Windows 8.3 short names, so a RUNNER~1 TEMP is not mistaken for a link here.
+      // (canonicalizePath uses the native realpath, which expands short names.)
+      let real = current;
+      try {
+        real = realpathSync(current);
+      } catch {
+        // missing: lexical
+      }
       if (!samePath(real, current)) throw new PathEscapeError(abs);
     } catch (err) {
       if (err instanceof PathEscapeError) throw err;

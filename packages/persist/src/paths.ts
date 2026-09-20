@@ -58,10 +58,15 @@ export function resolveProjectPath(projectRoot: string, input: string): string {
   return resolve(projectRoot, ...parts);
 }
 
-/** Follow junctions/symlinks when the path exists so ingest containment is canonical. */
+/**
+ * Follow junctions/symlinks when the path exists so ingest containment is canonical.
+ * Uses the native realpath (as `fs.promises.realpath`, which ingest uses, does) so
+ * Windows 8.3 short names such as `RUNNER~1` expand to the long form on both sides;
+ * the JS `realpathSync` keeps them, and `relative()` then escapes.
+ */
 export function canonicalizePath(absPath: string): string {
   try {
-    return realpathSync(absPath);
+    return realpathSync.native(absPath);
   } catch {
     return resolve(absPath);
   }

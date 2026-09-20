@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { SymlinkRefusedError } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionRefuseError } from "../dist/index.js";
 import {
   git,
@@ -319,6 +321,27 @@ test("abandon writes audit event and message", async () => {
     assert.match(jsonl, /scope changed/);
     const md = await readFile(join(store.paths.auditDir, "abandon-spec-checkin.md"), "utf8");
     assert.match(md, /scope changed/);
+  });
+});
+
+test("abandon refuses to write its receipt through a junctioned .legion-cli/audit (KD-8 ancestor walk)", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedPlanReady(store, { phase: "executing", lastReview: "PASS", task: { status: "done" } });
+    const outside = await mkdtemp(join(tmpdir(), "legion-abandon-outside-"));
+    try {
+      await rm(store.paths.auditDir, { recursive: true, force: true });
+      await symlink(outside, store.paths.auditDir, process.platform === "win32" ? "junction" : "dir");
+      await assert.rejects(() => engine.abandon("scope changed"), SymlinkRefusedError);
+      assert.deepEqual(
+        (await readdir(outside)).filter((name) => name.startsWith("abandon-")),
+        [],
+      );
+      assert.equal((await engine.getState()).phase, "executing");
+    } finally {
+      await rm(store.paths.auditDir, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });
 

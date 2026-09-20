@@ -4,7 +4,10 @@ import { findSkillsDir, listResolvedSkillCatalog } from "@9thlevelsoftware/legio
 import { isTaskReady } from "@9thlevelsoftware/legion-cli-graph";
 import {
   createLegionStore,
+  invalidTaskMessage,
+  listTaskFiles,
   type LegionReader,
+  type TaskFileEntry,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   AuditEventSchema,
@@ -106,18 +109,22 @@ async function assertInitialized(store: LegionReader): Promise<StateFile> {
   return state;
 }
 
+type InvalidTask = Extract<TaskFileEntry, { ok: false }>;
+
+/** Valid tasks plus the files that are not valid tasks (shown, never dropped). */
+export async function listTaskEntries(store: LegionReader): Promise<{ tasks: Task[]; invalid: InvalidTask[] }> {
+  const entries = await listTaskFiles(store.projectRoot);
+  return {
+    tasks: entries
+      .filter((entry): entry is Extract<TaskFileEntry, { ok: true }> => entry.ok)
+      .map((entry) => entry.task)
+      .sort((a, b) => a.id.localeCompare(b.id)),
+    invalid: entries.filter((entry): entry is InvalidTask => !entry.ok),
+  };
+}
+
 export async function listTasks(store: LegionReader): Promise<Task[]> {
-  const files = await listMarkdown(store.paths.tasksDir);
-  const tasks: Task[] = [];
-  for (const file of files) {
-    const id = file.replace(/\.md$/i, "");
-    try {
-      tasks.push((await store.readTask(id)).data);
-    } catch {
-      continue;
-    }
-  }
-  return tasks.sort((a, b) => a.id.localeCompare(b.id));
+  return (await listTaskEntries(store)).tasks;
 }
 
 async function readOptionalProject(store: LegionReader): Promise<ProjectFile | null> {
@@ -197,8 +204,12 @@ export async function readStatus(store: LegionReader) {
   const state = await readState(store);
   const project = state.phase === "uninitialized" ? null : await readOptionalProject(store);
   const config = await readOptionalConfig(store);
-  const slice = state.phase === "uninitialized" ? [] : sliceTasks(await listTasks(store), state.activeSpecId);
-  const blockers: Array<{ kind: "task" | "readiness" | "review"; id?: string; detail: string }> = [];
+  const listed = state.phase === "uninitialized" ? { tasks: [], invalid: [] } : await listTaskEntries(store);
+  const slice = sliceTasks(listed.tasks, state.activeSpecId);
+  const blockers: Array<{ kind: "task" | "readiness" | "review" | "invalid"; id?: string; detail: string }> = [];
+  for (const entry of listed.invalid) {
+    blockers.push({ kind: "invalid", id: entry.id, detail: invalidTaskMessage(entry) });
+  }
   if (state.lastReadiness === "FAIL") blockers.push({ kind: "readiness", detail: "readiness FAIL" });
   if (state.lastReview === "FAIL") blockers.push({ kind: "review", detail: "lastReview FAIL" });
   for (const task of slice) {
@@ -264,7 +275,7 @@ export async function readCurrentTask(store: LegionReader) {
 
 export async function readTaskGraph(store: LegionReader, specId?: string) {
   const state = await assertInitialized(store);
-  const tasks = await listTasks(store);
+  const { tasks, invalid } = await listTaskEntries(store);
   const active = specId ?? state.activeSpecId ?? null;
   const slice = sliceTasks(tasks, active);
   const config = await readOptionalConfig(store);
@@ -289,6 +300,7 @@ export async function readTaskGraph(store: LegionReader, specId?: string) {
       ready: isTaskReady(task, readyCtx),
       ...(task.adapter ? { adapter: task.adapter } : {}),
     })),
+    invalidTasks: invalid.map((entry) => ({ file: entry.file, error: entry.error })),
   };
 }
 

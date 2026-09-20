@@ -258,6 +258,9 @@ importers:
 
   packages/qa:
     dependencies:
+      '@9thlevelsoftware/legion-cli-agents':
+        specifier: workspace:*
+        version: link:../agents
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:../schema

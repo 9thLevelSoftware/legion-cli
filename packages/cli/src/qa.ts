@@ -28,12 +28,14 @@ export async function runQa(opts: CliOpts, flags: QaFlags): Promise<number> {
   const config = await engine.store.readConfig();
   const viewer = `http://${config.dashboard.bind}:${config.dashboard.port}`;
   const line = formatQaScore(score);
+  const warnings = engine.getLastQaWarnings();
 
   if (opts.json) {
     writeJson({
       ok: score.pass,
       score,
       line,
+      warnings,
       phase: state.phase,
       next: score.pass ? "legion-cli ship" : score.mode === "no-browser" ? HINT.degradedQa : next.run,
       viewer,
@@ -41,6 +43,7 @@ export async function runQa(opts: CliOpts, flags: QaFlags): Promise<number> {
     return score.pass ? 0 : 1;
   }
 
+  for (const warning of warnings) writeOut(warning);
   writeOut(line);
   if (score.pass) {
     writeOut("PASS. Next: legion-cli ship");

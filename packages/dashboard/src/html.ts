@@ -115,6 +115,8 @@ function taskCard(task: DashboardTask, currentId: string | null): string {
 }
 
 function alertFor(snapshot: DashboardSnapshot): string | undefined {
+  if (snapshot.stateError) return snapshot.stateError;
+  if (snapshot.blockers.some((item) => item.kind === "invalid")) return "Invalid task file";
   if (snapshot.blockers.some((item) => item.kind === "task")) return "Blocked work on the board";
   if (snapshot.lastReadiness === "FAIL") return "Readiness FAIL";
   if (snapshot.lastReview === "FAIL") return "Review FAIL";
@@ -155,7 +157,7 @@ export function renderKanban(snapshot: DashboardSnapshot, webmcp = false): strin
         .join("")}</ol>`;
   const body = `
     <h1>${escapeHtml(name)}</h1>
-    <p>phase: <strong>${escapeHtml(snapshot.phase)}</strong> · current task: <strong>${escapeHtml(current)}</strong></p>
+    <p>phase: <strong>${escapeHtml(snapshot.stateError ?? snapshot.phase)}</strong> · current task: <strong>${escapeHtml(current)}</strong></p>
     <h2>Path</h2>
 ${pathList(snapshot)}
     <h2>Kanban</h2>
