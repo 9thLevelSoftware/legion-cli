@@ -96,12 +96,21 @@ export function runGit(
   if (rel && !rel.startsWith("..") && !isAbsolute(rel)) {
     return { status: 1, stdout: "", stderr: `refusing to run git from inside the project (${binary})` };
   }
-  const result = spawnSync(binary, gitArgv(args, opts.kind ?? "read"), {
+  const kind = opts.kind ?? "read";
+  const result = spawnSync(binary, gitArgv(args, kind), {
     cwd,
     encoding: "utf8",
     windowsHide: true,
     shell: false,
-    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
+    env: {
+      ...process.env,
+      GIT_NO_REPLACE_OBJECTS: "1",
+      // Read/restore calls also ignore the system and global config, so no file outside the
+      // repository can introduce a filter or diff driver either (R-21).
+      ...(kind === "read"
+        ? { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: hardeningPaths().attributesFile }
+        : {}),
+    },
     ...(opts.maxBuffer ? { maxBuffer: opts.maxBuffer } : {}),
   });
   return {

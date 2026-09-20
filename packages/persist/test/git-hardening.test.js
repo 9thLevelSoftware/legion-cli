@@ -76,6 +76,10 @@ test("R-19: hardened read calls never run the repo fsmonitor", async () => {
     const script = join(dir, "fsmonitor.js").replaceAll("\\", "/");
     await writeFile(script, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");\n`);
     git(dir, ["config", "core.fsmonitor", `"${process.execPath.replaceAll("\\", "/")}" "${script}"`]);
+    // Positive control (R-32): the planted value is something this git really invokes.
+    git(dir, ["status", "--porcelain"]);
+    assert.equal(existsSync(marker), true, "control: an unhardened status runs the fsmonitor");
+    await rm(marker, { force: true });
     const status = runGit(dir, ["status", "--porcelain"]);
     assert.equal(status.status, 0, status.stderr);
     assert.equal(existsSync(marker), false, "fsmonitor ran on a hardened read");

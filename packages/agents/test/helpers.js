@@ -12,7 +12,9 @@ export async function withTempDir(fn) {
   try {
     return await fn(dir);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    // A just-killed process tree can still hold a handle on Windows (EBUSY): retry the cleanup
+    // instead of failing the package and hiding every suite after it (R-30).
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 }
 
