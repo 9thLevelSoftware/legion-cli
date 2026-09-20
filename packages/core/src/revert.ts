@@ -76,6 +76,8 @@ export type RevertResult = {
   quarantinedCommits?: string[];
   /** The one command that undoes the agent's ref movement (R-20). */
   commitRecovery?: string;
+  /** False when `update-ref` failed, so the commits are NOT safe from the next `gc` (R-22, R-32). */
+  commitsPinned?: boolean;
   /** The run's quarantine folder, whenever anything was displaced (R-15). */
   quarantineDir?: string | null;
 };

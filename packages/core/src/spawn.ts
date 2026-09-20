@@ -831,6 +831,7 @@ async function finishOnce(started: LiveStarted): Promise<RevertResult> {
       headMoved: tree.agentCommits.headMoved,
       branchMoved: tree.agentCommits.branchMoved,
       quarantinedCommits: tree.agentCommits.commits,
+      commitsPinned: tree.agentCommits.pinned,
       ...(tree.agentCommits.recovery ? { commitRecovery: tree.agentCommits.recovery } : {}),
       preSpawnRef: ctx.preSpawnRef,
       ...(started.sandbox ? { outsideJail: tree.reverted } : {}),
@@ -896,6 +897,7 @@ export function protectedIncidentMessage(
     | "branchMoved"
     | "quarantineDir"
     | "runId"
+    | "commitsPinned"
   >,
 ): string {
   const parts: string[] = [];
@@ -918,9 +920,12 @@ export function protectedIncidentMessage(
     // R-20/R-22: the working tree is already back; only the refs still hold work from the run.
     const ref = revert.runId ? `refs/legion-quarantine/${revert.runId}` : "refs/legion-quarantine/<runId>";
     parts.push(
-      commits.length > 0
-        ? `commits were made during the run (${commits.map((sha) => sha.slice(0, 8)).join(", ")}); they are listed in STATE.quarantinedCommits and kept at ${ref} (git log ${ref})`
-        : "the checked-out branch changed during the run",
+      commits.length === 0
+        ? "the checked-out branch changed during the run"
+        : revert.commitsPinned === false
+          ? // R-22: never claim reachability we failed to establish.
+            `commits were made during the run (${commits.map((sha) => sha.slice(0, 8)).join(", ")}); they are listed in STATE.quarantinedCommits, but ${ref} could NOT be created, so they are only reachable until the next git gc`
+          : `commits were made during the run (${commits.map((sha) => sha.slice(0, 8)).join(", ")}); they are listed in STATE.quarantinedCommits and kept at ${ref} (git log ${ref})`,
     );
     if (revert.commitRecovery) {
       parts.push(
