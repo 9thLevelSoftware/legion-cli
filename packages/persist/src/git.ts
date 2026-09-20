@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { lstatSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { PersistError } from "./errors.js";
 import { toPosixPath } from "./paths.js";
@@ -190,6 +190,32 @@ function sameAbsPath(a: string, b: string): boolean {
   return left === right || left.toLowerCase() === right.toLowerCase();
 }
 
+/** realpath of the longest existing prefix of `path`, with the missing remainder appended. */
+function realPrefix(path: string): string {
+  const tail: string[] = [];
+  let head = resolve(path);
+  for (;;) {
+    try {
+      return join(realpathSync.native(head), ...tail.reverse());
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return resolve(path);
+      tail.push(basename(head));
+      head = parent;
+    }
+  }
+}
+
+/**
+ * Compare a worktree path with one git recorded. Git stores realpaths, so a project reached
+ * through a link (junction, symlinked --project) must be resolved first. The last segment is not
+ * followed: a link at the worktree path itself must never match the checkout it points at.
+ */
+export function sameWorktreePath(a: string, b: string): boolean {
+  const canonical = (path: string) => join(realPrefix(dirname(resolve(path))), basename(resolve(path)));
+  return sameAbsPath(canonical(a), canonical(b));
+}
+
 export function listGitWorktrees(cwd: string): GitWorktree[] {
   const result = runGit(cwd, ["worktree", "list", "--porcelain"]);
   if (result.status !== 0) {
@@ -225,17 +251,105 @@ function gitWorktreePrune(cwd: string): void {
   runGit(cwd, ["worktree", "prune"]);
 }
 
+/** True when `candidate` is strictly below `root` (not equal, not outside, not another drive). */
+function strictlyUnder(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel !== "" && !isAbsolute(rel) && rel.split(/[\\/]/)[0] !== "..";
+}
+
+/** Like existsSync, but a dangling link still counts as present. */
+function pathPresent(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasGitSegment(rel: string): boolean {
+  return rel.split(/[\\/]/).some((part) => part.toLowerCase() === ".git");
+}
+
+/** True when `abs` is the top level of a live git checkout (of any repository). */
+function isOwnCheckout(abs: string): boolean {
+  const top = runGit(abs, ["rev-parse", "--show-toplevel"]);
+  if (top.status !== 0 || !top.stdout.trim()) return false;
+  try {
+    return sameAbsPath(realpathSync.native(top.stdout.trim()), realpathSync.native(abs));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stale-checkout cleanup may only touch `<project>/.legion-cli/worktrees/…`, and only where that
+ * resolves (through any linked `.legion-cli` or `worktrees` directory) inside the project: never
+ * the project itself, never `.git` or a directory holding one. A link at the target is only
+ * unlinked, never followed.
+ */
+function assertRemovableWorktreePath(cwd: string, worktreeAbs: string): void {
+  const root = resolve(cwd, ".legion-cli", "worktrees");
+  const target = resolve(worktreeAbs);
+  const refuse = (why: string): never => {
+    throw new PersistError(`refusing to remove ${target}: ${why}`);
+  };
+  if (!strictlyUnder(root, target)) {
+    refuse("stale worktrees are only removed under .legion-cli/worktrees/");
+  }
+  if (hasGitSegment(relative(root, target))) refuse("it is a .git directory");
+  if (!pathPresent(target)) return;
+  // Every existing ancestor chain must stay inside the project once links are followed.
+  const realCwd = realpathSync.native(cwd);
+  const realRoot = realpathSync.native(root);
+  if (!strictlyUnder(realCwd, realRoot) || hasGitSegment(relative(realCwd, realRoot))) {
+    refuse(".legion-cli/worktrees resolves outside the project");
+  }
+  const realParent = realpathSync.native(dirname(target));
+  if (!sameAbsPath(realParent, realRoot) && !strictlyUnder(realRoot, realParent)) {
+    refuse("it resolves outside .legion-cli/worktrees/");
+  }
+  if (lstatSync(target).isSymbolicLink()) return;
+  const realTarget = realpathSync.native(target);
+  if (!strictlyUnder(realRoot, realTarget) || hasGitSegment(relative(realRoot, realTarget))) {
+    refuse("it resolves outside .legion-cli/worktrees/");
+  }
+  let gitEntry: ReturnType<typeof lstatSync> | undefined;
+  try {
+    gitEntry = lstatSync(join(target, ".git"));
+  } catch {
+    gitEntry = undefined;
+  }
+  if (gitEntry && !gitEntry.isFile()) refuse("it contains a .git directory");
+}
+
 function dropStaleWorktree(cwd: string, worktreeAbs: string): void {
-  const listed = listGitWorktrees(cwd).find((wt) => sameAbsPath(wt.path, worktreeAbs));
+  assertRemovableWorktreePath(cwd, worktreeAbs);
+  const listed = listGitWorktrees(cwd).find((wt) => sameWorktreePath(wt.path, worktreeAbs));
   if (listed) {
     const removed = runGit(cwd, ["worktree", "remove", "--force", listed.path]);
     if (removed.status !== 0) gitWorktreePrune(cwd);
   } else {
     gitWorktreePrune(cwd);
   }
-  if (existsSync(worktreeAbs) && !isGitRepo(worktreeAbs)) {
-    rmSync(worktreeAbs, { recursive: true, force: true });
+  if (!pathPresent(worktreeAbs)) return;
+  if (lstatSync(worktreeAbs).isSymbolicLink()) {
+    unlinkSync(worktreeAbs); // the link only, never its target
+    return;
   }
+  // A plain leftover directory is "inside" the main work tree for git, so isGitRepo can't tell it
+  // apart; only a live checkout of its own (e.g. another repository's worktree) is kept.
+  if (isOwnCheckout(worktreeAbs)) {
+    throw new PersistError(`refusing to remove ${worktreeAbs}: it is a live checkout that is not this repository's worktree`);
+  }
+  rmSync(worktreeAbs, { recursive: true, force: true });
+}
+
+/** Reuse only a registered worktree of `cwd` that is a real directory and its own checkout top level. */
+function isReusableWorktree(cwd: string, abs: string): boolean {
+  if (!pathPresent(abs) || lstatSync(abs).isSymbolicLink()) return false;
+  if (!listGitWorktrees(cwd).some((wt) => sameWorktreePath(wt.path, abs))) return false;
+  return isOwnCheckout(abs);
 }
 
 /**
@@ -248,7 +362,7 @@ export function gitWorktreeAdd(cwd: string, worktreePath: string, branch: string
     throw new PersistError("git worktree add requires a git repository");
   }
   const abs = resolve(worktreePath);
-  if (isGitRepo(abs)) return abs;
+  if (isReusableWorktree(cwd, abs)) return abs;
   dropStaleWorktree(cwd, abs);
   // Recreate the existing branch tip; do not -B (that would reset to current HEAD).
   const args = gitBranchExists(cwd, branch)
@@ -267,7 +381,7 @@ export function gitWorktreeRemove(cwd: string, worktreePath: string, opts: { for
     throw new PersistError("git worktree remove requires a git repository");
   }
   const abs = resolve(worktreePath);
-  const listed = listGitWorktrees(cwd).find((wt) => sameAbsPath(wt.path, abs));
+  const listed = listGitWorktrees(cwd).find((wt) => sameWorktreePath(wt.path, abs));
   if (!listed) {
     gitWorktreePrune(cwd);
     return false;

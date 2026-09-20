@@ -659,14 +659,15 @@ export function createProgram(): Command {
     });
   addGlobalOptions(brownfield.command("pr-plan").description("Parse design.md '## PR Plan' into dag.json"))
     .argument("<id>", "run id")
+    .option("--force", "rebuild dag.json even when nodes have progress (resets every node to pending)")
     .allowExcessArguments(false)
-    .action(async (id: string, _opts, cmd: Command) => {
-      process.exitCode = await runBrownfieldPrPlan(resolveOpts(cmd), id);
+    .action(async (id: string, opts, cmd: Command) => {
+      process.exitCode = await runBrownfieldPrPlan(resolveOpts(cmd), id, opts as { force?: boolean });
     });
   addGlobalOptions(brownfield.command("dag").description("Show PR DAG progress; update one node with key=value"))
     .argument("<id>", "run id")
     .argument("[node]", "node id, e.g. pr-2")
-    .argument("[pairs...]", "status=… commit=… worktree=… agentId=… reviewRounds=… error=…")
+    .argument("[pairs...]", "status=… commit=… agentId=… reviewRounds=… error=…")
     .action(async (id: string, node: string | undefined, pairs: string[], _opts, cmd: Command) => {
       process.exitCode = await runBrownfieldDag(resolveOpts(cmd), id, node, pairs);
     });

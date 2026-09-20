@@ -32,7 +32,10 @@ Run `legion-cli brownfield pr-plan <id> --json`. It parses `## PR Plan` in `desi
 current tip of the branch, so later commits on main can't slip unaudited code into the stack. A
 dependent is based on its first dependency's branch and merges the others in. It refuses on missing
 dependencies, cycles, duplicate PR numbers, or a missing section — if it does, SendMessage the
-writer to fix the PR plan, re-run the design review's `review-status`, and try again.
+writer to fix the PR plan, re-run the design review's `review-status`, and try again. It also
+refuses without `reviews/design-review.md`, and once `dag.json` has progress (any node not
+`pending`, or a recorded `commit`) or can't be read, listing those nodes or the parse error: on resume, continue with `dag` instead. `pr-plan <id> --force` rebuilds the DAG and resets
+every node to `pending`; use it only when the user wants the plan re-executed from scratch.
 
 Report: `Executing PR plan: N PRs in L levels, concurrency C, effort E.`
 
@@ -46,7 +49,9 @@ other without any cherry-picking or re-stacking.
 whose dependencies are all completed), `inFlight`, `done`, `counts`, and every node, and it
 cascade-skips dependents of any failed node automatically. Update a node with
 `legion-cli brownfield dag <id> pr-3 status=implementing agentId=<id> --json`
-(settable: `status`, `commit`, `worktree`, `agentId`, `reviewRounds`, `error`).
+(settable: `status`, `commit`, `agentId`, `reviewRounds`, `error`). A node's `worktree` is recorded
+by `legion-cli brownfield worktree` and always lives at `.legion-cli/worktrees/<run-id>/<node>`; it
+can't be set.
 
 ```
 loop:
@@ -205,7 +210,9 @@ Merging is the user's decision, never yours.
 
 ## 7. Verify (phase 9)
 
-`state <id> phase=verify`. Skip if no PR completed. Otherwise launch one agent:
+If no PR completed, skip verify and go to the final report (`state <id> phase=complete`);
+`state <id> phase=verify` refuses when no DAG node is `completed`. Otherwise set
+`state <id> phase=verify` and launch one agent:
 `general-purpose`, `isolation: "worktree"`, `description: "[verify] brownfield result"`.
 
 ```

@@ -149,8 +149,8 @@ export async function runBrownfieldReviewStatus(
   ]);
 }
 
-export async function runBrownfieldPrPlan(opts: CliOpts, runId: string): Promise<number> {
-  const result = await createLegionEngine(opts.project).brownfieldPrPlan(runId);
+export async function runBrownfieldPrPlan(opts: CliOpts, runId: string, flags: { force?: boolean } = {}): Promise<number> {
+  const result = await createLegionEngine(opts.project).brownfieldPrPlan(runId, { force: flags.force === true });
   return emit(opts, { ...result }, [
     `PR plan: ${result.count} PRs in ${result.levels} level(s)`,
     ...result.order.map(

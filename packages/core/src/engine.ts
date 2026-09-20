@@ -1994,8 +1994,8 @@ export class LegionEngine {
     return this.#mutate(() => reviewStatusRun(this.store, parseBrownfieldRunId(runId), opts));
   }
 
-  async brownfieldPrPlan(runId: string): Promise<BrownfieldPrPlanResult> {
-    return this.#mutate(() => prPlanRun(this.store, parseBrownfieldRunId(runId)));
+  async brownfieldPrPlan(runId: string, opts: { force?: boolean } = {}): Promise<BrownfieldPrPlanResult> {
+    return this.#mutate(() => prPlanRun(this.store, parseBrownfieldRunId(runId), opts));
   }
 
   async brownfieldDag(runId: string, nodeId?: string, pairs: readonly string[] = []): Promise<BrownfieldDagResult> {

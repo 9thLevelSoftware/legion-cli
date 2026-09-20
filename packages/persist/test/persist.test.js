@@ -708,6 +708,87 @@ test("gitWorktreeAdd creates a missing branch at startPoint, not HEAD", async ()
   });
 });
 
+test("gitWorktreeAdd never clears .git or a path outside .legion-cli/worktrees", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "README.md"), "app\n", "utf8");
+    initGitRepo(dir);
+    const outside = await mkdtemp(join(tmpdir(), "legion-outside-"));
+    try {
+      await writeFile(join(outside, "keep.txt"), "keep\n", "utf8");
+      const refused = (path) =>
+        assert.throws(
+          () => gitWorktreeAdd(dir, path, "brownfield/dddddddd/pr-1-x"),
+          (err) => err instanceof PersistError && /refusing to remove/.test(err.message),
+        );
+      refused(join(dir, ".git"));
+      refused(join(dir, ".legion-cli", "worktrees", "dddddddd", ".git"));
+      refused(join(dir, ".legion-cli", "worktrees"));
+      refused(outside);
+      assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
+      assert.equal(git(dir, ["rev-parse", "--is-inside-work-tree"]), "true");
+      assert.equal(await readFile(join(outside, "keep.txt"), "utf8"), "keep\n");
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("gitWorktreeAdd refuses when .legion-cli/worktrees links outside the project", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "README.md"), "app\n", "utf8");
+    initGitRepo(dir);
+    const outside = await mkdtemp(join(tmpdir(), "legion-outside-"));
+    try {
+      await mkdir(join(outside, "r", "pr-1"), { recursive: true });
+      await writeFile(join(outside, "r", "pr-1", "keep.txt"), "keep\n", "utf8");
+      await mkdir(join(dir, ".legion-cli"), { recursive: true });
+      try {
+        await symlink(outside, join(dir, ".legion-cli", "worktrees"), process.platform === "win32" ? "junction" : "dir");
+      } catch (err) {
+        if (err?.code === "EPERM" || err?.code === "EACCES") return;
+        throw err;
+      }
+      assert.throws(
+        () => gitWorktreeAdd(dir, join(dir, ".legion-cli", "worktrees", "r", "pr-1"), "brownfield/r/pr-1-x"),
+        (err) => err instanceof PersistError && /resolves outside the project/.test(err.message),
+      );
+      assert.equal(await readFile(join(outside, "r", "pr-1", "keep.txt"), "utf8"), "keep\n");
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("gitWorktreeAdd reuses and removes a worktree when the project is reached through a link", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "README.md"), "app\n", "utf8");
+    initGitRepo(dir);
+    const linkParent = await mkdtemp(join(tmpdir(), "legion-link-"));
+    try {
+      const linked = join(linkParent, "project");
+      try {
+        await symlink(dir, linked, process.platform === "win32" ? "junction" : "dir");
+      } catch (err) {
+        if (err?.code === "EPERM" || err?.code === "EACCES") return;
+        throw err;
+      }
+      const worktree = join(linked, ".legion-cli", "worktrees", "eeeeeeee", "pr-1");
+      assert.equal(gitWorktreeAdd(linked, worktree, "brownfield/eeeeeeee/pr-1-x"), resolve(worktree));
+      const tip = git(worktree, ["rev-parse", "HEAD"]);
+      await writeFile(join(worktree, "wip.txt"), "wip\n", "utf8");
+      // Second call: reuse the registered worktree (git lists it under the real path).
+      assert.equal(gitWorktreeAdd(linked, worktree, "brownfield/eeeeeeee/pr-1-x"), resolve(worktree));
+      assert.equal(await readFile(join(worktree, "wip.txt"), "utf8"), "wip\n");
+      assert.equal(git(worktree, ["rev-parse", "HEAD"]), tip);
+      assert.equal(gitWorktreeRemove(linked, worktree, { force: true }), true);
+      assert.equal(existsSync(worktree), false);
+      assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
+    } finally {
+      await rm(linkParent, { recursive: true, force: true });
+    }
+  });
+});
+
 test("gitWorktreeRemove removes the checkout and keeps the branch", async () => {
   await withTempDir(async (dir) => {
     await writeFile(join(dir, "README.md"), "app\n", "utf8");
