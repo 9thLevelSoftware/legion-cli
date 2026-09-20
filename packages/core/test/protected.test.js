@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
   appendFile,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -35,6 +36,7 @@ import {
   restoreProtected,
   snapshotProtected,
 } from "../dist/index.js";
+import { recordAuditEvent } from "../dist/live-spawn.js";
 import { finishStartedSpawn } from "../dist/spawn.js";
 import { moveFileNoOverwrite } from "../dist/quarantine.js";
 import {
@@ -748,6 +750,76 @@ test("R-3: a new task file with a bad id is quarantined and FAILs normally, not 
   });
 });
 
+test("R-3: a new task file with a valid body but a non-canonical id is re-allocated, not admitted as-is", async () => {
+  const odd = makeTask({ id: "TSK-abc", title: "oddly named fix", status: "todo", type: "fix" });
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedReview(store);
+        const review = await engine.review();
+        assert.equal(review.verdict, "FAIL");
+        // Only canonical ids enter the store (plan item 10).
+        assert.deepEqual(review.createdTaskIds, ["TSK-0002"]);
+        assert.equal(review.incident, undefined);
+        assert.deepEqual((await readdir(join(dir, ".legion-cli", "tasks"))).sort(), ["TSK-0001.md", "TSK-0002.md"]);
+        assert.equal((await store.readTask("TSK-0002")).data.title, "oddly named fix");
+        const [q] = await quarantines(dir);
+        assert.match(await storedBytes(q, ".legion-cli/tasks/TSK-abc.md"), /oddly named fix/);
+      },
+      { skillsDir, fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-abc.md", content: taskMarkdown(odd) }] },
+    );
+  });
+});
+
+test("R-10: a refusal deferred while the run is being torn down still reaches the audit log", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    const other = spawnSleeper();
+    try {
+      const control = await writeControlRecords(
+        dir,
+        {
+          schemaVersion: "legion-cli-resume/v1",
+          runId: "review-teardown",
+          taskId: null,
+          skillId: "review",
+          preSpawnRef: "UNBORN",
+          startedAt: new Date().toISOString(),
+          pid: other.pid,
+          enginePid: other.pid,
+        },
+        { enginePid: other.pid, engineStartedAt: Date.now() },
+      );
+      const live = await engine.liveAgentRun();
+      assert.equal(live?.state, "live");
+      // The owner finishes and takes the control dir with it, exactly in the window where another
+      // process already decided to defer.
+      await rm(control, { recursive: true, force: true });
+      await recordAuditEvent(
+        dir,
+        {
+          schemaVersion: "legion-cli-audit/v1",
+          ts: new Date().toISOString(),
+          type: "refuse",
+          phase: "initialized",
+          taskId: null,
+          actor: "user",
+          data: { message: "deferred-after-teardown" },
+        },
+        live,
+      );
+      const events = await readAuditEvents(dir);
+      assert.ok(
+        events.some((event) => event.type === "refuse" && event.data.message === "deferred-after-teardown"),
+        "the refusal is not lost when the control dir disappears",
+      );
+    } finally {
+      await other.stop();
+    }
+  });
+});
+
 test("R-25: findLiveSpawn fail-closed and liveness branches", async () => {
   await withEngine(async ({ dir, engine }) => {
     await initProject(engine);
@@ -805,9 +877,8 @@ test("R-25: findLiveSpawn fail-closed and liveness branches", async () => {
   });
 });
 
-test("R-28: the cross-volume quarantine move (copy, verify, delete) and non-overwriting moves", async () => {
-  const alt = process.env.LEGION_CLI_TEST_ALT_VOLUME;
-  const root = await mkdtemp(join(alt ?? tmpdir(), "legion-move-"));
+test("R-28: a quarantine move never overwrites, and hard-links within one volume", async () => {
+  const root = await mkdtemp(join(tmpdir(), "legion-move-"));
   try {
     const src = join(root, "src.txt");
     const dest = join(root, "dest.txt");
@@ -824,9 +895,36 @@ test("R-28: the cross-volume quarantine move (copy, verify, delete) and non-over
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("R-28: the cross-volume quarantine move copies, verifies the sha and deletes the source", async (t) => {
+  const alt = process.env.LEGION_CLI_TEST_ALT_VOLUME;
   if (!alt) {
-    // The fallback (EXDEV) path needs a second volume; set LEGION_CLI_TEST_ALT_VOLUME to cover it.
-    assert.ok(true, "skipped: set LEGION_CLI_TEST_ALT_VOLUME to a path on another volume");
+    t.skip("needs a second volume: set LEGION_CLI_TEST_ALT_VOLUME to a path on another volume");
+    return;
+  }
+  // Only the destination is on the other volume, so `link()` really has to fail with EXDEV.
+  const srcRoot = await mkdtemp(join(tmpdir(), "legion-move-src-"));
+  const destRoot = await mkdtemp(join(alt, "legion-move-dest-"));
+  try {
+    const src = join(srcRoot, "src.txt");
+    const dest = join(destRoot, "dest.txt");
+    await writeFile(src, "payload\n");
+    const probe = join(destRoot, "probe.link");
+    let code;
+    try {
+      await link(src, probe);
+    } catch (err) {
+      code = err?.code;
+    }
+    assert.equal(code, "EXDEV", `LEGION_CLI_TEST_ALT_VOLUME must be on another volume (got ${code ?? "a hard link"})`);
+    const sha = await moveFileNoOverwrite(src, dest);
+    assert.equal(await readFile(dest, "utf8"), "payload\n");
+    assert.equal(existsSync(src), false, "the source is deleted only after the sha verifies");
+    assert.match(sha, /^[0-9a-f]{64}$/);
+  } finally {
+    await rm(srcRoot, { recursive: true, force: true });
+    await rm(destRoot, { recursive: true, force: true });
   }
 });
 

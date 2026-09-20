@@ -90,6 +90,9 @@ async function submoduleControlRoots(gitDir: string): Promise<string[]> {
  */
 const NEW_TASK_FILE = /^\.legion-cli\/tasks\/(TSK-[^/]*)\.md$/i;
 
+/** The only id shape that may enter the store; anything else is re-allocated (R-3). */
+const CANONICAL_TASK_ID = /^TSK-\d{4,}$/i;
+
 function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -465,8 +468,9 @@ async function admitNewTasks(
         continue;
       }
       let id = parsed.data.id;
-      if (id.toUpperCase() !== fileId.toUpperCase() || claimed.has(id.toUpperCase())) {
-        // Re-allocate: never overwrite an existing task, never keep a mismatched name.
+      if (!CANONICAL_TASK_ID.test(id) || id.toUpperCase() !== fileId.toUpperCase() || claimed.has(id.toUpperCase())) {
+        // Re-allocate: only canonical `TSK-\d{4,}` ids enter the store, and an id is never
+        // overwritten or kept under a mismatched name (R-3).
         const fresh = await nextFileId(tasksDir, "TSK", 4);
         const task = { ...parsed.data, id: fresh };
         const body = raw.replace(/^(---\r?\n[\s\S]*?\r?\n---\r?\n?)/, "");

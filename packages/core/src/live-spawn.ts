@@ -24,6 +24,8 @@ import {
 /** A record that can't be trusted counts as live until it is older than the maximum timeout plus this. */
 export const LIVE_RECORD_GRACE_MS = 10 * 60 * 1000;
 export const LIVE_MARKER_BASENAME = "live.json";
+/** Written when a run finished cleanly, just before its control dir goes away (R-10). */
+export const FINISHED_BASENAME = "finished";
 export const RESUME_BASENAME = "resume.json";
 
 export type LiveMarker = {
@@ -139,6 +141,11 @@ export async function endOwnedSpawn(projectRoot: string, runId: string): Promise
   for (const event of entry.audit) {
     await appendAuditEvent(projectRoot, event).catch(() => undefined);
   }
+  // A tombstone first, so a reader in the middle of the teardown sees a finished run rather than
+  // a markerless (fail-closed) one (R-10).
+  await writeFile(join(entry.controlDir, FINISHED_BASENAME), `${new Date().toISOString()}\n`, "utf8").catch(
+    () => undefined,
+  );
   await drainDeferredAuditEvents(projectRoot, entry.controlDir).catch(() => undefined);
   // Nothing else needs this run's control dir once it finished cleanly; leaving it would make
   // every later freeze check scan it (R-4, R-16). A crashed run keeps its records for replay.
@@ -239,6 +246,7 @@ async function runLiveness(projectDir: string, runId: string): Promise<LiveSpawn
     // control dir, so a markerless dir is either a crash or a deleted record (R-2, R-17). A dir
     // this process is about to own is not live yet.
     if (claimed.has(controlDir)) return null;
+    if (await exists(join(controlDir, FINISHED_BASENAME))) return null; // finished, being torn down
     const resume = await readResume(controlDir);
     if (resume) {
       // A run whose engine is this process but which is not in memory has finished.
@@ -358,6 +366,15 @@ async function dropDeadMarker(markerPath: string): Promise<void> {
   await retryFsOp(() => rm(markerPath, { force: true })).catch(() => undefined);
 }
 
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readResume(controlDir: string): Promise<ResumeFile | null> {
   try {
     const parsed = ResumeFileSchema.safeParse(JSON.parse(await readFile(join(controlDir, RESUME_BASENAME), "utf8")));
@@ -409,8 +426,13 @@ export async function recordAuditEvent(projectRoot: string, event: AuditEvent, l
   }
   const other = live === undefined ? await findLiveSpawn(projectRoot) : live;
   if (other && !other.owned) {
-    await appendDeferredAuditEvent(other.controlDir, event);
-    return;
+    try {
+      await appendDeferredAuditEvent(other.controlDir, event);
+      return;
+    } catch {
+      // The run finished and took its control dir with it between the liveness check and this
+      // append: the freeze is over, so the event belongs in the project audit log (R-10).
+    }
   }
   await appendAuditEvent(projectRoot, event);
 }
