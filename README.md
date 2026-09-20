@@ -29,14 +29,19 @@ verificationCommands and the QA unit command are trusted code run on your machin
 
 ### Your files are quarantined, never deleted
 
-After every agent run Legion compares your project by **content** and puts back anything the agent changed outside its contract — including files git never sees, like a gitignored `.env` or a local `dev.sqlite`. The agent's version is **moved to a quarantine folder outside the project**, never deleted: `<user state dir>/quarantine/<project>/<run>-<random>/`, with a `MANIFEST.json` listing every displaced path. Legion never removes that folder; `legion-cli doctor` lists what is retained and flags a manifest that no longer matches its audited hash.
+After every agent run Legion looks for changes by size, mtime, kind and file identity, then **confirms each one by content** before touching it, and puts back anything the agent changed outside its contract — including files git never sees, like a gitignored `.env` or a local `dev.sqlite`. The agent's version is **moved to a quarantine folder outside the project**, never deleted: `<user state dir>/quarantine/<project>/<run>-<random>/`, with a `MANIFEST.json` listing every displaced path. Legion never removes that folder; `legion-cli doctor` lists what is retained and flags a manifest that no longer matches its audited hash.
 
 Two consequences worth knowing:
 
 - **A run cannot tell who typed.** If you edit a file yourself while a run is live, that edit is quarantined and reverted too. Finish the run first.
-- **If the agent commits, Legion does not un-commit for you.** The working tree is restored, the commit shas are recorded in `STATE.quarantinedCommits` and kept reachable under `refs/legion-quarantine/<run>`, the task is blocked, and the one command that undoes the ref movement (`git reset <ref>` or `git checkout <branch>`) is printed. `legion-cli ship` remains the human commit gate.
+- **If the agent commits, Legion does not un-commit for you.** The working tree is restored, the commit shas are recorded in `STATE.quarantinedCommits` and kept at `refs/legion-quarantine/<run>` (and bundled beside the run's records), the task is blocked, and the command that undoes the ref movement is printed — it discards every commit made during the run, including any you made yourself. `legion-cli ship` remains the human commit gate.
 
-Build output is left alone: new files in gitignored directories (`dist/`, `coverage/`, an installed `node_modules`) are reported as warnings, not reverted. The exception is secret-like names (`.env*`), which are always quarantined.
+What it does **not** promise, so you can judge when to leave a run unattended:
+
+- Files git can reproduce are restored from git. Everything else — dirty, untracked and gitignored files — is protected by a copy up to 4 MiB each and 256 MiB per run, and by a hardlink above that. A hardlink survives `rm`, `git clean` and the usual write-a-temp-then-rename, but **not** a program that truncates and rewrites the file in place; when that happens Legion says so rather than restoring stale bytes.
+- The contents of gitignored directories (`node_modules/`, `dist/`) are reported at their **top level only** and never restored. Anything deeper is not tracked.
+- New build output in gitignored directories is reported and left in place, not reverted. Secret-like names (`.env*`, `id_rsa`, `*.pem`, `.npmrc`, …) are quarantined instead when they appear as new ignored files, and are backed up ahead of everything else when they already existed.
+- Detection is stat-first. It catches accidental and careless change reliably; an agent that deliberately forges a file's size, mtime, inode and change time at once is not detected outside the protected set, which is byte-compared.
 
 From this repo:
 

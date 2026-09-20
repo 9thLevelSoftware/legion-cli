@@ -128,7 +128,11 @@ export function ownedSpawn(projectRoot: string): { runId: string; skillId: Skill
  * End the spawn window for `runId`: forget it, drop the live marker, then append the audit events
  * this process buffered and the deferred events other processes wrote (after the P restore).
  */
-export async function endOwnedSpawn(projectRoot: string, runId: string): Promise<void> {
+export async function endOwnedSpawn(
+  projectRoot: string,
+  runId: string,
+  opts: { keepRecords?: boolean } = {},
+): Promise<void> {
   const key = projectKey(projectRoot);
   const entry = owned.get(key);
   if (!entry || entry.runId !== runId) return;
@@ -148,7 +152,11 @@ export async function endOwnedSpawn(projectRoot: string, runId: string): Promise
   );
   await drainDeferredAuditEvents(projectRoot, entry.controlDir).catch(() => undefined);
   // Nothing else needs this run's control dir once it finished cleanly; leaving it would make
-  // every later freeze check scan it (R-4, R-16). A crashed run keeps its records for replay.
+  // every later freeze check scan it (R-4, R-16). A crashed run keeps its records for replay, and
+  // so does an **incident** run: the quarantine manifest references its pre-spawn backups and
+  // PR 6's replay needs them (PR 5, R-8). The `finished` tombstone above keeps a retained dir
+  // from ever reading as live.
+  if (opts.keepRecords) return;
   await rm(entry.controlDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
 }
 

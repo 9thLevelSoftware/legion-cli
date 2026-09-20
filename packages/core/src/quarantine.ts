@@ -245,8 +245,25 @@ export async function retainedControlDir(projectRoot: string): Promise<{ dir: st
   } catch {
     return { dir, runs: 0, bytes: 0, files: 0 };
   }
-  const size = await treeSize(dir);
-  return { dir, runs: names.length, ...size };
+  // R-12/R-21: only the runs that actually retained backups, and only those subtrees — resume
+  // records and live markers are not what the doctor line claims to describe.
+  let runs = 0;
+  let bytes = 0;
+  let files = 0;
+  for (const name of names) {
+    const backups = join(dir, name, "pre");
+    try {
+      const st = await lstat(backups);
+      if (!st.isDirectory() || st.isSymbolicLink()) continue;
+    } catch {
+      continue;
+    }
+    const size = await treeSize(backups);
+    runs += 1;
+    bytes += size.bytes;
+    files += size.files;
+  }
+  return { dir, runs, bytes, files };
 }
 
 /** Retained quarantine folders for a project (doctor). The engine never deletes them. */

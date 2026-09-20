@@ -127,7 +127,7 @@ import {
 import { assertCanTransition, assertLegalPhase } from "./phases.js";
 import { evaluateReadiness, type ReadinessReport } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
-import { HEAD_MOVED_WARNING, type RevertResult } from "./revert.js";
+import { type RevertResult } from "./revert.js";
 import {
   assertSpawnGitRepo,
   findLatestTaskResume,
@@ -1193,8 +1193,10 @@ export class LegionEngine {
       });
       config = outcome.config;
       outcomes.push(outcome.result);
-      if (outcome.result.headMoved && !warnings.includes(HEAD_MOVED_WARNING)) {
-        warnings.push(HEAD_MOVED_WARNING);
+      // R-49: a commit made during the run is an incident now (KD-1 / §5.2 item 5), not the old
+      // "this is fine" warning — `protectedIncidentMessage` carries the shas and the recovery.
+      for (const warning of outcome.result.warnings ?? []) {
+        if (!warnings.includes(warning)) warnings.push(warning);
       }
       if (outcome.result.status === "blocked" || outcome.result.incident) break;
       if (!opts?.untilBlocked) break;
@@ -2203,9 +2205,6 @@ export class LegionEngine {
       const incident = Boolean(revert?.incident);
       const headMoved = Boolean(revert?.headMoved);
       const jailed = Boolean(started?.spawned && started.sandbox);
-      // R-20: STATE.md is in P, so this list is written after the P restore and cannot be
-      // erased by a later agent.
-      await this.#recordQuarantinedCommits(revert);
       if (started?.spawned && started.sandbox && revert) {
         await this.#audit(
           "sandbox_copyout",
@@ -2257,7 +2256,15 @@ export class LegionEngine {
             outcome.taskId,
           );
         }
-        return { ...outcome, adapterId, resolutionSource };
+        // R-14/R-15: the ignored-path warnings, the lost-file lines and the quarantine path reach
+        // the CLI through every outcome, not only the incident ones.
+        return {
+          ...outcome,
+          adapterId,
+          resolutionSource,
+          ...(revert?.warnings?.length ? { warnings: revert.warnings } : {}),
+          ...(revert?.quarantineDir ? { quarantineDir: revert.quarantineDir } : {}),
+        };
       };
 
       let extraJsonInvalid = false;
@@ -2555,7 +2562,6 @@ export class LegionEngine {
     after: readonly string[],
     rewrittenExistingTaskIds: readonly string[] = [],
   ): Promise<void> {
-    await this.#recordQuarantinedCommits(revert ?? null);
     const rejected = revert?.protected?.rejectedTaskFiles ?? [];
     const failed =
       Boolean(revert?.incident) ||
@@ -3434,6 +3440,8 @@ export class LegionEngine {
       handlePid: this.#fakeHandlePid,
       audit: this.#spawnAudit(),
       onRestored: this.#onProtectedRestored(),
+      // R-48: every spawn records the agent's commits, not only execute/review/verify.
+      onQuarantinedCommits: (shas: readonly string[]) => this.#recordQuarantinedCommits({ quarantinedCommits: [...shas] }),
     };
   }
 

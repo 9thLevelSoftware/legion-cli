@@ -28,6 +28,7 @@ import {
   controlProjectDirPath,
   quarantineRootPath,
   readAuditEvents,
+  tryGitHead,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   LegionEngine,
@@ -35,6 +36,7 @@ import {
   listRetainedQuarantines,
   restoreProtected,
   snapshotProtected,
+  snapshotTree,
 } from "../dist/index.js";
 import { recordAuditEvent } from "../dist/live-spawn.js";
 import { finishStartedSpawn } from "../dist/spawn.js";
@@ -653,6 +655,15 @@ test("R-1: a throwing jail copy-out still restores the protected set and is an i
     await initProject(engine);
     const statePath = join(dir, ".legion-cli", "STATE.md");
     const before = await readFile(statePath);
+    // PR 5 (R-8): a real tree snapshot and control dir, so the incident comes from the copy-out
+    // failure and not from `revertTree` crashing on an undefined snapshot.
+    const control = await mkdtemp(join(tmpdir(), "legion-copyout-ctl-"));
+    const treeSnapshot = await snapshotTree({
+      projectRoot: dir,
+      runId: "execute-copyout",
+      preSpawnRef: tryGitHead(dir),
+      controlDir: control,
+    });
     const snapshot = await snapshotProtected(dir);
     await writeFile(statePath, "forged by the agent\n");
     const events = [];
@@ -665,11 +676,12 @@ test("R-1: a throwing jail copy-out still restores the protected set and is an i
         projectRoot: dir,
         runId: "execute-copyout",
         skillId: "execute",
-        preSpawnRef: null,
+        preSpawnRef: treeSnapshot.preSpawnRef,
         allowedRoots: [],
         filesForbidden: undefined,
-        snapshot: undefined,
-        dirtyAtStart: new Set(),
+        treeSnapshot,
+        controlDir: control,
+        jailed: true,
         protectedSnapshot: snapshot,
         audit: async (type, data) => {
           events.push({ type, data });
@@ -693,7 +705,13 @@ test("R-1: a throwing jail copy-out still restores the protected set and is an i
     assert.equal(revert.incident, true);
     assert.deepEqual(await readFile(statePath), before);
     assert.ok(revert.protected.unrestorable.some((entry) => /jail copy-out failed/.test(entry)));
+    // The tree revert itself must NOT be what produced the incident (R-8).
+    assert.deepEqual(
+      (revert.unrestorable ?? []).filter((entry) => /the tree revert failed/.test(entry)),
+      [],
+    );
     assert.ok(events.some((event) => event.type === "protected_restored"));
+    await rm(control, { recursive: true, force: true });
   });
 });
 

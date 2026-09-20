@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { dropBackups, Quarantine, revertTree, snapshotTree } from "../dist/index.js";
+import { dropBackups, foldKey, Quarantine, revertTree, snapshotTree } from "../dist/index.js";
 import { commitAll, git, gitHead, initGitRepo } from "./helpers.js";
 
 /**
@@ -30,7 +30,13 @@ async function withProject(fn) {
 /** Take the pre-spawn snapshot, run `mutate` as the agent would, then revert. */
 async function roundTrip(dir, control, mutate, opts = {}) {
   const runId = `execute-test-${(runs += 1).toString(36)}`;
-  const snapshot = await snapshotTree({ projectRoot: dir, runId, preSpawnRef: gitHead(dir), controlDir: control });
+  const snapshot = await snapshotTree({
+    projectRoot: dir,
+    runId,
+    preSpawnRef: gitHead(dir),
+    controlDir: control,
+    ...(opts.linkBackups === undefined ? {} : { linkBackups: opts.linkBackups }),
+  });
   await mutate();
   const quarantine = new Quarantine(dir, runId);
   const result = await revertTree({
@@ -85,12 +91,18 @@ test("an ignored .env the agent rewrites is restored from its backup", async () 
     await writeFile(join(dir, ".gitignore"), ".env\nconfig/local.json\ndev.sqlite\nbig.bin\ndist/\n", "utf8");
     initGitRepo(dir);
     await writeFile(join(dir, ".env"), "TOKEN=real\n", "utf8");
-    const { result } = await roundTrip(dir, control, async () => {
+    const { result, quarantineDir } = await roundTrip(dir, control, async () => {
       await writeFile(join(dir, ".env"), "TOKEN=stolen\n", "utf8");
     });
     assert.equal((await read(dir, ".env")).replaceAll("\r\n", "\n"), "TOKEN=real\n");
-    assert.ok(result.reverted.includes(".env"));
+    assert.ok(result.restoredIgnored.includes(".env"), JSON.stringify(result));
     assert.equal(result.incident, false);
+    // R-45: the credential-leak-relevant artifact is the agent's copy; it must be quarantined.
+    assert.ok(quarantineDir);
+    assert.equal(
+      (await readFile(join(quarantineDir, "files", ".env"), "utf8")).replaceAll("\r\n", "\n"),
+      "TOKEN=stolen\n",
+    );
   });
 });
 
@@ -107,8 +119,11 @@ test("non-secret ignored files that are overwritten or deleted are restored from
     });
     assert.equal((await read(dir, "config/local.json")).replaceAll("\r\n", "\n"), '{"port":1}\n');
     assert.equal((await read(dir, "dev.sqlite")).replaceAll("\r\n", "\n"), "sqlite-bytes\n");
-    assert.ok(result.reverted.includes("config/local.json"));
-    assert.ok(result.reverted.includes("dev.sqlite"));
+    // R-10: an ignored file the agent's own build touched is restored, but it is not scope creep,
+    // so it is reported separately and never trips the FileContract gate.
+    assert.ok(result.restoredIgnored.includes("config/local.json"), JSON.stringify(result));
+    assert.ok(result.restoredIgnored.includes("dev.sqlite"), JSON.stringify(result));
+    assert.deepEqual(result.reverted, []);
     assert.equal(result.incident, false);
     assert.ok(quarantineDir);
     assert.equal(
@@ -118,20 +133,68 @@ test("non-secret ignored files that are overwritten or deleted are restored from
   });
 });
 
-test("an ignored file over the 4 MiB cap is named in a warning, not restored, and is no incident", async () => {
+// R-31: above the copy cap the file is hardlinked instead of left unprotected, so the common
+// destruction paths (rename-over, rm, git clean) are now recoverable rather than silent losses.
+test("an ignored file over the 4 MiB copy cap is hardlinked and still restored", async () => {
   await withProject(async ({ dir, control }) => {
     await writeFile(join(dir, ".gitignore"), "big.bin\n", "utf8");
     initGitRepo(dir);
     await writeFile(join(dir, "big.bin"), Buffer.alloc(5 * 1024 * 1024, 1));
     const { result } = await roundTrip(dir, control, async () => {
-      await writeFile(join(dir, "big.bin"), Buffer.alloc(5 * 1024 * 1024, 2));
+      // rename-over, the way most tools write: the hardlink keeps the old inode alive.
+      await writeFile(join(dir, "big.bin.tmp"), Buffer.alloc(5 * 1024 * 1024, 2));
+      await rename(join(dir, "big.bin.tmp"), join(dir, "big.bin"));
     });
+    assert.equal(result.incident, false, JSON.stringify(result));
+    assert.ok(result.restoredIgnored.includes("big.bin"), JSON.stringify(result));
+    const restored = await readFile(join(dir, "big.bin"));
+    assert.equal(restored.length, 5 * 1024 * 1024);
+    assert.equal(restored[0], 1);
+  });
+});
+
+test("with no hardlink available an over-cap ignored file is named as LOST and left in place", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, ".gitignore"), "big.bin\n", "utf8");
+    initGitRepo(dir);
+    await writeFile(join(dir, "big.bin"), Buffer.alloc(5 * 1024 * 1024, 1));
+    const { result } = await roundTrip(
+      dir,
+      control,
+      async () => {
+        await writeFile(join(dir, "big.bin"), Buffer.alloc(5 * 1024 * 1024, 2));
+      },
+      { linkBackups: false },
+    );
     assert.equal(result.incident, false);
     assert.ok(
-      result.warnings.some((line) => line.startsWith("big.bin") && line.includes("not restorable")),
+      result.warnings.some((line) => line.startsWith("LOST: big.bin") && line.includes("backup cap")),
       JSON.stringify(result.warnings),
     );
     assert.deepEqual(result.reverted, []);
+    // Left exactly as the agent wrote it, and said so — not quietly deleted.
+    assert.equal((await readFile(join(dir, "big.bin")))[0], 2);
+  });
+});
+
+// R-6/R-16: an over-cap file that was only TOUCHED must not block the run.
+test("touching an unbacked-up file without changing it is not an incident", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, ".gitignore"), "big.bin\n", "utf8");
+    initGitRepo(dir);
+    const bytes = Buffer.alloc(5 * 1024 * 1024, 1);
+    await writeFile(join(dir, "big.bin"), bytes);
+    const { result } = await roundTrip(
+      dir,
+      control,
+      async () => {
+        await writeFile(join(dir, "big.bin"), bytes);
+      },
+      { linkBackups: false },
+    );
+    assert.equal(result.incident, false, JSON.stringify(result));
+    assert.deepEqual(result.reverted, []);
+    assert.deepEqual(result.unrestorable, []);
   });
 });
 
@@ -142,13 +205,14 @@ test("rewriting a file in an ignored directory, and a new ignored directory, are
     await writeFile(join(dir, "dist", "x.js"), "old build\n", "utf8");
     initGitRepo(dir);
     const { result, quarantineDir } = await roundTrip(dir, control, async () => {
-      await writeFile(join(dir, "dist", "x.js"), "new build output that is longer\n", "utf8");
+      // R-44: the same byte length, so only the mtime leg of the comparison can catch it.
+      await writeFile(join(dir, "dist", "x.js"), "new build\n", "utf8");
       await mkdir(join(dir, "coverage"), { recursive: true });
       await writeFile(join(dir, "coverage", "lcov.info"), "TN:\n", "utf8");
       await writeFile(join(dir, ".env.local"), "TOKEN=planted\n", "utf8");
     });
     assert.equal(result.incident, false);
-    assert.equal((await read(dir, "dist/x.js")).replaceAll("\r\n", "\n"), "new build output that is longer\n");
+    assert.equal((await read(dir, "dist/x.js")).replaceAll("\r\n", "\n"), "new build\n");
     assert.ok(result.warnings.some((line) => line.startsWith("dist/x.js")), JSON.stringify(result.warnings));
     assert.ok(result.warnings.some((line) => line.startsWith("coverage/")), JSON.stringify(result.warnings));
     // The secret-like exception: quarantined, not left in place.
@@ -260,6 +324,204 @@ test("a clean run leaves no control-dir backups", async () => {
   });
 });
 
+// R-28: an ignored directory's contents are never walked, so a credential file inside one used to
+// get at most a warning. Secret-like names there are backed up and restored.
+test("a secret-like file inside an ignored directory is restored, and other files there are not", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, ".gitignore"), "secrets/\nbuild/\n", "utf8");
+    await mkdir(join(dir, "secrets"), { recursive: true });
+    await mkdir(join(dir, "build"), { recursive: true });
+    await writeFile(join(dir, "secrets", "prod.env"), "TOKEN=real\n", "utf8");
+    await writeFile(join(dir, "build", "x.js"), "old build\n", "utf8");
+    initGitRepo(dir);
+    const { result, quarantineDir } = await roundTrip(dir, control, async () => {
+      await writeFile(join(dir, "secrets", "prod.env"), "TOKEN=stolen\n", "utf8");
+      await writeFile(join(dir, "build", "x.js"), "new build\n", "utf8");
+    });
+    assert.equal((await read(dir, "secrets/prod.env")).replaceAll("\r\n", "\n"), "TOKEN=real\n");
+    assert.ok(result.restoredIgnored.includes("secrets/prod.env"), JSON.stringify(result));
+    assert.equal(result.incident, false, JSON.stringify(result.unrestorable));
+    assert.ok(quarantineDir);
+    assert.equal(
+      (await readFile(join(quarantineDir, "files", "secrets", "prod.env"), "utf8")).replaceAll("\r\n", "\n"),
+      "TOKEN=stolen\n",
+    );
+    // Ordinary build output in an ignored directory is still only reported, never restored.
+    assert.equal((await read(dir, "build/x.js")).replaceAll("\r\n", "\n"), "new build\n");
+    assert.ok(
+      result.warnings.some((line) => line.startsWith("build/x.js")),
+      JSON.stringify(result.warnings),
+    );
+  });
+});
+
+// R-1: `git status` and `ls-files -i` are both silent about a nested checkout, so inferring
+// "tracked-clean" by elimination destroyed the file. `ls-files` is the authoritative tracked set.
+test("files in a nested repository are backed up, not inferred tracked-clean", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, "seed.md"), "seed\n", "utf8");
+    initGitRepo(dir);
+    await mkdir(join(dir, "vendor"), { recursive: true });
+    await writeFile(join(dir, "vendor", "lib.js"), "vendored\n", "utf8");
+    git(join(dir, "vendor"), ["init"]);
+    git(join(dir, "vendor"), ["config", "user.name", "v"]);
+    git(join(dir, "vendor"), ["config", "user.email", "v@v.v"]);
+    git(join(dir, "vendor"), ["add", "-A"]);
+    git(join(dir, "vendor"), ["commit", "-m", "vendored"]);
+    const { result, snapshot } = await roundTrip(dir, control, async () => {
+      await writeFile(join(dir, "vendor", "lib.js"), "agent broke this\n", "utf8");
+    });
+    assert.equal(snapshot.entries.get(foldKey("vendor/lib.js"))?.cls, "untracked");
+    assert.equal((await read(dir, "vendor/lib.js")).replaceAll("\r\n", "\n"), "vendored\n");
+    assert.ok(result.reverted.includes("vendor/lib.js"), JSON.stringify(result));
+    assert.deepEqual(result.unrestorable, []);
+  });
+});
+
+// R-26: the stat gate is the only detector, so an mtime-preserving same-size write must still be
+// caught by the identity fields the same lstat already carries.
+test("a same-size write that restores the mtime is still detected", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, "README.md"), "aaaaaaa\n", "utf8");
+    initGitRepo(dir);
+    const before = await lstat(join(dir, "README.md"));
+    const { result } = await roundTrip(dir, control, async () => {
+      await writeFile(join(dir, "README.md"), "bbbbbbb\n", "utf8");
+      await utimes(join(dir, "README.md"), before.atime, before.mtime);
+    });
+    assert.ok(result.reverted.includes("README.md"), JSON.stringify(result));
+    assert.equal((await read(dir, "README.md")).replaceAll("\r\n", "\n"), "aaaaaaa\n");
+  });
+});
+
+// R-27: the ignored-path exemption must be decided by the PRE-run rules, not by a .gitignore the
+// agent appended to on its way out.
+test("an agent that gitignores its own out-of-contract file does not get the ignored exemption", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, ".gitignore"), "dist/\n", "utf8");
+    initGitRepo(dir);
+    const { result } = await roundTrip(dir, control, async () => {
+      await writeFile(join(dir, "planted.txt"), "out of contract\n", "utf8");
+      await writeFile(join(dir, ".gitignore"), "dist/\nplanted.txt\n", "utf8");
+    });
+    assert.equal(existsSync(join(dir, "planted.txt")), false, "the planted file is quarantined, not left in place");
+    assert.ok(result.reverted.includes("planted.txt"), JSON.stringify(result));
+    assert.equal((await read(dir, ".gitignore")).replaceAll("\r\n", "\n"), "dist/\n");
+  });
+});
+
+// R-25: an in-tree `.gitattributes` decides both the hash comparison and the restored bytes, and
+// git honours it even when the file is brand new and untracked. The root one is in the protected
+// set; a nested one is not, which is the gap this closes.
+test("a planted nested .gitattributes is restored before anything is compared", async () => {
+  await withProject(async ({ dir, control }) => {
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "const a = 1;\n", "utf8");
+    initGitRepo(dir);
+    const { result } = await roundTrip(dir, control, async () => {
+      await writeFile(join(dir, "src", ".gitattributes"), "*.ts working-tree-encoding=UTF-16LE\n", "utf8");
+      await writeFile(join(dir, "src", "main.ts"), "const a = 2;\n", "utf8");
+    });
+    assert.equal(
+      existsSync(join(dir, "src", ".gitattributes")),
+      false,
+      "the planted attributes file is quarantined",
+    );
+    assert.equal((await read(dir, "src/main.ts")).replaceAll("\r\n", "\n"), "const a = 1;\n");
+    assert.ok(result.reverted.includes("src/main.ts"), JSON.stringify(result));
+    assert.ok(
+      result.warnings.some((line) => line.includes(".gitattributes/.gitignore changed")),
+      JSON.stringify(result.warnings),
+    );
+  });
+});
+
+// R-4: the worktree restore must not leave the agent's content staged, where `ship` would commit it.
+test("content the agent staged out of contract is unstaged by the revert", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, "app.js"), "original\n", "utf8");
+    initGitRepo(dir);
+    await roundTrip(dir, control, async () => {
+      await writeFile(join(dir, "app.js"), "agent content\n", "utf8");
+      git(dir, ["add", "app.js"]);
+    });
+    assert.equal((await read(dir, "app.js")).replaceAll("\r\n", "\n"), "original\n");
+    assert.equal(git(dir, ["status", "--porcelain"]).trim(), "", "nothing is left staged");
+  });
+});
+
+// R-4: `git rm --cached` changes nothing on disk, so only the index snapshot can see it.
+test("a git rm --cached the agent ran is put back", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, "app.js"), "original\n", "utf8");
+    initGitRepo(dir);
+    await roundTrip(dir, control, async () => {
+      git(dir, ["rm", "--cached", "-q", "app.js"]);
+    });
+    assert.equal(git(dir, ["status", "--porcelain"]).trim(), "", "the index entry is back");
+  });
+});
+
+// R-3: a file the agent replaced with a directory must end as the file, not an empty directory.
+test("a file replaced by a directory is restored as the file", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, "config.js"), "module.exports = 1;\n", "utf8");
+    initGitRepo(dir);
+    const { result } = await roundTrip(dir, control, async () => {
+      await rm(join(dir, "config.js"));
+      await mkdir(join(dir, "config.js"), { recursive: true });
+      await writeFile(join(dir, "config.js", "index.js"), "planted\n", "utf8");
+    });
+    assert.equal((await lstat(join(dir, "config.js"))).isFile(), true);
+    assert.equal((await read(dir, "config.js")).replaceAll("\r\n", "\n"), "module.exports = 1;\n");
+    assert.deepEqual(result.unrestorable, [], JSON.stringify(result));
+  });
+});
+
+// R-41: the rename case the deleted `gitDiscoverChanges` test used to guard, on every platform.
+test("an out-of-contract rename restores the source and quarantines the destination", async () => {
+  await withProject(async ({ dir, control }) => {
+    await writeFile(join(dir, "secret.ts"), "the secret\n", "utf8");
+    initGitRepo(dir);
+    const { result, quarantineDir } = await roundTrip(dir, control, async () => {
+      git(dir, ["mv", "secret.ts", "leaked.ts"]);
+    });
+    assert.equal((await read(dir, "secret.ts")).replaceAll("\r\n", "\n"), "the secret\n");
+    assert.equal(existsSync(join(dir, "leaked.ts")), false);
+    assert.ok(result.reverted.includes("leaked.ts"), JSON.stringify(result));
+    assert.ok(quarantineDir);
+    assert.equal(
+      (await readFile(join(quarantineDir, "files", "leaked.ts"), "utf8")).replaceAll("\r\n", "\n"),
+      "the secret\n",
+    );
+    assert.equal(git(dir, ["status", "--porcelain"]).trim(), "");
+  });
+});
+
+// R-39: the plan's NFC/NFD in-contract criterion, which nothing exercised before.
+test("an NFD file on disk matches its NFC contract entry and is not flagged", async () => {
+  await withProject(async ({ dir, control }) => {
+    const nfd = "café.ts";
+    const nfc = "café.ts".normalize("NFC");
+    await writeFile(join(dir, "seed.md"), "seed\n", "utf8");
+    await writeFile(join(dir, nfd), "before\n", "utf8");
+    initGitRepo(dir);
+    const { result } = await roundTrip(
+      dir,
+      control,
+      async () => {
+        await writeFile(join(dir, nfd), "the agent's legitimate artifact\n", "utf8");
+      },
+      { allowedRoots: [nfc] },
+    );
+    assert.deepEqual(result.reverted, [], JSON.stringify(result));
+    assert.equal(
+      (await readFile(join(dir, nfd), "utf8")).replaceAll("\r\n", "\n"),
+      "the agent's legitimate artifact\n",
+    );
+  });
+});
+
 test("a quarantine that fails with EBUSY leaves the file unrestored and makes the run an incident", async () => {
   await withProject(async ({ dir, control }) => {
     await writeFile(join(dir, "README.md"), "committed\n", "utf8");
@@ -282,6 +544,8 @@ test("a quarantine that fails with EBUSY leaves the file unrestored and makes th
     );
     // Never restored over an un-quarantined file: the agent's version is still the live one.
     assert.equal((await read(dir, "README.md")).replaceAll("\r\n", "\n"), "agent rewrote this\n");
+    // R-43: and nothing half-moved was left behind in the quarantine folder.
+    assert.equal(quarantine.dir, null, "no quarantine folder was created for a failed move");
   });
 });
 

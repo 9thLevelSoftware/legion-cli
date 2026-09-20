@@ -97,8 +97,13 @@ export function globToRegExp(pattern: string): RegExp {
   return new RegExp(`^${out}$`);
 }
 
+/**
+ * Unicode normalization is not part of a path's identity: `café.ts` typed NFC in a contract and
+ * stored NFD on disk are the same file, on macOS and on NTFS/ext4 alike (R-39). Case is still
+ * significant, so a case-only rename is still a change.
+ */
 export function matchesGlob(pattern: string, posixPath: string): boolean {
-  return globToRegExp(pattern).test(posixPath);
+  return globToRegExp(pattern.normalize("NFC")).test(posixPath.normalize("NFC"));
 }
 
 /** `.env` / `.env.*` in any path segment, any case (NTFS would otherwise alias `.ENV` onto `.env`). */

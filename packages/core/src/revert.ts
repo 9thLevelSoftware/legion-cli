@@ -1,13 +1,19 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { copyFile, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   atomicWriteFile,
+  gitAllRefs,
   gitBlobIdsAtRef,
+  gitBundleCreate,
   gitCatFileFiltered,
   gitHashObjects,
   gitIgnoredEntries,
+  gitIndexEntries,
+  gitIsAncestor,
+  gitLsFiles,
+  gitResetIndexPaths,
   gitRevListRange,
   gitStatusRecords,
   gitUpdateRef,
@@ -17,26 +23,37 @@ import {
   tryGitBranch,
   tryGitHead,
 } from "@9thlevelsoftware/legion-cli-persist";
-import { hasGitSegment, isAllowedPath, isEngineRuntimePath, isEnvBasename, matchesGlob } from "./contracts.js";
+import { globToRegExp, hasGitSegment, isAllowedPath, isEngineRuntimePath, isEnvBasename } from "./contracts.js";
 import { isProtectedPath, type ProtectedRestoreResult } from "./protected.js";
 import { sha256File, type Quarantine } from "./quarantine.js";
 
-export const HEAD_MOVED_WARNING =
-  "agent committed; Legion CLI did not `reset`. `legion-cli ship` is the human commit gate.";
-
-/** Per-file and total backup caps for the pre-spawn snapshot (KD-16). */
+/** Per-file and total *copy* caps for the pre-spawn backups (KD-16). Hardlinks are uncapped. */
 export const BACKUP_FILE_MAX_BYTES = 4 * 1024 * 1024;
 export const BACKUP_TOTAL_MAX_BYTES = 256 * 1024 * 1024;
 
 /** Directory name inside the run's control dir that holds the pre-spawn backups (R-8). */
 export const BACKUP_DIR_NAME = "pre";
 export const TREE_MANIFEST_NAME = "tree-manifest.json";
+export const COMMIT_BUNDLE_NAME = "agent-commits.bundle";
+
+/**
+ * PR 4's "HEAD movement is only a warning" is gone: a commit made during a run is an incident
+ * (KD-1, §5.2 item 5). The constant stays so a caller that still imports it gets the new wording
+ * rather than the contradictory old one (R-49).
+ */
+export const HEAD_MOVED_WARNING =
+  "commits were made during the agent run; the task is blocked and the shas are in STATE.quarantinedCommits";
+
+export const GIT_CLASSIFY_FAILED_MESSAGE =
+  "git could not classify your working tree, so Legion cannot protect your files during this run";
 
 export type RevertResult = {
   extrasReverted: string[];
   incident: boolean;
   headMoved: boolean;
   preSpawnRef: string | null;
+  /** The run this result belongs to, so messages can name `refs/legion-quarantine/<runId>`. */
+  runId?: string;
   /** Protected-set comparison and restore (KD-1), done before any git call. */
   protected?: ProtectedRestoreResult;
   /** An incident from outside the protected-set restore (e.g. a jail write under `.git`). */
@@ -59,6 +76,8 @@ export type RevertResult = {
   quarantinedCommits?: string[];
   /** The one command that undoes the agent's ref movement (R-20). */
   commitRecovery?: string;
+  /** The run's quarantine folder, whenever anything was displaced (R-15). */
+  quarantineDir?: string | null;
 };
 
 export function recordPreSpawnRef(projectRoot: string): string | null {
@@ -75,24 +94,51 @@ export function foldKey(posixPath: string): string {
   return FOLDS ? nfc.toLowerCase() : nfc;
 }
 
-/** `.env*` and the other names whose loss would be a credential leak (KD-4, KD-16). */
+/** Case-sensitive but normalization-insensitive: `café.ts` in NFD and NFC are one spelling (R-19). */
+function sameSpelling(a: string, b: string): boolean {
+  return a.normalize("NFC") === b.normalize("NFC");
+}
+
+/**
+ * `.env*` and the other names whose loss or exposure would be a credential incident (KD-4, R-28).
+ * Deliberately broad: a false positive only means the file is quarantined instead of left alone.
+ */
 export function isSecretLikeName(name: string): boolean {
   if (isEnvBasename(name)) return true;
   const lower = name.toLowerCase();
   if (/(^|[._-])(secret|secrets|credential|credentials|token|password|passwd)([._-]|$)/.test(lower)) return true;
   if (/(^|[._-])api[._-]?keys?([._-]|$)/.test(lower)) return true;
   if (/^id_(rsa|dsa|ecdsa|ed25519)/.test(lower)) return true;
-  return /\.(pem|key|p12|pfx|keystore|jks)$/.test(lower);
+  if (/^(\.npmrc|\.netrc|_netrc|\.pgpass|\.htpasswd|\.dockercfg|kubeconfig|authorized_keys)$/.test(lower)) return true;
+  if (/^service[-_]?account.*\.json$/.test(lower)) return true;
+  return /\.(env|pem|key|p12|pfx|keystore|jks|ovpn|ppk|asc|gpg|tfstate)$/.test(lower);
 }
 
 function isSecretLikePath(posixPath: string): boolean {
   return posixPath.split("/").some((part) => isSecretLikeName(part));
 }
 
+/** Files that decide how git converts content; they are restored before anything is compared. */
+function isAttributeOrIgnoreFile(posixPath: string): boolean {
+  const base = (posixPath.split("/").pop() ?? "").toLowerCase();
+  return base === ".gitattributes" || base === ".gitignore";
+}
+
 /* ------------------------------------------------------------- the walk */
 
 export type TreeKind = "file" | "dir" | "link" | "other";
-export type TreeStat = { size: number; mtimeMs: number; kind: TreeKind };
+export type TreeStat = {
+  size: number;
+  mtimeMs: number;
+  kind: TreeKind;
+  /** Inode/file index: changes on the write-temp-then-rename every editor and most tools use. */
+  ino: string;
+  /** POSIX change time / NTFS MFT change time: `utimes` cannot forge it (R-26). */
+  ctimeMs: number;
+  nlink: number;
+  /** POSIX permission bits, so a restored `0755` script stays executable (R-5). */
+  mode: number;
+};
 export type GitClass = "tracked-clean" | "dirty" | "untracked" | "ignored";
 export type RestoreSource = "git" | "backup" | "none";
 
@@ -101,10 +147,18 @@ export type PreEntry = TreeStat & {
   path: string;
   cls: GitClass;
   restoreFrom: RestoreSource;
-  /** Absolute path of the backup copy under `<controlDir>/pre/`. */
+  /** Absolute path of the backup copy (or hardlink) under `<controlDir>/pre/`. */
   backup?: string;
-  /** sha256 of the pre-spawn bytes (only when backed up). */
+  /** sha256 of the pre-spawn bytes. Present for copied backups and for over-cap files (R-6, R-16). */
   sha256?: string;
+  /**
+   * For a **hardlinked** backup (over the copy cap, R-31): the pre-run stat of the shared inode.
+   * A hardlink survives `rm`, `git clean` and rename-over, but not an in-place truncating write —
+   * which changes this stat, so the copy is known to be stale rather than silently trusted.
+   */
+  backupStat?: { size: number; mtimeMs: number; ino: string; ctimeMs: number };
+  /** Why no backup exists, when one was wanted (R-16). */
+  noBackup?: "over-cap" | string;
 };
 
 export type TreeSnapshot = {
@@ -118,22 +172,39 @@ export type TreeSnapshot = {
   ignoredDirs: Map<string, string>;
   /** foldKey(dir) → its top-level entries, keyed by foldKey(name) (KD-16). */
   ignoredDirTop: Map<string, Map<string, TreeStat & { name: string }>>;
-  /** Ignored files outside ignored directories with no backup (over the cap). */
-  overCap: Set<string>;
+  /** foldKey of every ignored FILE outside ignored directories, under the pre-spawn rules (R-27). */
+  ignoredFileKeys: Set<string>;
+  /**
+   * Secret-like names at the top level of a pre-existing ignored directory (`secrets/prod.env`).
+   * They are backed up and restored, but they live outside `entries` because the walk never
+   * descends into an ignored directory, so they would otherwise read as deleted every run (R-28).
+   */
+  ignoredSecrets: Map<string, PreEntry>;
+  /** Pre-existing files the backup pass could not protect, with the reason (R-16, R-31). */
+  unprotected: Map<string, string>;
+  /** `git ls-files -s -z` at spawn time, so an index-only change is still detected (R-4). */
+  index: Map<string, string> | null;
+  /** Every ref and its object id at spawn time (R-32). */
+  refs: Map<string, string> | null;
   backupDir: string | null;
   backupBytes: number;
-  /** True when a git call the snapshot needed failed; the finish makes it an incident (F-044). */
+  /** True when a git call the snapshot needed failed; the spawn is refused (R-17). */
   gitUnavailable: boolean;
   takenAt: string;
 };
 
-/** Walk prunes these `.legion-cli` children by name: engine runtime, never agent work (F-035). */
+/** `.legion-cli` children the walk prunes by name: engine runtime, never agent work (F-035). */
 const PRUNED_LEGION_CHILDREN = new Set(["cache", "index", "sandbox", "worktrees"]);
+const LEGION = ".legion-cli";
 
 function prunedDir(posix: string): boolean {
   const parts = posix.split("/");
   if (parts.some((part) => part.toLowerCase() === ".git")) return true;
-  return parts.length === 2 && (parts[0] ?? "").toLowerCase() === ".legion-cli" && PRUNED_LEGION_CHILDREN.has((parts[1] ?? "").toLowerCase());
+  return (
+    parts.length === 2 &&
+    (parts[0] ?? "").toLowerCase() === LEGION &&
+    PRUNED_LEGION_CHILDREN.has((parts[1] ?? "").toLowerCase())
+  );
 }
 
 function kindOf(st: { isSymbolicLink(): boolean; isDirectory(): boolean; isFile(): boolean }): TreeKind {
@@ -146,7 +217,15 @@ function kindOf(st: { isSymbolicLink(): boolean; isDirectory(): boolean; isFile(
 async function statEntry(abs: string): Promise<TreeStat | null> {
   try {
     const st = await lstat(abs);
-    return { size: Number(st.size), mtimeMs: Math.round(st.mtimeMs), kind: kindOf(st) };
+    return {
+      size: Number(st.size),
+      mtimeMs: Math.round(st.mtimeMs),
+      kind: kindOf(st),
+      ino: String(st.ino),
+      ctimeMs: Math.round(st.ctimeMs),
+      nlink: Number(st.nlink),
+      mode: st.mode & 0o7777,
+    };
   } catch {
     return null;
   }
@@ -175,9 +254,10 @@ type WalkResult = {
 };
 
 /**
- * lstat-only walk of the non-ignored tree (KD-16). Links are recorded and never followed,
- * `.git` and the engine's runtime areas are pruned by name, and ignored directories are recorded
- * with their top-level entries only.
+ * lstat-only walk of the non-ignored tree (KD-16). Links are recorded and never followed, `.git`
+ * and the engine's runtime areas are pruned by name, and ignored directories are recorded with
+ * their top-level entries only. `.legion-cli` is always walked, even though `init` gitignores it,
+ * so another run's cache stays observable (R-33 from PR 4; R-9/R-34/R-46 here).
  */
 async function walkTree(projectRoot: string, ignoredDirKeys: ReadonlySet<string>): Promise<WalkResult> {
   const entries = new Map<string, TreeStat & { path: string }>();
@@ -198,7 +278,8 @@ async function walkTree(projectRoot: string, ignoredDirKeys: ReadonlySet<string>
       const key = foldKey(posix);
       const st = await statEntry(join(abs, dirent.name));
       if (!st) continue;
-      if (st.kind === "dir" && ignoredDirKeys.has(key)) {
+      const alwaysWalk = key === LEGION;
+      if (st.kind === "dir" && ignoredDirKeys.has(key) && !alwaysWalk) {
         ignoredDirs.set(key, posix);
         ignoredDirTop.set(key, await listTop(join(abs, dirent.name)));
         continue;
@@ -213,18 +294,30 @@ async function walkTree(projectRoot: string, ignoredDirKeys: ReadonlySet<string>
 
 /* --------------------------------------------------------- the snapshot */
 
-function classify(projectRoot: string): {
+type Classification = {
+  tracked: Set<string>;
   dirty: Set<string>;
   untracked: Set<string>;
+  untrackedPrefixes: string[];
   ignoredFiles: Set<string>;
   ignoredDirKeys: Set<string>;
   ok: boolean;
-} {
+};
+
+function classify(projectRoot: string): Classification {
+  const tracked = new Set<string>();
   const dirty = new Set<string>();
   const untracked = new Set<string>();
+  const untrackedPrefixes: string[] = [];
   const ignoredFiles = new Set<string>();
   const ignoredDirKeys = new Set<string>();
   let ok = true;
+
+  // R-1: `ls-files` is the authoritative tracked set. Inferring "tracked-clean" by elimination
+  // silently swallowed submodules and nested checkouts, which git reports as neither.
+  const trackedPaths = gitLsFiles(projectRoot);
+  if (trackedPaths) for (const path of trackedPaths) tracked.add(foldKey(path));
+  else ok = false;
 
   const ignored = gitIgnoredEntries(projectRoot);
   if (ignored) {
@@ -237,77 +330,111 @@ function classify(projectRoot: string): {
   const status = gitStatusRecords(projectRoot);
   if (status) {
     for (const record of status) {
-      const key = foldKey(record.path);
-      if (record.x === "?" && record.y === "?") untracked.add(key);
-      else dirty.add(key);
+      // A nested repository comes back as the single directory record `?? vendor/` (R-1).
+      const isDir = record.path.endsWith("/");
+      const path = isDir ? record.path.slice(0, -1) : record.path;
+      const key = foldKey(path);
+      if (record.x === "?" && record.y === "?") {
+        untracked.add(key);
+        if (isDir) untrackedPrefixes.push(`${key}/`);
+      } else {
+        dirty.add(key);
+      }
       if (record.from) dirty.add(foldKey(record.from));
     }
   } else {
     ok = false;
   }
-  return { dirty, untracked, ignoredFiles, ignoredDirKeys, ok };
+  return { tracked, dirty, untracked, untrackedPrefixes, ignoredFiles, ignoredDirKeys, ok };
 }
 
 /**
  * Pre-spawn snapshot (KD-16), taken under the lock just before the protected-set snapshot.
- * Nothing is hashed here except the files that are backed up: one `ls-files` and one `status`
- * classify the tree, and the walk records `{size, mtimeMs, kind}` only.
+ * Nothing is hashed here except the files that cannot be reproduced from git: one `ls-files`,
+ * one `ls-files -i`, one `status` and one `ls-files -s` classify the tree, and the walk records
+ * stat metadata only. When git cannot classify the tree the snapshot bails out immediately and
+ * the caller refuses the spawn (R-17) rather than walking and copying the whole repository.
  */
 export async function snapshotTree(opts: {
   projectRoot: string;
   runId: string;
   preSpawnRef: string | null;
   controlDir?: string | null;
+  /** Hardlink over-cap files instead of leaving them unprotected (R-31). Off only for tests. */
+  linkBackups?: boolean;
 }): Promise<TreeSnapshot> {
   const { projectRoot } = opts;
-  const { dirty, untracked, ignoredFiles, ignoredDirKeys, ok } = classify(projectRoot);
-  const walked = await walkTree(projectRoot, ignoredDirKeys);
-
-  const entries = new Map<string, PreEntry>();
-  for (const [key, stat] of walked.entries) {
-    const cls: GitClass = ignoredFiles.has(key)
-      ? "ignored"
-      : untracked.has(key)
-        ? "untracked"
-        : dirty.has(key)
-          ? "dirty"
-          : ok
-            ? "tracked-clean"
-            : "untracked";
-    entries.set(key, { ...stat, cls, restoreFrom: cls === "tracked-clean" ? "git" : "none" });
-  }
-
+  const classified = classify(projectRoot);
   const snapshot: TreeSnapshot = {
     projectRoot,
     runId: opts.runId,
     preSpawnRef: opts.preSpawnRef,
     preSpawnBranch: tryGitBranch(projectRoot),
-    entries,
-    ignoredDirs: walked.ignoredDirs,
-    ignoredDirTop: walked.ignoredDirTop,
-    overCap: new Set<string>(),
+    entries: new Map(),
+    ignoredDirs: new Map(),
+    ignoredDirTop: new Map(),
+    ignoredFileKeys: classified.ignoredFiles,
+    ignoredSecrets: new Map(),
+    unprotected: new Map(),
+    index: null,
+    refs: null,
     backupDir: null,
     backupBytes: 0,
-    gitUnavailable: !ok,
+    gitUnavailable: !classified.ok,
     takenAt: new Date().toISOString(),
   };
+  // Fail closed and cheap: no walk, no backups, nothing under the lock (R-7, R-17).
+  if (!classified.ok) return snapshot;
 
-  if (opts.controlDir) await takeBackups(snapshot, opts.controlDir);
+  const walked = await walkTree(projectRoot, classified.ignoredDirKeys);
+  for (const [key, stat] of walked.entries) {
+    const underUntrackedDir = classified.untrackedPrefixes.some((prefix) => key.startsWith(prefix));
+    // R-1: only a path git actually tracks can be restored from git. Everything else — including
+    // a submodule's or a nested checkout's files, which `status` and `ls-files -i` both omit —
+    // falls back to `untracked`, so it gets a backup.
+    const cls: GitClass = classified.ignoredFiles.has(key)
+      ? "ignored"
+      : classified.tracked.has(key) && !underUntrackedDir
+        ? classified.dirty.has(key)
+          ? "dirty"
+          : "tracked-clean"
+        : "untracked";
+    snapshot.entries.set(key, { ...stat, cls, restoreFrom: cls === "tracked-clean" ? "git" : "none" });
+  }
+  snapshot.ignoredDirs = walked.ignoredDirs;
+  snapshot.ignoredDirTop = walked.ignoredDirTop;
+  snapshot.index = gitIndexEntries(projectRoot);
+  snapshot.refs = gitAllRefs(projectRoot);
+
+  if (opts.controlDir) await takeBackups(snapshot, opts.controlDir, opts.linkBackups !== false);
   return snapshot;
 }
 
 /**
- * Backups for everything git cannot reproduce: dirty and untracked non-ignored files, and every
- * pre-existing ignored file outside ignored directories. Secret-like names go first so the cap
- * never squeezes them out (KD-16).
+ * Backups for everything git cannot reproduce: dirty and untracked non-ignored files, every
+ * pre-existing ignored file outside ignored directories, and any secret-like name sitting at the
+ * top level of an ignored directory (R-28). A **hardlink** is tried first: it is O(1), costs no
+ * space and survives `rm`, `git clean` and rename-over, which are the ways these files usually
+ * die (R-31); only the copy fallback is capped. Secret-like names sort first either way.
  */
-async function takeBackups(snapshot: TreeSnapshot, controlDir: string): Promise<void> {
+async function takeBackups(snapshot: TreeSnapshot, controlDir: string, linkBackups: boolean): Promise<void> {
   const candidates: PreEntry[] = [];
   for (const entry of snapshot.entries.values()) {
     if (entry.kind !== "file") continue;
     if (entry.cls === "tracked-clean") continue;
     if (isProtectedPath(entry.path) || isEngineRuntimePath(entry.path)) continue;
     candidates.push(entry);
+  }
+  // Secret-like names at the top level of a pre-existing ignored directory (`secrets/prod.env`).
+  for (const [key, dir] of snapshot.ignoredDirs) {
+    for (const top of (snapshot.ignoredDirTop.get(key) ?? new Map()).values()) {
+      const path = `${dir}/${top.name}`;
+      // The whole path, so everything under a `secrets/` or `.aws/` directory counts.
+      if (top.kind !== "file" || !isSecretLikePath(path)) continue;
+      const entry: PreEntry = { ...top, path, cls: "ignored", restoreFrom: "none" };
+      snapshot.ignoredSecrets.set(foldKey(path), entry);
+      candidates.push(entry);
+    }
   }
   if (candidates.length === 0) return;
   candidates.sort((a, b) => {
@@ -318,26 +445,52 @@ async function takeBackups(snapshot: TreeSnapshot, controlDir: string): Promise<
   const dir = join(controlDir, BACKUP_DIR_NAME);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   snapshot.backupDir = dir;
-  let total = 0;
+  let copied = 0;
   let n = 0;
   for (const entry of candidates) {
-    if (entry.size > BACKUP_FILE_MAX_BYTES || total + entry.size > BACKUP_TOTAL_MAX_BYTES) {
-      if (entry.cls === "ignored") snapshot.overCap.add(entry.path);
-      continue;
-    }
+    const src = join(snapshot.projectRoot, ...entry.path.split("/"));
     const dest = join(dir, `${(n += 1).toString(36).padStart(4, "0")}.bin`);
-    try {
-      const bytes = await readFile(join(snapshot.projectRoot, ...entry.path.split("/")));
-      await writeFile(dest, bytes, { mode: 0o600, flag: "wx" });
-      entry.backup = dest;
-      entry.sha256 = createHash("sha256").update(bytes).digest("hex");
-      entry.restoreFrom = "backup";
-      total += bytes.length;
-    } catch {
-      if (entry.cls === "ignored") snapshot.overCap.add(entry.path);
+    if (entry.size <= BACKUP_FILE_MAX_BYTES && copied + entry.size <= BACKUP_TOTAL_MAX_BYTES) {
+      try {
+        const bytes = await readFile(src);
+        await writeFile(dest, bytes, { mode: 0o400, flag: "wx" });
+        entry.backup = dest;
+        entry.sha256 = createHash("sha256").update(bytes).digest("hex");
+        entry.restoreFrom = "backup";
+        copied += bytes.length;
+        continue;
+      } catch (err) {
+        // R-16/R-28c: say what actually failed instead of blaming the cap.
+        entry.noBackup = `backup failed (${describe(err)})`;
+      }
     }
+    // Over the copy cap (or the copy failed): a hardlink is O(1), costs no space and survives
+    // `rm`, `git clean -fdx` and rename-over — the ways these files actually die (R-31).
+    if (linkBackups) {
+      try {
+        await link(src, dest);
+        const st = await statEntry(dest);
+        if (st) {
+          entry.backup = dest;
+          entry.restoreFrom = "backup";
+          entry.backupStat = { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, ctimeMs: st.ctimeMs };
+          delete entry.noBackup;
+          continue;
+        }
+      } catch {
+        // Cross-volume (the project on D:, the profile on C:) or a filesystem without links.
+      }
+    }
+    entry.noBackup ??= "over-cap";
+    snapshot.unprotected.set(
+      entry.path,
+      entry.noBackup === "over-cap" ? "over the 4 MiB / 256 MiB backup cap" : entry.noBackup,
+    );
+    // Hash it anyway, so a touched-but-identical file is confirmed unchanged instead of blocking
+    // the run (R-6, R-16). Bounded: only files that had no backup at all reach this.
+    entry.sha256 = await sha256File(src).catch(() => undefined);
   }
-  snapshot.backupBytes = total;
+  snapshot.backupBytes = copied;
 
   await writeFile(
     join(controlDir, TREE_MANIFEST_NAME),
@@ -348,14 +501,17 @@ async function takeBackups(snapshot: TreeSnapshot, controlDir: string): Promise<
         preSpawnRef: snapshot.preSpawnRef,
         preSpawnBranch: snapshot.preSpawnBranch,
         takenAt: snapshot.takenAt,
-        backupBytes: total,
-        entries: [...snapshot.entries.values()]
-          .filter((entry) => entry.restoreFrom !== "none" || snapshot.overCap.has(entry.path))
+        backupBytes: copied,
+        unprotected: [...snapshot.unprotected].map(([path, why]) => ({ path, why })),
+        entries: [...snapshot.entries.values(), ...snapshot.ignoredSecrets.values()]
+          .filter((entry) => entry.restoreFrom !== "none" || entry.noBackup)
           .map((entry) => ({
             path: entry.path,
             cls: entry.cls,
             restoreFrom: entry.restoreFrom,
-            ...(entry.backup ? { backup: entry.backup, sha256: entry.sha256 } : {}),
+            ...(entry.noBackup ? { noBackup: entry.noBackup } : {}),
+            ...(entry.backup ? { backup: entry.backup } : {}),
+            ...(entry.sha256 ? { sha256: entry.sha256 } : {}),
           })),
       },
       null,
@@ -363,6 +519,37 @@ async function takeBackups(snapshot: TreeSnapshot, controlDir: string): Promise<
     )}\n`,
     { encoding: "utf8", mode: 0o600 },
   ).catch(() => undefined);
+}
+
+/**
+ * R-20: the retained `pre/` folders hold plaintext copies of ignored files, `.env` among them, and
+ * only the owning run's clean finish deletes its own. Drop any that is older than the ceiling at
+ * the start of the next run, so an incident-heavy project does not accumulate secrets for ever.
+ * The resume record and the quarantine manifest are left alone.
+ */
+export const BACKUP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+export async function reclaimOldBackups(controlProjectDir: string, now = Date.now()): Promise<number> {
+  let names: string[];
+  try {
+    names = await readdir(controlProjectDir);
+  } catch {
+    return 0;
+  }
+  let dropped = 0;
+  for (const name of names) {
+    const dir = join(controlProjectDir, name);
+    try {
+      const st = await lstat(join(dir, BACKUP_DIR_NAME));
+      if (!st.isDirectory() || st.isSymbolicLink()) continue;
+      if (now - st.mtimeMs < BACKUP_RETENTION_MS) continue;
+      await rm(join(dir, BACKUP_DIR_NAME), { recursive: true, force: true });
+      dropped += 1;
+    } catch {
+      // no backups for this run, or it is in use
+    }
+  }
+  return dropped;
 }
 
 /** R-8: a finish with no incident keeps nothing; incident runs keep the backups for recovery. */
@@ -379,38 +566,63 @@ export type AgentCommits = {
   headMoved: boolean;
   branchMoved: boolean;
   commits: string[];
+  /** Refs that were deleted or moved so that pre-spawn commits are no longer reachable (R-32). */
+  lostRefs: string[];
+  /** `refs/legion-quarantine/<runId>` was created, so the commits survive a later `gc`. */
+  pinned: boolean;
   recovery?: string;
 };
 
 /**
- * R-20: an agent that committed moved `HEAD` or the branch. The commits are kept reachable under
- * `refs/legion-quarantine/<runId>`; the engine never moves the user's refs itself, it prints the
- * one command that does.
+ * R-20/R-32: an agent that committed moved `HEAD`, the branch, or some other ref. The commits are
+ * pinned under `refs/legion-quarantine/<runId>` and bundled beside the retained backups, outside
+ * `.git`, so a later `gc --prune=now` cannot erase the evidence. The engine never moves the user's
+ * refs itself; it prints the one command that does.
  */
-export function detectAgentCommits(snapshot: TreeSnapshot): AgentCommits {
+export function detectAgentCommits(snapshot: TreeSnapshot, controlDir?: string | null): AgentCommits {
   const { projectRoot, preSpawnRef, preSpawnBranch } = snapshot;
   const headNow = tryGitHead(projectRoot);
   const branchNow = tryGitBranch(projectRoot);
   const headMoved = Boolean(preSpawnRef && headNow && headNow !== preSpawnRef);
   const branchMoved = preSpawnBranch !== branchNow;
-  if (!headMoved && !branchMoved) return { headMoved: false, branchMoved: false, commits: [] };
+
+  // Every other ref: a deleted branch, a force-moved one, a dropped stash, a deleted tag (R-32).
+  const lostRefs: string[] = [];
+  const refsNow = gitAllRefs(projectRoot);
+  if (snapshot.refs && refsNow) {
+    for (const [ref, sha] of snapshot.refs) {
+      const now = refsNow.get(ref);
+      if (now === sha) continue;
+      if (!now) lostRefs.push(`${ref} (deleted, was ${sha.slice(0, 8)})`);
+      else if (!gitIsAncestor(projectRoot, sha, now)) lostRefs.push(`${ref} (moved off ${sha.slice(0, 8)})`);
+    }
+  }
+
+  if (!headMoved && !branchMoved && lostRefs.length === 0) {
+    return { headMoved: false, branchMoved: false, commits: [], lostRefs, pinned: false };
+  }
 
   const commits = headMoved && preSpawnRef && headNow ? gitRevListRange(projectRoot, preSpawnRef, headNow) : [];
+  const ref = `refs/legion-quarantine/${snapshot.runId}`;
+  let pinned = false;
   if (commits.length > 0) {
     // Purely so `git gc` cannot drop them: the user's own refs are left exactly where they are.
-    gitUpdateRef(projectRoot, `refs/legion-quarantine/${snapshot.runId}`, commits[0] as string);
+    pinned = gitUpdateRef(projectRoot, ref, commits[0] as string);
+    if (controlDir) gitBundleCreate(projectRoot, join(controlDir, COMMIT_BUNDLE_NAME), pinned ? [ref] : commits);
   }
   const recovery = branchMoved
     ? `git checkout ${preSpawnBranch ?? preSpawnRef ?? "HEAD"}`
-    : `git reset ${preSpawnRef ?? "HEAD"}`;
-  return { headMoved, branchMoved, commits, recovery };
+    : headMoved
+      ? `git reset ${preSpawnRef ?? "HEAD"}`
+      : undefined;
+  return { headMoved, branchMoved, commits, lostRefs, pinned, ...(recovery ? { recovery } : {}) };
 }
 
 /* ----------------------------------------------------------- the revert */
 
-function forbiddenByContract(posixPath: string, filesForbidden: readonly string[] | undefined): boolean {
-  if (!filesForbidden || filesForbidden.length === 0) return false;
-  return filesForbidden.some((pattern) => pattern === posixPath || matchesGlob(pattern, posixPath));
+/** Contract matchers compiled once per revert instead of per candidate (plan item 1, R-50). */
+function compileMatchers(patterns: readonly string[]): RegExp[] {
+  return patterns.map((pattern) => globToRegExp(pattern.normalize("NFC")));
 }
 
 export type RevertTreeOpts = {
@@ -420,10 +632,15 @@ export type RevertTreeOpts = {
   filesForbidden?: readonly string[];
   /** Shared with the protected-set restore, so one run has one quarantine folder. */
   quarantine: Quarantine;
+  /** The run's control dir, for the agent-commit bundle. */
+  controlDir?: string | null;
 };
 
 export type RevertTreeResult = {
+  /** Out-of-contract paths that were quarantined and restored (they fail the contract). */
   reverted: string[];
+  /** Pre-existing ignored files restored from backup: not the agent's scope creep (R-10). */
+  restoredIgnored: string[];
   warnings: string[];
   unrestorable: string[];
   incident: boolean;
@@ -440,43 +657,42 @@ type Candidate = {
 
 /**
  * Post-spawn pass (KD-16), after the protected-set restore. Stat-first: a candidate is any path
- * whose stat, kind or on-disk spelling changed, or that was added or removed. Candidates are then
- * confirmed by content (batched `hash-object` against the `preSpawnRef` blob, or the backup sha)
- * before anything is touched. Every confirmed change outside the contract is quarantined first
- * and only then restored from a verified source (KD-1); a failed quarantine skips the restore.
+ * whose stat, kind, identity or on-disk spelling changed, or that was added or removed.
+ * Candidates are then confirmed by content before anything is touched. Every confirmed change
+ * outside the contract is quarantined first and only then restored from a source that was
+ * verified *before* the move (KD-1, R-29); a failed quarantine skips the restore.
  */
 export async function revertTree(opts: RevertTreeOpts): Promise<RevertTreeResult> {
   const { snapshot, quarantine } = opts;
   const { projectRoot } = snapshot;
   const result: RevertTreeResult = {
     reverted: [],
+    restoredIgnored: [],
     warnings: [],
     unrestorable: [],
     incident: snapshot.gitUnavailable,
-    agentCommits: { headMoved: false, branchMoved: false, commits: [] },
+    agentCommits: { headMoved: false, branchMoved: false, commits: [], lostRefs: [], pinned: false },
   };
   if (snapshot.gitUnavailable) {
-    result.warnings.push("git was unavailable when the run started; only backed-up files can be restored");
+    result.warnings.push("git could not classify the tree when the run started; nothing was protected");
   }
 
-  const post = gitIgnoredEntries(projectRoot);
-  if (!post) result.incident = true;
-  const postIgnoredDirKeys = new Set((post?.dirs ?? []).map(foldKey));
-  const postIgnoredFileKeys = new Set((post?.files ?? []).map(foldKey));
-  // A directory that was ignored before the run stays pruned even if git can no longer say so.
-  for (const key of snapshot.ignoredDirs.keys()) postIgnoredDirKeys.add(key);
+  const allowed = compileMatchers(opts.allowedRoots);
+  const forbidden = compileMatchers(opts.filesForbidden ?? []);
+  const handled: string[] = [];
+  const skip = (posix: string): boolean => {
+    const nfc = posix.normalize("NFC");
+    if (hasGitSegment(posix) || isProtectedPath(posix) || isEngineRuntimePath(posix, opts.runId)) return true;
+    if (!isAllowedPath(posix, opts.allowedRoots)) return false;
+    return !forbidden.some((re) => re.test(nfc)) && allowed.some((re) => re.test(nfc));
+  };
 
-  const after = await walkTree(projectRoot, postIgnoredDirKeys);
-  ignoredDirWarnings(snapshot, after, postIgnoredDirKeys, result);
+  // Walk with the PRE-spawn ignored directories: a directory the agent newly ignored must still
+  // be enumerated, or it would be an escape hatch (R-27).
+  const after = await walkTree(projectRoot, new Set(snapshot.ignoredDirs.keys()));
 
   /* --- collect candidates ------------------------------------------- */
   const candidates: Candidate[] = [];
-  const skip = (posix: string): boolean =>
-    hasGitSegment(posix) ||
-    isProtectedPath(posix) ||
-    isEngineRuntimePath(posix, opts.runId) ||
-    (isAllowedPath(posix, opts.allowedRoots) && !forbiddenByContract(posix, opts.filesForbidden));
-
   for (const [key, before] of snapshot.entries) {
     const now = after.entries.get(key);
     if (now && unchangedStat(before, now)) continue;
@@ -490,41 +706,110 @@ export async function revertTree(opts: RevertTreeOpts): Promise<RevertTreeResult
     if (skip(now.path)) continue;
     candidates.push({ key, after: now });
   }
-
-  /* --- confirm by content ------------------------------------------- */
-  const unchanged = await confirmUnchanged(snapshot, candidates);
-
-  /* --- act ----------------------------------------------------------- */
-  const gitRestores = candidates.filter(
-    (candidate) =>
-      !unchanged.has(candidate.key) && candidate.before?.kind === "file" && candidate.before.restoreFrom === "git",
-  );
-  const blobs =
-    snapshot.preSpawnRef && gitRestores.length > 0
-      ? gitBlobIdsAtRef(projectRoot, snapshot.preSpawnRef, gitRestores.map((candidate) => (candidate.before as PreEntry).path))
-      : new Map<string, string | null>();
-  const contents =
-    snapshot.preSpawnRef && gitRestores.length > 0
-      ? gitCatFileFiltered(projectRoot, snapshot.preSpawnRef, gitRestores.map((candidate) => (candidate.before as PreEntry).path))
-      : new Map<string, Buffer | null>();
-
-  // Shallowest first, so a restored ancestor directory exists before its children are written.
+  // Shallowest first, so a restored ancestor exists before its children are written.
   candidates.sort((a, b) => {
     const pa = a.before?.path ?? a.after?.path ?? "";
     const pb = b.before?.path ?? b.after?.path ?? "";
     return pa.split("/").length - pb.split("/").length || pa.localeCompare(pb);
   });
 
-  for (const candidate of candidates) {
-    if (unchanged.has(candidate.key)) continue;
-    const before = candidate.before;
-    const now = candidate.after;
-    const display = now?.path ?? before?.path ?? "";
-    // A directory the agent created is not work by itself; its files are handled one by one.
-    if (!before && now?.kind === "dir") continue;
+  /* --- 1. the trusted base: .gitattributes and .gitignore ------------ */
+  // These decide what `hash-object` and `cat-file --filters` produce and what counts as ignored,
+  // and git honours them even when the file is brand new and untracked (R-25, R-27). They are put
+  // back before anything else is compared.
+  const baseCandidates = candidates.filter((candidate) =>
+    isAttributeOrIgnoreFile(candidate.after?.path ?? candidate.before?.path ?? ""),
+  );
+  const baseChanged = baseCandidates.length > 0;
+  if (baseChanged) {
+    const basePaths = baseCandidates
+      .filter((candidate) => candidate.before?.kind === "file" && candidate.before.restoreFrom === "git")
+      .map((candidate) => (candidate.before as PreEntry).path);
+    const baseBlobs = snapshot.preSpawnRef
+      ? gitBlobIdsAtRef(projectRoot, snapshot.preSpawnRef, basePaths)
+      : new Map<string, string | null>();
+    const baseContents = snapshot.preSpawnRef
+      ? gitCatFileFiltered(projectRoot, snapshot.preSpawnRef, basePaths)
+      : new Map<string, Buffer | null>();
+    for (const candidate of baseCandidates) {
+      const display = candidate.after?.path ?? candidate.before?.path ?? "";
+      try {
+        await actOn(candidate, { snapshot, quarantine, handled, result, blobs: baseBlobs, contents: baseContents });
+        result.reverted.push(display);
+      } catch (err) {
+        result.incident = true;
+        result.unrestorable.push(`${display} (${describe(err)})`);
+      }
+    }
+    result.warnings.push(
+      ".gitattributes/.gitignore changed during the run; they were put back before anything else was compared",
+    );
+  }
 
-    // Ignored-path policy (KD-16, R-7).
-    if (!before && (postIgnoredFileKeys.has(candidate.key) || underIgnoredDir(candidate.key, postIgnoredDirKeys))) {
+  // Now the ignore rules are the pre-run ones again, so this query classifies the post-run tree
+  // under the PRE-run rules — which is exactly what the policy wants (R-27).
+  const post = gitIgnoredEntries(projectRoot);
+  if (!post) result.incident = true;
+  const ignoredDirKeys = new Set((post?.dirs ?? []).map(foldKey));
+  const ignoredFileKeys = new Set((post?.files ?? []).map(foldKey));
+  for (const key of snapshot.ignoredDirs.keys()) ignoredDirKeys.add(key);
+  ignoredDirWarnings(snapshot, after, result);
+
+  /* --- 2. confirm by content ----------------------------------------- */
+  const rest = candidates.filter((candidate) => !baseCandidates.includes(candidate));
+  const { unchanged, blobs: confirmBlobs } = await confirmUnchanged(snapshot, rest);
+
+  /* --- 3. act --------------------------------------------------------- */
+  const live = rest.filter((candidate) => !unchanged.has(candidate.key));
+  const gitPaths = live
+    .filter((candidate) => candidate.before?.kind === "file" && candidate.before.restoreFrom === "git")
+    .map((candidate) => (candidate.before as PreEntry).path);
+  const blobs = new Map(confirmBlobs);
+  const missing = gitPaths.filter((path) => !blobs.has(path));
+  if (snapshot.preSpawnRef && missing.length > 0) {
+    for (const [path, id] of gitBlobIdsAtRef(projectRoot, snapshot.preSpawnRef, missing)) blobs.set(path, id);
+  }
+  const contents =
+    snapshot.preSpawnRef && gitPaths.length > 0
+      ? gitCatFileFiltered(projectRoot, snapshot.preSpawnRef, gitPaths)
+      : new Map<string, Buffer | null>();
+  // `--filters` produces git's *canonical checkout* form. In an autocrlf repo a file that was on
+  // disk with LF endings would come back as CRLF — a "verified" restore (both hash to the same
+  // blob) that is not byte-identical to what was there. The recorded pre-run size settles which
+  // form was actually on disk; only the paths that disagree cost a second batch.
+  const wrongForm = live
+    .filter((candidate) => {
+      const before = candidate.before;
+      if (!before || before.restoreFrom !== "git" || before.kind !== "file") return false;
+      const bytes = contents.get(before.path);
+      return Boolean(bytes) && bytes?.length !== before.size;
+    })
+    .map((candidate) => (candidate.before as PreEntry).path);
+  if (snapshot.preSpawnRef && wrongForm.length > 0) {
+    const raw = gitCatFileFiltered(projectRoot, snapshot.preSpawnRef, wrongForm, { filters: false });
+    for (const path of wrongForm) {
+      const bytes = raw.get(path);
+      const size = live.find((candidate) => candidate.before?.path === path)?.before?.size;
+      if (bytes && bytes.length === size) contents.set(path, bytes);
+    }
+  }
+  // R-25 belt-and-braces: a changed attributes file means the git-sourced bytes were produced
+  // under rules we had to repair, so say so instead of quietly trusting them.
+  if (baseChanged && gitPaths.length > 0) {
+    result.incident = true;
+    result.unrestorable.push(
+      "a .gitattributes/.gitignore file changed during the run, so the git-sourced restores could not be trusted to be byte-exact",
+    );
+  }
+
+  const verify: { abs: string; blob: string; display: string }[] = [];
+  for (const candidate of live) {
+    const display = candidate.after?.path ?? candidate.before?.path ?? "";
+    if (handled.some((done) => candidate.key.startsWith(`${done}/`))) continue;
+    if (!candidate.before && candidate.after?.kind === "dir") continue;
+
+    // Ignored-path policy (KD-16, R-7, R-27), decided by the PRE-run rules.
+    if (!candidate.before && (ignoredFileKeys.has(candidate.key) || underPrefix(candidate.key, ignoredDirKeys))) {
       if (isSecretLikePath(display)) {
         try {
           await quarantine.move(toFsPath(projectRoot, display), display, "new", null);
@@ -538,106 +823,262 @@ export async function revertTree(opts: RevertTreeOpts): Promise<RevertTreeResult
       }
       continue;
     }
-    if (before?.cls === "ignored" && before.restoreFrom === "none") {
-      result.warnings.push(`${display} (not restorable (over the 4 MiB / 256 MiB backup cap))`);
-      continue;
-    }
-    if (before && before.kind === "file" && before.restoreFrom === "none") {
-      result.incident = true;
-      result.unrestorable.push(`${display} (no restore source: it was neither tracked nor backed up)`);
+    if (candidate.before && candidate.before.kind === "file" && candidate.before.restoreFrom === "none") {
+      await handleUnrestorable(candidate, snapshot, quarantine, result);
       continue;
     }
 
     try {
-      await revertOne(snapshot, candidate, quarantine, blobs, contents);
-      result.reverted.push(display);
+      const written = await actOn(candidate, { snapshot, quarantine, handled, result, blobs, contents });
+      if (written) verify.push(written);
+      if (candidate.before?.cls === "ignored") result.restoredIgnored.push(display);
+      else result.reverted.push(display);
     } catch (err) {
       result.incident = true;
       result.unrestorable.push(`${display} (${describe(err)})`);
     }
   }
 
-  result.agentCommits = detectAgentCommits(snapshot);
-  if (result.agentCommits.headMoved || result.agentCommits.branchMoved) result.incident = true;
+  /* --- 4. verify every git-sourced restore in ONE batch (R-18, R-37) -- */
+  if (verify.length > 0) {
+    const hashes = gitHashObjects(
+      projectRoot,
+      verify.map((item) => item.abs),
+    );
+    for (const item of verify) {
+      if (hashes.get(item.abs) === item.blob) continue;
+      result.incident = true;
+      result.unrestorable.push(
+        `${item.display} (the restored bytes did not hash to the pre-run blob; the agent's version is kept in quarantine)`,
+      );
+    }
+  }
+
+  /* --- 5. secret-like names inside ignored directories (R-28) ---------- */
+  await restoreIgnoredSecrets(snapshot, quarantine, result);
+
+  /* --- 6. the index (R-4) --------------------------------------------- */
+  await resetIndex(snapshot, result, skip);
+
+  result.agentCommits = detectAgentCommits(snapshot, opts.controlDir);
+  const commits = result.agentCommits;
+  if (commits.headMoved || commits.branchMoved || commits.lostRefs.length > 0) result.incident = true;
   return result;
 }
 
 /**
- * Stat-first comparison. A directory's own mtime changes whenever a child is added or removed,
- * which is not work on the directory itself — its children are candidates of their own — so a
- * directory only counts as changed when its kind or its on-disk spelling changed.
+ * R-28: an ignored directory's contents are never walked, so a rewritten `secrets/prod.env` would
+ * only ever produce a warning. These few names are stat-compared directly and put back from their
+ * backup, with the agent's version quarantined — a credential file must never be left holding it.
  */
-function unchangedStat(before: PreEntry, now: TreeStat & { path: string }): boolean {
-  if (now.kind !== before.kind || now.path !== before.path) return false;
-  if (before.kind === "dir") return true;
-  return now.size === before.size && now.mtimeMs === before.mtimeMs;
+async function restoreIgnoredSecrets(
+  snapshot: TreeSnapshot,
+  quarantine: Quarantine,
+  result: RevertTreeResult,
+): Promise<void> {
+  for (const before of snapshot.ignoredSecrets.values()) {
+    const abs = join(snapshot.projectRoot, ...before.path.split("/"));
+    const now = await statEntry(abs);
+    if (now && unchangedStat(before, { ...now, path: before.path })) continue;
+    if (before.restoreFrom !== "backup" || !before.backup) {
+      result.incident = true;
+      result.unrestorable.push(
+        `LOST: ${before.path} (${snapshot.unprotected.get(before.path) ?? "no backup was taken"}; a credential-like file changed inside an ignored directory)`,
+      );
+      continue;
+    }
+    try {
+      if (!(await backupIsIntact(before))) throw new Error("the hardlinked pre-run copy was rewritten in place");
+      const expected = before.sha256 ?? (await sha256File(before.backup));
+      if (now) await quarantine.move(abs, before.path, "changed", "snapshot");
+      await retryFsOp(() => copyFile(before.backup as string, abs, fsConstants.COPYFILE_EXCL));
+      if ((await sha256File(abs)) !== expected) throw new Error("the restored bytes did not match the backup");
+      await applyMode(abs, before.mode);
+      result.restoredIgnored.push(before.path);
+    } catch (err) {
+      result.incident = true;
+      result.unrestorable.push(`${before.path} (${describe(err)})`);
+    }
+  }
 }
 
-function underIgnoredDir(key: string, ignoredDirKeys: ReadonlySet<string>): boolean {
-  for (const dir of ignoredDirKeys) {
-    if (key.startsWith(`${dir}/`)) return true;
+/**
+ * R-4: the worktree restore does not touch the index, so content the agent staged would survive
+ * and `ship` would commit it. Every out-of-contract path whose index entry differs from the
+ * pre-spawn index is reset back to `preSpawnRef` — which also catches a `git rm --cached`, the one
+ * change a stat-first walk cannot see at all.
+ */
+async function resetIndex(
+  snapshot: TreeSnapshot,
+  result: RevertTreeResult,
+  skip: (posix: string) => boolean,
+): Promise<void> {
+  if (!snapshot.index || !snapshot.preSpawnRef) return;
+  const now = gitIndexEntries(snapshot.projectRoot);
+  if (!now) {
+    result.incident = true;
+    result.unrestorable.push("the git index could not be read, so staged agent content may remain");
+    return;
+  }
+  const changed: string[] = [];
+  for (const [path, entry] of now) {
+    if (snapshot.index.get(path) === entry) continue;
+    if (skip(path)) continue;
+    changed.push(path);
+  }
+  for (const path of snapshot.index.keys()) {
+    if (now.has(path) || skip(path)) continue;
+    changed.push(path);
+  }
+  if (changed.length === 0) return;
+  if (!gitResetIndexPaths(snapshot.projectRoot, snapshot.preSpawnRef, changed)) {
+    result.incident = true;
+    result.unrestorable.push(`the index could not be reset for ${changed.join(", ")}`);
+    return;
+  }
+  result.warnings.push(`staged changes were unstaged: ${changed.join(", ")}`);
+}
+
+/**
+ * A confirmed change with no restore source. Nothing here can be put back, so the agent's version
+ * is left exactly where it is unless the name is secret-like — the one case where leaving the
+ * agent's bytes in a credential file is worse than losing them (R-14, R-16, R-28).
+ */
+async function handleUnrestorable(
+  candidate: Candidate,
+  snapshot: TreeSnapshot,
+  quarantine: Quarantine,
+  result: RevertTreeResult,
+): Promise<void> {
+  const before = candidate.before as PreEntry;
+  const display = candidate.after?.path ?? before.path;
+  const why = snapshot.unprotected.get(before.path) ?? "no backup was taken";
+  if (isSecretLikePath(display) && candidate.after) {
+    try {
+      await quarantine.move(toFsPath(snapshot.projectRoot, display), display, "unrestorable", null);
+      result.incident = true;
+      result.unrestorable.push(`LOST: ${display} (${why}; the agent's version was quarantined, not restored)`);
+    } catch (err) {
+      result.incident = true;
+      result.unrestorable.push(`LOST: ${display} (${why}; and the quarantine failed: ${describe(err)})`);
+    }
+    return;
+  }
+  if (!candidate.after) {
+    // Deleted or replaced by the agent and not reproducible: the bytes are gone for good.
+    result.incident = true;
+    result.unrestorable.push(`LOST: ${display} (${why}; the pre-run content cannot be recovered)`);
+    return;
+  }
+  result.warnings.push(`LOST: ${display} (${why}; the agent's version was left in place, not restored)`);
+}
+
+function underPrefix(key: string, prefixes: ReadonlySet<string>): boolean {
+  for (const prefix of prefixes) {
+    if (key.startsWith(`${prefix}/`)) return true;
   }
   return false;
 }
 
 /**
- * Top-level entries of pre-existing ignored directories (and whole new ignored directories) are
- * reported, never restored: they are build output. Secret-like new names are quarantined (KD-16).
+ * Stat-first comparison (KD-16, R-26). A directory's own mtime changes whenever a child is added
+ * or removed, which is not work on the directory itself, so a directory only counts as changed
+ * when its kind or its spelling changed. For files the identity fields (`ino`, `ctimeMs`,
+ * `nlink`) come free from the `lstat` already taken and close the one-syscall `utimes` evasion.
  */
-function ignoredDirWarnings(
-  snapshot: TreeSnapshot,
-  after: WalkResult,
-  postIgnoredDirKeys: ReadonlySet<string>,
-  result: RevertTreeResult,
-): void {
+function unchangedStat(before: PreEntry, now: TreeStat & { path: string }): boolean {
+  if (now.kind !== before.kind || !sameSpelling(now.path, before.path)) return false;
+  if (before.kind === "dir") return true;
+  if (now.size !== before.size || now.mtimeMs !== before.mtimeMs) return false;
+  if (now.mode !== before.mode || now.nlink !== before.nlink) return false;
+  // A volatile `ino` or `ctimeMs` (some network and FUSE mounts) only costs an extra candidate,
+  // which the content confirmation then clears — it can never produce a false *restore*.
+  if (now.ino !== "0" && before.ino !== "0" && now.ino !== before.ino) return false;
+  return now.ctimeMs === before.ctimeMs;
+}
+
+/**
+ * Top-level entries of pre-existing ignored directories are reported, never restored: they are
+ * build output. A new secret-like name is quarantined instead of warned about (KD-16, R-28).
+ */
+function ignoredDirWarnings(snapshot: TreeSnapshot, after: WalkResult, result: RevertTreeResult): void {
   for (const [key, spelling] of after.ignoredDirs) {
     const beforeTop = snapshot.ignoredDirTop.get(key);
     const afterTop = after.ignoredDirTop.get(key) ?? new Map();
     if (!beforeTop) {
-      if (!snapshot.entries.has(key)) result.warnings.push(`${spelling}/ (new ignored directory; left in place)`);
+      result.warnings.push(`${spelling}/ (new ignored directory; left in place)`);
       continue;
     }
     for (const [name, stat] of afterTop) {
       const was = beforeTop.get(name);
       if (was && was.kind === stat.kind && was.size === stat.size && was.mtimeMs === stat.mtimeMs) continue;
+      // A secret-like path under an ignored directory is backed up at snapshot time and restored
+      // separately; anything else here is build output.
+      if (isSecretLikePath(`${spelling}/${stat.name}`)) continue;
       result.warnings.push(`${spelling}/${stat.name} (${was ? "changed" : "new"} ignored output; left in place)`);
     }
     for (const [name, stat] of beforeTop) {
-      if (!afterTop.has(name)) result.warnings.push(`${spelling}/${stat.name} (deleted ignored output; not restored)`);
+      if (afterTop.has(name) || isSecretLikePath(`${spelling}/${stat.name}`)) continue;
+      result.warnings.push(`${spelling}/${stat.name} (deleted ignored output; not restored)`);
     }
   }
-  for (const key of snapshot.ignoredDirs.keys()) {
-    if (!after.ignoredDirs.has(key) && postIgnoredDirKeys.has(key)) {
-      result.warnings.push(`${snapshot.ignoredDirs.get(key)}/ (ignored directory removed; not restored)`);
+  for (const [key, spelling] of snapshot.ignoredDirs) {
+    if (!after.ignoredDirs.has(key) && !after.entries.has(key)) {
+      result.warnings.push(`${spelling}/ (ignored directory removed; not restored)`);
     }
   }
 }
 
+/** A hardlinked backup is only the pre-run content while nothing wrote through the shared inode. */
+async function backupIsIntact(entry: PreEntry): Promise<boolean> {
+  if (!entry.backup || !entry.backupStat) return true;
+  const st = await statEntry(entry.backup);
+  if (!st) return false;
+  // Size and mtime only: unlinking the project-side name (a rename-over, the case the hardlink
+  // exists to survive) also bumps the inode's change time, so `ctimeMs` cannot be used here.
+  return st.size === entry.backupStat.size && st.mtimeMs === entry.backupStat.mtimeMs;
+}
+
 /** Stat changes are only a hint: confirm each candidate by content before touching anything. */
-async function confirmUnchanged(snapshot: TreeSnapshot, candidates: readonly Candidate[]): Promise<Set<string>> {
+async function confirmUnchanged(
+  snapshot: TreeSnapshot,
+  candidates: readonly Candidate[],
+): Promise<{ unchanged: Set<string>; blobs: Map<string, string | null> }> {
   const unchanged = new Set<string>();
+  const blobs = new Map<string, string | null>();
   const trackedNow: Candidate[] = [];
   for (const candidate of candidates) {
     const before = candidate.before;
     const now = candidate.after;
-    if (!before || !now || before.kind !== "file" || now.kind !== "file" || now.path !== before.path) continue;
+    if (!before || !now || before.kind !== "file" || now.kind !== "file") continue;
+    // A spelling difference that is only a normalization difference is still the same path (R-19).
+    if (!sameSpelling(now.path, before.path)) continue;
     if (before.restoreFrom === "git") {
       trackedNow.push(candidate);
       continue;
     }
-    if (before.restoreFrom === "backup" && before.sha256) {
-      try {
-        if ((await sha256File(join(snapshot.projectRoot, ...before.path.split("/")))) === before.sha256) {
-          unchanged.add(candidate.key);
-        }
-      } catch {
-        // treat as changed
+    let expected = before.sha256;
+    if (!expected && before.backup && before.backupStat) {
+      // A hardlinked backup: the same inode means nothing was written at all.
+      if (now.ino !== "0" && now.ino === before.backupStat.ino && now.size === before.backupStat.size) {
+        unchanged.add(candidate.key);
+        continue;
       }
+      if (!(await backupIsIntact(before))) continue; // rewritten in place: the copy is stale
+      expected = await sha256File(before.backup).catch(() => undefined);
+    }
+    if (!expected) continue;
+    try {
+      if ((await sha256File(join(snapshot.projectRoot, ...before.path.split("/")))) === expected) {
+        unchanged.add(candidate.key);
+      }
+    } catch {
+      // treat as changed
     }
   }
-  if (trackedNow.length === 0 || !snapshot.preSpawnRef) return unchanged;
+  if (trackedNow.length === 0 || !snapshot.preSpawnRef) return { unchanged, blobs };
   const paths = trackedNow.map((candidate) => (candidate.before as PreEntry).path);
-  const blobs = gitBlobIdsAtRef(snapshot.projectRoot, snapshot.preSpawnRef, paths);
+  for (const [path, id] of gitBlobIdsAtRef(snapshot.projectRoot, snapshot.preSpawnRef, paths)) blobs.set(path, id);
   const hashes = gitHashObjects(
     snapshot.projectRoot,
     paths.map((path) => join(snapshot.projectRoot, ...path.split("/"))),
@@ -648,69 +1089,131 @@ async function confirmUnchanged(snapshot: TreeSnapshot, candidates: readonly Can
     const hash = hashes.get(join(snapshot.projectRoot, ...path.split("/")));
     if (blob && hash && blob === hash) unchanged.add(candidate.key);
   }
-  return unchanged;
+  return { unchanged, blobs };
 }
 
+type ActContext = {
+  snapshot: TreeSnapshot;
+  quarantine: Quarantine;
+  handled: string[];
+  result: RevertTreeResult;
+  blobs: ReadonlyMap<string, string | null>;
+  contents: ReadonlyMap<string, Buffer | null>;
+};
+
 /**
- * One confirmed change: lstat the ancestors, quarantine the agent's version first, and only then
- * restore from a verified source. A failed quarantine throws before anything is restored, and a
- * restore that does not verify keeps the quarantined copy and throws (R-18, R-25).
+ * One confirmed change. The restore source is checked **first** (R-29), so a missing blob or a
+ * tampered backup leaves the agent's version in place instead of emptying the path. Only then is
+ * the agent's version quarantined, and only then is the pre-run content written back. Returns the
+ * data the batched post-write verification needs, for git-sourced restores (R-18, R-37).
  */
-async function revertOne(
-  snapshot: TreeSnapshot,
+async function actOn(
   candidate: Candidate,
-  quarantine: Quarantine,
-  blobs: ReadonlyMap<string, string | null>,
-  contents: ReadonlyMap<string, Buffer | null>,
-): Promise<void> {
+  ctx: ActContext,
+): Promise<{ abs: string; blob: string; display: string } | null> {
+  const { snapshot, quarantine, handled } = ctx;
   const { projectRoot } = snapshot;
   const before = candidate.before;
   const now = candidate.after;
+  const display = now?.path ?? before?.path ?? "";
 
+  // 1. Is a restore possible at all? Checked before anything is moved.
+  let bytes: Buffer | null = null;
+  let blob: string | null = null;
+  let backupSha: string | undefined;
+  if (before?.kind === "file") {
+    if (before.restoreFrom === "backup" && before.backup) {
+      if (!(await backupIsIntact(before))) {
+        throw new Error(
+          `${display} was rewritten in place, which also destroyed the hardlinked pre-run copy; the agent's version was left alone`,
+        );
+      }
+      backupSha = before.sha256 ?? (await sha256File(before.backup));
+      if (before.sha256 && backupSha !== before.sha256) {
+        throw new Error(`the backup of ${display} no longer matches its recorded hash; nothing was moved`);
+      }
+    } else if (before.restoreFrom === "git") {
+      bytes = ctx.contents.get(before.path) ?? null;
+      blob = ctx.blobs.get(before.path) ?? null;
+      if (!bytes || !blob) {
+        throw new Error("git could not produce the pre-run bytes; the agent's version was left in place");
+      }
+    }
+  }
+
+  // 2. Quarantine the agent's version.
   if (now) {
     const abs = toFsPath(projectRoot, now.path);
-    await ensureRealAncestors(projectRoot, now.path, quarantine);
+    await ensureRealAncestors(projectRoot, now.path, quarantine, handled);
+    if (before?.kind === "dir" && now.kind === "dir") {
+      // A directory whose spelling changed: fix the name, never move the subtree, because the
+      // children are candidates of their own (R-18, R-35).
+      await renameInPlace(projectRoot, now.path, before.path);
+      handled.push(candidate.key);
+      return null;
+    }
     const reason = before ? (now.kind === before.kind ? "changed" : "replaced") : "new";
-    // `move` is itself non-overwriting and retried (EPERM/EBUSY); a failure throws before any
-    // restore happens, so the agent's version is never lost.
     await quarantine.move(abs, now.path, reason, before ? "snapshot" : null);
+    // Only a real directory is moved recursively, so only that swallows its children's
+    // candidates. A link is unlinked and never followed, so whatever was under the real
+    // directory it replaced still has to be restored (R-18, R-35).
+    if (now.kind === "dir") handled.push(candidate.key);
   }
-  if (!before) return;
+  if (!before) return null;
 
   const abs = toFsPath(projectRoot, before.path);
-  await ensureRealAncestors(projectRoot, before.path, quarantine);
+  await ensureRealAncestors(projectRoot, before.path, quarantine, handled);
 
   if (before.kind === "dir") {
     await mkdir(abs, { recursive: true });
-    return;
+    return null;
   }
   if (before.kind !== "file") {
     throw new Error("not a regular file before the run; moved aside, not recreated");
   }
 
-  if (before.restoreFrom === "backup" && before.backup && before.sha256) {
+  if (before.restoreFrom === "backup" && before.backup) {
     await retryFsOp(() => copyFile(before.backup as string, abs, fsConstants.COPYFILE_EXCL));
-    if ((await sha256File(abs)) !== before.sha256) {
+    if ((await sha256File(abs)) !== backupSha) {
       throw new Error("the restored bytes did not match the backup; the agent's version is kept in quarantine");
     }
-    return;
+    await applyMode(abs, before.mode);
+    handled.push(candidate.key);
+    return null;
   }
 
-  const bytes = contents.get(before.path);
-  const blob = blobs.get(before.path);
-  if (!bytes || !blob) {
-    throw new Error("git could not produce the pre-run bytes; the agent's version is kept in quarantine");
-  }
-  await atomicWriteFile(abs, bytes, { root: projectRoot, symlinkMessage: "restore target is a link" });
-  // R-18: verify what actually landed on disk, so a planted replace ref or filter cannot swap it.
-  const rehash = gitHashObjects(projectRoot, [abs]).get(abs);
-  if (rehash !== blob) {
-    throw new Error("the restored bytes did not hash to the pre-run blob; the agent's version is kept in quarantine");
-  }
+  await atomicWriteFile(abs, bytes as Buffer, { root: projectRoot, symlinkMessage: "restore target is a link" });
+  await applyMode(abs, before.mode);
+  handled.push(candidate.key);
+  return { abs, blob: blob as string, display };
 }
 
-/** Every ancestor is lstat'ed; a link or junction is quarantined as a link and replaced (A-025). */
-async function ensureRealAncestors(projectRoot: string, posix: string, quarantine: Quarantine): Promise<void> {
+/** R-5: a restored `0755` script must still be executable; a backup copy must not stay `0400`. */
+async function applyMode(abs: string, mode: number): Promise<void> {
+  if (process.platform === "win32") return;
+  await chmod(abs, mode & 0o7777).catch(() => undefined);
+}
+
+/** A case-only or normalization-only directory rename, undone without moving the subtree. */
+async function renameInPlace(projectRoot: string, from: string, to: string): Promise<void> {
+  const src = toFsPath(projectRoot, from);
+  const dest = toFsPath(projectRoot, to);
+  if (src === dest) return;
+  const via = `${dest}.legion-rename-${Date.now().toString(36)}`;
+  await retryFsOp(() => rename(src, via));
+  await retryFsOp(() => rename(via, dest));
+}
+
+/**
+ * Every ancestor is lstat'ed; a link or junction is quarantined as a link and replaced (A-025).
+ * A path this pass has already restored is never displaced (R-3).
+ */
+async function ensureRealAncestors(
+  projectRoot: string,
+  posix: string,
+  quarantine: Quarantine,
+  handled: readonly string[],
+): Promise<void> {
   const parts = posix.split("/");
   let cursor = "";
   for (const part of parts.slice(0, -1)) {
@@ -724,13 +1227,16 @@ async function ensureRealAncestors(projectRoot: string, posix: string, quarantin
       await mkdir(abs);
       continue;
     }
+    if (st.isDirectory() && !st.isSymbolicLink()) continue;
+    if (handled.includes(foldKey(cursor))) {
+      throw new Error(`${cursor} was already restored by this pass as a file; ${posix} cannot also be created`);
+    }
     if (st.isSymbolicLink()) {
       await quarantine.quarantineLink(abs, cursor, "directory");
-      await mkdir(abs);
-    } else if (!st.isDirectory()) {
+    } else {
       await quarantine.move(abs, cursor, "replaced", "directory");
-      await mkdir(abs);
     }
+    await mkdir(abs);
   }
 }
 

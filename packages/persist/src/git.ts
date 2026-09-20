@@ -65,19 +65,32 @@ function hardeningPaths(): { hooksPath: string; attributesFile: string } {
   return hardening;
 }
 
-let preserved: string[] | undefined;
+let preserved: { key: string; args: string[] } | undefined;
 
 /**
- * Read calls ignore the system and global config (R-21), which would also drop two keys people
- * legitimately set there: `safe.directory` (container and shared checkouts) and, on Windows,
- * `core.longpaths`. Those two are read back from the system/global scopes only — never from the
- * repository config, which an agent can write — and re-injected with `-c`.
+ * Read calls ignore the system and global config (R-21), which would also drop keys people
+ * legitimately set there and that decide what a file's *content* is:
+ * - `safe.directory` (container and shared checkouts) and, on Windows, `core.longpaths`;
+ * - `core.autocrlf` / `core.eol` — Git for Windows ships `core.autocrlf=true` in the **system**
+ *   config, so hiding it makes `hash-object` and `cat-file --filters` disagree with what
+ *   `git checkout` actually wrote into the worktree (PR 5 R-2);
+ * - `filter.<driver>.{clean,smudge,process,required}` — `git lfs install` writes these to the
+ *   **global** config while the in-tree `.gitattributes` that names the driver is always honoured.
+ *   Without them an LFS checkout "restores" a 130-byte pointer over the asset (PR 5 R-30).
+ * All of them are read back from the system/global scopes only — never from the repository config,
+ * which an agent can write — and re-injected with `-c`.
  */
 function preservedGlobalConfig(): string[] {
-  if (preserved) return preserved;
+  // Keyed on the env that selects the scopes, so a process that repoints them is not served a
+  // stale answer (and so the regression test can exercise a real global config).
+  const key = `${process.env.GIT_CONFIG_GLOBAL ?? ""}\u0000${process.env.GIT_CONFIG_SYSTEM ?? ""}\u0000${process.env.PATH ?? ""}`;
+  if (preserved && preserved.key === key) return preserved.args;
   const out: string[] = [];
   const binary = resolveGitBinary();
-  if (!binary) return (preserved = out);
+  if (!binary) {
+    preserved = { key, args: out };
+    return out;
+  }
   const read = (scope: string, args: string[]): string[] => {
     const result = spawnSync(binary, ["config", scope, ...args], {
       encoding: "utf8",
@@ -93,8 +106,19 @@ function preservedGlobalConfig(): string[] {
     if (process.platform === "win32") {
       for (const value of read(scope, ["--get", "core.longpaths"])) out.push("-c", `core.longpaths=${value}`);
     }
+    // Enums, not executable hooks: re-injecting them cannot introduce code.
+    for (const key of ["core.autocrlf", "core.eol"]) {
+      for (const value of read(scope, ["--get", key])) out.push("-c", `${key}=${value}`);
+    }
+    // `filter.*` DOES name executables, but only from scopes the agent cannot write. Without them
+    // an in-tree `.gitattributes` naming an undefined driver silently degrades to pass-through.
+    for (const line of read(scope, ["--get-regexp", "^filter\\..*\\.(clean|smudge|process|required)$"])) {
+      const space = line.indexOf(" ");
+      if (space <= 0) continue;
+      out.push("-c", `${line.slice(0, space)}=${line.slice(space + 1)}`);
+    }
   }
-  preserved = out;
+  preserved = { key, args: out };
   return out;
 }
 
@@ -373,18 +397,27 @@ export function gitIgnoredEntries(cwd: string): { dirs: string[]; files: string[
 export function gitBlobIdsAtRef(cwd: string, ref: string, paths: readonly string[]): Map<string, string | null> {
   const out = new Map<string, string | null>();
   if (paths.length === 0) return out;
+  const { batchable, single } = partitionBatchable(paths);
+  for (const path of single) {
+    const one = runGit(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}:${path}`]);
+    out.set(path, one.status === 0 ? one.stdout.trim() || null : null);
+  }
+  if (batchable.length === 0) return out;
   const result = runGit(cwd, ["cat-file", "--batch-check"], {
-    input: `${paths.map((path) => `${ref}:${path}`).join("\n")}\n`,
+    input: `${batchable.map((path) => `${ref}:${path}`).join("\n")}\n`,
     maxBuffer: 64 * 1024 * 1024,
   });
-  if (result.status !== 0) {
-    for (const path of paths) out.set(path, null);
+  const lines = result.stdout.split("\n").filter((line) => line.length > 0);
+  // Positional zipping is only safe when the record count matches exactly (R-33).
+  if (result.status !== 0 || lines.length !== batchable.length) {
+    for (const path of batchable) {
+      const one = runGit(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}:${path}`]);
+      out.set(path, one.status === 0 ? one.stdout.trim() || null : null);
+    }
     return out;
   }
-  const lines = result.stdout.split("\n").filter((line) => line.length > 0);
-  paths.forEach((path, index) => {
-    const line = lines[index] ?? "";
-    const parts = line.trim().split(/\s+/);
+  batchable.forEach((path, index) => {
+    const parts = (lines[index] ?? "").trim().split(/\s+/);
     out.set(path, parts.length >= 2 && parts[1] === "blob" ? (parts[0] as string) : null);
   });
   return out;
@@ -397,20 +430,24 @@ export function gitBlobIdsAtRef(cwd: string, ref: string, paths: readonly string
 export function gitHashObjects(cwd: string, absPaths: readonly string[]): Map<string, string | null> {
   const out = new Map<string, string | null>();
   if (absPaths.length === 0) return out;
+  // `--stdin-paths` is newline-delimited and C-unquotes a leading `"`; those go one per call (R-33).
+  const { batchable, single } = partitionBatchable(absPaths);
+  const one = (abs: string): void => {
+    const result = runGit(cwd, ["hash-object", "--", abs]);
+    out.set(abs, result.status === 0 ? result.stdout.trim() || null : null);
+  };
+  for (const abs of single) one(abs);
+  if (batchable.length === 0) return out;
   const result = runGit(cwd, ["hash-object", "--stdin-paths"], {
-    input: `${absPaths.join("\n")}\n`,
+    input: `${batchable.join("\n")}\n`,
     maxBuffer: 64 * 1024 * 1024,
   });
-  if (result.status !== 0) {
-    // One unreadable path aborts the batch; fall back to one call per path.
-    for (const abs of absPaths) {
-      const one = runGit(cwd, ["hash-object", "--", abs]);
-      out.set(abs, one.status === 0 ? one.stdout.trim() : null);
-    }
+  const lines = result.stdout.split("\n").filter((line) => line.trim().length > 0);
+  if (result.status !== 0 || lines.length !== batchable.length) {
+    for (const abs of batchable) one(abs);
     return out;
   }
-  const lines = result.stdout.split("\n").filter((line) => line.trim().length > 0);
-  absPaths.forEach((abs, index) => out.set(abs, (lines[index] ?? "").trim() || null));
+  batchable.forEach((abs, index) => out.set(abs, (lines[index] ?? "").trim() || null));
   return out;
 }
 
@@ -418,17 +455,31 @@ export function gitHashObjects(cwd: string, absPaths: readonly string[]): Map<st
  * Worktree bytes of `<ref>:<path>` with the smudge filters applied, batched through
  * `git cat-file --batch --filters` and falling back to one call per path on older gits.
  */
-export function gitCatFileFiltered(cwd: string, ref: string, paths: readonly string[]): Map<string, Buffer | null> {
+export function gitCatFileFiltered(
+  cwd: string,
+  ref: string,
+  paths: readonly string[],
+  opts: { filters?: boolean } = {},
+): Map<string, Buffer | null> {
+  const filters = opts.filters !== false;
   const out = new Map<string, Buffer | null>();
   if (paths.length === 0) return out;
-  const batch = runGitBuffer(cwd, ["cat-file", "--batch", "--filters"], {
-    input: `${paths.map((path) => `${ref}:${path}`).join("\n")}\n`,
+  const { batchable, single } = partitionBatchable(paths);
+  const one = (path: string): void => {
+    const args = filters ? ["cat-file", "--filters", `${ref}:${path}`] : ["cat-file", "blob", `${ref}:${path}`];
+    const result = runGitBuffer(cwd, args, { maxBuffer: 512 * 1024 * 1024 });
+    out.set(path, result.status === 0 ? result.stdout : null);
+  };
+  for (const path of single) one(path);
+  if (batchable.length === 0) return out;
+  const batch = runGitBuffer(cwd, filters ? ["cat-file", "--batch", "--filters"] : ["cat-file", "--batch"], {
+    input: `${batchable.map((path) => `${ref}:${path}`).join("\n")}\n`,
     maxBuffer: 512 * 1024 * 1024,
   });
   if (batch.status === 0) {
     let cursor = 0;
     let ok = true;
-    for (const path of paths) {
+    for (const path of batchable) {
       const nl = batch.stdout.indexOf(0x0a, cursor);
       if (nl < 0) {
         ok = false;
@@ -452,13 +503,82 @@ export function gitCatFileFiltered(cwd: string, ref: string, paths: readonly str
       cursor = nl + 1 + size + 1; // trailing LF
     }
     if (ok) return out;
-    out.clear();
+    for (const path of batchable) out.delete(path);
   }
+  for (const path of batchable) one(path);
+  return out;
+}
+
+/**
+ * Paths that are safe to send through a newline-delimited batch, and the rest, which go one per
+ * call. A path containing a newline would shift every later record and silently pair one file's
+ * bytes with another file's blob id (R-33).
+ */
+function partitionBatchable(paths: readonly string[]): { batchable: string[]; single: string[] } {
+  const batchable: string[] = [];
+  const single: string[] = [];
   for (const path of paths) {
-    const one = runGitBuffer(cwd, ["cat-file", "--filters", `${ref}:${path}`], { maxBuffer: 512 * 1024 * 1024 });
-    out.set(path, one.status === 0 ? one.stdout : null);
+    if (path.includes("\n") || path.includes("\r") || path.startsWith('"')) single.push(path);
+    else batchable.push(path);
+  }
+  return { batchable, single };
+}
+
+/** `git ls-files -s -z`: index entries as `path → "<mode> <sha> <stage>"`. Null when git fails. */
+export function gitIndexEntries(cwd: string): Map<string, string> | null {
+  const result = runGit(cwd, ["ls-files", "-s", "-z"], { maxBuffer: 256 * 1024 * 1024 });
+  if (result.status !== 0) return null;
+  const out = new Map<string, string>();
+  for (const record of result.stdout.split("\0")) {
+    if (!record) continue;
+    const tab = record.indexOf("\t");
+    if (tab < 0) continue;
+    out.set(toPosixPath(record.slice(tab + 1)), record.slice(0, tab).trim());
   }
   return out;
+}
+
+/**
+ * `git reset -q <ref> -- <paths>`: put the index entries for those paths back to what `ref` holds
+ * (dropping the entry when the path is not in `ref`). The worktree is untouched. False on failure.
+ */
+export function gitResetIndexPaths(cwd: string, ref: string, paths: readonly string[]): boolean {
+  if (paths.length === 0) return true;
+  let ok = true;
+  // Chunked so a large revert never overflows the command line on Windows.
+  for (let i = 0; i < paths.length; i += 200) {
+    const chunk = paths.slice(i, i + 200);
+    if (runGit(cwd, ["reset", "-q", "--end-of-options", ref, "--", ...chunk]).status !== 0) ok = false;
+  }
+  return ok;
+}
+
+/** Every ref and its object id (`for-each-ref`), plus the stash when there is one (R-32). */
+export function gitAllRefs(cwd: string): Map<string, string> | null {
+  const result = runGit(cwd, ["for-each-ref", "--format=%(objectname) %(refname)"], {
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.status !== 0) return null;
+  const out = new Map<string, string>();
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const space = line.indexOf(" ");
+    if (space <= 0) continue;
+    out.set(line.slice(space + 1).trim(), line.slice(0, space).trim());
+  }
+  const stash = runGit(cwd, ["rev-parse", "--verify", "--quiet", "refs/stash"]);
+  if (stash.status === 0 && stash.stdout.trim()) out.set("refs/stash", stash.stdout.trim());
+  return out;
+}
+
+/** True when `ancestor` is reachable from `descendant` (a ref move that loses nothing). */
+export function gitIsAncestor(cwd: string, ancestor: string, descendant: string): boolean {
+  return runGit(cwd, ["merge-base", "--is-ancestor", ancestor, descendant]).status === 0;
+}
+
+/** `git bundle create`: the agent's commits, kept outside `.git` so a later `gc` cannot drop them. */
+export function gitBundleCreate(cwd: string, file: string, shas: readonly string[]): boolean {
+  if (shas.length === 0) return false;
+  return runGit(cwd, ["bundle", "create", file, ...shas], { maxBuffer: 16 * 1024 * 1024 }).status === 0;
 }
 
 /** Commit shas in `<from>..<to>`, newest first. Empty when the range is empty or git fails. */

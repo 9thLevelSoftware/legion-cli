@@ -74,12 +74,17 @@ export async function runExecute(
   for (const outcome of result.tasks) {
     const task = slice.find((item) => item.id === outcome.taskId);
     writeOut(startingTaskLine(outcome.taskId, task?.title, outcome.adapterId));
-    if (outcome.incident) {
-      writeOut("inspect .git");
-    }
+    // R-15: the incident reason says what actually happened and where the quarantine is; the old
+    // hard-coded "inspect .git" was wrong for every incident that did not touch `.git`.
     if (outcome.extrasReverted.length > 0) {
-      writeOut(`FileContract extras reverted: ${outcome.extrasReverted.join(", ")}`);
+      writeOut(
+        outcome.quarantineDir
+          ? `FileContract extras reverted: ${outcome.extrasReverted.join(", ")} (the previous versions are at ${outcome.quarantineDir})`
+          : `FileContract extras reverted: ${outcome.extrasReverted.join(", ")}`,
+      );
     }
+    // R-14: ignored-path warnings and "LOST:" lines are the user's only notice; print them.
+    for (const warning of outcome.warnings ?? []) writeOut(warning);
     if (outcome.ticketId) {
       writeOut(
         outcome.extrasReverted.length > 0

@@ -8,6 +8,7 @@ import { mkdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promise
 import { restoreProtected, snapshotProtected } from "../dist/index.js";
 import {
   commitAll,
+  controlDir,
   gitHead,
   initGitRepo,
   initProject,
@@ -80,6 +81,8 @@ test("a user edit outside the jail is reverted, blocks the task, and files no TS
         assert.match(result.tasks[0].reason ?? "", /outside the jail/);
         // No scope ticket: TSK-0002 must not exist (Q1).
         await assert.rejects(() => store.readTask("TSK-0002"));
+        // R-15: the user is told where their displaced edit went.
+        assert.ok(result.tasks[0].quarantineDir, JSON.stringify(result.tasks[0]));
       },
       {
         fakeArtifacts: [{ path: "src/main.ts", content: "export const ok = true;\n" }],
@@ -111,6 +114,8 @@ test("a commit made during the run blocks the task and lands in STATE.quarantine
         });
         await writeFile(join(dir, "README.md"), "my readme\n", "utf8");
         initGitRepo(dir);
+        // An untracked file, so the run really does take a backup worth retaining.
+        await writeFile(join(dir, "notes.md"), "my untracked notes\n", "utf8");
         const pre = gitHead(dir);
         const result = await engine.execute("auto");
         assert.equal(result.status, "blocked");
@@ -121,6 +126,11 @@ test("a commit made during the run blocks the task and lands in STATE.quarantine
         assert.equal(state.quarantinedCommits.length, 1);
         assert.notEqual(state.quarantinedCommits[0], pre);
         assert.match(result.tasks[0].reason ?? "", /git reset/);
+        // R-40: an incident run KEEPS its backups — the quarantine manifest and PR 6's replay
+        // both reference them.
+        const runControl = controlDir(dir, result.tasks[0].runId);
+        assert.equal(existsSync(join(runControl, "pre")), true, "incident runs keep their backups");
+        assert.equal(existsSync(join(runControl, "tree-manifest.json")), true);
       },
       {
         fakeArtifacts: [{ path: "src/main.ts", content: "export const ok = true;\n" }],
@@ -129,6 +139,35 @@ test("a commit made during the run blocks the task and lands in STATE.quarantine
           commitAll(projectDir, "agent commit");
         },
       },
+    );
+  });
+});
+
+// R-40: the other direction — a run with no incident must delete its own pre-spawn backups.
+test("a clean run deletes its own control-dir backups", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedPlanReady(store, {
+          task: {
+            contract: {
+              filesAllowed: ["src/main.ts"],
+              expectedArtifacts: ["src/main.ts"],
+              verificationCommands: [passingVerificationCommand()],
+            },
+          },
+        });
+        await writeFile(join(dir, "notes.md"), "an untracked file worth backing up\n", "utf8");
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "done", JSON.stringify(result.tasks[0]));
+        assert.equal(result.tasks[0].incident, false);
+        const runControl = controlDir(dir, result.tasks[0].runId);
+        assert.equal(existsSync(join(runControl, "pre")), false, "a clean run keeps no backups");
+        assert.equal(existsSync(join(runControl, "tree-manifest.json")), false);
+      },
+      { fakeArtifacts: [{ path: "src/main.ts", content: "export const ok = true;\n" }] },
     );
   });
 });
@@ -156,6 +195,8 @@ test("FileContract revert still runs after sandboxed execute copy-out", async ()
         assert.ok(result.tasks[0].extrasReverted.includes("src/secret.ts"));
         assert.equal(existsSync(join(dir, "src", "operator-extra.ts")), false);
         assert.ok(result.tasks[0].extrasReverted.includes("src/operator-extra.ts"));
+        // R-15: the user is told where the displaced versions went.
+        assert.ok(result.tasks[0].quarantineDir, JSON.stringify(result.tasks[0]));
       },
       {
         fakeArtifacts: [{ path: "src/secret.ts", content: "export const secret = true;\n" }],

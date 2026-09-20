@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { appendAuditEvent, quarantineRootPath } from "@9thlevelsoftware/legion-cli-persist";
+import { appendAuditEvent, controlProjectDirPath, quarantineRootPath } from "@9thlevelsoftware/legion-cli-persist";
 
 import {
   allowCopyJailIn,
@@ -62,6 +62,34 @@ test("R-40: doctor lists retained quarantines and flags a manifest that does not
     assert.ok(report.warnings.some((warning) => warning.includes(tampered)));
     const text = runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     assert.match(normalize(text.stdout), /Quarantine \(retained; never deleted by Legion\)/);
+  });
+});
+
+// PR 5 R-42: plan item 10's "doctor reports the total retained control-dir size and the path".
+test("doctor reports retained pre-spawn backups, and only the runs that kept them", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    await allowCopyJailIn(dir);
+    const control = controlProjectDirPath(dir);
+    // One run that kept backups, and one that did not (only a resume record).
+    await mkdir(join(control, "execute-kept", "pre"), { recursive: true });
+    await writeFile(join(control, "execute-kept", "pre", "0001.bin"), "abcde");
+    await writeFile(join(control, "execute-kept", "tree-manifest.json"), "{}\n");
+    await mkdir(join(control, "execute-clean"), { recursive: true });
+    await writeFile(join(control, "execute-clean", "resume.json"), "{}\n");
+
+    const report = JSON.parse(
+      runCli(["doctor", "--project", dir, "--json"], { env: { LEGION_CLI_ADAPTER: "fake" } }).stdout,
+    );
+    void report;
+    const text = normalize(
+      runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } }).stdout,
+    );
+    assert.match(text, /Run control dir \(pre-spawn backups kept for incident runs and crash replay\)/);
+    // Exactly one run, exactly the five bytes of the one backup: the resume-only run is excluded.
+    assert.match(text, /^ {2}1 run\(s\), 1 file\(s\), 5 bytes {2}/m);
+    assert.match(text, /including ignored ones such as \.env/);
   });
 });
 

@@ -769,6 +769,8 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
           "",
           "Run control dir (pre-spawn backups kept for incident runs and crash replay)",
           `  ${controlRetention.runs} run(s), ${controlRetention.files} file(s), ${controlRetention.bytes} bytes  ${controlRetention.dir}`,
+          "  these are copies of files git cannot reproduce, including ignored ones such as .env;",
+          "  a run older than 30 days has its copies dropped at the start of the next run",
         ]
       : []),
   ];

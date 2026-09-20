@@ -309,6 +309,10 @@ export type ExecuteTaskResult = {
   extrasReverted: string[];
   incident: boolean;
   headMoved: boolean;
+  /** Ignored build output, unstaged paths, over-cap losses and the quarantine path (R-14, R-15). */
+  warnings?: string[];
+  /** The run's out-of-project quarantine folder, whenever anything was displaced. */
+  quarantineDir?: string | null;
   ticketId?: string;
   verificationPass?: boolean;
   /** Why the task was blocked by verification, e.g. "verification command did not start: …". */

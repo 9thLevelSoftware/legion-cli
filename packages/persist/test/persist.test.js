@@ -1156,6 +1156,40 @@ test("gitIgnoredEntries separates ignored directories from ignored files", async
   });
 });
 
+// PR 5 R-2/R-30: R-21 hides the system and global config from read calls, which would also hide
+// `core.autocrlf` (shipped in the SYSTEM config by Git for Windows) and the `filter.lfs.*`
+// drivers (written to the GLOBAL config by `git lfs install`) — both decide what a file's
+// content is, so `hash-object`/`cat-file --filters` would disagree with the worktree.
+test("read calls re-inject core.autocrlf from the global config, so the worktree bytes round-trip", async () => {
+  await withTempDir(async (dir) => {
+    const global = join(dir, "global.gitconfig");
+    await writeFile(global, "[core]\n\tautocrlf = true\n", "utf8");
+    const previous = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = global;
+    try {
+      // Commit LF bytes, then check the file out so the worktree holds what autocrlf produces.
+      await writeFile(join(dir, "text.txt"), "one\ntwo\n", "utf8");
+      initGitRepo(dir);
+      await rm(join(dir, "text.txt"));
+      git(dir, ["checkout", "HEAD", "--", "text.txt"]);
+      const head = git(dir, ["rev-parse", "HEAD"]);
+      const abs = join(dir, "text.txt");
+      const worktree = await readFile(abs);
+      // Without the re-injection, hash-object runs with autocrlf OFF and cannot match the blob.
+      assert.equal(
+        gitHashObjects(dir, [abs]).get(abs),
+        gitBlobIdsAtRef(dir, head, ["text.txt"]).get("text.txt"),
+        `worktree bytes ${JSON.stringify(worktree.toString("utf8"))} must hash to the committed blob`,
+      );
+      // And the restore source must produce those same worktree bytes back.
+      assert.deepEqual(gitCatFileFiltered(dir, head, ["text.txt"]).get("text.txt"), worktree);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = previous;
+    }
+  });
+});
+
 test("gitHashObjects and gitBlobIdsAtRef agree for an unchanged tracked file", async () => {
   await withTempDir(async (dir) => {
     await writeFile(join(dir, "kept.ts"), "kept\n", "utf8");
