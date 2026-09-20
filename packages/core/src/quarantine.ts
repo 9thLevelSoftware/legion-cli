@@ -3,6 +3,7 @@ import { constants as fsConstants, createReadStream } from "node:fs";
 import { copyFile, link, lstat, mkdir, readdir, readFile, readlink, rmdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
+  controlProjectDirPath,
   ensureQuarantineRoot,
   PersistError,
   quarantineRootPath,
@@ -230,6 +231,22 @@ async function treeSize(abs: string): Promise<{ bytes: number; files: number }> 
     }
   }
   return { bytes, files };
+}
+
+/**
+ * What the project's control dir still holds (R-8): pre-spawn backups and manifests kept for
+ * incident runs and for crash replay. A clean finish deletes its own; `doctor` reports the rest.
+ */
+export async function retainedControlDir(projectRoot: string): Promise<{ dir: string; runs: number; bytes: number; files: number }> {
+  const dir = controlProjectDirPath(projectRoot);
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return { dir, runs: 0, bytes: 0, files: 0 };
+  }
+  const size = await treeSize(dir);
+  return { dir, runs: names.length, ...size };
 }
 
 /** Retained quarantine folders for a project (doctor). The engine never deletes them. */

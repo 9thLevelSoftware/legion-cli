@@ -2202,6 +2202,10 @@ export class LegionEngine {
       const extras = revert?.extrasReverted ?? [];
       const incident = Boolean(revert?.incident);
       const headMoved = Boolean(revert?.headMoved);
+      const jailed = Boolean(started?.spawned && started.sandbox);
+      // R-20: STATE.md is in P, so this list is written after the P restore and cannot be
+      // erased by a later agent.
+      await this.#recordQuarantinedCommits(revert);
       if (started?.spawned && started.sandbox && revert) {
         await this.#audit(
           "sandbox_copyout",
@@ -2266,13 +2270,18 @@ export class LegionEngine {
 
       if (incident || extras.length > 0 || extraJsonInvalid) {
         let ticketId: string | undefined;
-        if (extras.length > 0) {
+        // Q1: a jailed run's real-tree changes outside the jail are the user's (or a stray
+        // process's) edits, not the agent's scope creep, so no scope ticket is filed for them.
+        // Writes the jail dropped are still scope creep and still file one.
+        const outsideJail = revert?.outsideJail ?? [];
+        const ticketExtras = extras.filter((path) => !outsideJail.includes(path));
+        if (ticketExtras.length > 0) {
           const { task: ticket } = await this.#fileTicketLocked(
             {
               title:
-                extras.length === 1
-                  ? `FileContract extra: ${extras[0]}`
-                  : `FileContract extras: ${extras.join(", ")}`,
+                ticketExtras.length === 1
+                  ? `FileContract extra: ${ticketExtras[0]}`
+                  : `FileContract extras: ${ticketExtras.join(", ")}`,
               parentId: lockedTask.id,
               fromAgent: true,
               type: "bug",
@@ -2289,6 +2298,12 @@ export class LegionEngine {
           phase: "executing",
           currentTaskId: lockedTask.id,
         });
+        const jailReason =
+          jailed && outsideJail.length > 0
+            ? `files changed outside the jail during the run (by you or the agent) — see ${revert?.protected?.quarantine?.dir ?? "the quarantine folder"}`
+            : undefined;
+        const reason = incident && revert ? protectedIncidentMessage(revert) : undefined;
+        const combined = [jailReason, reason].filter(Boolean).join("; ");
         return finish({
           taskId: lockedTask.id,
           status: "blocked",
@@ -2297,7 +2312,7 @@ export class LegionEngine {
           incident,
           headMoved,
           ticketId,
-          ...(incident && revert ? { reason: protectedIncidentMessage(revert) } : {}),
+          ...(combined ? { reason: combined } : {}),
         });
       }
 
@@ -2523,13 +2538,24 @@ export class LegionEngine {
 
   async #refuseSpawnContract(
     skillId: "verify" | "review",
-    revert: Pick<RevertResult, "extrasReverted" | "incident" | "protected" | "otherIncident"> | null,
+    revert: Pick<
+      RevertResult,
+      | "extrasReverted"
+      | "incident"
+      | "protected"
+      | "otherIncident"
+      | "unrestorable"
+      | "quarantinedCommits"
+      | "commitRecovery"
+      | "branchMoved"
+    > | null,
     error: unknown,
     createdTaskIds: readonly string[],
     before: readonly string[],
     after: readonly string[],
     rewrittenExistingTaskIds: readonly string[] = [],
   ): Promise<void> {
+    await this.#recordQuarantinedCommits(revert ?? null);
     const rejected = revert?.protected?.rejectedTaskFiles ?? [];
     const failed =
       Boolean(revert?.incident) ||
@@ -2570,6 +2596,23 @@ export class LegionEngine {
     }
     if (error instanceof LegionRefuseError) throw error;
     if (error) throw error;
+  }
+
+  /**
+   * R-20: record the agent's commits in `STATE.quarantinedCommits`, after the protected-set
+   * restore. The commits stay reachable through `refs/legion-quarantine/<runId>` (created by the
+   * revert); the engine never moves the user's own refs.
+   */
+  async #recordQuarantinedCommits(revert: Pick<RevertResult, "quarantinedCommits"> | null): Promise<void> {
+    const commits = revert?.quarantinedCommits ?? [];
+    if (commits.length === 0) return;
+    try {
+      const state = await this.#readState();
+      const merged = [...new Set([...(state.quarantinedCommits ?? []), ...commits])];
+      await this.#writeState({ ...state, quarantinedCommits: merged });
+    } catch {
+      // The incident is reported either way; a STATE write failure must not hide it.
+    }
   }
 
   async #fileExtrasFromRun(

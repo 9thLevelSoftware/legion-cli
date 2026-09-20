@@ -116,24 +116,35 @@ function gitArgv(args: readonly string[], kind: GitKind): string[] {
   ];
 }
 
-/** Every engine git spawn goes through here. */
+export type GitRunOpts = { kind?: GitKind; maxBuffer?: number; input?: string | Buffer };
+
+/** Every engine git spawn goes through here; `runGitBuffer` is the binary-safe variant. */
 export function runGit(
   cwd: string,
   args: readonly string[],
-  opts: { kind?: GitKind; maxBuffer?: number } = {},
+  opts: GitRunOpts = {},
 ): { status: number; stdout: string; stderr: string } {
+  const raw = runGitBuffer(cwd, args, opts);
+  return { status: raw.status, stdout: raw.stdout.toString("utf8"), stderr: raw.stderr };
+}
+
+/** Binary-safe git spawn: `stdout` stays a Buffer (blob contents must never go through utf8). */
+export function runGitBuffer(
+  cwd: string,
+  args: readonly string[],
+  opts: GitRunOpts = {},
+): { status: number; stdout: Buffer; stderr: string } {
   const binary = resolveGitBinary();
   if (!binary) {
-    return { status: 1, stdout: "", stderr: "git executable not found on PATH" };
+    return { status: 1, stdout: Buffer.alloc(0), stderr: "git executable not found on PATH" };
   }
   const rel = relative(resolve(cwd), binary);
   if (rel && !rel.startsWith("..") && !isAbsolute(rel)) {
-    return { status: 1, stdout: "", stderr: `refusing to run git from inside the project (${binary})` };
+    return { status: 1, stdout: Buffer.alloc(0), stderr: `refusing to run git from inside the project (${binary})` };
   }
   const kind = opts.kind ?? "read";
   const result = spawnSync(binary, gitArgv(args, kind), {
     cwd,
-    encoding: "utf8",
     windowsHide: true,
     shell: false,
     env: {
@@ -145,12 +156,14 @@ export function runGit(
         ? { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: hardeningPaths().attributesFile }
         : {}),
     },
+    ...(opts.input === undefined ? {} : { input: opts.input }),
     ...(opts.maxBuffer ? { maxBuffer: opts.maxBuffer } : {}),
   });
+  const stderr = result.stderr ? Buffer.from(result.stderr).toString("utf8") : "";
   return {
     status: result.status ?? 1,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? result.error?.message ?? "",
+    stdout: result.stdout ? Buffer.from(result.stdout) : Buffer.alloc(0),
+    stderr: stderr || result.error?.message || "",
   };
 }
 
@@ -180,44 +193,16 @@ export function gitDiffRevision(cwd: string, revision: string): string | null {
   return result.status === 0 ? result.stdout : null;
 }
 
-function gitLines(cwd: string, args: string[]): string[] {
-  const result = runGit(cwd, args);
+/** Path-listing git calls all use `-z`, so a path is never quoted nor split on ` -> ` (KD-16). */
+function gitPathsZ(cwd: string, args: string[]): string[] {
+  const result = runGit(cwd, args, { maxBuffer: 64 * 1024 * 1024 });
   if (result.status !== 0) {
     throw new PersistError(`git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim()}`);
   }
   return result.stdout
-    .split(/\r?\n/)
-    .map((line) => toPosixPath(line.replace(/^"(.*)"$/, "$1").trim()))
+    .split("\0")
+    .map((line) => toPosixPath(line))
     .filter((line) => line.length > 0);
-}
-
-function unquoteDiffPath(value: string): string {
-  return toPosixPath(value.replace(/^"(.*)"$/, "$1").trim());
-}
-
-/** Parse one `git diff --name-status` line. R/C include source and destination. */
-function parseNameStatusLine(line: string): string[] {
-  if (!line) return [];
-  const parts = line.split("\t");
-  if (parts.length < 2) return [];
-  const code = parts[0].trim();
-  if (!code) return [];
-  if ((code.startsWith("R") || code.startsWith("C")) && parts.length >= 3) {
-    return [unquoteDiffPath(parts[1]), unquoteDiffPath(parts[2])].filter((path) => path.length > 0);
-  }
-  return [unquoteDiffPath(parts[1])].filter((path) => path.length > 0);
-}
-
-function gitNameStatusPaths(cwd: string, args: string[]): string[] {
-  const result = runGit(cwd, args);
-  if (result.status !== 0) {
-    throw new PersistError(`git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim()}`);
-  }
-  const paths: string[] = [];
-  for (const raw of result.stdout.split(/\r?\n/)) {
-    for (const path of parseNameStatusLine(raw)) paths.push(path);
-  }
-  return paths;
 }
 
 export function isGitRepo(cwd: string): boolean {
@@ -286,58 +271,206 @@ export function gitPathExistsAtRef(cwd: string, ref: string, storePath: string):
   return result.status === 0;
 }
 
-export function gitRestoreWorktree(cwd: string, ref: string, storePath: string): void {
-  const result = runGit(cwd, ["restore", `--source=${ref}`, "--worktree", "--staged", "--", storePath]);
-  if (result.status !== 0) {
-    throw new PersistError(`git restore failed for ${storePath}: ${result.stderr.trim()}`);
-  }
-}
+/** One `git status -z` record: the XY code and its path (plus a rename/copy source). */
+export type GitStatusRecord = { x: string; y: string; path: string; from?: string };
 
-export function gitRmWorktree(cwd: string, storePath: string): void {
-  const result = runGit(cwd, ["rm", "-f", "--", storePath]);
-  if (result.status !== 0) {
-    throw new PersistError(`git rm failed for ${storePath}: ${result.stderr.trim()}`);
+/**
+ * `git status -z --porcelain=v1 -uall`, NUL-parsed (KD-16). `-z` never quotes and never uses
+ * ` -> `, so a path containing that literal text is parsed correctly. Null when git fails.
+ */
+export function gitStatusRecords(cwd: string): GitStatusRecord[] | null {
+  const result = runGit(cwd, ["status", "-z", "--porcelain=v1", "-uall"], { maxBuffer: 256 * 1024 * 1024 });
+  if (result.status !== 0) return null;
+  const fields = result.stdout.split("\0");
+  const out: GitStatusRecord[] = [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const record = fields[i];
+    if (!record || record.length < 4) continue;
+    const x = record[0] as string;
+    const y = record[1] as string;
+    const path = toPosixPath(record.slice(3));
+    if (x === "R" || x === "C" || y === "R" || y === "C") {
+      // The source path is the next NUL-separated field.
+      const from = fields[i + 1];
+      i += 1;
+      out.push({ x, y, path, ...(from ? { from: toPosixPath(from) } : {}) });
+      continue;
+    }
+    out.push({ x, y, path });
   }
+  return out;
 }
 
 function porcelainPaths(cwd: string): string[] {
-  const result = runGit(cwd, ["status", "--porcelain", "-uall"]);
-  if (result.status !== 0) {
-    throw new PersistError(`git status failed: ${result.stderr.trim()}`);
-  }
+  const records = gitStatusRecords(cwd);
+  if (!records) throw new PersistError("git status failed");
   const paths: string[] = [];
-  for (const raw of result.stdout.split(/\r?\n/)) {
-    if (raw.length < 4) continue;
-    const rest = raw.slice(3);
-    const renamed = rest.split(" -> ");
-    const target = renamed.length > 1 ? renamed[1] : rest;
-    const posix = toPosixPath(target.replace(/^"(.*)"$/, "$1").trim());
-    if (posix) paths.push(posix);
-    if (renamed.length > 1) {
-      const from = toPosixPath(renamed[0].replace(/^"(.*)"$/, "$1").trim());
-      if (from) paths.push(from);
-    }
+  for (const record of records) {
+    if (record.path) paths.push(record.path);
+    if (record.from) paths.push(record.from);
   }
   return paths;
 }
 
-/**
- * Union of committed, staged, unstaged, and untracked paths since preSpawnRef.
- * Ignored files are excluded by git's standard excludes on purpose. Execute
- * revert discovers gitignored extras via a filesystem snapshot, not
- * `git status --ignored` (that would also revert pre-existing ignored files).
- */
-export function gitDiscoverChanges(cwd: string, preSpawnRef: string | null): string[] {
-  if (!isGitRepo(cwd)) return [];
-  const paths = new Set<string>();
-  if (preSpawnRef) {
-    // --name-status so a committed git mv yields both source and destination.
-    for (const path of gitNameStatusPaths(cwd, ["diff", "--name-status", preSpawnRef, "HEAD"])) paths.add(path);
-    for (const path of gitNameStatusPaths(cwd, ["diff", "--name-status", preSpawnRef])) paths.add(path);
+/** The subset of `paths` an ignore rule matches, in one `git check-ignore -z --stdin`. */
+export function gitCheckIgnoreMany(cwd: string, paths: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  if (paths.length === 0) return out;
+  const result = runGit(cwd, ["check-ignore", "-z", "--stdin"], {
+    input: `${paths.join("\0")}\0`,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  // 0 = some matched, 1 = none matched; anything else is a real failure.
+  if (result.status !== 0 && result.status !== 1) return out;
+  for (const raw of result.stdout.split("\0")) {
+    if (raw) out.add(toPosixPath(raw));
   }
-  for (const path of porcelainPaths(cwd)) paths.add(path);
-  for (const path of gitLines(cwd, ["ls-files", "--others", "--exclude-standard"])) paths.add(path);
-  return [...paths];
+  return out;
+}
+
+/**
+ * Ignored entries (KD-16): `dirs` are directories an ignore rule matches outright, which the walk
+ * prunes; `files` are ignored files outside them, which are backed up and restored. `--directory`
+ * also collapses a directory that merely *happens* to contain nothing but ignored files (say
+ * `config/` holding only `local.json`); those are expanded back into individual files with one
+ * scoped `ls-files`, so the user's `config/local.json` is protected like any other ignored file.
+ * Null when git fails.
+ */
+export function gitIgnoredEntries(cwd: string): { dirs: string[]; files: string[] } | null {
+  const result = runGit(cwd, ["ls-files", "-z", "-o", "-i", "--exclude-standard", "--directory"], {
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  if (result.status !== 0) return null;
+  const collapsed: string[] = [];
+  const files: string[] = [];
+  for (const raw of result.stdout.split("\0")) {
+    if (!raw) continue;
+    const posix = toPosixPath(raw);
+    if (posix.endsWith("/")) collapsed.push(posix.slice(0, -1));
+    else files.push(posix);
+  }
+  if (collapsed.length === 0) return { dirs: [], files };
+  const trulyIgnored = gitCheckIgnoreMany(cwd, collapsed);
+  const dirs = collapsed.filter((dir) => trulyIgnored.has(dir));
+  const expand = collapsed.filter((dir) => !trulyIgnored.has(dir));
+  if (expand.length > 0) {
+    const inner = runGit(cwd, ["ls-files", "-z", "-o", "-i", "--exclude-standard", "--", ...expand], {
+      maxBuffer: 256 * 1024 * 1024,
+    });
+    if (inner.status === 0) {
+      for (const raw of inner.stdout.split("\0")) {
+        if (raw) files.push(toPosixPath(raw));
+      }
+    }
+  }
+  return { dirs, files };
+}
+
+/**
+ * Blob ids of `<ref>:<path>` in one `git cat-file --batch-check` (F-033). Missing paths map to
+ * null. Keys are the input paths.
+ */
+export function gitBlobIdsAtRef(cwd: string, ref: string, paths: readonly string[]): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  if (paths.length === 0) return out;
+  const result = runGit(cwd, ["cat-file", "--batch-check"], {
+    input: `${paths.map((path) => `${ref}:${path}`).join("\n")}\n`,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    for (const path of paths) out.set(path, null);
+    return out;
+  }
+  const lines = result.stdout.split("\n").filter((line) => line.length > 0);
+  paths.forEach((path, index) => {
+    const line = lines[index] ?? "";
+    const parts = line.trim().split(/\s+/);
+    out.set(path, parts.length >= 2 && parts[1] === "blob" ? (parts[0] as string) : null);
+  });
+  return out;
+}
+
+/**
+ * `git hash-object --stdin-paths` over absolute worktree paths, filters applied (autocrlf, LFS
+ * clean), in one spawn (F-033). Unreadable paths map to null.
+ */
+export function gitHashObjects(cwd: string, absPaths: readonly string[]): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  if (absPaths.length === 0) return out;
+  const result = runGit(cwd, ["hash-object", "--stdin-paths"], {
+    input: `${absPaths.join("\n")}\n`,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    // One unreadable path aborts the batch; fall back to one call per path.
+    for (const abs of absPaths) {
+      const one = runGit(cwd, ["hash-object", "--", abs]);
+      out.set(abs, one.status === 0 ? one.stdout.trim() : null);
+    }
+    return out;
+  }
+  const lines = result.stdout.split("\n").filter((line) => line.trim().length > 0);
+  absPaths.forEach((abs, index) => out.set(abs, (lines[index] ?? "").trim() || null));
+  return out;
+}
+
+/**
+ * Worktree bytes of `<ref>:<path>` with the smudge filters applied, batched through
+ * `git cat-file --batch --filters` and falling back to one call per path on older gits.
+ */
+export function gitCatFileFiltered(cwd: string, ref: string, paths: readonly string[]): Map<string, Buffer | null> {
+  const out = new Map<string, Buffer | null>();
+  if (paths.length === 0) return out;
+  const batch = runGitBuffer(cwd, ["cat-file", "--batch", "--filters"], {
+    input: `${paths.map((path) => `${ref}:${path}`).join("\n")}\n`,
+    maxBuffer: 512 * 1024 * 1024,
+  });
+  if (batch.status === 0) {
+    let cursor = 0;
+    let ok = true;
+    for (const path of paths) {
+      const nl = batch.stdout.indexOf(0x0a, cursor);
+      if (nl < 0) {
+        ok = false;
+        break;
+      }
+      const header = batch.stdout.subarray(cursor, nl).toString("utf8").trim();
+      const parts = header.split(/\s+/);
+      if (parts.length < 3 || parts[1] !== "blob") {
+        out.set(path, null);
+        cursor = nl + 1;
+        if (header.endsWith("missing")) continue;
+        ok = false;
+        break;
+      }
+      const size = Number(parts[2]);
+      if (!Number.isFinite(size) || nl + 1 + size > batch.stdout.length) {
+        ok = false;
+        break;
+      }
+      out.set(path, batch.stdout.subarray(nl + 1, nl + 1 + size));
+      cursor = nl + 1 + size + 1; // trailing LF
+    }
+    if (ok) return out;
+    out.clear();
+  }
+  for (const path of paths) {
+    const one = runGitBuffer(cwd, ["cat-file", "--filters", `${ref}:${path}`], { maxBuffer: 512 * 1024 * 1024 });
+    out.set(path, one.status === 0 ? one.stdout : null);
+  }
+  return out;
+}
+
+/** Commit shas in `<from>..<to>`, newest first. Empty when the range is empty or git fails. */
+export function gitRevListRange(cwd: string, from: string, to: string): string[] {
+  const result = runGit(cwd, ["rev-list", "--end-of-options", `${from}..${to}`], { maxBuffer: 16 * 1024 * 1024 });
+  if (result.status !== 0) return [];
+  return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+/** Point a ref at a commit (`refs/legion-quarantine/<runId>`, R-20). False when git refuses. */
+export function gitUpdateRef(cwd: string, ref: string, sha: string): boolean {
+  return runGit(cwd, ["update-ref", "--end-of-options", ref, sha]).status === 0;
 }
 
 export type GitWorktree = {
@@ -618,7 +751,7 @@ export function gitDiffCached(cwd: string): string {
 }
 
 export function gitStagedPaths(cwd: string): string[] {
-  return gitLines(cwd, ["diff", "--cached", "--name-only"]);
+  return gitPathsZ(cwd, ["diff", "--cached", "--name-only", "-z"]);
 }
 
 export function gitHasStaged(cwd: string): boolean {

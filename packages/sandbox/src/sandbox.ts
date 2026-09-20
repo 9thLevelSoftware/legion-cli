@@ -799,8 +799,12 @@ async function copyOutWrites(
   }
   const jailSet = new Set(files);
   const removed = new Set<string>();
+  // F-086: a host file is deleted only when it was copied INTO the jail and the agent removed it
+  // there. A file the user (or another tool) created on the host mid-run was never in the jail,
+  // so its absence from the jail says nothing and it survives copy-out.
   for (const allowed of allowedWrites) {
     if (jailSet.has(allowed) || isBlockedRel(allowed) || allowed.includes("*")) continue;
+    if (!copyInHashes.has(allowed)) continue;
     if (!legionCopyOutAllowed(allowed, contractRoots)) continue;
     let jailEntryExists = false;
     try {
@@ -817,6 +821,7 @@ async function copyOutWrites(
     for (const rel of await listHostFilesUnder(projectRoot, allowed)) {
       if (!legionCopyOutAllowed(rel, contractRoots)) continue;
       if (jailSet.has(rel) || removed.has(rel)) continue;
+      if (!copyInHashes.has(rel)) continue; // created on the host mid-run (F-086)
       if (await unlinkAllowedIfGone(projectRoot, rel, copied)) removed.add(rel);
     }
   }

@@ -808,29 +808,39 @@ Write paths under `.legion-cli/` outside `#mutate`, and why each is safe:
 | dashboard POSTs (`ticket`, `wikiTrust`, `qaChecklist`) | `dispatchEngineWrite` | goes through engine verbs, so the freeze applies |
 | `brief` / `search` / `garden` / `assume list` / `control-mode` | `ensureWikiIndex` | only `index/**`, which is excluded and rebuilt after any restore |
 
-**Revert algorithm** (after **every** `wait()`, still holding the lock, after the P restore; P paths are never handled here). Porcelain alone is not enough: a vendor CLI that `git commit`s hides extras from `git status`. **Allowed-set membership is the only fail criterion. HEAD movement is a warning, not a failure.**
+**Revert algorithm** (after **every** `wait()`, still holding the lock, after the P restore; P paths are never handled here). Git is **not** the oracle — it is only one restore source. The tree is compared by **content**, found stat-first (KD-16), and every changed path is **quarantined before** it is restored, never deleted (KD-1, A-006). **Allowed-set membership is the only contract-fail criterion; an agent commit is an incident, not a warning.**
 
-1. Before spawn, record `preSpawnRef = git rev-parse HEAD` in the run's control record (`<userStateDir>/control/<projectHash>/<runId>/resume.json`). Also snapshot the set of task ids (for `review` / `verify`).
-2. After `wait()`, discover candidate paths (POSIX-normalized), union of:
-   - `git diff --name-status <preSpawnRef> HEAD`
-   - `git status --porcelain -uall`
-   - `git ls-files --others --exclude-standard`
+1. **Before spawn** (under the lock, just before the P snapshot):
+   - `preSpawnRef = git rev-parse HEAD` and the checked-out branch go into the run's control record (`<userStateDir>/control/<projectHash>/<runId>/`). A repo with at least one commit is required (KD-3).
+   - One `git ls-files -z -o -i --exclude-standard --directory` lists the ignored entries. A directory an ignore rule matches outright is **pruned**: only its existence and its top-level entry names, sizes and mtimes are recorded. A directory that merely happens to hold nothing but ignored files (`config/` with only `local.json`) is expanded back into individual ignored *files*.
+   - One `git status -z --porcelain=v1 -uall` classifies every path as tracked-clean, dirty or untracked. Every path-listing git call uses `-z`; nothing is split on ` -> `.
+   - The tree is walked with `lstat` only, never following links, pruning `.git` and `.legion-cli/{cache,index,sandbox,worktrees}` by name, recording `{size, mtimeMs, kind}` keyed by NFC and case-folded on win32/darwin (the on-disk spelling is kept alongside). **Nothing is hashed here except what is backed up.**
+   - **Backups** go to `<controlDir>/pre/` (owner-only) for dirty and untracked non-ignored files and for **every pre-existing ignored file outside ignored directories**, each ≤ 4 MiB, 256 MiB total, secret-like names first so the cap never squeezes them out. Each entry records `restoreFrom: "git" | "backup" | "none"`.
+2. **After `wait()`** (after the P restore): re-walk and collect candidates — any path whose stat, kind or on-disk spelling changed, plus anything added or removed. Each candidate is then **confirmed by content**:
+   - tracked-clean: one batched `git hash-object --stdin-paths` (filters applied) equal to the `preSpawnRef` blob means unchanged;
+   - backed-up: an equal sha256 means unchanged.
 3. `allowed` = SkillContract roots (execute: intersect `FileContract.filesAllowed ∪ expectedArtifacts`, plus `.legion-cli/cache/runs/<id>/**`).
-4. If any discovered path is under `.git/` (hooks, config — not merely `HEAD` moving to a new commit) → **incident**: do not `rm -rf .git`; mark blocked; print “inspect .git”; stop. A new commit that only changes object store + `HEAD` is **not** this incident.
-5. If `HEAD != preSpawnRef`: **warning** only. Print “agent committed; Legion CLI did not `reset`. `legion-cli ship` is the human commit gate.” Do **not** `git reset --hard` or `git reset --soft`. Do **not** mark the task blocked for this reason alone.
-6. For each discovered path `p` **not** in `allowed` OR in implicit forbidden (extras):
-   - If `p` existed at `preSpawnRef`: `git restore --source=<preSpawnRef> --worktree --staged -- <p>`.
-   - If `p` did not exist at `preSpawnRef` and is now tracked: `git rm -f -- <p>` (leave a dirty tree; do not create a cleanup commit).
-   - If untracked file: `fs.rm(p, { force: true })`.
-   - If untracked directory containing no allowed paths: `fs.rm(p, { recursive: true, force: true })`.
-   - Do **not** `git clean -fd`. Do **not** `git reset --hard`.
-7. If any extra was reverted: contract failure (execute: task `blocked` + ticket `type: scope`; plan/review: command FAIL). Do not run `verificationCommands` as success.
-8. If no extras remain — i.e. `git diff --name-only <preSpawnRef>` (plus leftover porcelain/untracked) is a **subset of `allowed`** — then:
+4. Any confirmed change under `.git/` is an **incident**: never `rm -rf .git`; mark blocked; stop. (The git control files themselves are in P and are restored before this pass.)
+5. **Agent commits (R-20).** If `HEAD` or the checked-out branch differs from the pre-spawn values, the commits (`git rev-list <preSpawnRef>..HEAD`) are appended to `STATE.quarantinedCommits` — that field is in P, so a later agent cannot erase it — and kept reachable under `refs/legion-quarantine/<runId>`. The run is an **incident** (task blocked) and the recovery step is printed: `git reset <preSpawnRef>`, or `git checkout <original branch>` for a branch switch. The engine never moves your refs itself, and the working tree is already reverted.
+6. For each confirmed change **not** in `allowed` (or in implicit forbidden), in its own try/catch, quarantines of a case-folded key before restores of the same key (R-25):
+   - `lstat` every ancestor; a link or junction ancestor is quarantined as a link (`unlink`, never recursed) and replaced by a real directory (A-025).
+   - **Quarantine first** — a non-overwriting move through the EPERM/EBUSY retry helper. If the quarantine fails, the path is **not** restored and the run is an incident.
+   - **Then restore from a verified source.** From git: batched `git cat-file --batch --filters` (per-file fallback) with `GIT_NO_REPLACE_OBJECTS=1`, and the written file is re-hashed and must equal the `preSpawnRef` blob (R-18). From a backup: the sha256 must match the in-memory manifest. On any mismatch the run is an incident and the quarantined copy is kept.
+   - Nothing is ever `rm`'d, and `git clean -fd` / `git reset --hard` are never run.
+7. **Ignored-path policy (KD-16, R-7).**
+   - New entries under ignored directories, and new ignored files, are **left in place** and listed as warnings — they are build output (`dist/`, `coverage/`, an installed `node_modules`). Secret-like names (`.env*`, KD-4 patterns) are quarantined instead. Neither case is an incident.
+   - A modified or deleted pre-existing ignored file **outside** ignored directories is quarantined and restored from its backup, like any backed-up file. One over the cap, with no backup, produces the named warning "not restorable (over the 4 MiB / 256 MiB backup cap)".
+   - Changes deeper than the top level inside pre-existing ignored directories are **not tracked**. A documented limit of the stat-first design, as is an edit that forges both size and mtime outside P.
+8. **Git failures.** Git is only a restore source: if it errors, the backup restores still complete and the run becomes an incident (F-044).
+9. If any extra was reverted: contract failure (execute: task `blocked` + ticket `type: scope`; plan/review: command FAIL). Do not run `verificationCommands` as success. **Exception (Q1):** for a **jailed** run, real-tree changes *outside the jail* are the operator's (or a stray process's) edits, not the agent's scope creep — the task is blocked with "files changed outside the jail during the run (by you or the agent) — see `<quarantine path>`" and **no scope ticket is filed**. Writes the jail dropped are still scope creep and still file one.
+10. **Backup retention (R-8).** A finish with no incident deletes the run's `<controlDir>/pre/` and its manifest. Incident runs keep them (the quarantine manifest references them), as does a crash, for replay. `doctor` reports the total retained control-dir size and its path.
+11. **Budget (KD-16).** Measured on the dev box with `node_modules` installed: pre-spawn snapshot ≤ 2 s and post-spawn diff ≤ 2 s; a CI guard builds a synthetic 20,000-file tree (15,000 ignored, 200 changed) and asserts snapshot + diff + restore ≤ 20 s.
+12. If no extras remain — i.e. the confirmed changes are a **subset of `allowed`** — then:
    - **execute:** run `verificationCommands` (`cwd` = project, `shell: false`) even if `HEAD != preSpawnRef`. verificationCommands and the QA unit command are trusted code run on your machine, outside the sandbox, with API keys and tokens removed from the environment. They go through one non-blocking runner: `argv[0]` resolves through PATH/PATHEXT (npm `.cmd` shims are unwrapped, so `pnpm test` works on Windows), output streams to `.legion-cli/cache/runs/<runId>/verify-<n>.log`, and a timeout kills the process tree. Commands are argv-only (`a && b` is refused). A command that can't start (missing binary, shell operator), a non-zero exit, a timeout, or any exception blocks the task with the reason ("verification command did not start: …"); nothing leaves a task in `verifying`, and the next verb demotes a `verifying` task whose run is dead to `blocked`. On PASS, mark task `done`. HEAD may still point at the agent commit; that is fine. `legion-cli ship` is the human commit gate.
    - **other skills:** command succeeds (review then applies the lastReview rule in §2.1).
 
 PR-11 goldens:
-- Extra: `fake` adapter `git add` + `git commit` of `src/secret.ts` **not** in `filesAllowed` → path absent from the worktree after revert; task `blocked`; no `reset --hard`.
+- Extra: `fake` adapter `git add` + `git commit` of `src/secret.ts` **not** in `filesAllowed` → the path is quarantined out of the worktree after revert; task `blocked`; no `reset --hard`; the commit sha is in `STATE.quarantinedCommits`.
 - In-contract: `fake` adapter commits **only** `filesAllowed` → `verificationCommands` run; task `done`; HEAD may still be the agent commit.
 
 This is **after-the-fact policy**. Execute also runs inside an OS sandbox (`@9thlevelsoftware/legion-cli-sandbox`; jail-as-project-root; copy-out only `allowedWrites`; revert still runs). Vendor CLIs can still use the network. Concurrent workers stay later (§5.4).

@@ -36,8 +36,12 @@ import {
   readAuditEvents,
   summarizeAuditMetrics,
   gitAdd,
+  gitBlobIdsAtRef,
+  gitCatFileFiltered,
   gitCheckIgnore,
-  gitDiscoverChanges,
+  gitHashObjects,
+  gitIgnoredEntries,
+  gitStatusRecords,
   gitHead,
   gitBranchCreate,
   gitRevParse,
@@ -1112,16 +1116,58 @@ test("ingest documents write untrusted wiki pages", async () => {
   });
 });
 
-test("gitDiscoverChanges lists both paths of a committed rename", async () => {
+// KD-16: `-z` parsing replaced the ` -> ` split, which mangled any path containing that text.
+test("gitStatusRecords parses a staged rename, including a path that contains ' -> '", async () => {
   await withTempDir(async (dir) => {
+    // `>` is not a legal NTFS filename character, so the literal-arrow leg is POSIX-only.
+    const arrow = process.platform === "win32" ? "a b.ts" : "a -> b.ts";
     await writeFile(join(dir, "secret.ts"), "secret\n", "utf8");
+    await writeFile(join(dir, arrow), "arrow\n", "utf8");
     initGitRepo(dir);
-    const pre = git(dir, ["rev-parse", "HEAD"]);
     git(dir, ["mv", "secret.ts", "leaked.ts"]);
-    git(dir, ["commit", "-m", "rename"]);
-    const paths = gitDiscoverChanges(dir, pre);
-    assert.ok(paths.includes("secret.ts"), `expected secret.ts in ${JSON.stringify(paths)}`);
-    assert.ok(paths.includes("leaked.ts"), `expected leaked.ts in ${JSON.stringify(paths)}`);
+    await writeFile(join(dir, arrow), "arrow2\n", "utf8");
+    const records = gitStatusRecords(dir);
+    const rename = records.find((record) => record.path === "leaked.ts");
+    assert.ok(rename, `expected leaked.ts in ${JSON.stringify(records)}`);
+    assert.equal(rename.from, "secret.ts");
+    assert.ok(
+      records.some((record) => record.path === arrow && record.from === undefined),
+      `expected the literal '${arrow}' path in ${JSON.stringify(records)}`,
+    );
+  });
+});
+
+test("gitIgnoredEntries separates ignored directories from ignored files", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, ".gitignore"), "node_modules/\n.env\n", "utf8");
+    await mkdir(join(dir, "node_modules", "pkg"), { recursive: true });
+    await writeFile(join(dir, "node_modules", "pkg", "index.js"), "x\n", "utf8");
+    await writeFile(join(dir, ".env"), "TOKEN=1\n", "utf8");
+    initGitRepo(dir);
+    const ignored = gitIgnoredEntries(dir);
+    assert.ok(ignored);
+    assert.ok(ignored.dirs.includes("node_modules"), JSON.stringify(ignored));
+    assert.ok(ignored.files.includes(".env"), JSON.stringify(ignored));
+    // --directory collapses the whole tree, so the walk never descends into it.
+    assert.equal(
+      ignored.files.some((file) => file.startsWith("node_modules/")),
+      false,
+    );
+  });
+});
+
+test("gitHashObjects and gitBlobIdsAtRef agree for an unchanged tracked file", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "kept.ts"), "kept\n", "utf8");
+    initGitRepo(dir);
+    const head = git(dir, ["rev-parse", "HEAD"]);
+    const blob = gitBlobIdsAtRef(dir, head, ["kept.ts"]).get("kept.ts");
+    const hash = gitHashObjects(dir, [join(dir, "kept.ts")]).get(join(dir, "kept.ts"));
+    assert.ok(blob);
+    assert.equal(hash, blob);
+    const bytes = gitCatFileFiltered(dir, head, ["kept.ts"]).get("kept.ts");
+    assert.ok(bytes);
+    assert.equal(bytes.toString("utf8").replaceAll("\r\n", "\n"), "kept\n");
   });
 });
 

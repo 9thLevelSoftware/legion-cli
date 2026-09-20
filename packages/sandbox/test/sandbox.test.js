@@ -181,6 +181,29 @@ test("copy-out includes an allowed write that did not exist yet", async () => {
   });
 });
 
+// F-086: a host file created DURING the run was never copied into the jail, so its absence from
+// the jail says nothing about it. Only files that were copied in may be deleted on the way out.
+test("copy-out keeps a host file created mid-run inside an allowed directory", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await mkdir(join(dir, "out"), { recursive: true });
+    await writeFile(join(dir, "out", "keep.txt"), "keep\n", "utf8");
+    const handle = await materializeJail(policy(dir, { allowedWrites: ["out", "out/late.txt"] }));
+    try {
+      // The operator (or another tool) writes into the real tree after the jail was built.
+      await writeFile(join(dir, "out", "midrun.txt"), "written on the host\n", "utf8");
+      await writeFile(join(dir, "out", "late.txt"), "also on the host\n", "utf8");
+      const result = await handle.copyOut();
+      assert.equal(existsSync(join(dir, "out", "midrun.txt")), true);
+      assert.equal(existsSync(join(dir, "out", "late.txt")), true);
+      assert.equal(result.copied.includes("out/midrun.txt"), false);
+      assert.equal(result.copied.includes("out/late.txt"), false);
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
 test("copy-out deletes children missing from an allowed directory", async () => {
   await withTempDir(async (dir) => {
     await seedProject(dir);

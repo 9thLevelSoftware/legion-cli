@@ -40,7 +40,20 @@ export {
   splitLines,
   splitMustNotAndOutOfScope,
 } from "./intent.js";
-export { HEAD_MOVED_WARNING, revertExtras } from "./revert.js";
+export {
+  BACKUP_DIR_NAME,
+  BACKUP_FILE_MAX_BYTES,
+  BACKUP_TOTAL_MAX_BYTES,
+  detectAgentCommits,
+  dropBackups,
+  foldKey,
+  HEAD_MOVED_WARNING,
+  isSecretLikeName,
+  revertTree,
+  snapshotTree,
+  TREE_MANIFEST_NAME,
+} from "./revert.js";
+export type { AgentCommits, RevertResult, RevertTreeResult, TreeSnapshot } from "./revert.js";
 export {
   ensureRegressionTest,
   fixFilesAllowed,
@@ -85,7 +98,7 @@ export {
   snapshotProtected,
 } from "./protected.js";
 export type { ProtectedRestoreResult, ProtectedSnapshot } from "./protected.js";
-export { listRetainedQuarantines, QUARANTINE_MANIFEST } from "./quarantine.js";
+export { listRetainedQuarantines, Quarantine, QUARANTINE_MANIFEST, retainedControlDir } from "./quarantine.js";
 export type { QuarantineManifestEntry, RetainedQuarantine } from "./quarantine.js";
 export {
   WIREFRAME_PALETTE,

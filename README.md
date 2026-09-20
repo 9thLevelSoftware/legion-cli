@@ -27,6 +27,17 @@ Init requires `--adapter` (`claude` | `generic` | `fake` | `grok` | `openai` | `
 
 verificationCommands and the QA unit command are trusted code run on your machine, outside the sandbox, with API keys and tokens removed from the environment. They are argv-only: split `a && b` into separate commands.
 
+### Your files are quarantined, never deleted
+
+After every agent run Legion compares your project by **content** and puts back anything the agent changed outside its contract — including files git never sees, like a gitignored `.env` or a local `dev.sqlite`. The agent's version is **moved to a quarantine folder outside the project**, never deleted: `<user state dir>/quarantine/<project>/<run>-<random>/`, with a `MANIFEST.json` listing every displaced path. Legion never removes that folder; `legion-cli doctor` lists what is retained and flags a manifest that no longer matches its audited hash.
+
+Two consequences worth knowing:
+
+- **A run cannot tell who typed.** If you edit a file yourself while a run is live, that edit is quarantined and reverted too. Finish the run first.
+- **If the agent commits, Legion does not un-commit for you.** The working tree is restored, the commit shas are recorded in `STATE.quarantinedCommits` and kept reachable under `refs/legion-quarantine/<run>`, the task is blocked, and the one command that undoes the ref movement (`git reset <ref>` or `git checkout <branch>`) is printed. `legion-cli ship` remains the human commit gate.
+
+Build output is left alone: new files in gitignored directories (`dist/`, `coverage/`, an installed `node_modules`) are reported as warnings, not reverted. The exception is secret-like names (`.env*`), which are always quarantined.
+
 From this repo:
 
 ```bash

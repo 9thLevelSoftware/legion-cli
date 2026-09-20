@@ -230,6 +230,11 @@ export type RestoreProtectedOpts = {
   allowedRoots: readonly string[];
   /** plan/review/verify: a NEW valid `.legion-cli/tasks/TSK-*.md` is admitted (R-2). */
   admitNewTasks: boolean;
+  /**
+   * A quarantine folder shared with the tree revert (PR 5), so one run has one folder and one
+   * manifest. When given, the caller finalizes it after the tree revert has run.
+   */
+  quarantine?: Quarantine;
 };
 
 /**
@@ -243,7 +248,7 @@ export async function restoreProtected(
   snapshot: ProtectedSnapshot,
   opts: RestoreProtectedOpts,
 ): Promise<ProtectedRestoreResult> {
-  const quarantine = new Quarantine(snapshot.projectRoot, opts.runId);
+  const quarantine = opts.quarantine ?? new Quarantine(snapshot.projectRoot, opts.runId);
   const result: ProtectedRestoreResult = {
     changed: [],
     unrestorable: [],
@@ -335,14 +340,16 @@ export async function restoreProtected(
     }
   }
 
-  try {
-    const finalized = await quarantine.finalize();
-    if (finalized) {
-      result.quarantine = { ...finalized, entries: quarantine.entries.length };
+  if (!opts.quarantine) {
+    try {
+      const finalized = await quarantine.finalize();
+      if (finalized) {
+        result.quarantine = { ...finalized, entries: quarantine.entries.length };
+      }
+    } catch (err) {
+      result.incident = true;
+      result.unrestorable.push(`quarantine manifest (${describe(err)})`);
     }
-  } catch (err) {
-    result.incident = true;
-    result.unrestorable.push(`quarantine manifest (${describe(err)})`);
   }
   result.rewrittenTaskIds.sort();
   return result;

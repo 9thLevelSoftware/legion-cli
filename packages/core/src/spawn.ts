@@ -80,12 +80,14 @@ import {
   type ProtectedRestoreResult,
   type ProtectedSnapshot,
 } from "./protected.js";
+import { Quarantine } from "./quarantine.js";
 import {
+  dropBackups,
   recordPreSpawnRef,
-  revertExtras,
-  snapshotDirtyPaths,
-  snapshotPaths,
+  revertTree,
+  snapshotTree,
   type RevertResult,
+  type TreeSnapshot,
 } from "./revert.js";
 
 export { findSkillsDir };
@@ -181,8 +183,10 @@ type SpawnRevertCtx = {
   preSpawnRef: string | null;
   allowedRoots: string[];
   filesForbidden: readonly string[] | undefined;
-  snapshot: Awaited<ReturnType<typeof snapshotPaths>> | undefined;
-  dirtyAtStart: ReturnType<typeof snapshotDirtyPaths>;
+  /** The stat-first pre-spawn tree snapshot and its backups (KD-16), held in memory. */
+  treeSnapshot: TreeSnapshot;
+  controlDir: string;
+  jailed: boolean;
   /** P, held in memory: the finish path never trusts disk (KD-2). */
   protectedSnapshot: ProtectedSnapshot;
   audit?: SpawnAudit;
@@ -482,11 +486,6 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     skipDesignAppend: assembled.skipDesignAppend,
   });
   const preSpawnRef = recordPreSpawnRef(opts.projectRoot);
-  // Always snapshot the worktree, even when preSpawnRef is set. Gitignored
-  // extras are invisible to `git status --exclude-standard`; KD-11 forbids
-  // unioning raw `git status --ignored` (that would revert pre-existing ignored files).
-  const snapshot = await snapshotPaths(opts.projectRoot);
-  const dirtyAtStart = snapshotDirtyPaths(opts.projectRoot, preSpawnRef);
   // Control records live outside the project (KD-2, R-15): the agent's own run cache holds
   // nothing the engine trusts.
   const controlDir = await ensureControlDir(opts.projectRoot, runId, { exclusive: true });
@@ -583,12 +582,16 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   // audit events are buffered (KD-15). The snapshot is the last step before the spawn.
   registerOwnedSpawn({ projectRoot: opts.projectRoot, runId, skillId: opts.skillId, controlDir });
   let protectedSnapshot: ProtectedSnapshot;
+  let treeSnapshot: TreeSnapshot;
   let handle: AgentHandle;
   let started: LiveStarted | undefined;
   try {
     const marker = liveMarkerFor(runId, opts.skillId, DEFAULT_TIMEOUT_MS);
     rememberLiveMarker(opts.projectRoot, marker);
     await writeLiveMarker(controlDir, marker);
+    // KD-16: the stat-first tree snapshot and its backups, then P, are the last steps before
+    // the spawn. Both live in the same control dir, outside the project.
+    treeSnapshot = await snapshotTree({ projectRoot: opts.projectRoot, runId, preSpawnRef, controlDir });
     protectedSnapshot = await snapshotProtected(opts.projectRoot);
     await writeFile(join(controlDir, "protected-snapshot.json"), serializeProtectedSnapshot(protectedSnapshot), {
       encoding: "utf8",
@@ -634,8 +637,9 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         preSpawnRef,
         allowedRoots,
         filesForbidden,
-        snapshot,
-        dirtyAtStart,
+        treeSnapshot,
+        controlDir,
+        jailed: Boolean(sandbox),
         protectedSnapshot,
         audit: opts.audit,
         onRestored: opts.onRestored,
@@ -708,6 +712,8 @@ async function finishOnce(started: LiveStarted): Promise<RevertResult> {
   let dropped: string[] = [];
   let protectedResult: ProtectedRestoreResult | undefined;
   let copyOutError: string | undefined;
+  let quarantine: Quarantine | undefined;
+  let incidentForCleanup = true;
   try {
     // R-20: tear the agent's process tree down on every finish path, not just on timeout, so a
     // detached grandchild cannot write after the compare. PR 6 still owns interrupt handling.
@@ -722,12 +728,15 @@ async function finishOnce(started: LiveStarted): Promise<RevertResult> {
         copyOutError = err instanceof Error ? err.message : String(err);
       }
     }
+    // One quarantine folder per run: P and the tree revert share it, and it is finalized once.
+    quarantine = new Quarantine(ctx.projectRoot, ctx.runId);
     // KD-1: P is compared and restored before any engine git call, from the in-memory snapshot.
     try {
       protectedResult = await restoreProtected(ctx.protectedSnapshot, {
         runId: ctx.runId,
         allowedRoots: ctx.allowedRoots,
         admitNewTasks: admitsNewTasks(ctx.skillId),
+        quarantine,
       });
     } catch (err) {
       // Fail closed: an unexpected error is an incident, never a silent pass.
@@ -745,9 +754,27 @@ async function finishOnce(started: LiveStarted): Promise<RevertResult> {
       protectedResult.incident = true;
       protectedResult.unrestorable.push(`jail copy-out failed (${copyOutError})`);
     }
-    const revert = await revertExtras(ctx);
-    const extrasReverted = new Set(revert.extrasReverted);
-    let otherIncident = revert.incident;
+    // KD-16: the stat-first content revert over the rest of the tree, after the P restore.
+    let tree: Awaited<ReturnType<typeof revertTree>>;
+    try {
+      tree = await revertTree({
+        snapshot: ctx.treeSnapshot,
+        runId: ctx.runId,
+        allowedRoots: ctx.allowedRoots,
+        filesForbidden: ctx.filesForbidden,
+        quarantine,
+      });
+    } catch (err) {
+      tree = {
+        reverted: [],
+        warnings: [],
+        unrestorable: [`the tree revert failed (${err instanceof Error ? err.message : String(err)})`],
+        incident: true,
+        agentCommits: { headMoved: false, branchMoved: false, commits: [] },
+      };
+    }
+    const extrasReverted = new Set(tree.reverted);
+    let otherIncident = tree.incident;
     if (started.sandbox) {
       for (const rel of dropped) {
         if (hasGitSegment(rel)) otherIncident = true;
@@ -755,11 +782,27 @@ async function finishOnce(started: LiveStarted): Promise<RevertResult> {
         extrasReverted.add(rel);
       }
     }
+    try {
+      const finalized = await quarantine.finalize();
+      if (finalized) protectedResult.quarantine = { ...finalized, entries: quarantine.entries.length };
+    } catch (err) {
+      otherIncident = true;
+      tree.unrestorable.push(`quarantine manifest (${err instanceof Error ? err.message : String(err)})`);
+    }
+    const incident = otherIncident || protectedResult.incident;
+    incidentForCleanup = incident;
     return {
-      ...revert,
       extrasReverted: [...extrasReverted],
-      incident: otherIncident || protectedResult.incident,
+      incident,
       otherIncident,
+      headMoved: tree.agentCommits.headMoved,
+      branchMoved: tree.agentCommits.branchMoved,
+      quarantinedCommits: tree.agentCommits.commits,
+      ...(tree.agentCommits.recovery ? { commitRecovery: tree.agentCommits.recovery } : {}),
+      preSpawnRef: ctx.preSpawnRef,
+      ...(started.sandbox ? { outsideJail: tree.reverted } : {}),
+      warnings: tree.warnings,
+      unrestorable: tree.unrestorable,
       protected: protectedResult,
       sandboxCopied: copied,
       sandboxDropped: dropped,
@@ -775,6 +818,9 @@ async function finishOnce(started: LiveStarted): Promise<RevertResult> {
     await rm(join(controlDirPath(ctx.projectRoot, ctx.runId), "protected-snapshot.json"), { force: true }).catch(
       () => undefined,
     );
+    // R-8: a clean finish keeps no backups. Incident runs keep them (the quarantine manifest
+    // references them) and so does a crash, for PR 6's replay.
+    if (!incidentForCleanup) await dropBackups(ctx.controlDir).catch(() => undefined);
     if (protectedResult && ctx.audit) {
       if (protectedResult.quarantine) {
         await ctx
@@ -804,20 +850,41 @@ async function finishOnce(started: LiveStarted): Promise<RevertResult> {
 }
 
 /** One-line incident description for refusals and task notes. */
-export function protectedIncidentMessage(revert: Pick<RevertResult, "protected" | "incident">): string {
+export function protectedIncidentMessage(
+  revert: Pick<
+    RevertResult,
+    "protected" | "incident" | "unrestorable" | "quarantinedCommits" | "commitRecovery" | "branchMoved"
+  >,
+): string {
+  const parts: string[] = [];
   const prot = revert.protected;
-  if (!prot || (prot.changed.length === 0 && prot.unrestorable.length === 0)) {
-    return "inspect .git — spawn touched .git/";
+  if (prot && (prot.changed.length > 0 || prot.unrestorable.length > 0)) {
+    parts.push(`the agent changed protected files (${prot.changed.join(", ") || "none"})`);
+    if (prot.unrestorable.length > 0) parts.push(`NOT restored: ${prot.unrestorable.join("; ")}`);
+    else parts.push("they were restored");
+    if (prot.quarantine) parts.push(`the agent's versions are in quarantine at ${prot.quarantine.dir}`);
+    // Any `.legion-cli/` change made while the run was live is treated the same way, including a
+    // person's own editor save (R-13), and the task needs reopening afterwards (R-12).
+    parts.push(
+      "any change to .legion-cli/ made while the run was live — including your own edits — is quarantined and reverted",
+    );
   }
-  const parts = [`the agent changed protected files (${prot.changed.join(", ") || "none"})`];
-  if (prot.unrestorable.length > 0) parts.push(`NOT restored: ${prot.unrestorable.join("; ")}`);
-  else parts.push("they were restored");
-  if (prot.quarantine) parts.push(`the agent's versions are in quarantine at ${prot.quarantine.dir}`);
-  // Any `.legion-cli/` change made while the run was live is treated the same way, including a
-  // person's own editor save (R-13), and the task needs reopening afterwards (R-12).
-  parts.push(
-    "any change to .legion-cli/ made while the run was live — including your own edits — is quarantined and reverted",
-  );
+  if (revert.unrestorable && revert.unrestorable.length > 0) {
+    parts.push(`NOT restored: ${revert.unrestorable.join("; ")}`);
+  }
+  const commits = revert.quarantinedCommits ?? [];
+  if (commits.length > 0 || revert.branchMoved) {
+    // R-20: the working tree is already back; only the refs still hold the agent's work.
+    parts.push(
+      commits.length > 0
+        ? `the agent committed (${commits.map((sha) => sha.slice(0, 8)).join(", ")}); the commits are kept reachable under refs/legion-quarantine/ and listed in STATE.quarantinedCommits`
+        : "the checked-out branch changed during the run",
+    );
+    if (revert.commitRecovery) {
+      parts.push(`the working tree is already reverted; to undo the ref movement: ${revert.commitRecovery}`);
+    }
+  }
+  if (parts.length === 0) return "inspect .git — spawn touched .git/";
   parts.push("inspect the quarantine, then reopen the task (legion-cli task retry, PR 6)");
   return parts.join("; ");
 }

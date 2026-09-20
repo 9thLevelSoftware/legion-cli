@@ -15,7 +15,6 @@ import {
   LegionRefuseError,
   optionalSkillSpawn,
   regressionTestPath,
-  revertExtras,
 } from "../dist/index.js";
 import { restoreProtected, snapshotProtected } from "../dist/index.js";
 import {

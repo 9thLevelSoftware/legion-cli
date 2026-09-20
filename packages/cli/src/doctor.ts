@@ -20,6 +20,7 @@ import {
   describeLiveSpawn,
   findSkillsDir,
   listRetainedQuarantines,
+  retainedControlDir,
 } from "@9thlevelsoftware/legion-cli-core";
 import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
@@ -633,6 +634,8 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   const quarantineLines = quarantines.map(
     (entry) => `  ${entry.runId}  ${entry.files} file(s), ${entry.bytes} bytes  ${entry.integrity}  ${entry.dir}`,
   );
+  // R-8: pre-spawn backups retained for incident runs and crash replay. A clean finish drops its own.
+  const controlRetention = await retainedControlDir(opts.project);
 
   const schemaVersions = Object.values(SCHEMA_VERSION);
 
@@ -760,6 +763,13 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     ...(agentRun ? ["", "Agent run", `  ${describeLiveSpawn(agentRun)}`] : []),
     ...(quarantineLines.length > 0
       ? ["", "Quarantine (retained; never deleted by Legion)", ...quarantineLines]
+      : []),
+    ...(controlRetention.runs > 0
+      ? [
+          "",
+          "Run control dir (pre-spawn backups kept for incident runs and crash replay)",
+          `  ${controlRetention.runs} run(s), ${controlRetention.files} file(s), ${controlRetention.bytes} bytes  ${controlRetention.dir}`,
+        ]
       : []),
   ];
   if (warnings.length > 0) {

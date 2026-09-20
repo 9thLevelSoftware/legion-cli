@@ -80,6 +80,11 @@ export const StateFileSchema = z.object({
   lastReadiness: ReadinessSchema.nullable().optional(),
   lastReview: ReviewVerdictSchema.nullable().optional(),
   lastQaId: z.string().min(1).nullable().optional(),
+  /**
+   * Commits an agent made during a spawn (R-20). STATE.md is in the protected set, so a later
+   * agent cannot erase this list. `refs/legion-quarantine/<runId>` keeps the commits reachable.
+   */
+  quarantinedCommits: z.array(z.string().regex(/^[0-9a-f]{7,64}$/)).optional(),
 });
 export type StateFile = z.infer<typeof StateFileSchema>;
 

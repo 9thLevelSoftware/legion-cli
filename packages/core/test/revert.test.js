@@ -50,6 +50,45 @@ test("the protected-set restore replaces a symlinked task file without following
   });
 });
 
+// PR 5 (Q1): a jailed run's real-tree change is quarantined and restored, the task is blocked,
+// and NO scope ticket is filed for it — it is not the agent's scope creep.
+test("a user edit outside the jail is reverted, blocks the task, and files no TSK", async () => {
+  await withFakeAdapter(async () => {
+    let projectDir;
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        projectDir = dir;
+        await initProject(engine);
+        await seedPlanReady(store, {
+          task: {
+            contract: {
+              filesAllowed: ["src/main.ts"],
+              expectedArtifacts: ["src/main.ts"],
+              verificationCommands: [passingVerificationCommand()],
+            },
+          },
+        });
+        await writeFile(join(dir, "README.md"), "my readme\n", "utf8");
+        initGitRepo(dir);
+        const before = await readFile(join(dir, "README.md"), "utf8");
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.equal(await readFile(join(dir, "README.md"), "utf8"), before);
+        assert.ok(result.tasks[0].extrasReverted.includes("README.md"), JSON.stringify(result.tasks[0]));
+        assert.match(result.tasks[0].reason ?? "", /outside the jail/);
+        // No scope ticket: TSK-0002 must not exist (Q1).
+        await assert.rejects(() => store.readTask("TSK-0002"));
+      },
+      {
+        fakeArtifacts: [{ path: "src/main.ts", content: "export const ok = true;\n" }],
+        fakeOnWait: async () => {
+          await writeFile(join(projectDir, "README.md"), "the operator typed this mid-run\n", "utf8");
+        },
+      },
+    );
+  });
+});
+
 test("FileContract revert still runs after sandboxed execute copy-out", async () => {
   await withFakeAdapter(async () => {
     let projectDir;
