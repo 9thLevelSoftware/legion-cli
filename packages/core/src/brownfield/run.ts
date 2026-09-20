@@ -27,6 +27,7 @@ import { RUN_SUBDIRS, runAbs, runArtifactPaths, storeAbs } from "./paths.js";
 import {
   applyStateSet,
   assertBrownfieldReady,
+  assertPhaseAllowed,
   newRunId,
   nowIso,
   parseEffort,
@@ -159,6 +160,9 @@ export function nextStepFor(
       return run.execute ? `legion-cli brownfield pr-plan ${id}` : `legion-cli run promote ${id}`;
     case "execute":
       if (!dag?.present) return `legion-cli brownfield pr-plan ${id}`;
+      if (dag.done && dag.completed === 0) {
+        return `no PR completed; skip verify: legion-cli brownfield state ${id} phase=complete`;
+      }
       if (dag.done) return `verify the combined result, then legion-cli brownfield state ${id} phase=verify`;
       return dag.ready.length > 0
         ? `legion-cli brownfield worktree ${id} ${dag.ready[0]} (ready: ${dag.ready.join(", ")})`
@@ -256,7 +260,10 @@ export async function stateRun(
   let run = await readRun(store, runId);
   if (pairs.length > 0) {
     const hint = HINT.brownfieldState(runId);
-    run = await writeRun(store.projectRoot, applyStateSet(run, parseKeyValuePairs(pairs, hint), hint));
+    const parsed = parseKeyValuePairs(pairs, hint);
+    const next = applyStateSet(run, parsed, hint);
+    if (parsed.some(([key]) => key === "phase")) await assertPhaseAllowed(store.projectRoot, runId, next.phase, hint);
+    run = await writeRun(store.projectRoot, next);
   }
   const paths = runArtifactPaths(runId);
   const artifacts = await artifactPresence(store.projectRoot, paths);
@@ -267,7 +274,7 @@ export async function stateRun(
   let dag: BrownfieldStateResult["dag"] = null;
   if (artifacts.dag) {
     const summary = summarizeDag(await readDag(store.projectRoot, runId));
-    dag = { present: true, done: summary.done, ready: summary.ready };
+    dag = { present: true, done: summary.done, ready: summary.ready, completed: summary.counts.completed ?? 0 };
   }
   return {
     kind: "state",

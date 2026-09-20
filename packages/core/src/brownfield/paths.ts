@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { runPagePath, runResumePath, runStorePath } from "@9thlevelsoftware/legion-cli-persist";
+import { runPagePath, runResumePath, runStorePath, toFsPath } from "@9thlevelsoftware/legion-cli-persist";
 import type { BrownfieldArtifactPaths } from "../types.js";
 
 /** Subdirectories every run gets at init. `analysis/` is specialist output only; `merge` reads nothing else. */
@@ -31,9 +31,9 @@ export function runArtifactPaths(runId: string): BrownfieldArtifactPaths {
   };
 }
 
-/** Absolute filesystem path for a POSIX store path. */
+/** Absolute filesystem path for a POSIX store path. Absolute or escaping paths throw `PathEscapeError`. */
 export function storeAbs(projectRoot: string, storePath: string): string {
-  return join(projectRoot, ...storePath.split("/"));
+  return toFsPath(projectRoot, storePath);
 }
 
 /** Absolute path inside a run directory. */

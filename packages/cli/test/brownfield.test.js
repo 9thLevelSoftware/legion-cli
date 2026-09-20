@@ -174,9 +174,50 @@ test("brownfield subcommands drive roster → merge → review-status → pr-pla
     assert.equal(removed.removed, true);
     assert.equal(await exists(wtAbs), false);
 
-    const state = cliJson(["brownfield", "state", "bbbbbbbb", "phase=verify", "meta.note=done", "--project", dir]);
-    assert.equal(state.state.phase, "verify");
+    // No PR completed: `next` says skip verify, verify is refused, and phase=complete works.
+    const stuck = cliJson(["brownfield", "state", "bbbbbbbb", "--project", dir]);
+    assert.match(stuck.next, /skip verify: legion-cli brownfield state bbbbbbbb phase=complete/);
+    const verify = runCli(["brownfield", "state", "bbbbbbbb", "phase=verify", "--project", dir, "--json"]);
+    assert.equal(verify.status, 1);
+    assert.match(verify.stdout + verify.stderr, /phase=verify needs at least one completed DAG node/);
+    const state = cliJson(["brownfield", "state", "bbbbbbbb", "phase=complete", "meta.note=done", "--project", dir]);
+    assert.equal(state.state.phase, "complete");
     assert.equal(state.state.meta.note, "done");
+
+    // Re-running pr-plan would wipe recorded progress: refused without --force.
+    const dagFile = join(dir, ".legion-cli", "runs", "bbbbbbbb", "dag.json");
+    const replan = runCli(["brownfield", "pr-plan", "bbbbbbbb", "--project", dir, "--json"]);
+    assert.equal(replan.status, 1);
+    assert.match(replan.stdout + replan.stderr, /pr-1 failed.*--force/s);
+    assert.equal(JSON.parse(await readFile(dagFile, "utf8")).nodes[0].status, "failed");
+    const forced = cliJson(["brownfield", "pr-plan", "bbbbbbbb", "--force", "--project", dir]);
+    assert.equal(forced.count, 2);
+    assert.deepEqual(cliJson(["brownfield", "dag", "bbbbbbbb", "--project", dir]).counts, { pending: 2 });
+  });
+});
+
+test("brownfield dag cannot point a worktree at .git, and a hand-edited path is ignored", async () => {
+  await withTempDir(async (dir) => {
+    await seedBrownfield(dir);
+    cliJson(["brownfield", "init", "--project", dir, "--run-id", "cccccccc", "--execute", "audit"]);
+    await seedRunFile(dir, "cccccccc", "design.md", DESIGN);
+    await seedRunFile(dir, "cccccccc", "reviews/design-review.md", "# Design Review\n");
+    cliJson(["brownfield", "pr-plan", "cccccccc", "--project", dir]);
+
+    const set = runCli(["brownfield", "dag", "cccccccc", "pr-1", "worktree=.git", "--project", dir, "--json"]);
+    assert.equal(set.status, 1);
+    assert.match(set.stdout + set.stderr, /worktree is not settable/);
+
+    const dagFile = join(dir, ".legion-cli", "runs", "cccccccc", "dag.json");
+    const dag = JSON.parse(await readFile(dagFile, "utf8"));
+    dag.nodes[0].worktree = ".git";
+    await writeFile(dagFile, `${JSON.stringify(dag, null, 2)}\n`, "utf8");
+
+    const wt = cliJson(["brownfield", "worktree", "cccccccc", "pr-1", "--project", dir]);
+    assert.equal(wt.worktree, ".legion-cli/worktrees/cccccccc/pr-1");
+    assert.equal(await exists(join(dir, ".git", "HEAD")), true);
+    git(dir, ["status", "--porcelain"]);
+    assert.equal(git(dir, ["rev-parse", "--is-inside-work-tree"]), "true");
   });
 });
 

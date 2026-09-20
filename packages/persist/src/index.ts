@@ -64,6 +64,7 @@ export {
   gitWorktreeRemove,
   isGitRepo,
   listGitWorktrees,
+  sameWorktreePath,
   tryGitBranch,
   tryGitHead,
 } from "./git.js";
