@@ -82,14 +82,47 @@ const NEXT_BY_PHASE: Record<Phase, NextCommand> = {
   },
 };
 
+export type NextContext = {
+  mode?: "greenfield" | "brownfield";
+  controlMode?: ControlMode;
+  /** The newest brownfield run that has not completed, when there is one. */
+  brownfieldRun?: { runId: string; phase: string } | null;
+};
+
+/** The one exit from a blocked task (KD-5). `next` names it so the board is never a dead end. */
+export function blockedP0(slice: readonly Task[]): Task | undefined {
+  return (
+    slice.find((task) => task.status === "blocked" && task.priority === "P0") ??
+    slice.find((task) => task.status === "blocked")
+  );
+}
+
 export function nextCommand(
   state: StateFile,
   slice: readonly Task[],
   mode?: "greenfield" | "brownfield",
   controlMode?: ControlMode,
+  ctx: Pick<NextContext, "brownfieldRun"> = {},
 ): NextCommand {
+  // A brownfield run that never finished is the real next step, whatever the phase says.
+  if (ctx.brownfieldRun) {
+    return {
+      run: `legion-cli brownfield --resume ${ctx.brownfieldRun.runId}`,
+      hint: `finish the ${ctx.brownfieldRun.phase} phase of this audit (legion-cli intent turns its findings into a spec).`,
+    };
+  }
   if (state.phase === "initialized" && mode === "brownfield") {
     return { run: "legion-cli brownfield", hint: "audit this running app (code is evidence)." };
+  }
+  // A blocked P0 stops the slice: recommend the retry rather than an execute that refuses.
+  if (state.phase === "executing" || state.phase === "plan_ready") {
+    const blocked = slice.find((task) => task.status === "blocked" && task.priority === "P0");
+    if (blocked && !slice.some((task) => task.status === "ready" && task.priority === "P0")) {
+      return {
+        run: `legion-cli task retry ${blocked.id}`,
+        hint: `${blocked.id} is blocked; inspect the quarantine (legion-cli doctor), then retry it.`,
+      };
+    }
   }
   if (state.phase === "executing" && isSliceTerminal(slice)) {
     if (state.lastReview === "PASS") {

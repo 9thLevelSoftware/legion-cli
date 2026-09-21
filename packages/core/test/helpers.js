@@ -127,6 +127,7 @@ export function spawnSleeper() {
   });
   return {
     pid: child.pid,
+    alive: () => child.exitCode === null && child.signalCode === null,
     stop: () =>
       new Promise((done) => {
         if (child.exitCode !== null || child.signalCode !== null) return done();
@@ -203,6 +204,27 @@ export async function initProject(engine, opts = {}) {
     });
   }
   if (withGit) ensureGitRepo(engine.projectRoot, { commitLegion });
+}
+
+/**
+ * Point the project at the `generic` adapter running this node binary, so a test can choose the
+ * agent's exit code. `args` must still carry `{{pointer}}` (KD-7).
+ */
+export async function useGenericAdapter(store, args) {
+  const config = await store.readConfig();
+  await store.writeConfig({
+    ...config,
+    adapter: {
+      ...config.adapter,
+      default: "generic",
+      generic: { binary: process.execPath, args },
+    },
+  });
+}
+
+/** A generic adapter that writes to stderr and exits non-zero. */
+export function exitingAgentArgs(code, stderr = "boom") {
+  return ["-e", `process.stderr.write(${JSON.stringify(`${stderr}\n`)}); process.exit(${code});`, "{{pointer}}"];
 }
 
 /** Grok on PATH is still unspawnable when args omit {{pointer}}. */

@@ -50,3 +50,30 @@ export async function runTaskAmend(opts: CliOpts, id: string, flags: TaskAmendFl
   writeOut("Next: legion-cli next");
   return 0;
 }
+
+/**
+ * KD-5: the one exit from a blocked task. It does not re-run anything — it puts the task back to
+ * `ready` so `legion-cli execute` can pick it up, and invalidates the last review.
+ */
+export async function runTaskRetry(opts: CliOpts, id: string): Promise<number> {
+  if (!id.trim()) {
+    refuse("task retry requires a task id", HINT.retry());
+  }
+  const engine = createLegionEngine(opts.project);
+  const { task, quarantinedCommits } = await engine.retryTask(id);
+  const next = `legion-cli execute ${task.id}`;
+  if (opts.json) {
+    writeJson({ ok: true, id: task.id, status: task.status, quarantinedCommits, next });
+    return 0;
+  }
+  writeOut(`${task.id} is ready again.`);
+  if (quarantinedCommits.length > 0) {
+    writeOut(
+      `Commits made during the blocked run stay reachable at refs/legion-quarantine/* (${quarantinedCommits
+        .map((sha) => sha.slice(0, 8))
+        .join(", ")}); they are no longer listed as an open incident.`,
+    );
+  }
+  writeOut(`Next: ${next}`);
+  return 0;
+}

@@ -17,6 +17,8 @@ export const HINT = {
   planRetry: "fix the FAIL list, then legion-cli plan",
   doctor: "legion-cli doctor",
   amend: "legion-cli task amend",
+  retry: (taskId = "<id>") => `legion-cli task retry ${taskId}`,
+  clearStaleRun: "legion-cli doctor --clear-stale-run",
   blockers: "legion-cli status --blockers",
   advisory: "legion-cli control-mode guarded",
   execute: "legion-cli next / legion-cli execute",

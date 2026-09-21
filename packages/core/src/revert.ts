@@ -1280,3 +1280,137 @@ async function ensureRealAncestors(
 function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+export type ReplayTreeResult = {
+  /** Paths whose agent version was quarantined and whose pre-run bytes were put back. */
+  reverted: string[];
+  /** Changes replay could not undo; each one makes the replay an incident. */
+  unrestorable: string[];
+  incident: boolean;
+  /** True when a manifest was found and read at all. */
+  replayed: boolean;
+};
+
+type TreeManifestEntry = {
+  path: string;
+  restoreFrom: RestoreSource;
+  backup?: string;
+  sha256?: string;
+  noBackup?: string;
+};
+
+/**
+ * Crash replay of the content revert (PR 6), from the tree manifest and backups the pre-spawn
+ * snapshot left in the control dir. The live path ({@link revertTree}) walks the tree and works
+ * from the in-memory snapshot; after a crash that snapshot is gone, so replay is deliberately
+ * narrower: it puts back the paths the manifest recorded a restore source for, and nothing else.
+ *
+ * The limits, which the run summary and the blocked task both point at:
+ * - a file the agent *created* has no pre-run entry, so it is left in place (the task is blocked
+ *   and the quarantine folder is named, so the user still sees the run's output);
+ * - a change to a file that was over the backup cap can only be reported, not undone.
+ */
+export async function replayTreeFromManifest(opts: {
+  projectRoot: string;
+  controlDir: string;
+  quarantine: Quarantine;
+  runId: string;
+}): Promise<ReplayTreeResult> {
+  const result: ReplayTreeResult = { reverted: [], unrestorable: [], incident: false, replayed: false };
+  let manifest: { preSpawnRef?: unknown; entries?: unknown };
+  try {
+    manifest = JSON.parse(await readFile(join(opts.controlDir, TREE_MANIFEST_NAME), "utf8")) as typeof manifest;
+  } catch (err) {
+    // No manifest at all means the run died before (or during) the snapshot: nothing to put back.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return result;
+    result.incident = true;
+    result.unrestorable.push(`the pre-run tree manifest could not be read (${describe(err)})`);
+    return result;
+  }
+  result.replayed = true;
+  const preSpawnRef = typeof manifest.preSpawnRef === "string" ? manifest.preSpawnRef : null;
+  const entries: TreeManifestEntry[] = [];
+  for (const raw of Array.isArray(manifest.entries) ? manifest.entries : []) {
+    if (!raw || typeof raw !== "object") continue;
+    const rec = raw as Record<string, unknown>;
+    if (typeof rec.path !== "string") continue;
+    // P is restored from its own snapshot, before this runs; `.git` and the engine's runtime
+    // areas are never content-reverted (KD-1).
+    if (hasGitSegment(rec.path) || isProtectedPath(rec.path) || isEngineRuntimePath(rec.path, opts.runId)) continue;
+    entries.push({
+      path: rec.path,
+      restoreFrom: rec.restoreFrom === "git" || rec.restoreFrom === "backup" ? rec.restoreFrom : "none",
+      ...(typeof rec.backup === "string" ? { backup: rec.backup } : {}),
+      ...(typeof rec.sha256 === "string" ? { sha256: rec.sha256 } : {}),
+      ...(typeof rec.noBackup === "string" ? { noBackup: rec.noBackup } : {}),
+    });
+  }
+  if (entries.length === 0) return result;
+
+  const gitPaths = entries.filter((entry) => entry.restoreFrom === "git").map((entry) => entry.path);
+  const contents =
+    preSpawnRef && preSpawnRef !== "UNBORN" && gitPaths.length > 0
+      ? gitCatFileFiltered(opts.projectRoot, preSpawnRef, gitPaths)
+      : new Map<string, Buffer | null>();
+
+  const handled: string[] = [];
+  for (const entry of entries) {
+    const abs = toFsPath(opts.projectRoot, entry.path);
+    let current: Buffer | null;
+    try {
+      current = await readFile(abs);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        current = null;
+      } else {
+        result.incident = true;
+        result.unrestorable.push(`${entry.path} (could not be read: ${describe(err)})`);
+        continue;
+      }
+    }
+    if (entry.restoreFrom === "none") {
+      // Recorded only because it had no backup (over the cap): report a change, never guess.
+      if (!entry.sha256 || current === null) continue;
+      if (sha256Buffer(current) !== entry.sha256) {
+        result.incident = true;
+        result.unrestorable.push(
+          `${entry.path} (changed during the run and has no pre-run copy: over the 4 MiB / 256 MiB backup cap)`,
+        );
+      }
+      continue;
+    }
+    let pre: Buffer | null = null;
+    if (entry.restoreFrom === "backup" && entry.backup) {
+      pre = await readFile(entry.backup).catch(() => null);
+      if (pre && entry.sha256 && sha256Buffer(pre) !== entry.sha256) pre = null;
+    } else if (entry.restoreFrom === "git") {
+      pre = contents.get(entry.path) ?? null;
+    }
+    if (current !== null && pre !== null && current.equals(pre)) continue;
+    if (pre === null) {
+      if (current === null) continue; // gone before the run too, or never restorable: nothing to do
+      result.incident = true;
+      result.unrestorable.push(`${entry.path} (the pre-run copy is gone; the agent's version was left in place)`);
+      continue;
+    }
+    try {
+      if (current !== null) {
+        await ensureRealAncestors(opts.projectRoot, entry.path, opts.quarantine, handled);
+        await opts.quarantine.move(abs, entry.path, "changed", "snapshot");
+      }
+      await ensureRealAncestors(opts.projectRoot, entry.path, opts.quarantine, handled);
+      await atomicWriteFile(abs, pre, { root: opts.projectRoot, symlinkMessage: "restore target is a link" });
+      handled.push(foldKey(entry.path));
+      result.reverted.push(entry.path);
+      result.incident = true;
+    } catch (err) {
+      result.incident = true;
+      result.unrestorable.push(`${entry.path} (${describe(err)})`);
+    }
+  }
+  return result;
+}
+
+function sha256Buffer(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}

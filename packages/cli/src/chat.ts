@@ -15,6 +15,7 @@ import { runBrief } from "./brief.js";
 import type { CliOpts } from "./io.js";
 import { formatHelpLayer1 } from "./help-all.js";
 import { writeErr, writeJson, writeOut } from "./io.js";
+import { withInterruptHandling } from "./interrupt.js";
 import { nextCommand } from "./next.js";
 import { closePrompt, isYes, readLine } from "./prompt.js";
 import { runSearch } from "./search.js";
@@ -56,7 +57,8 @@ async function formatNextVerb(engine: ReturnType<typeof createLegionEngine>): Pr
     }
   }
   const slice = state.phase === "uninitialized" ? [] : await engine.listSliceTasks();
-  const next = nextCommand(state, slice, mode, controlMode);
+  const brownfieldRun = mode === "brownfield" ? await engine.latestOpenBrownfieldRun().catch(() => null) : null;
+  const next = nextCommand(state, slice, mode, controlMode, { brownfieldRun });
   return `Next: ${next.run}`;
 }
 
@@ -174,7 +176,10 @@ export async function runChat(opts: CliOpts, flags: ChatFlags): Promise<number> 
   try {
     let session = await resumeOrCreateChatSession(engine);
     if (once !== undefined) {
-      const result = await handleTurn(opts, engine, session, once, { once: true, adapter });
+      // A chat turn can spawn; Ctrl-C must still put the tree back before exiting.
+      const result = await withInterruptHandling(() =>
+        handleTurn(opts, engine, session, once, { once: true, adapter }),
+      );
       return result.code;
     }
 
@@ -183,7 +188,9 @@ export async function runChat(opts: CliOpts, flags: ChatFlags): Promise<number> 
       const line = await readLine("> ");
       if (!line) continue;
       if (/^(exit|quit)$/i.test(line)) return 0;
-      const result = await handleTurn(opts, engine, session, line, { once: false, adapter });
+      const result = await withInterruptHandling(() =>
+        handleTurn(opts, engine, session, line, { once: false, adapter }),
+      );
       session = result.session;
       if (result.stop) return result.code;
     }

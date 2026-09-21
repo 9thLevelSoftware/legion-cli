@@ -348,6 +348,8 @@ export type ReviewResult = {
   protectedChanged?: string[];
   /** Out-of-project quarantine folder for this run, when anything was quarantined. */
   quarantineDir?: string;
+  /** Why the review failed when nothing was created or rewritten (e.g. the agent exited 3). */
+  reason?: string;
 };
 
 export type ShipReceipt = {

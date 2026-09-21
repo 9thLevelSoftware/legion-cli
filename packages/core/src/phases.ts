@@ -18,7 +18,9 @@ export const LEGAL_PHASE_TRANSITIONS: Readonly<Record<Phase, readonly Phase[]>> 
   executing: ["executing", "ready_to_ship", "abandoned"],
   ready_to_ship: ["shipped", "executing", "abandoned"],
   shipped: ["intent_draft"],
-  abandoned: [],
+  // KD-5: abandoning is not a dead end. `legion-cli spec new` starts the next increment from an
+  // abandoned spec exactly as it does from a shipped one (F-054).
+  abandoned: ["intent_draft"],
 };
 
 export function canTransition(from: Phase, to: Phase): boolean {
@@ -42,7 +44,7 @@ export function hintForIllegalTransition(from: Phase, to: Phase): string {
   }
   if (to === "ready_to_ship") return HINT.qa;
   if (to === "shipped") return HINT.qa;
-  if (to === "intent_draft" && from === "shipped") return HINT.specNew;
+  if (to === "intent_draft" && (from === "shipped" || from === "abandoned")) return HINT.specNew;
   return HINT.spec;
 }
 

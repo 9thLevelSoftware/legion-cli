@@ -5,6 +5,8 @@ import test from "node:test";
 
 import { INTENT_Q, LegionRefuseError, canTransition, PHASES } from "../dist/index.js";
 import {
+  ensureGitRepo,
+  failingVerificationCommand,
   initProject,
   makeQaScore,
   makeSpec,
@@ -447,43 +449,152 @@ test("plan walks spec_frozen → planning → plan_ready and transition cannot s
   });
 });
 
-test("reopening a blocked slice task after review PASS invalidates lastReview", async () => {
+// The seam this test used to go through (setTaskStatus in/out of every status) is gone: the real
+// route from a blocked task back to done is `task retry` → `execute` (KD-5, KD-13).
+test("a task blocked by failing verification goes retry → execute → done → review", async () => {
   await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedPlanReady(store, {
+        phase: "executing",
+        extraTasks: [
+          makeTask({
+            id: "TSK-0002",
+            priority: "P1",
+            contract: {
+              filesAllowed: ["src/p1.ts"],
+              expectedArtifacts: ["src/p1.ts"],
+              verificationCommands: [failingVerificationCommand()],
+            },
+          }),
+        ],
+        task: { status: "done" },
+      });
+      ensureGitRepo(dir);
+
+      const blocked = await engine.execute("TSK-0002");
+      assert.equal(blocked.status, "blocked");
+      assert.equal((await store.readTask("TSK-0002")).data.status, "blocked");
+      assert.match(blocked.tasks[0].reason, /verification command failed/);
+
+      // A blocked task is not a dead end.
+      await engine.amendTask("TSK-0002", {
+        ...(await store.readTask("TSK-0002")).data.contract,
+        verificationCommands: [passingVerificationCommand()],
+      });
+      const retried = await engine.retryTask("TSK-0002");
+      assert.equal(retried.task.status, "ready");
+      assert.equal((await engine.getState()).lastReview, null);
+
+      const done = await engine.execute("TSK-0002");
+      assert.equal(done.status, "done");
+      assert.equal((await store.readTask("TSK-0002")).data.status, "done");
+
+      const review = await engine.review();
+      assert.equal(review.verdict, "PASS");
+      assert.equal((await engine.getState()).lastReview, "PASS");
+      const score = await engine.qa({ score: makeQaScore() });
+      assert.equal(score.pass, true);
+      assert.equal((await engine.getState()).phase, "ready_to_ship");
+    });
+  });
+});
+
+test("task retry invalidates a PASS review and clears the quarantined-commit incident", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedPlanReady(store, {
+        phase: "executing",
+        extraTasks: [
+          makeTask({
+            id: "TSK-0002",
+            priority: "P1",
+            status: "blocked",
+            contract: { filesAllowed: ["src/p1.ts"], expectedArtifacts: ["src/p1.ts"] },
+          }),
+        ],
+        task: { status: "done" },
+      });
+      ensureGitRepo(dir);
+      const review = await engine.review();
+      assert.equal(review.verdict, "PASS");
+      await patchState(store, { quarantinedCommits: ["a".repeat(40)] });
+
+      const retried = await engine.retryTask("TSK-0002");
+      assert.equal(retried.task.status, "ready");
+      assert.deepEqual(retried.quarantinedCommits, ["a".repeat(40)]);
+      const state = await engine.getState();
+      assert.equal(state.lastReview, "FAIL");
+      assert.equal(state.quarantinedCommits, undefined);
+      const audit = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
+      assert.match(audit, /"type":"task_retry"/);
+
+      // qa is refused until a fresh review, so a retry can never sneak past a gate.
+      await assert.rejects(
+        () => engine.qa({ score: makeQaScore() }),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          return true;
+        },
+      );
+    });
+  });
+});
+
+test("task retry refuses a task that is not blocked, and one outside the active slice", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedPlanReady(store, { phase: "executing" });
+      await assert.rejects(
+        () => engine.retryTask("TSK-0001"),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /is ready, not blocked/);
+          return true;
+        },
+      );
+      await writeTask(
+        store,
+        makeTask({ id: "TSK-0009", specId: "spec-other", status: "blocked" }),
+      );
+      await assert.rejects(
+        () => engine.retryTask("TSK-0009"),
+        (err) => {
+          assert.match(err.message, /not in the active spec slice/);
+          return true;
+        },
+      );
+      await assert.rejects(
+        () => engine.retryTask("TSK-9999"),
+        (err) => {
+          assert.match(err.message, /unknown task/);
+          return true;
+        },
+      );
+    });
+  });
+});
+
+test("abandon is not a dead end: spec new from abandoned gives intent_draft", async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
-    await seedPlanReady(store, {
-      phase: "executing",
-      extraTasks: [
-        makeTask({
-          id: "TSK-0002",
-          priority: "P1",
-          status: "blocked",
-          contract: { filesAllowed: ["src/p1.ts"], expectedArtifacts: ["src/p1.ts"] },
-        }),
-      ],
-      task: { status: "done" },
-    });
-    const review = await engine.review();
-    assert.equal(review.verdict, "PASS");
-    assert.equal((await engine.getState()).lastReview, "PASS");
+    await seedPlanReady(store);
+    await engine.abandon("the customer changed their mind");
+    assert.equal((await engine.getState()).phase, "abandoned");
 
-    await engine.setTaskStatus("TSK-0002", "ready");
-    assert.equal((await engine.getState()).lastReview, "FAIL");
-    assert.equal((await engine.getState()).phase, "executing");
+    await engine.newSpec();
+    const state = await engine.getState();
+    assert.equal(state.phase, "intent_draft");
+    assert.equal(state.activeSpecId ?? null, null);
+    assert.equal((await store.readSpec("spec-checkin")).data.status, "superseded");
+  });
+});
 
-    await engine.setTaskStatus("TSK-0002", "in_progress");
-    await engine.setTaskStatus("TSK-0002", "verifying");
-    await engine.setTaskStatus("TSK-0002", "done");
-    await assert.rejects(
-      () => engine.qa({ score: makeQaScore() }),
-      (err) => {
-        assert.equal(err instanceof LegionRefuseError, true);
-        assert.match(err.nextHint, /legion-cli review/);
-        return true;
-      },
-    );
-  });
-  });
+test("canTransition allows abandoned → intent_draft only", async () => {
+  assert.equal(canTransition("abandoned", "intent_draft"), true);
+  assert.equal(canTransition("abandoned", "executing"), false);
 });
 
 test("qa is refused after a review that filed fix tasks until re-review PASS", async () => {

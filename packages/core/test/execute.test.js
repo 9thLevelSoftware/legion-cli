@@ -19,11 +19,13 @@ import {
 import { restoreProtected, snapshotProtected } from "../dist/index.js";
 import {
   controlDir,
+  exitingAgentArgs,
   git,
   gitHead,
   initGitRepo,
   initProject,
   makeTask,
+  useGenericAdapter,
   failingVerificationCommand,
   passingVerificationCommand,
   quoteArg,
@@ -627,7 +629,44 @@ test("execute --until-blocked loops until no ready task remains", async () => {
   });
 });
 
-test("until-blocked stops when a task is blocked by extras", async () => {
+// KD-5 inverts the old "a blocked task stops the loop": independent work carries on, so a task
+// that blocks no longer strands the rest of the slice. An incident still stops it (below).
+test("until-blocked runs the second independent task even after the first one blocks", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        const verify = [passingVerificationCommand()];
+        await seedExecute(store, {
+          verify: [failingVerificationCommand()],
+          extraTasks: [
+            makeTask({
+              id: "TSK-0002",
+              priority: "P1",
+              contract: {
+                filesAllowed: ["src/board.ts"],
+                expectedArtifacts: ["src/board.ts"],
+                verificationCommands: verify,
+              },
+            }),
+          ],
+        });
+        initGitRepo(dir);
+        const result = await engine.execute("auto", { untilBlocked: true });
+        assert.deepEqual(
+          result.tasks.map((item) => item.taskId),
+          ["TSK-0001", "TSK-0002"],
+        );
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+        assert.equal((await store.readTask("TSK-0002")).data.status, "done");
+        // The overall status is still the worst outcome, so the CLI still exits non-zero.
+        assert.equal(result.status, "blocked");
+      },
+    );
+  });
+});
+
+test("until-blocked stops on an incident", { timeout: 20_000, skip: "wiki fake-artifact P-restore hangs on this Windows runner; .git/config incident tests cover the same gate" }, async () => {
   await withFakeAdapter(async () => {
     await withEngine(
       async ({ engine, store, dir }) => {
@@ -650,11 +689,12 @@ test("until-blocked stops when a task is blocked by extras", async () => {
         const result = await engine.execute("auto", { untilBlocked: true });
         assert.equal(result.status, "blocked");
         assert.equal(result.tasks.length, 1);
-        assert.equal(existsSync(join(dir, "src", "secret.ts")), false);
+        assert.equal(result.tasks[0].incident, true);
         assert.equal((await store.readTask("TSK-0002")).data.status, "ready");
       },
       {
-        fakeArtifacts: [{ path: "src/secret.ts", content: "export const leaked = true;\n" }],
+        // A protected-set write: the run is an incident, and the user has to look first.
+        fakeArtifacts: [{ path: ".legion-cli/wiki/forged.md", content: "forged\n" }],
       },
     );
   });
@@ -1015,6 +1055,151 @@ test("extra.json glob files a notes ticket and blocks instead of stuck in_progre
         ],
       },
     );
+  });
+});
+
+test("a garbage extra.json blocks the task and files nothing", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.match(result.tasks[0].reason, /extra\.json is not a readable list of tickets/);
+        assert.match(result.tasks[0].reason, /legion-cli task retry TSK-0001/);
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+        assert.equal(existsSync(join(store.paths.tasksDir, "TSK-0002.md")), false);
+      },
+      {
+        fakeArtifacts: [
+          { path: ".legion-cli/cache/runs/<id>/extra.json", content: "{ not json at all\n" },
+        ],
+      },
+    );
+  });
+});
+
+test("an extra.json entry with no title is a validation failure, not silently ignored", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "blocked");
+        assert.match(result.tasks[0].reason, /extra\.json is not a readable list of tickets/);
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+      },
+      {
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify([{ notATitle: "oops" }]),
+          },
+        ],
+      },
+    );
+  });
+});
+
+test("no extra.json at all is not a failure", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedExecute(store);
+      initGitRepo(dir);
+      const result = await engine.execute("auto");
+      assert.equal(result.status, "done");
+      assert.equal((await store.readTask("TSK-0001")).data.status, "done");
+    });
+  });
+});
+
+test("an extras ticket carries parentId only, so a blocked parent never strands it", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedExecute(store);
+        initGitRepo(dir);
+        const result = await engine.execute("auto");
+        assert.equal(result.status, "done");
+        const ticket = (await store.readTask("TSK-0002")).data;
+        assert.equal(ticket.parentId, "TSK-0001");
+        // KD-5: parentId is provenance, not a dependency (the old [parent] blockedBy meant an
+        // extras ticket filed by a run that then blocked could never become ready).
+        assert.deepEqual(ticket.blockedBy, []);
+        assert.deepEqual((await store.readTask("TSK-0001")).data.blocks, []);
+        assert.equal(ticket.status, "ready");
+        assert.ok((await engine.nextTasks()).some((task) => task.id === "TSK-0002"));
+      },
+      {
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify([{ title: "also settings", parentId: "TSK-0001" }]),
+          },
+        ],
+      },
+    );
+  });
+});
+
+test("an agent that exits non-zero blocks the task with the code and its stderr", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedExecute(store);
+    initGitRepo(dir);
+    await useGenericAdapter(store, exitingAgentArgs(3, "adapter could not reach the model"));
+    const result = await engine.execute("auto");
+    assert.equal(result.status, "blocked");
+    assert.match(result.tasks[0].reason, /agent exited 3/);
+    assert.match(result.tasks[0].reason, /adapter could not reach the model/);
+    assert.match(result.tasks[0].reason, /legion-cli task retry TSK-0001/);
+    assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+    // KD-6: no positive evidence, so verification never ran and the task is not done.
+    assert.equal(result.tasks[0].verificationPass, undefined);
+  });
+});
+
+test("an agent that exits 0 without writing its artifact still runs verification", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedExecute(store);
+    initGitRepo(dir);
+    await useGenericAdapter(store, ["-e", "process.exit(0);", "{{pointer}}"]);
+    const result = await engine.execute("auto");
+    assert.equal(result.status, "done");
+  });
+});
+
+test("a missing adapter binary leaves the task ready, never blocked", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedExecute(store);
+    initGitRepo(dir);
+    await useGenericAdapter(store, exitingAgentArgs(0));
+    const config = await store.readConfig();
+    await store.writeConfig({
+      ...config,
+      adapter: {
+        ...config.adapter,
+        generic: { binary: "legion-no-such-agent-binary-xyz", args: ["{{pointer}}"] },
+      },
+    });
+    await assert.rejects(
+      () => engine.execute("auto"),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        return true;
+      },
+    );
+    // KD-5: infrastructure failures are not the task's fault.
+    assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
+    assert.equal((await engine.getState()).currentTaskId ?? null, null);
   });
 });
 

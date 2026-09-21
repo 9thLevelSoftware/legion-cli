@@ -38,9 +38,15 @@ import {
   parseMarkdownDocument,
   PathEscapeError,
   EngineLockedError,
+  controlDirPath,
+  drainDeferredAuditEvents,
   invalidTaskMessage,
+  isPidAlive,
+  killRecordedProcessTree,
   listTaskFiles,
   nextFileId,
+  processIdentity,
+  startedAfterRecorded,
   PersistError,
   ensureGitignore,
   commitPaths,
@@ -89,7 +95,9 @@ import {
 import {
   ADAPTER_ID_HELP,
   ControlModeSchema,
+  MAX_SPAWN_TIMEOUT_MS,
   QAScoreSchema,
+  ResumeFileSchema,
   SCHEMA_VERSION,
   type AdapterId,
   type Assumption,
@@ -103,6 +111,7 @@ import {
   type ProjectFile,
   type QAScore,
   type Readiness,
+  type ResumeFile,
   type ReviewVerdict,
   type FileContract,
   type SessionBrief,
@@ -112,7 +121,7 @@ import {
   type TaskStatus,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { copyShippedCraft, isBrandViolationBlockingFreeze } from "@9thlevelsoftware/legion-cli-design-system";
-import { assertExecuteSandbox, SandboxError } from "@9thlevelsoftware/legion-cli-sandbox";
+import { assertExecuteSandbox, destroyLeftoverJail, SandboxError } from "@9thlevelsoftware/legion-cli-sandbox";
 import { HINT, LegionRefuseError, refuse, refuseKind } from "./errors.js";
 import { assertIngestSourceAllowed } from "./ingest-guard.js";
 import { decisionFileName, templateDecisions } from "./discuss.js";
@@ -127,12 +136,16 @@ import {
 import { assertCanTransition, assertLegalPhase } from "./phases.js";
 import { evaluateReadiness, type ReadinessReport } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
-import { type RevertResult } from "./revert.js";
+import { dropBackups, replayTreeFromManifest, type RevertResult } from "./revert.js";
+import { parseProtectedSnapshot, restoreProtected } from "./protected.js";
+import { Quarantine } from "./quarantine.js";
 import {
+  AgentExitError,
   assertSpawnGitRepo,
   findLatestTaskResume,
   findSkillsDir,
   finishStartedSpawn,
+  isOwnedUnfinishedRun,
   optionalSkillSpawn,
   protectedIncidentMessage,
   resumeRunIsLive,
@@ -143,7 +156,16 @@ import {
   type OptionalSpawnResult,
   type StartedSkillSpawn,
 } from "./spawn.js";
-import { findLiveSpawn, frozenMessage, recordAuditEvent, type LiveSpawn } from "./live-spawn.js";
+import {
+  findLiveSpawn,
+  frozenMessage,
+  FINISHED_BASENAME,
+  LIVE_MARKER_BASENAME,
+  LIVE_RECORD_GRACE_MS,
+  recordAuditEvent,
+  RESUME_BASENAME,
+  type LiveSpawn,
+} from "./live-spawn.js";
 import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
 import { compactTaskBody, outcomeFromTask } from "./compact.js";
 import { assertTaskStatusTransition } from "./tasks.js";
@@ -154,7 +176,13 @@ import {
   regressionVerifyCommand,
 } from "./fix.js";
 import { packetFromInput, packetMarkdownBody } from "./packets.js";
-import { defaultTicketContract, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
+import {
+  defaultTicketContract,
+  extraJsonItemCount,
+  parseExtraJson,
+  taskMarkdownBody,
+  ticketFromInput,
+} from "./tickets.js";
 import {
   displayStagedRoots,
   ghAvailable,
@@ -241,6 +269,18 @@ const FINISH_TOKEN = new AsyncLocalStorage<string>();
 
 function enterFinish(started: StartedSkillSpawn | undefined): void {
   if (started?.spawned) FINISH_TOKEN.enterWith(started.runId);
+}
+
+/** The one exit from a blocked task (KD-5). Every message that blocks one names it. */
+function retryHint(taskId: string): string {
+  return `legion-cli task retry ${taskId}`;
+}
+
+/** An interrupted run is replayed, then blocked, and only a retry plus a fresh review opens it. */
+const INTERRUPTED_RUN_REASON = "an interrupted run was reverted";
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Distill spawn is skipped when materialized source exceeds this many characters (64 KiB). */
@@ -551,8 +591,9 @@ export class LegionEngine {
   async newSpec(): Promise<void> {
     return this.#mutate(async () => {
       const state = await this.#readState();
-      if (state.phase !== "shipped") {
-        refuse("Start a new spec after this one ships", HINT.specNew);
+      // KD-5: `shipped` and `abandoned` are both endings, and both lead back to `intent_draft`.
+      if (state.phase !== "shipped" && state.phase !== "abandoned") {
+        refuse("Start a new spec after this one ships or is abandoned", HINT.specNew);
       }
       if (state.activeSpecId) {
         try {
@@ -1198,7 +1239,10 @@ export class LegionEngine {
       for (const warning of outcome.result.warnings ?? []) {
         if (!warnings.includes(warning)) warnings.push(warning);
       }
-      if (outcome.result.status === "blocked" || outcome.result.incident) break;
+      // KD-5: a blocked task is recoverable and independent work should not stop for it, so
+      // `--until-blocked` carries on to the next ready task. An **incident** still stops the
+      // loop: the tree was disturbed and the user has to look at the quarantine first (R-10).
+      if (outcome.result.incident) break;
       if (!opts?.untilBlocked) break;
       const ready = await this.#withLockOrRefuse(async () => {
         const state = await this.#readState();
@@ -1215,10 +1259,13 @@ export class LegionEngine {
     }
     const state = await this.#readState();
     const last = outcomes.at(-1);
+    // `--until-blocked` runs past a blocked task, so the overall status is the worst outcome:
+    // the run still exits non-zero and `next` still points at the blocked work.
+    const anyBlocked = outcomes.some((outcome) => outcome.status === "blocked");
     return {
       taskId: last?.taskId ?? "",
       phase: state.phase,
-      status: last?.status ?? "blocked",
+      status: anyBlocked ? "blocked" : (last?.status ?? "blocked"),
       tasks: outcomes,
       warnings,
     };
@@ -1271,6 +1318,7 @@ export class LegionEngine {
         taskAdapter: task?.adapter,
         audit: this.#spawnAudit(),
         onRestored: this.#onProtectedRestored(),
+        beforeSnapshot: async ({ runId }) => this.#writeActiveRunLocked(runId, task?.id ?? null),
       });
       if (result.runId) {
         await this.#fileExtrasFromRun(result.runId, specId, { type: "fix", parentId: task?.id });
@@ -1353,15 +1401,30 @@ export class LegionEngine {
         await this.#clampSpawnedTaskStatuses(createdTaskIds);
         await this.#promoteReadyTasks(specId, "executing", config.control_mode);
       }
+      // KD-6: a review whose agent exited non-zero produced no evidence, so it is a FAIL, not a
+      // refusal — the verdict is the answer the user asked for. Other spawn errors still refuse.
+      const agentExit = waited.error instanceof AgentExitError ? waited.error : undefined;
       await this.#refuseSpawnContract(
         "review",
         revert,
-        waited.error,
+        agentExit ? undefined : waited.error,
         createdTaskIds,
         before,
         after,
         rewrittenExistingTaskIds,
       );
+      if (agentExit) {
+        const failed = await this.#applyReviewSnapshotsLocked(await this.#readState(), before, after, [
+          `(${agentExit.message})`,
+        ]);
+        return {
+          verdict: failed,
+          createdTaskIds,
+          extrasReverted: revert?.extrasReverted ?? [],
+          rewrittenExistingTaskIds,
+          reason: agentExit.message,
+        };
+      }
       // A protected-set incident (restored and quarantined) FAILs the review even when no task
       // file was touched, e.g. a forged qa/checklist.json (R-10).
       const verdict = await this.#applyReviewSnapshotsLocked(
@@ -1880,6 +1943,61 @@ export class LegionEngine {
     });
   }
 
+  /**
+   * KD-5: `blocked` is recoverable. The one exit from an incident, and it is per run (R-10):
+   * there is no project-wide incident state to clear, so a retry moves the task back to `ready`,
+   * invalidates the last review (the slice changed again) and says where the run's leftovers are.
+   * The user is expected to have inspected the quarantine first.
+   */
+  async retryTask(taskId: string): Promise<{ task: Task; quarantinedCommits: string[] }> {
+    const id = taskId.trim();
+    if (!id) {
+      refuse("task retry requires a task id", HINT.retry());
+    }
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("task retry needs a Legion CLI project first", HINT.init);
+      }
+      let doc: { data: Task; body: string };
+      try {
+        doc = await this.store.readTask(id);
+      } catch {
+        refuse(`unknown task ${id}`, HINT.blockers);
+      }
+      if (doc.data.specId !== state.activeSpecId) {
+        refuse(`task ${id} is not in the active spec slice`, HINT.blockers);
+      }
+      if (doc.data.status !== "blocked") {
+        refuse(`task ${id} is ${doc.data.status}, not blocked`, HINT.blockers);
+      }
+      if (
+        doc.data.contract.filesAllowed.length === 0 ||
+        doc.data.contract.verificationCommands.length === 0
+      ) {
+        refuse(`task ${id} needs a file contract and verification commands`, HINT.amend);
+      }
+      await this.#transitionTaskTo(id, "ready");
+      // R-20: the commits an agent made during the run stay at `refs/legion-quarantine/<runId>`
+      // and in the audit log. The STATE list is the *open* incident, and this retry closes it.
+      const quarantinedCommits = [...(state.quarantinedCommits ?? [])];
+      const after = await this.#readState();
+      const next: StateFile = { ...after, currentTaskId: null };
+      if (quarantinedCommits.length > 0) delete next.quarantinedCommits;
+      await this.#writeState(next);
+      await this.#audit(
+        "task_retry",
+        next.phase,
+        "user",
+        { from: "blocked", to: "ready", ...(quarantinedCommits.length > 0 ? { quarantinedCommits } : {}) },
+        id,
+      );
+      // A retried task is open work again, so any PASS recorded before it must not stand (KD-6).
+      await this.#failLastReviewLocked();
+      return { task: (await this.store.readTask(id)).data, quarantinedCommits };
+    });
+  }
+
   async setTaskStatus(taskId: string, status: TaskStatus): Promise<void> {
     return this.#mutate(async () => {
       if (status === "compacted") {
@@ -1970,6 +2088,68 @@ export class LegionEngine {
     });
   }
 
+  /**
+   * The manual override behind `legion-cli doctor --clear-stale-run` (KD-2, 8b). A control record
+   * that cannot be read or does not validate counts as **live** until it is older than the maximum
+   * timeout plus the grace (about 25 minutes), because the freeze fails closed. This is the way
+   * out before then: it refuses while the recorded engine *or* agent process is alive with a
+   * matching start time, and otherwise runs exactly the same replay as automatic recovery.
+   *
+   * It deliberately bypasses the freeze (that is what it is for), so it takes the store lock
+   * directly rather than going through `#withLockOrRefuse`.
+   */
+  async clearStaleRun(): Promise<{
+    runId: string;
+    taskId: string | null;
+    reverted: string[];
+    unrestorable: string[];
+    quarantineDir: string | null;
+  }> {
+    const live = await findLiveSpawn(this.projectRoot);
+    if (!live) {
+      refuse("no agent-run record is freezing engine writes", HINT.doctor);
+    }
+    if (live.owned) {
+      refuse("this process is running that agent; wait for it to finish", HINT.status);
+    }
+    const controlDir = live.controlDir;
+    const resume = await this.#readControlResume(controlDir);
+    for (const [label, pid, startedAt] of [
+      ["engine", resume?.enginePid, resume?.engineStartedAt],
+      ["agent", resume?.pid, resume?.agentPidStartedAt],
+      ["engine", live.marker?.enginePid, live.marker?.engineStartedAt],
+    ] as const) {
+      if (typeof pid !== "number" || pid === process.pid) continue;
+      if (!isPidAlive(pid)) continue;
+      const actual = await processIdentity(pid);
+      // Alive and not a reused PID: the run really is running. Never clear it.
+      if (actual === null || typeof startedAt !== "number" || !startedAfterRecorded(actual, startedAt)) {
+        refuse(
+          `the recorded ${label} process (pid ${pid}) is still running; nothing was cleared`,
+          HINT.status,
+        );
+      }
+    }
+    const runId = live.runId === "unknown" ? (resume?.runId ?? "unknown") : live.runId;
+    return this.store.withLock(async () => {
+      const state = await this.#readState();
+      const taskId = state.activeRun?.runId === runId ? (state.activeRun.taskId ?? null) : (resume?.taskId ?? null);
+      if (runId === "unknown") {
+        // Nothing nameable to replay (the whole control folder is unreadable): say so rather
+        // than pretend a run was put back.
+        refuse(
+          `the control directory ${controlDir} could not be read; remove it once you are sure no agent is running`,
+          HINT.doctor,
+        );
+      }
+      const result = await this.#replayCrashedRunLocked(
+        { runId, taskId },
+        { reason: "a stale run record was cleared by the user", auditType: "stale_run_cleared" },
+      );
+      return { taskId, ...result };
+    });
+  }
+
   async peekLiveSpawn(): Promise<{ taskId: string } | null> {
     const state = await this.#readState();
     if (!state.currentTaskId) return null;
@@ -1998,6 +2178,34 @@ export class LegionEngine {
    */
   async liveAgentRun(): Promise<LiveSpawn | null> {
     return findLiveSpawn(this.projectRoot);
+  }
+
+  /**
+   * The newest brownfield run that has not completed (PR 6). `next` points at it, because a
+   * half-finished audit is the most common reason a brownfield project looks stuck.
+   */
+  async latestOpenBrownfieldRun(): Promise<{ runId: string; phase: string } | null> {
+    let names: string[];
+    try {
+      names = await readdir(join(this.projectRoot, ".legion-cli", "runs"));
+    } catch {
+      return null;
+    }
+    let best: { runId: string; phase: string; at: string } | null = null;
+    for (const name of names) {
+      try {
+        const raw = JSON.parse(
+          await readFile(join(this.projectRoot, ".legion-cli", "runs", name, "resume.json"), "utf8"),
+        ) as { runId?: unknown; phase?: unknown; startedAt?: unknown; updatedAt?: unknown };
+        if (typeof raw.runId !== "string" || typeof raw.phase !== "string") continue;
+        if (raw.phase === "complete") continue;
+        const at = typeof raw.updatedAt === "string" ? raw.updatedAt : typeof raw.startedAt === "string" ? raw.startedAt : "";
+        if (!best || at > best.at) best = { runId: raw.runId, phase: raw.phase, at };
+      } catch {
+        // a run directory without a readable resume.json is not resumable
+      }
+    }
+    return best ? { runId: best.runId, phase: best.phase } : null;
   }
 
   /** Start a brownfield run (or, with `resume`, report its state). The orchestrating agent does judgment. */
@@ -2167,7 +2375,8 @@ export class LegionEngine {
           allowNoSandbox: opts.allowNoSandbox,
           // KD-15 / R-1: the sandbox event is written before the protected-set snapshot, so a
           // no-op run is never an incident and the event survives the restore.
-          beforeSnapshot: async ({ sandbox }) => {
+          beforeSnapshot: async ({ sandbox, runId }) => {
+            await this.#writeActiveRunLocked(runId, task?.id ?? null);
             if (!sandbox) return;
             const degraded = Boolean(opts.allowNoSandbox) && !sandbox.hardened;
             await this.#audit(
@@ -2180,14 +2389,27 @@ export class LegionEngine {
           },
         });
       } catch (err) {
-        await this.#transitionTaskTo(task.id, "blocked");
+        // KD-5: infrastructure failures (sandbox, launch, a refused precondition) are not the
+        // task's fault. Put it back to `ready` and refuse with the cause, so `execute` can simply
+        // be run again once the laptop is fixed — no `task retry` needed.
+        await this.#returnTaskToReadyLocked(task.id);
         if (err instanceof SandboxError) {
           refuse(err.message, HINT.allowNoSandbox);
         }
-        throw err;
+        if (err instanceof LegionRefuseError) throw err;
+        refuse(
+          `execute could not start the agent for ${task.id}: ${err instanceof Error ? err.message : String(err)}`,
+          HINT.doctor,
+        );
       }
       if (!started.spawned) {
-        await this.#transitionTaskTo(task.id, "blocked");
+        await this.#returnTaskToReadyLocked(task.id);
+        refuse(
+          started.resolution
+            ? spawnableAdapterRefuseMessage("execute", started.resolution)
+            : "execute could not start an agent",
+          HINT.doctor,
+        );
       }
     });
 
@@ -2310,7 +2532,11 @@ export class LegionEngine {
             ? `files changed outside the jail during the run (by you or the agent) — see ${revert?.protected?.quarantine?.dir ?? "the quarantine folder"}`
             : undefined;
         const reason = incident && revert ? protectedIncidentMessage(revert) : undefined;
-        const combined = [jailReason, reason].filter(Boolean).join("; ");
+        const extraReason = extraJsonInvalid
+          ? "the run's extra.json is not a readable list of tickets; nothing was filed from it"
+          : undefined;
+        const parts = [jailReason, extraReason, reason].filter(Boolean);
+        const combined = parts.length > 0 ? [...parts, retryHint(lockedTask.id)].join("; ") : "";
         return finish({
           taskId: lockedTask.id,
           status: "blocked",
@@ -2324,7 +2550,14 @@ export class LegionEngine {
       }
 
       if (waited.error || !started?.spawned) {
+        // KD-6: a non-zero exit (or none, without a timeout) is a failed run. The reason carries
+        // the code and the tail of the agent's stderr, so the blocked task says what went wrong.
         await this.#transitionTaskTo(lockedTask.id, "blocked");
+        const reason = waited.error
+          ? waited.error instanceof Error
+            ? waited.error.message
+            : String(waited.error)
+          : undefined;
         return finish({
           taskId: lockedTask.id,
           status: "blocked",
@@ -2332,6 +2565,7 @@ export class LegionEngine {
           extrasReverted: extras,
           incident,
           headMoved,
+          ...(reason ? { reason: `${reason}; ${retryHint(lockedTask.id)}` } : {}),
         });
       }
 
@@ -2447,6 +2681,26 @@ export class LegionEngine {
       refuse(`task ${task.id} is not ready`, HINT.blockers);
     }
     return task;
+  }
+
+  /**
+   * Undo the `in_progress` transition a spawn that never started had already made (KD-5). This is
+   * not a status *transition* — `in_progress → ready` is not one — it is the rollback of a write
+   * whose reason disappeared, so the task is exactly as it was before `execute` was typed.
+   */
+  async #returnTaskToReadyLocked(taskId: string): Promise<void> {
+    try {
+      const doc = await this.store.readTask(taskId);
+      if (doc.data.status !== "in_progress") return;
+      await this.store.writeTask({ ...doc.data, status: "ready" }, doc.body);
+      const state = await this.#readState();
+      if (state.currentTaskId === taskId) {
+        await this.#writeState({ ...state, currentTaskId: null });
+      }
+    } catch {
+      // The refusal that follows is the message that matters; a failed rollback leaves the task
+      // `in_progress`, which #recoverDeadInProgressLocked settles on the next verb.
+    }
   }
 
   async #transitionTaskTo(taskId: string, to: TaskStatus): Promise<void> {
@@ -2630,12 +2884,18 @@ export class LegionEngine {
     let raw: unknown;
     try {
       raw = JSON.parse(await readFile(abs, "utf8"));
-    } catch {
-      return { invalid: false, ticketIds: [] };
+    } catch (err) {
+      // KD-6: "no extras" is the *absence* of the file. Anything else — unreadable bytes, broken
+      // JSON — is a failed run, never a silent pass (F-082).
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return { invalid: false, ticketIds: [] };
+      return { invalid: true, ticketIds: [] };
     }
-    let invalid = false;
+    const parsedTickets = parseExtraJson(raw);
+    // A file that parsed as JSON but described no usable ticket (wrong shape, empty titles) is a
+    // validation failure, not "no extras".
+    let invalid = parsedTickets.length !== extraJsonItemCount(raw);
     const ticketIds: string[] = [];
-    for (const input of parseExtraJson(raw)) {
+    for (const input of parsedTickets) {
       const { task, coerced } = await this.#fileTicketLocked(
         {
           ...input,
@@ -2707,16 +2967,9 @@ export class LegionEngine {
       };
       coerced = true;
     }
+    // KD-5: no dependency edge either way. `parentId` alone links the ticket to the work it came
+    // out of; writing `parent.blocks` too would re-create the dependency from the other side.
     await this.store.writeTask(ticket, taskMarkdownBody(ticket));
-    if (parentId) {
-      const parentDoc = await this.store.readTask(parentId);
-      if (!parentDoc.data.blocks.includes(id)) {
-        await this.store.writeTask(
-          { ...parentDoc.data, blocks: [...parentDoc.data.blocks, id] },
-          parentDoc.body,
-        );
-      }
-    }
     const promoted = await this.#promoteTicketIfReady(id, specId);
     await this.#failLastReviewLocked();
     return { task: promoted, coerced };
@@ -3442,7 +3695,30 @@ export class LegionEngine {
       onRestored: this.#onProtectedRestored(),
       // R-48: every spawn records the agent's commits, not only execute/review/verify.
       onQuarantinedCommits: (shas: readonly string[]) => this.#recordQuarantinedCommits({ quarantinedCommits: [...shas] }),
+      beforeSnapshot: async (ctx: { runId: string; taskId?: string }) =>
+        this.#writeActiveRunLocked(ctx.runId, ctx.taskId ?? null),
+      onFinished: async (ctx: { runId: string }) => this.#clearActiveRunLocked(ctx.runId),
     };
+  }
+
+  /**
+   * KD-15 + PR 6: the last engine write before the protected-set snapshot names the run this
+   * project is inside, so a crash leaves exactly one control record for recovery to read. The
+   * finish takes the control dir (or tombstones it), and the next verb clears this.
+   */
+  async #writeActiveRunLocked(runId: string, taskId: string | null): Promise<void> {
+    const state = await this.#readState();
+    if (state.phase === "uninitialized") return;
+    await this.#writeState({ ...state, activeRun: { runId, ...(taskId ? { taskId } : {}) } });
+  }
+
+  /** KD-15: drop the pointer once the spawn has finished (control dir gone or tombstoned). */
+  async #clearActiveRunLocked(runId: string): Promise<void> {
+    const state = await this.#readState();
+    if (state.activeRun?.runId !== runId) return;
+    const next: StateFile = { ...state };
+    delete next.activeRun;
+    await this.#writeState(next);
   }
 
   /**
@@ -3460,11 +3736,171 @@ export class LegionEngine {
     };
   }
 
+  /**
+   * Crash replay (PR 6). `STATE.activeRun` names the one run this project was inside, written
+   * before the protected-set snapshot (KD-15) and left behind by a crash, so recovery reads
+   * exactly one control record rather than guessing from the whole folder.
+   *
+   * Nothing here trusts the agent: an unjailed agent can reach the control dir (KD-2's honest
+   * limit), so a replay **always** fails the last review, records an incident and blocks the
+   * task, whatever the persisted snapshot says. Gates need a retry and a fresh review after it.
+   */
+  async #replayCrashedRunLocked(
+    run: { runId: string; taskId?: string | null },
+    opts: { reason: string; auditType: string },
+  ): Promise<{ runId: string; reverted: string[]; unrestorable: string[]; quarantineDir: string | null }> {
+    const controlDir = controlDirPath(this.projectRoot, run.runId);
+    const resume = await this.#readControlResume(controlDir);
+    // 1. The agent may still be alive with a dead engine. Kill its tree, but only when the PID's
+    //    start time still matches the record, so a PID reused since is never killed.
+    const killed = await killRecordedProcessTree(resume?.pid ?? null, resume?.agentPidStartedAt).catch(
+      () => "not-running" as const,
+    );
+
+    const quarantine = new Quarantine(this.projectRoot, run.runId);
+    const unrestorable: string[] = [];
+    const reverted: string[] = [];
+    // 2a. P first, from the persisted snapshot: quarantine the agent's version, then restore.
+    let protectedChanged: string[] = [];
+    try {
+      const raw = await readFile(join(controlDir, "protected-snapshot.json"), "utf8");
+      const snapshot = parseProtectedSnapshot(raw);
+      if (!snapshot) {
+        unrestorable.push("the persisted protected-set snapshot is unreadable");
+      } else {
+        const restored = await restoreProtected(snapshot, {
+          runId: run.runId,
+          // Nothing is exempt on the replay path: the contract that would have exempted a path
+          // belonged to a run that never finished (fail closed).
+          allowedRoots: [],
+          admitNewTasks: false,
+          quarantine,
+        });
+        protectedChanged = restored.changed;
+        unrestorable.push(...restored.unrestorable);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        unrestorable.push(`the protected set could not be replayed (${describeError(err)})`);
+      }
+    }
+    // 2b. Then the content revert, from the tree manifest and the pre-spawn backups.
+    try {
+      const tree = await replayTreeFromManifest({
+        projectRoot: this.projectRoot,
+        controlDir,
+        quarantine,
+        runId: run.runId,
+      });
+      reverted.push(...tree.reverted);
+      unrestorable.push(...tree.unrestorable);
+    } catch (err) {
+      unrestorable.push(`the tree could not be replayed (${describeError(err)})`);
+    }
+    let quarantineDir: string | null = null;
+    try {
+      const finalized = await quarantine.finalize();
+      if (finalized) {
+        quarantineDir = finalized.dir;
+        await this.#audit("quarantine_created", (await this.#readState()).phase, "engine", {
+          runId: run.runId,
+          dir: finalized.dir,
+          manifestSha256: finalized.manifestSha256,
+          entries: quarantine.entries.length,
+        });
+      }
+    } catch (err) {
+      unrestorable.push(`quarantine manifest (${describeError(err)})`);
+    }
+    // 3. The jail the crashed run left behind is a whole copy of its read set; drop it.
+    await destroyLeftoverJail(this.projectRoot, run.runId).catch(() => undefined);
+    // A restore writes bytes straight to disk, so the index is stale (R-14).
+    if (protectedChanged.length > 0) await this.store.rebuild().catch(() => undefined);
+
+    // 4. Always: fail the last review, record the incident, block the task.
+    await this.#failLastReviewLocked();
+    const state = await this.#readState();
+    const next: StateFile = { ...state };
+    delete next.activeRun;
+    if (next.currentTaskId && next.currentTaskId === run.taskId) next.currentTaskId = null;
+    await this.#writeState(next);
+    await this.#audit(
+      opts.auditType,
+      next.phase,
+      "engine",
+      {
+        runId: run.runId,
+        reason: opts.reason,
+        agentProcess: killed,
+        protectedChanged,
+        reverted,
+        unrestorable,
+        quarantine: quarantineDir,
+      },
+      run.taskId ?? undefined,
+      null,
+    );
+    if (run.taskId) {
+      try {
+        const doc = await this.store.readTask(run.taskId);
+        if (doc.data.status !== "blocked" && doc.data.status !== "done" && doc.data.status !== "compacted") {
+          await this.#transitionTaskTo(run.taskId, "blocked");
+        }
+      } catch {
+        // the task file is gone or invalid; the incident is recorded either way
+      }
+    }
+    // 5. The backups exist for this replay; they are plaintext copies of ignored files, so they
+    //    go as soon as the replay is over. The `finished` tombstone stops the leftover control
+    //    dir reading as a live (fail-closed) record for every later command.
+    await drainDeferredAuditEvents(this.projectRoot, controlDir).catch(() => undefined);
+    await dropBackups(controlDir).catch(() => undefined);
+    await rm(join(controlDir, LIVE_MARKER_BASENAME), { force: true }).catch(() => undefined);
+    await writeFile(join(controlDir, FINISHED_BASENAME), `${nowIso()}\n`, "utf8").catch(() => undefined);
+    return { runId: run.runId, reverted, unrestorable, quarantineDir };
+  }
+
+  async #readControlResume(controlDir: string): Promise<ResumeFile | null> {
+    try {
+      const parsed = ResumeFileSchema.safeParse(
+        JSON.parse(await readFile(join(controlDir, RESUME_BASENAME), "utf8")),
+      );
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Did this run finish (cleanly or as an incident) rather than crash? */
+  async #runFinished(controlDir: string): Promise<boolean> {
+    if (!existsSync(controlDir)) return true; // a clean finish takes the whole dir with it
+    return existsSync(join(controlDir, FINISHED_BASENAME));
+  }
+
   async #recoverDeadInProgressLocked(): Promise<void> {
     const state = await this.#readState();
     if (state.phase === "uninitialized") return;
+    const active = state.activeRun;
+    if (active) {
+      const live = await findLiveSpawn(this.projectRoot);
+      if (live && live.runId === active.runId) return; // still running (ours or another process's)
+      const controlDir = controlDirPath(this.projectRoot, active.runId);
+      if (await this.#runFinished(controlDir)) {
+        const fresh = await this.#readState();
+        if (fresh.activeRun?.runId === active.runId) {
+          const next: StateFile = { ...fresh };
+          delete next.activeRun;
+          await this.#writeState(next);
+        }
+      } else if (!isOwnedUnfinishedRun(active.runId)) {
+        await this.#replayCrashedRunLocked(active, {
+          reason: INTERRUPTED_RUN_REASON,
+          auditType: "run_replayed",
+        });
+      }
+    }
     const tasks = await this.#listTasks();
-    let current = state.currentTaskId ?? null;
+    let current = (await this.#readState()).currentTaskId ?? null;
     let changedCurrent = false;
     for (const task of tasks) {
       if (task.status !== "in_progress" && task.status !== "verifying") continue;
@@ -3472,7 +3908,14 @@ export class LegionEngine {
       // Child pid is dead after wait(); enginePid live means this process is still finishing.
       // Verification runs under engine.lock, which we now hold, so a `verifying` task whose run
       // is dead was interrupted (Ctrl-C, crash) and would otherwise be stuck forever.
-      if (resume && resumeRunIsLive(resume)) continue;
+      // A record whose engine is *this* process is only live while the run is still in memory
+      // (KD-2): a settled-but-unfinished run must not wait for the process to exit.
+      const resumeLive = resume
+        ? resume.enginePid === process.pid
+          ? isOwnedUnfinishedRun(resume.runId)
+          : resumeRunIsLive(resume)
+        : false;
+      if (resumeLive) continue;
       const isCurrent = current === task.id;
       if (!resume && !isCurrent) continue;
       if (task.status === "verifying") {

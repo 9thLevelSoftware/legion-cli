@@ -828,6 +828,16 @@ async function copyOutWrites(
   return { copied, dropped };
 }
 
+/**
+ * Remove the jail a crashed run left behind (PR 6). The live path destroys its own jail in the
+ * finish; after a crash nobody did, and the copy jail holds a whole copy of the read set.
+ */
+export async function destroyLeftoverJail(projectRoot: string, runId: string): Promise<void> {
+  const safe = assertSafeRunId(runId);
+  const jailRoot = toFsPath(resolve(projectRoot), `.legion-cli/sandbox/${safe}`);
+  await rm(jailRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+}
+
 export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHandle> {
   const projectRoot = resolve(policy.projectRoot);
   const runId = assertSafeRunId(policy.runId);

@@ -2,6 +2,7 @@ import { createLegionEngine, findSkillsDir, HINT, isSliceTerminal, refuse } from
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
+import { withInterruptHandling } from "./interrupt.js";
 import { nextCommand } from "./next.js";
 import { closePrompt, isNo, isYes, readLine, slurpStdin } from "./prompt.js";
 
@@ -40,12 +41,16 @@ export async function runExecute(
       await slurpStdin();
       await confirmAllowNoSandbox("execute");
     }
-  const result = await engine.execute(flags.id ?? "auto", {
-    untilBlocked: Boolean(flags.untilBlocked),
-    fix: Boolean(flags.fix),
-    allowNoSandbox: Boolean(flags.allowNoSandbox),
-    ...(adapter ? { adapter } : {}),
-  });
+  // Ctrl-C during a run kills the agent and finishes the spawn (restore P, revert, unfreeze)
+  // before exiting, so an interrupted execute leaves the same state a crash replay would.
+  const result = await withInterruptHandling(() =>
+    engine.execute(flags.id ?? "auto", {
+      untilBlocked: Boolean(flags.untilBlocked),
+      fix: Boolean(flags.fix),
+      allowNoSandbox: Boolean(flags.allowNoSandbox),
+      ...(adapter ? { adapter } : {}),
+    }),
+  );
   const state = await engine.getState();
   const slice = await engine.listSliceTasks();
   const next = nextCommand(state, slice);

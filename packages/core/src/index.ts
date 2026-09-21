@@ -53,11 +53,12 @@ export {
   HEAD_MOVED_WARNING,
   isSecretLikeName,
   reclaimOldBackups,
+  replayTreeFromManifest,
   revertTree,
   snapshotTree,
   TREE_MANIFEST_NAME,
 } from "./revert.js";
-export type { AgentCommits, RevertResult, RevertTreeResult, TreeSnapshot } from "./revert.js";
+export type { AgentCommits, ReplayTreeResult, RevertResult, RevertTreeResult, TreeSnapshot } from "./revert.js";
 export {
   ensureRegressionTest,
   fixFilesAllowed,
@@ -77,6 +78,9 @@ export {
 } from "./verify.js";
 export type { VerificationRun } from "./verify.js";
 export {
+  abortStartedSpawns,
+  AGENT_STDERR_TAIL_LINES,
+  AgentExitError,
   argvSummarySafe,
   findSkillsDir,
   GIT_REPO_REQUIRED_MESSAGE,
@@ -85,6 +89,7 @@ export {
   protectedIncidentMessage,
   resolveSkillDir,
   resumeRunIsLive,
+  unfinishedSpawnIds,
 } from "./spawn.js";
 export {
   describeLiveSpawn,
@@ -92,13 +97,16 @@ export {
   frozenMessage,
   LIVE_MARKER_BASENAME,
   LIVE_MARKER_HEARTBEAT_MS,
+  LIVE_RECORD_GRACE_MS,
   RESUME_BASENAME,
 } from "./live-spawn.js";
 export type { LiveSpawn } from "./live-spawn.js";
 export {
   isProtectedPath,
+  parseProtectedSnapshot,
   PROTECTED_INLINE_MAX_BYTES,
   restoreProtected,
+  serializeProtectedSnapshot,
   snapshotProtected,
 } from "./protected.js";
 export type { ProtectedRestoreResult, ProtectedSnapshot } from "./protected.js";

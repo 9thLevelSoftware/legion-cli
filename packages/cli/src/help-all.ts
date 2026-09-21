@@ -41,7 +41,7 @@ const LIFECYCLE_CORE = [
 
 const ALWAYS_ON = [
   ["status (default)", "Where am I? What next?", "--blockers, --plain"],
-  ["doctor", "Is my laptop ready?", "--metrics"],
+  ["doctor", "Is my laptop ready?", "--metrics, --clear-stale-run"],
   ["control-mode [mode]", "Show or set guarded|surgical|advisory", ""],
   ["ingest <src…>", "Teach Legion CLI from these files/links", "--transcript, --diff, --no-commit, --distill"],
   ["wiki trust <page>", "I have read this ingested page; treat it as real", ""],
@@ -57,6 +57,7 @@ const BOARD_EXTRAS = [
   ["next", "What is unblocked?", ""],
   ["ticket create", "Park extra work", "--parent, --title, --from-agent, --type, --priority, --adapter, --route"],
   ["task amend", "Human changes a file contract", "--allow-deps, --adapter, --route, --clear-adapter"],
+  ["task retry <id>", "Move a blocked task back to ready", ""],
   ["fix <bug>", "Test first (must stay RED), then fix", "--adapter, --allow-no-sandbox"],
   ["abandon", "Stop this spec without shipping", "--message"],
   ["assume list", "Open questions that block work", ""],

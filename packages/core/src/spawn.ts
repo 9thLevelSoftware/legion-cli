@@ -169,13 +169,15 @@ export type SkillSpawnOpts = {
   handlePid?: number;
   allowNoSandbox?: boolean;
   /** Engine writes that belong to this spawn, run just before the protected-set snapshot (KD-15). */
-  beforeSnapshot?: (ctx: { sandbox?: SandboxHandle }) => Promise<void>;
+  beforeSnapshot?: (ctx: { sandbox?: SandboxHandle; runId: string; taskId?: string }) => Promise<void>;
   /** Engine audit sink for finish events (`protected_restored`, `quarantine_created`). */
   audit?: SpawnAudit;
   /** Called after a restore that changed protected files, so the engine can drop stale caches. */
   onRestored?: (result: ProtectedRestoreResult) => Promise<void>;
   /** Called with the agent's commit shas, after the P restore, so STATE can record them (R-20). */
   onQuarantinedCommits?: (shas: readonly string[]) => Promise<void>;
+  /** Called after the control dir is torn down, so the engine can drop STATE.activeRun. */
+  onFinished?: (ctx: { runId: string }) => Promise<void>;
 };
 
 export type SpawnAudit = (type: string, data: Record<string, unknown>) => Promise<void>;
@@ -196,6 +198,7 @@ type SpawnRevertCtx = {
   audit?: SpawnAudit;
   onRestored?: (result: ProtectedRestoreResult) => Promise<void>;
   onQuarantinedCommits?: (shas: readonly string[]) => Promise<void>;
+  onFinished?: (ctx: { runId: string }) => Promise<void>;
 };
 
 export type StartedSkillSpawn =
@@ -504,7 +507,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   };
   const startedAt = new Date().toISOString();
 
-  const writeResume = async (pid: number | null) => {
+  const writeResume = async (pid: number | null, agentPidStartedAt?: number) => {
     await writeFile(
       join(controlDir, RESUME_BASENAME),
       `${JSON.stringify(
@@ -517,6 +520,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
           startedAt,
           timeoutMs: DEFAULT_TIMEOUT_MS,
           pid,
+          ...(agentPidStartedAt !== undefined ? { agentPidStartedAt } : {}),
           enginePid: process.pid,
           engineStartedAt: ownProcessStartedAt(),
           adapterId: resolution.id,
@@ -578,7 +582,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   // KD-15: every spawn-related engine write (e.g. execute's sandbox_start audit, which needs the
   // backend chosen above) happens before the protected-set snapshot.
   try {
-    await opts.beforeSnapshot?.({ sandbox });
+    await opts.beforeSnapshot?.({ sandbox, runId, ...(opts.taskId ? { taskId: opts.taskId } : {}) });
   } catch (err) {
     await sandbox?.destroy().catch(() => undefined);
     await abandonControlDir();
@@ -655,6 +659,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         audit: opts.audit,
         onRestored: opts.onRestored,
         onQuarantinedCommits: opts.onQuarantinedCommits,
+        onFinished: opts.onFinished,
       },
       resolution,
       binary: tmpl.binary,
@@ -662,7 +667,10 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       sandbox,
     };
     unfinished.set(runId, started);
-    await writeResume(handle.pid);
+    // The agent's PID *and* the moment it started (PR 6): crash replay only kills a recorded
+    // tree whose start time still matches, so a PID reused since is never killed. `Date.now()`
+    // at the spawn is on the same clock `processIdentity` reports, well inside its tolerance.
+    await writeResume(handle.pid, Date.now());
   } catch (err) {
     if (started) {
       // The agent is already running: finish it (kill, restore P, unfreeze) instead of leaking it.
@@ -677,6 +685,38 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   return started;
 }
 
+/** Lines of the agent's stderr carried into the blocked task's reason (KD-6). */
+export const AGENT_STDERR_TAIL_LINES = 20;
+
+/** A spawn that ended with a non-zero (or unknown) exit code. Gates treat it as failure (KD-6). */
+export class AgentExitError extends AgentError {
+  readonly exitCode: number | null;
+  constructor(message: string, exitCode: number | null) {
+    super(message);
+    this.name = "AgentExitError";
+    this.exitCode = exitCode;
+  }
+}
+
+async function stderrTail(path: string | undefined): Promise<string[]> {
+  if (!path) return [];
+  try {
+    const lines = (await readFile(path, "utf8")).split(/\r?\n/).filter((line) => line.trim().length > 0);
+    return lines.slice(-AGENT_STDERR_TAIL_LINES);
+  } catch {
+    return [];
+  }
+}
+
+export async function agentExitError(result: {
+  exitCode: number | null;
+  stderrPath?: string;
+}): Promise<AgentExitError> {
+  const tail = await stderrTail(result.stderrPath);
+  const head = `agent exited ${result.exitCode === null ? "without an exit code" : result.exitCode}`;
+  return new AgentExitError(tail.length > 0 ? `${head}: ${tail.join(" | ")}` : head, result.exitCode);
+}
+
 export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spawned: true }>): Promise<WaitedSkillSpawn> {
   let error: unknown;
   let timedOut = false;
@@ -684,6 +724,9 @@ export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spa
     const agentResult = await started.handle.wait();
     timedOut = Boolean(agentResult.timedOut);
     if (timedOut) error = new AgentError("spawn timed out");
+    // KD-6: positive evidence only. A non-zero exit — or none at all, without a timeout — is a
+    // failed run, whatever the agent left on disk.
+    else if (agentResult.exitCode !== 0) error = await agentExitError(agentResult);
   } catch (err) {
     error = err;
   }
@@ -716,6 +759,37 @@ export function finishStartedSpawn(started: LiveStarted): Promise<RevertResult> 
 export async function settleStartedSpawn(runId: string): Promise<void> {
   const started = unfinished.get(runId);
   if (started) await finishStartedSpawn(started).catch(() => undefined);
+}
+
+/** Run ids this process has started and not finished yet (for the interrupt handler, PR 6). */
+export function unfinishedSpawnIds(): string[] {
+  return [...unfinished.keys()];
+}
+
+/**
+ * Is this run one this process started and has not finished? Liveness of our own runs comes from
+ * memory, never from disk (KD-2): a record whose `enginePid` is us but which is not in this map
+ * belongs to a run that has already settled, so recovery may act on it without waiting for the
+ * process to exit.
+ */
+export function isOwnedUnfinishedRun(runId: string): boolean {
+  return unfinished.has(runId);
+}
+
+/**
+ * Ctrl-C (PR 6): kill every agent this process started — the POSIX process group, or the Windows
+ * process tree — and then run each spawn's normal finish, so P is restored, the tree is reverted
+ * and the freeze lifts before the CLI exits. Never throws.
+ */
+export async function abortStartedSpawns(): Promise<string[]> {
+  const live = [...unfinished.values()];
+  for (const started of live) {
+    await started.handle.abort().catch(() => undefined);
+  }
+  for (const started of live) {
+    await finishStartedSpawn(started).catch(() => undefined);
+  }
+  return live.map((started) => started.runId);
 }
 
 async function finishOnce(started: LiveStarted): Promise<RevertResult> {
@@ -857,6 +931,7 @@ async function finishOnce(started: LiveStarted): Promise<RevertResult> {
       () => undefined,
     );
     if (!incidentForCleanup) await dropBackups(ctx.controlDir).catch(() => undefined);
+    if (ctx.onFinished) await ctx.onFinished({ runId: ctx.runId }).catch(() => undefined);
     if (protectedResult && ctx.audit) {
       if (protectedResult.quarantine) {
         await ctx

@@ -7,10 +7,12 @@ import test from "node:test";
 
 import { isSliceTerminal, LegionEngine, LegionRefuseError } from "../dist/index.js";
 import {
+  exitingAgentArgs,
   initProject,
   makeQaScore,
   makeTask,
   passingVerificationCommand,
+  useGenericAdapter,
   readLatestRunPrompt,
   seedPlanReady,
   withEngine,
@@ -324,9 +326,10 @@ test("review extra.json files a child without treating parent blocks as a rewrit
         assert.equal((await engine.getState()).lastReview, "FAIL");
         const child = (await store.readTask("TSK-0002")).data;
         assert.equal(child.parentId, "TSK-0001");
-        assert.deepEqual(child.blockedBy, ["TSK-0001"]);
+        // KD-5: `--parent` / extras set `parentId` only — no dependency edge either way.
+        assert.deepEqual(child.blockedBy, []);
         const parent = (await store.readTask("TSK-0001")).data;
-        assert.ok(parent.blocks.includes("TSK-0002"));
+        assert.equal(parent.blocks.includes("TSK-0002"), false);
         assert.equal(parent.status, "done");
       },
       {
@@ -346,6 +349,30 @@ test("review extra.json files a child without treating parent blocks as a rewrit
       },
     );
   });
+});
+
+test("a review whose agent exits non-zero is FAIL, not a refusal", async () => {
+  await withEngine(
+    async ({ engine, store }) => {
+      await initProject(engine);
+      await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
+      await useGenericAdapter(store, exitingAgentArgs(3, "reviewer crashed"));
+      const review = await engine.review();
+      // KD-6: no evidence was produced, so the verdict is FAIL — the answer the user asked for.
+      assert.equal(review.verdict, "FAIL");
+      assert.match(review.reason ?? "", /agent exited 3/);
+      assert.match(review.reason ?? "", /reviewer crashed/);
+      assert.equal((await engine.getState()).lastReview, "FAIL");
+      await assert.rejects(
+        () => engine.qa({ score: makeQaScore() }),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          return true;
+        },
+      );
+    },
+    { skillsDir },
+  );
 });
 
 test("review extras vs SkillContract FAIL the command", async () => {

@@ -63,6 +63,9 @@
         }
       ]
     },
+    "agentPidStartedAt": {
+      "type": "number"
+    },
     "enginePid": {
       "type": "integer",
       "exclusiveMinimum": 0,

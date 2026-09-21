@@ -39,12 +39,23 @@ export function ticketFromInput(id: string, specId: string, input: NewTicket): T
     specId,
     adapter: input.adapter,
     parentId: input.parentId,
-    blockedBy: input.parentId ? [input.parentId] : [],
+    // KD-5: a parent is provenance, not a dependency. Making extras `blockedBy` their parent
+    // meant a ticket filed from a run that then blocked could never become ready (F-053), which
+    // is the whole reason the extras were parked. `--parent` sets `parentId` only.
+    blockedBy: [],
     blocks: [],
     contract: defaultTicketContract(id, input.contract),
     assignee: input.fromAgent ? "agent" : "human",
     notes: input.notes ?? (input.fromAgent ? "Filed from agent extra work." : ""),
   };
+}
+
+/**
+ * How many tickets the file *claimed* to describe. A count that beats {@link parseExtraJson}'s
+ * result means at least one entry failed validation, which blocks the task (KD-6).
+ */
+export function extraJsonItemCount(raw: unknown): number {
+  return Array.isArray(raw) ? raw.length : raw === null || raw === undefined ? 0 : 1;
 }
 
 export function parseExtraJson(raw: unknown): NewTicket[] {

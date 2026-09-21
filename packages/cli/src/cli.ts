@@ -55,7 +55,7 @@ import { runShip } from "./ship.js";
 import { runShow } from "./show.js";
 import { runSpecApprove, runSpecDraft, runSpecNew, runSpecShow } from "./spec.js";
 import { runStatus } from "./status.js";
-import { runTaskAmend } from "./task.js";
+import { runTaskAmend, runTaskRetry } from "./task.js";
 import { runTicketCreate } from "./ticket.js";
 import { runVerify } from "./verify.js";
 import { runContextCompact } from "./context.js";
@@ -167,9 +167,13 @@ export function createProgram(): Command {
 
   addGlobalOptions(program.command("doctor").description("Is my laptop ready?"))
     .option("--metrics", "local-only audit metrics (never phones home)")
+    .option("--clear-stale-run", "replay and clear a crashed run that is freezing writes")
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { metrics?: boolean };
-      const code = await runDoctor(resolveOpts(cmd), { metrics: Boolean(flags.metrics) });
+      const flags = opts as { metrics?: boolean; clearStaleRun?: boolean };
+      const code = await runDoctor(resolveOpts(cmd), {
+        metrics: Boolean(flags.metrics),
+        clearStaleRun: Boolean(flags.clearStaleRun),
+      });
       process.exitCode = code;
     });
 
@@ -338,7 +342,7 @@ export function createProgram(): Command {
 
   addGlobalOptions(program.command("execute").description("Do the next ready task"))
     .argument("[id]", "task id")
-    .option("--until-blocked", "loop until no ready task remains or one blocks")
+    .option("--until-blocked", "loop until no ready task remains; blocked tasks continue, incidents stop")
     .option("--fix", "fix-run prompt (keep reproducing tests)")
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .option("--allow-no-sandbox", "TTY gate to run execute on a copy jail")
@@ -570,6 +574,13 @@ export function createProgram(): Command {
         clearAdapter?: boolean;
       };
       const code = await runTaskAmend(resolveOpts(cmd), id, flags);
+      process.exitCode = code;
+    });
+  addGlobalOptions(task.command("retry").description("Move a blocked task back to ready"))
+    .argument("<id>", "task id")
+    .allowExcessArguments(false)
+    .action(async (id: string, _opts, cmd: Command) => {
+      const code = await runTaskRetry(resolveOpts(cmd), id);
       process.exitCode = code;
     });
 

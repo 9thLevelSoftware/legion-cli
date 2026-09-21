@@ -212,6 +212,65 @@ export function serializeProtectedSnapshot(snapshot: ProtectedSnapshot): string 
   });
 }
 
+/**
+ * Read a snapshot back from the control dir for crash replay (PR 6). The JSON form is data an
+ * unjailed agent could have reached (KD-2's honest limit), so replay never *trusts* it: the
+ * replay always fails the last review and blocks the task afterwards, whatever these bytes say.
+ * Anything malformed is dropped rather than throwing, so a partly written file still restores
+ * what it can.
+ */
+export function parseProtectedSnapshot(json: string): ProtectedSnapshot | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  const projectRoot = typeof rec.projectRoot === "string" ? rec.projectRoot : null;
+  if (!projectRoot || !Array.isArray(rec.scopes)) return null;
+  const scopes: ProtectedScope[] = [];
+  for (const scopeRaw of rec.scopes) {
+    if (!scopeRaw || typeof scopeRaw !== "object") continue;
+    const scopeRec = scopeRaw as Record<string, unknown>;
+    const base = typeof scopeRec.base === "string" ? scopeRec.base : null;
+    if (!base || !Array.isArray(scopeRec.entries)) continue;
+    const entries = new Map<string, ProtectedEntry>();
+    for (const pair of scopeRec.entries) {
+      if (!Array.isArray(pair) || typeof pair[0] !== "string") continue;
+      const entry = parseProtectedEntry(pair[1]);
+      if (entry) entries.set(pair[0], entry);
+    }
+    const inProject = canonicalizePath(base) === canonicalizePath(projectRoot);
+    scopes.push({
+      base,
+      // The project scope labels paths relative to the root; a control dir outside it is absolute.
+      label: inProject ? (rel) => rel : (rel) => toPosixPath(join(base, ...rel.split("/"))),
+      roots: Array.isArray(scopeRec.roots) ? scopeRec.roots.filter((r): r is string => typeof r === "string") : [],
+      contractScoped: scopeRec.contractScoped === true,
+      entries,
+    });
+  }
+  if (scopes.length === 0) return null;
+  return {
+    projectRoot,
+    scopes,
+    takenAt: typeof rec.takenAt === "string" ? rec.takenAt : new Date(0).toISOString(),
+  };
+}
+
+function parseProtectedEntry(value: unknown): ProtectedEntry | null {
+  if (!value || typeof value !== "object") return null;
+  const rec = value as Record<string, unknown>;
+  if (rec.kind === "dir" || rec.kind === "other") return { kind: rec.kind };
+  if (rec.kind === "link") return typeof rec.target === "string" ? { kind: "link", target: rec.target } : null;
+  if (rec.kind !== "file") return null;
+  if (typeof rec.size !== "number" || typeof rec.sha256 !== "string") return null;
+  const bytes = typeof rec.b64 === "string" ? Buffer.from(rec.b64, "base64") : undefined;
+  return { kind: "file", size: rec.size, sha256: rec.sha256, ...(bytes ? { bytes } : {}) };
+}
+
 function sameEntry(a: ProtectedEntry | undefined, b: ProtectedEntry | undefined): boolean {
   if (!a || !b) return a === b;
   if (a.kind !== b.kind) return false;

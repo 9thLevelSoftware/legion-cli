@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 /**
@@ -89,4 +89,55 @@ export function sameProcessStart(a: number, b: number): boolean {
  */
 export function startedAfterRecorded(actualStartedAt: number, recordedStartedAt: number): boolean {
   return actualStartedAt > recordedStartedAt + PROCESS_START_TOLERANCE_MS;
+}
+
+export type KillTreeOutcome = "killed" | "not-running" | "pid-reused" | "unknown-identity";
+
+/**
+ * Crash replay (PR 6): tear down a process tree recorded in a control record, but only when the
+ * PID still belongs to the process that was recorded. A PID that has been reused since is never
+ * killed — the one-sided {@link startedAfterRecorded} test decides — and a PID whose identity we
+ * cannot read at all is left alone too, so replay never shoots a bystander.
+ *
+ * POSIX kills the process *group* (the agent is spawned detached, so the group id is its pid);
+ * win32 uses `taskkill /T`. The group/tree kill lives here rather than in `agents` because
+ * `persist` is the lower package: `agents` owns the live handle, this owns the dead record.
+ */
+export async function killRecordedProcessTree(
+  pid: number | null | undefined,
+  recordedStartedAt: number | undefined,
+): Promise<KillTreeOutcome> {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return "not-running";
+  if (pid === process.pid) return "not-running";
+  if (!pidExists(pid)) return "not-running";
+  const actual = await processIdentity(pid);
+  if (actual === null) return pidExists(pid) ? "unknown-identity" : "not-running";
+  if (typeof recordedStartedAt !== "number") return "unknown-identity";
+  if (startedAfterRecorded(actual, recordedStartedAt)) return "pid-reused";
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      shell: false,
+      encoding: "utf8",
+    });
+  } else {
+    for (const target of [-pid, pid]) {
+      try {
+        process.kill(target, "SIGKILL");
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ESRCH") break;
+      }
+    }
+  }
+  return "killed";
+}
+
+/** Whether a pid exists (no signal sent). `lock.ts` imports this module, so its own copy stays there. */
+function pidExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
 }

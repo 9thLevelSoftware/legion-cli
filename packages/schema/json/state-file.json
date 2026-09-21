@@ -93,6 +93,36 @@
         "type": "string",
         "pattern": "^[0-9a-f]{7,64}$"
       }
+    },
+    "activeRun": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "taskId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "runId"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

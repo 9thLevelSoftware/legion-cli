@@ -85,6 +85,17 @@ export const StateFileSchema = z.object({
    * agent cannot erase this list. `refs/legion-quarantine/<runId>` keeps the commits reachable.
    */
   quarantinedCommits: z.array(z.string().regex(/^[0-9a-f]{7,64}$/)).optional(),
+  /**
+   * The spawn this project is inside, written before the protected-set snapshot (KD-15) and
+   * cleared at the finish. Crash recovery reads exactly one control record: this one (PR 6).
+   */
+  activeRun: z
+    .object({
+      runId: z.string().min(1),
+      taskId: z.string().min(1).nullable().optional(),
+    })
+    .nullable()
+    .optional(),
 });
 export type StateFile = z.infer<typeof StateFileSchema>;
 
@@ -455,6 +466,11 @@ export const ResumeFileSchema = z.object({
   /** Spawn timeout, bounded by MAX_SPAWN_TIMEOUT_MS (R-15). */
   timeoutMs: z.number().int().positive().max(MAX_SPAWN_TIMEOUT_MS).optional(),
   pid: z.number().int().positive().nullable().optional(),
+  /**
+   * Start time (epoch ms) of the agent process, so crash replay never kills a reused PID (PR 6).
+   * Recorded as the spawn moment, on the same clock {@link processIdentity} reports.
+   */
+  agentPidStartedAt: z.number().optional(),
   /** Legion CLI process that owns the run. Live after wait() while post-wait still runs. */
   enginePid: z.number().int().positive().optional(),
   /** Start time (epoch ms) of the engine process, to detect PID reuse. */

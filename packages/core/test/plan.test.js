@@ -212,10 +212,11 @@ test("extra work becomes a linked ticket, not an expansion", async () => {
         const child = slice.find((task) => task.parentId === "TSK-0001");
         assert.ok(child, "expected linked ticket");
         assert.equal(child.id, "TSK-0002");
-        assert.deepEqual(child.blockedBy, ["TSK-0001"]);
+        // KD-5: `parentId` is provenance, not a dependency edge (F-053).
+        assert.deepEqual(child.blockedBy, []);
         const afterParent = slice.find((task) => task.id === "TSK-0001");
         assert.deepEqual(afterParent.contract.filesAllowed, ["src/main.ts"]);
-        assert.ok(afterParent.blocks.includes("TSK-0002"));
+        assert.equal(afterParent.blocks.includes("TSK-0002"), false);
       },
       {
         skillsDir,
@@ -244,10 +245,12 @@ test("fileTicket parks extra work and expandCurrentTask still refuses", async ()
       parentId: "TSK-0001",
     });
     assert.equal(ticket.parentId, "TSK-0001");
-    assert.equal(ticket.status, "todo");
+    // KD-5: parked work is ready as soon as its own contract is valid — it does not wait on the
+    // task it came out of, which may itself end up blocked.
+    assert.equal(ticket.status, "ready");
     const parent = (await store.readTask("TSK-0001")).data;
     assert.deepEqual(parent.contract.filesAllowed, ["src/main.ts"]);
-    assert.ok(parent.blocks.includes(ticket.id));
+    assert.equal(parent.blocks.includes(ticket.id), false);
     assert.equal((await engine.getState()).lastReview, "FAIL");
     await assert.rejects(
       () => engine.expandCurrentTask("also do settings in-place"),
@@ -485,12 +488,14 @@ test("unblocked ticket is stored ready so next/execute can pick it", async () =>
     assert.equal(ticket.status, "ready");
     const ready = await engine.nextTasks();
     assert.ok(ready.some((task) => task.id === ticket.id));
-    const blocked = await engine.fileTicket({ title: "child of live task", parentId: "TSK-0001" });
-    assert.equal(blocked.status, "todo");
+    // KD-5: a child of a live task is not blocked by it — `parentId` records where it came from.
+    const child = await engine.fileTicket({ title: "child of live task", parentId: "TSK-0001" });
+    assert.equal(child.status, "ready");
+    assert.deepEqual(child.blockedBy, []);
     const after = await engine.nextTasks();
     assert.equal(
-      after.some((task) => task.id === blocked.id),
-      false,
+      after.some((task) => task.id === child.id),
+      true,
     );
   });
 });

@@ -63,9 +63,33 @@ test("executing + lastReview FAIL + open work hints execute, not review", () => 
   assert.equal(next.run, "legion-cli execute");
 });
 
-test("executing + lastReview FAIL + terminal slice hints review", () => {
-  const next = executing("FAIL", [task("done"), task("blocked", "TSK-0002")]);
+test("executing + lastReview FAIL + all-done slice hints review", () => {
+  const next = executing("FAIL", [task("done")]);
   assert.equal(next.run, "legion-cli review");
+});
+
+test("executing + blocked P0 with no ready P0 hints task retry", () => {
+  const next = executing("FAIL", [task("blocked")]);
+  assert.equal(next.run, "legion-cli task retry TSK-0001");
+});
+
+test("open brownfield run hints brownfield --resume before the lifecycle next", () => {
+  const next = nextCommand(
+    {
+      schemaVersion: "legion-cli-state/v1",
+      phase: "executing",
+      activeSpecId: "spec-checkin",
+      currentTaskId: "TSK-0001",
+      lastReadiness: "PASS",
+      lastReview: null,
+      lastQaId: null,
+    },
+    [task("ready")],
+    "brownfield",
+    undefined,
+    { brownfieldRun: { runId: "87437d5f", phase: "execute" } },
+  );
+  assert.equal(next.run, "legion-cli brownfield --resume 87437d5f");
 });
 
 test("executing + lastReview PASS + terminal slice hints qa", () => {

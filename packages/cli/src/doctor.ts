@@ -19,7 +19,9 @@ import {
   createLegionEngine,
   describeLiveSpawn,
   findSkillsDir,
+  HINT,
   listRetainedQuarantines,
+  refuse,
   retainedControlDir,
 } from "@9thlevelsoftware/legion-cli-core";
 import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
@@ -44,6 +46,7 @@ import {
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
+import { closePrompt, isYes, readLine } from "./prompt.js";
 import { scanWikiSecrets, type SecretHit } from "./secrets.js";
 import { isSpawnableBinary, listOnPath, pathLegionIsLegionCli, runBounded, runTool } from "./which.js";
 
@@ -257,7 +260,47 @@ function formatCheck(check: DoctorCheck): string {
 
 export type DoctorMetricsFlags = {
   metrics?: boolean;
+  clearStaleRun?: boolean;
 };
+
+/**
+ * KD-2 (8b): the explicit way out of a freeze held by a control record that cannot be read. The
+ * engine refuses while the recorded engine or agent process is alive with a matching start time;
+ * this asks first, because the replay reverts the working tree.
+ */
+export async function runClearStaleRun(opts: CliOpts): Promise<number> {
+  const engine = createLegionEngine(opts.project);
+  const live = await engine.liveAgentRun();
+  if (!live) {
+    if (opts.json) {
+      writeJson({ ok: true, cleared: false, detail: "no agent-run record is freezing engine writes" });
+      return 0;
+    }
+    writeOut("No agent-run record is freezing engine writes.");
+    return 0;
+  }
+  if (!opts.yes) {
+    writeOut(`Stale run: ${describeLiveSpawn(live)}`);
+    writeOut(
+      "Clearing it reverts the working tree to the run's pre-spawn state, quarantines the agent's versions and blocks its task. Continue? [y/N]",
+    );
+    const answer = await readLine("> ");
+    if (!isYes(answer)) {
+      refuse("doctor --clear-stale-run declined", HINT.clearStaleRun);
+    }
+  }
+  const result = await engine.clearStaleRun();
+  if (opts.json) {
+    writeJson({ ok: true, cleared: true, ...result, next: result.taskId ? `legion-cli task retry ${result.taskId}` : "legion-cli status" });
+    return 0;
+  }
+  writeOut(`Cleared ${result.runId}.`);
+  if (result.reverted.length > 0) writeOut(`Reverted: ${result.reverted.join(", ")}`);
+  for (const line of result.unrestorable) writeOut(`NOT restored: ${line}`);
+  if (result.quarantineDir) writeOut(`The displaced versions are in quarantine at ${result.quarantineDir}`);
+  writeOut(result.taskId ? `Next: legion-cli task retry ${result.taskId}` : "Next: legion-cli status");
+  return 0;
+}
 
 async function qaScoresFallback(projectRoot: string): Promise<{ runs: number; passes: number }> {
   const dir = join(projectRoot, ".legion-cli", "qa", "scores");
@@ -345,6 +388,13 @@ function formatMetricsLines(metrics: LocalMetrics, phase: Phase | null, qaSource
 }
 
 export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): Promise<number> {
+  if (flags.clearStaleRun) {
+    try {
+      return await runClearStaleRun(opts);
+    } finally {
+      closePrompt();
+    }
+  }
   const engine = createLegionEngine(opts.project);
   const checks: DoctorCheck[] = [];
   const warnings: string[] = [];

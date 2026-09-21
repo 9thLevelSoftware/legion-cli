@@ -3,6 +3,7 @@ import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
+import { withInterruptHandling } from "./interrupt.js";
 import { nextCommand } from "./next.js";
 
 /** Test seam: fake adapter artifacts when LEGION_CLI_ADAPTER=fake. */
@@ -24,7 +25,7 @@ export async function runReview(opts: CliOpts, flags: { adapter?: string } = {})
     skillsDir: findSkillsDir(),
     fakeArtifacts: reviewFakeArtifacts(),
   });
-  const result = await engine.review(adapter ? { adapter } : undefined);
+  const result = await withInterruptHandling(() => engine.review(adapter ? { adapter } : undefined));
   const state = await engine.getState();
   const slice = await engine.listSliceTasks();
   const next = nextCommand(state, slice);

@@ -21,8 +21,13 @@ import {
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 
-/** A record that can't be trusted counts as live until it is older than the maximum timeout plus this. */
-export const LIVE_RECORD_GRACE_MS = 10 * 60 * 1000;
+/**
+ * A record that can't be trusted counts as live until it is older than the maximum timeout plus
+ * this. One constant for the whole freeze/liveness/replay story (PR 6): the maximum timeout is
+ * 20 minutes, so an unreadable record wedges writes for at most ~25 minutes, and
+ * `legion-cli doctor --clear-stale-run` is the explicit override before that.
+ */
+export const LIVE_RECORD_GRACE_MS = 5 * 60 * 1000;
 export const LIVE_MARKER_BASENAME = "live.json";
 /** Written when a run finished cleanly, just before its control dir goes away (R-10). */
 export const FINISHED_BASENAME = "finished";
@@ -263,7 +268,10 @@ async function runLiveness(projectDir: string, runId: string): Promise<LiveSpawn
         typeof resume.enginePid === "number" && isPidAlive(resume.enginePid)
           ? !(await pidReused(resume.enginePid, resume.engineStartedAt))
           : false;
-      const agentLive = typeof resume.pid === "number" && resume.pid !== process.pid && isPidAlive(resume.pid);
+      const agentLive =
+        typeof resume.pid === "number" && resume.pid !== process.pid && isPidAlive(resume.pid)
+          ? !(await pidReused(resume.pid, resume.agentPidStartedAt))
+          : false;
       const expires = Math.min(Date.parse(resume.startedAt) || Date.now(), Date.now()) + (resume.timeoutMs ?? MAX_SPAWN_TIMEOUT_MS) + LIVE_RECORD_GRACE_MS;
       if ((engineLive || agentLive) && Date.now() < expires) {
         return {
@@ -345,6 +353,12 @@ async function runLiveness(projectDir: string, runId: string): Promise<LiveSpawn
     await dropDeadMarker(markerPath); // PID reused: the recorded engine is gone (R-16)
     return null;
   }
+  // A run is dead once its own timeout plus the grace has passed, even with a live engine PID:
+  // the agent cannot still be running, and a wedged engine must not freeze writes for ever (PR 6).
+  if (Date.now() >= expiresAt) {
+    await dropDeadMarker(markerPath);
+    return null;
+  }
   return { runId, skillId: marker.skillId, controlDir, owned: false, state: "live", expiresAt, marker };
 }
 
@@ -401,7 +415,8 @@ async function pidReused(pid: number, recordedStartedAt: number | undefined): Pr
 async function agentStillRunning(controlDir: string): Promise<boolean> {
   const resume = await readResume(controlDir);
   const pid = resume?.pid;
-  return typeof pid === "number" && pid !== process.pid && isPidAlive(pid);
+  if (typeof pid !== "number" || pid === process.pid || !isPidAlive(pid)) return false;
+  return !(await pidReused(pid, resume?.agentPidStartedAt));
 }
 
 export function frozenMessage(live: Pick<LiveSpawn, "skillId" | "runId" | "state" | "detail" | "expiresAt">): string {

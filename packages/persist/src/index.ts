@@ -26,12 +26,14 @@ export {
   userStateDir,
 } from "./state-dir.js";
 export {
+  killRecordedProcessTree,
   ownProcessStartedAt,
   PROCESS_START_TOLERANCE_MS,
   processIdentity,
   sameProcessStart,
   startedAfterRecorded,
 } from "./process-identity.js";
+export type { KillTreeOutcome } from "./process-identity.js";
 export { invalidTaskMessage, listTaskFiles } from "./tasks-list.js";
 export type { TaskFileEntry } from "./tasks-list.js";
 export {
