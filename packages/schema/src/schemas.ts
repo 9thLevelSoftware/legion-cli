@@ -183,7 +183,7 @@ export const SandboxConfigSchema = z
   .object({
     requireHardened: z.boolean().default(true),
     allowCopyJail: z.boolean().default(false),
-    backend: z.enum(["auto", "bwrap", "seatbelt", "copy"]).default("auto"),
+    backend: z.enum(["auto", "bwrap", "seatbelt", "copy", "docker"]).default("auto"),
     skills: z.array(SkillIdSchema).min(1).default(["execute"]),
   })
   .strict();
@@ -246,6 +246,20 @@ function adapterTargetsId(
   const named = adapter.named ? Object.values(adapter.named) : [];
   return routed.includes(id) || named.includes(id);
 }
+
+export const McpServerConfigSchema = z
+  .object({
+    command: z.string().min(1).optional(),
+    args: z.array(z.string()).default([]),
+    env: z.record(z.string(), z.string()).optional(),
+    url: z.string().url().optional(),
+    transport: z.enum(["stdio", "sse"]).default("stdio"),
+  })
+  .strict();
+export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
+
+export const McpServersConfigSchema = z.record(z.string().min(1), McpServerConfigSchema);
+export type McpServersConfig = z.infer<typeof McpServersConfigSchema>;
 
 export const LegionConfigSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.config),
@@ -316,6 +330,12 @@ export const LegionConfigSchema = z.object({
   }),
   skills: SkillsConfigSchema.default({ trustKeys: [] }),
   map: MapConfigSchema.default({}),
+  mcpServers: McpServersConfigSchema.optional(),
+  git: z
+    .object({
+      microCommits: z.boolean().default(false),
+    })
+    .optional(),
 }).strict();
 export type LegionConfig = z.infer<typeof LegionConfigSchema>;
 
@@ -863,21 +883,60 @@ export type ChatProposalAction = z.infer<typeof ChatProposalActionSchema>;
 export const ChatActionSchema = z.union([ChatReadActionSchema, ChatProposalActionSchema]);
 export type ChatAction = z.infer<typeof ChatActionSchema>;
 
+export const ChatTurnSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    parentId: z.string().nullable().optional(),
+    branchId: z.string().optional(),
+    role: z.enum(["user", "assistant"]),
+    text: z.string(),
+    action: ChatActionSchema.optional(),
+  })
+  .strict();
+export type ChatTurn = z.infer<typeof ChatTurnSchema>;
+
 export const ChatSessionFileSchema = z
   .object({
     schemaVersion: z.literal(SCHEMA_VERSION.chatSession),
     id: z.string().min(1),
     startedAt: z.string().min(1),
-    turns: z.array(
-      z.object({
-        role: z.enum(["user", "assistant"]),
-        text: z.string(),
-        action: ChatActionSchema.optional(),
-      }),
-    ),
+    activeBranchId: z.string().optional(),
+    turns: z.array(ChatTurnSchema),
   })
   .strict();
 export type ChatSessionFile = z.infer<typeof ChatSessionFileSchema>;
+
+export const RecipeParamSchema = z
+  .object({
+    type: z.enum(["string", "boolean", "number"]),
+    description: z.string().min(1),
+    default: z.union([z.string(), z.boolean(), z.number()]).optional(),
+  })
+  .strict();
+export type RecipeParam = z.infer<typeof RecipeParamSchema>;
+
+export const RecipeStepSchema = z
+  .object({
+    id: z.string().min(1),
+    description: z.string().min(1),
+    action: z.enum(["prompt", "command", "mcp_tool", "verify"]),
+    tool: z.string().optional(),
+    params: z.record(z.string(), z.unknown()).optional(),
+    contract: FileContractSchema.optional(),
+  })
+  .strict();
+export type RecipeStep = z.infer<typeof RecipeStepSchema>;
+
+export const RecipeSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.recipe),
+    name: z.string().regex(/^[a-z0-9-]+$/),
+    description: z.string().min(1),
+    parameters: z.record(z.string(), RecipeParamSchema).default({}),
+    steps: z.array(RecipeStepSchema).min(1),
+  })
+  .strict();
+export type Recipe = z.infer<typeof RecipeSchema>;
 
 export const ServeFileSchema = z
   .object({

@@ -68,6 +68,7 @@ export type InitOptions = {
   http?: { baseUrl: string; model: string; apiKeyEnv: string; allowLoopback?: boolean };
   mode?: "greenfield" | "brownfield";
   controlMode?: ControlMode | "autonomous" | string;
+  allowCopyJail?: boolean;
 };
 
 export type BrownfieldEffort = 1 | 2 | 3 | 4 | 5;

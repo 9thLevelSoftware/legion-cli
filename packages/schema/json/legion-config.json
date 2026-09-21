@@ -509,7 +509,8 @@
             "auto",
             "bwrap",
             "seatbelt",
-            "copy"
+            "copy",
+            "docker"
           ]
         },
         "skills": {
@@ -577,6 +578,60 @@
         }
       },
       "additionalProperties": false
+    },
+    "mcpServers": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "args": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "env": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "transport": {
+            "default": "stdio",
+            "type": "string",
+            "enum": [
+              "stdio",
+              "sse"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "git": {
+      "type": "object",
+      "properties": {
+        "microCommits": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
     }
   },
   "required": [

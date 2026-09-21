@@ -22,3 +22,5 @@ export {
   MCP_HTTP_RATE_PER_SEC,
 } from "./http.js";
 export type { HandleMcpHttpOpts } from "./http.js";
+export { LegionMcpClientPool } from "./client.js";
+export type { ExternalMcpTool, ToolCallResult } from "./client.js";

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  detectDependencyCycle,
   expectedArtifactsFailsPlan,
   filesAllowedFailsPlan,
   isTaskReady,
@@ -9,6 +10,7 @@ import {
   pickNextTask,
   readyTasks,
   unresolvedBlockers,
+  validateTaskGraph,
 } from "../dist/index.js";
 
 function task(overrides = {}) {
@@ -194,4 +196,42 @@ test("readyTasks is P0 then oldest id", () => {
     ["TSK-0002", "TSK-0003", "TSK-0001"],
   );
   assert.equal(pickNextTask(ctx([p1, p0b, p0a])).id, "TSK-0002");
+});
+
+test("detectDependencyCycle detects direct cycles and self loops", () => {
+  const t1 = task({ id: "TSK-0001", blockedBy: ["TSK-0002"] });
+  const t2 = task({ id: "TSK-0002", blockedBy: ["TSK-0001"] });
+  assert.deepEqual(detectDependencyCycle([t1, t2]), ["TSK-0001", "TSK-0002", "TSK-0001"]);
+
+  const selfLoop = task({ id: "TSK-0003", blockedBy: ["TSK-0003"] });
+  assert.deepEqual(detectDependencyCycle([selfLoop]), ["TSK-0003", "TSK-0003"]);
+
+  const linear1 = task({ id: "TSK-0001", blockedBy: [] });
+  const linear2 = task({ id: "TSK-0002", blockedBy: ["TSK-0001"] });
+  assert.equal(detectDependencyCycle([linear1, linear2]), null);
+});
+
+test("validateTaskGraph checks self loops, ghost blockers, and cycles", () => {
+  const t1 = task({ id: "TSK-0001", blockedBy: ["TSK-0001"] });
+  assert.deepEqual(validateTaskGraph([t1]), {
+    valid: false,
+    error: "task TSK-0001 cannot be blocked by itself",
+  });
+
+  const ghost = task({ id: "TSK-0001", blockedBy: ["TSK-9999"] });
+  assert.deepEqual(validateTaskGraph([ghost]), {
+    valid: false,
+    error: "task TSK-0001 references non-existent blocker TSK-9999",
+  });
+
+  const c1 = task({ id: "TSK-0001", blockedBy: ["TSK-0002"] });
+  const c2 = task({ id: "TSK-0002", blockedBy: ["TSK-0001"] });
+  assert.deepEqual(validateTaskGraph([c1, c2]), {
+    valid: false,
+    error: "dependency cycle detected: TSK-0001 -> TSK-0002 -> TSK-0001",
+  });
+
+  const ok1 = task({ id: "TSK-0001", blockedBy: [] });
+  const ok2 = task({ id: "TSK-0002", blockedBy: ["TSK-0001"] });
+  assert.deepEqual(validateTaskGraph([ok1, ok2]), { valid: true });
 });

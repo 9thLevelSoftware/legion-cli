@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { Command, CommanderError, Help, Option } from "commander";
 import { HINT, LegionRefuseError, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { DesignSystemError } from "@9thlevelsoftware/legion-cli-design-system";
-import { EngineLockedError } from "@9thlevelsoftware/legion-cli-persist";
+import { EngineLockedError, PathEscapeError } from "@9thlevelsoftware/legion-cli-persist";
+import { SandboxError } from "@9thlevelsoftware/legion-cli-sandbox";
 import { ADAPTER_ID_HELP } from "@9thlevelsoftware/legion-cli-schema";
 import { runAbandon } from "./abandon.js";
 import { runAssumeAnswer, runAssumeList } from "./assume.js";
@@ -23,6 +24,9 @@ import {
   type ReviewStatusFlags,
 } from "./brownfield.js";
 import { runChat } from "./chat.js";
+import { runUndo } from "./undo.js";
+import { runRecipeList, runRecipeRun } from "./recipe.js";
+import { runRepl } from "./repl.js";
 import { runDashboard } from "./dashboard.js";
 import { runServe } from "./serve.js";
 import { runDiscuss } from "./discuss.js";
@@ -229,9 +233,10 @@ export function createProgram(): Command {
   addGlobalOptions(program.command("chat").description("REPL that routes into engine verbs"))
     .option("--once <utterance>", "one turn, then exit")
     .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--fork <turnId>", "fork conversation at specified turn id")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { once?: string; adapter?: string };
+      const flags = opts as { once?: string; adapter?: string; fork?: string };
       const code = await runChat(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
@@ -822,6 +827,42 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
+  addGlobalOptions(program.command("undo").description("Revert last completed task or Legion commit"))
+    .option("--task <id>", "specific task id")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { task?: string };
+      const code = await runUndo({ ...resolveOpts(cmd), ...flags });
+      process.exitCode = code;
+    });
+
+  const recipe = addGlobalOptions(program.command("recipe").description("Automated workflow recipes"));
+  recipe.allowExcessArguments(false).action(requireSub("recipe", "list or run", "legion-cli recipe list"));
+  addGlobalOptions(recipe.command("list").description("List available workflow recipes"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      const code = await runRecipeList(resolveOpts(cmd));
+      process.exitCode = code;
+    });
+  addGlobalOptions(recipe.command("run").description("Execute a workflow recipe"))
+    .argument("<name>", "recipe name or path")
+    .option("--param <pairs...>", "parameter overrides key=value")
+    .allowExcessArguments(false)
+    .action(async (name: string, opts, cmd: Command) => {
+      const flags = opts as { param?: string[] };
+      const code = await runRecipeRun(name, { ...resolveOpts(cmd), ...flags });
+      process.exitCode = code;
+    });
+
+  addGlobalOptions(program.command("repl").description("Sandboxed interactive REPL"))
+    .option("--lang <language>", "node | python | sh", "node")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { lang?: string };
+      const code = await runRepl({ ...resolveOpts(cmd), ...flags });
+      process.exitCode = code;
+    });
+
   program.addHelpCommand(false);
   program
     .command("help")
@@ -863,6 +904,14 @@ export async function runCli(argv: string[]): Promise<number> {
     }
     if (err instanceof LegionRefuseError || err instanceof DesignSystemError) {
       printRefuse(err, json);
+      return 1;
+    }
+    if (err instanceof SandboxError) {
+      printRefuse({ message: err.message, nextHint: HINT.allowNoSandbox }, json);
+      return 1;
+    }
+    if (err instanceof PathEscapeError) {
+      printRefuse({ message: err.message, nextHint: HINT.status }, json);
       return 1;
     }
     if (err instanceof CommanderError) {

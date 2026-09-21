@@ -14,11 +14,27 @@
       "type": "string",
       "minLength": 1
     },
+    "activeBranchId": {
+      "type": "string"
+    },
     "turns": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branchId": {
+            "type": "string"
+          },
           "role": {
             "type": "string",
             "enum": [
@@ -178,7 +194,8 @@
         "required": [
           "role",
           "text"
-        ]
+        ],
+        "additionalProperties": false
       }
     }
   },

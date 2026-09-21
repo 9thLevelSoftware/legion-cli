@@ -28,6 +28,7 @@ export const SCHEMA_VERSION = {
   skillOverlay: "legion-cli-skill-overlay/v1",
   chatSession: "legion-cli-chat/v1",
   serve: "legion-cli-serve/v1",
+  recipe: "legion-cli-recipe/v1",
 } as const;
 
 export type SchemaVersion = (typeof SCHEMA_VERSION)[keyof typeof SCHEMA_VERSION];

@@ -11,9 +11,11 @@ export {
 export {
   compareReadyOrder,
   dependencySubgraph,
+  detectDependencyCycle,
   isTaskReady,
   pickNextTask,
   readyTasks,
   unresolvedBlockers,
+  validateTaskGraph,
 } from "./ready.js";
 export type { ReadyContext } from "./ready.js";

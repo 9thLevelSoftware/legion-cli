@@ -596,13 +596,13 @@ test("per-PR worktrees match git's long-form paths from an 8.3 short project roo
     const engine = new LegionEngine(dir);
     await setupProject({ dir, engine });
     await engine.brownfield({ runId: "18181818", execute: true });
-    await seedFixture(dir, "18181818", "design-ok.md", "design.md");
+    await seedReady(dir, "18181818");
     await engine.brownfieldPrPlan("18181818");
     assert.equal((await engine.brownfieldWorktree("18181818", "pr-1")).created, true);
     assert.equal((await engine.brownfieldWorktree("18181818", "pr-1")).created, false);
 
     await engine.brownfield({ runId: "19191919", execute: true });
-    await seedFixture(dir, "19191919", "design-ok.md", "design.md");
+    await seedReady(dir, "19191919");
     await engine.brownfieldPrPlan("19191919");
     git(dir, ["worktree", "add", "-b", "brownfield/19191919", join(dir, ".legion-cli", "worktrees", "19191919")]);
     await assertRefuses(engine.brownfieldWorktree("19191919", "pr-1"), /legacy single worktree/);

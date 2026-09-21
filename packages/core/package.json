@@ -53,6 +53,7 @@
     "@9thlevelsoftware/legion-cli-qa": "workspace:*",
     "@9thlevelsoftware/legion-cli-sandbox": "workspace:*",
     "@9thlevelsoftware/legion-cli-schema": "workspace:*",
-    "@9thlevelsoftware/legion-cli-wiki": "workspace:*"
+    "@9thlevelsoftware/legion-cli-wiki": "workspace:*",
+    "yaml": "2.9.0"
   }
 }
