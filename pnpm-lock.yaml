@@ -143,6 +143,9 @@ importers:
       '@9thlevelsoftware/legion-cli-wiki':
         specifier: workspace:*
         version: link:../wiki
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
 
   packages/dashboard:
     dependencies:

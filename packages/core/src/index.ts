@@ -13,6 +13,7 @@ export {
   applyChatAction,
   buildChatPrompt,
   createChatSession,
+  forkChatSession,
   gateChatAction,
   isChatProposalAction,
   resumeOrCreateChatSession,
@@ -20,6 +21,10 @@ export {
   sanitizeChatAction,
 } from "./chat.js";
 export type { ChatApplyResult, ChatRouteOpts, ChatTurnKind, ChatTurnResult } from "./chat.js";
+export { undoLastTask } from "./undo.js";
+export type { UndoResult } from "./undo.js";
+export { loadRecipe, runRecipe } from "./recipes.js";
+export type { RecipeExecutionResult } from "./recipes.js";
 export { createLegionEngine, DISTILL_SOURCE_MAX_CHARS, LegionEngine } from "./engine.js";
 export type { MapLspMode, MapOptions, MapResult } from "./map.js";
 export {

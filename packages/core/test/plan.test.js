@@ -326,6 +326,53 @@ test("amendTask updates FileContract and deps require --allow-deps", async () =>
   });
 });
 
+test("amendTask refuses cyclic and self-loop dependencies even with --allow-deps", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedPlanReady(store, {
+      extraTasks: [
+        makeTask({
+          id: "TSK-0002",
+          status: "todo",
+          blockedBy: ["TSK-0001"],
+          contract: { filesAllowed: ["src/board.ts"], expectedArtifacts: ["src/board.ts"] },
+        }),
+      ],
+    });
+    const current = (await store.readTask("TSK-0001")).data.contract;
+
+    // Self loop
+    await assert.rejects(
+      () => engine.amendTask("TSK-0001", current, { allowDeps: true, blockedBy: ["TSK-0001"] }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /cannot be blocked by itself/);
+        return true;
+      },
+    );
+
+    // Direct cycle
+    await assert.rejects(
+      () => engine.amendTask("TSK-0001", current, { allowDeps: true, blockedBy: ["TSK-0002"] }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /dependency cycle detected/);
+        return true;
+      },
+    );
+
+    // Ghost blocker
+    await assert.rejects(
+      () => engine.amendTask("TSK-0001", current, { allowDeps: true, blockedBy: ["TSK-9999"] }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /references non-existent blocker/);
+        return true;
+      },
+    );
+  });
+});
+
 test("nextTasks returns unblocked P0 then oldest", async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);

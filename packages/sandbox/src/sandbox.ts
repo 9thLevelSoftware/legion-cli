@@ -12,9 +12,10 @@ import {
   toProjectRelativePosix,
 } from "@9thlevelsoftware/legion-cli-persist";
 import { isConcretePosixRepoRelativePath, type LegionConfig } from "@9thlevelsoftware/legion-cli-schema";
+import { dockerArgvPrefix, findRunnableDocker } from "./docker.js";
 import { SandboxError } from "./errors.js";
 
-export type SandboxBackend = "bwrap" | "seatbelt" | "copy";
+export type SandboxBackend = "bwrap" | "seatbelt" | "copy" | "docker";
 
 export type SandboxPolicy = {
   projectRoot: string;
@@ -81,7 +82,7 @@ function samePath(a: string, b: string): boolean {
   return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
-function findOnPath(name: string, rejectStubs = false): string | undefined {
+export function findOnPath(name: string, rejectStubs = false): string | undefined {
   const pathVal = process.env.PATH ?? process.env.Path ?? "";
   const pathExt = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM") : "";
   const exts = process.platform === "win32" ? pathExt.split(";").filter(Boolean) : [""];
@@ -152,6 +153,9 @@ export function detectSandbox(): { backend: SandboxBackend; hardened: boolean } 
   if (process.platform === "darwin") {
     const seatbelt = findOnPath("sandbox-exec", true);
     if (seatbelt) return { backend: "seatbelt", hardened: true };
+  }
+  if (findRunnableDocker()) {
+    return { backend: "docker", hardened: true };
   }
   return { backend: "copy", hardened: false };
 }
@@ -890,6 +894,18 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
           }),
         };
         backend = "bwrap";
+        hardened = true;
+      }
+    } else if (selected.want === "docker") {
+      const bin = findRunnableDocker();
+      if (!bin) {
+        if (!policy.allowDegradedCopy) throw new SandboxError(HARDENED_REQUIRED);
+      } else {
+        wrapper = {
+          bin,
+          argvPrefix: dockerArgvPrefix({ jailRoot }),
+        };
+        backend = "docker";
         hardened = true;
       }
     } else {

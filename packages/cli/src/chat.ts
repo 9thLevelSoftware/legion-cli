@@ -2,6 +2,7 @@ import {
   applyChatAction,
   createLegionEngine,
   findSkillsDir,
+  forkChatSession,
   HINT,
   isChatProposalAction,
   refuse,
@@ -23,6 +24,7 @@ import { runStatus } from "./status.js";
 export type ChatFlags = {
   once?: string;
   adapter?: string;
+  fork?: string;
 };
 
 function isTty(): boolean {
@@ -173,6 +175,10 @@ export async function runChat(opts: CliOpts, flags: ChatFlags): Promise<number> 
 
   try {
     let session = await resumeOrCreateChatSession(engine);
+    if (flags.fork) {
+      session = forkChatSession(session, flags.fork);
+      writeOut(`Forked chat session into branch ${session.activeBranchId} at turn ${flags.fork}.`);
+    }
     if (once !== undefined) {
       const result = await handleTurn(opts, engine, session, once, { once: true, adapter });
       return result.code;

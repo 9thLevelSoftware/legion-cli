@@ -1402,6 +1402,14 @@ test("sandbox, skills.trustKeys, and map config are additive", () => {
       adapter: { default: "fake" },
       sandbox: { backend: "docker" },
     }).success,
+    true,
+  );
+  assert.equal(
+    LegionConfigSchema.safeParse({
+      schemaVersion: "legion-cli-config/v1",
+      adapter: { default: "fake" },
+      sandbox: { backend: "invalid-backend" },
+    }).success,
     false,
   );
   assert.equal(

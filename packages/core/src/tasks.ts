@@ -12,7 +12,7 @@ export const LEGAL_TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskSt
   in_progress: ["verifying", "blocked"],
   verifying: ["done", "blocked"],
   blocked: ["todo", "ready"],
-  done: ["compacted"],
+  done: ["compacted", "todo"],
   compacted: [],
 };
 

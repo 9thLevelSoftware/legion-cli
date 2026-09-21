@@ -15,6 +15,7 @@ import {
   overlappingFilesAllowed,
   pickNextTask,
   readyTasks,
+  validateTaskGraph,
 } from "@9thlevelsoftware/legion-cli-graph";
 import {
   ensureRealMapDir,
@@ -440,7 +441,12 @@ export class LegionEngine {
         qa: { mode: "full", passScore: 85 },
         dashboard: { port: 7420, bind: "127.0.0.1" },
         flags: { mcpApps: false, webmcp: false, parallelExecute: false },
-        sandbox: { requireHardened: true, allowCopyJail: false, backend: "auto", skills: ["execute"] },
+        sandbox: {
+          requireHardened: true,
+          allowCopyJail: opts.allowCopyJail ?? false,
+          backend: "auto",
+          skills: ["execute"],
+        },
         skills: { trustKeys: [] },
         map: {},
       };
@@ -1156,16 +1162,22 @@ export class LegionEngine {
         refuse("clearAdapter and adapter are mutually exclusive", HINT.amend);
       }
       const adapter = opts?.clearAdapter ? undefined : (opts?.adapter ?? doc.data.adapter);
-      await this.store.writeTask(
-        {
-          ...doc.data,
-          adapter,
-          contract: merged,
-          blockedBy: nextBlockedBy,
-          blocks: nextBlocks,
-        },
-        doc.body,
-      );
+      const nextTask: Task = {
+        ...doc.data,
+        adapter,
+        contract: merged,
+        blockedBy: nextBlockedBy,
+        blocks: nextBlocks,
+      };
+      if (depsChanged) {
+        const allTasks = await this.#listTasks();
+        const candidateTasks = allTasks.map((t) => (t.id === id ? nextTask : t));
+        const graphCheck = validateTaskGraph(candidateTasks);
+        if (!graphCheck.valid) {
+          refuse(`cannot amend task: ${graphCheck.error}`, HINT.amend);
+        }
+      }
+      await this.store.writeTask(nextTask, doc.body);
       const state = await this.#readState();
       let controlMode: ControlMode = "guarded";
       try {

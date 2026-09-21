@@ -22,6 +22,7 @@ const PARENT_ONLY = new Set([
   "design-system",
   "skills",
   "context",
+  "recipe",
 ]);
 
 /** Every registered command path, e.g. "spec approve", with whether it has subcommands. */

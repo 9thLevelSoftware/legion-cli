@@ -88,3 +88,74 @@ export function readyTasks(ctx: ReadyContext): Task[] {
 export function pickNextTask(ctx: ReadyContext): Task | undefined {
   return readyTasks(ctx)[0];
 }
+
+/**
+ * Detect circular dependencies in task blockedBy relationships.
+ * Returns the cycle path (e.g. ['TSK-0001', 'TSK-0002', 'TSK-0001']) or null.
+ */
+export function detectDependencyCycle(tasks: readonly Task[]): string[] | null {
+  const index = byId(tasks);
+  const visited = new Set<string>();
+  const inStack = new Set<string>();
+
+  for (const task of tasks) {
+    if (visited.has(task.id)) continue;
+    const path: string[] = [];
+
+    function dfs(currentId: string): string[] | null {
+      visited.add(currentId);
+      inStack.add(currentId);
+      path.push(currentId);
+
+      const node = index.get(currentId);
+      if (node) {
+        for (const depId of node.blockedBy) {
+          if (depId === currentId) {
+            return [currentId, currentId];
+          }
+          if (inStack.has(depId)) {
+            const cycleStart = path.indexOf(depId);
+            return [...path.slice(cycleStart), depId];
+          }
+          if (!visited.has(depId)) {
+            const found = dfs(depId);
+            if (found) return found;
+          }
+        }
+      }
+
+      path.pop();
+      inStack.delete(currentId);
+      return null;
+    }
+
+    const cycle = dfs(task.id);
+    if (cycle) return cycle;
+  }
+  return null;
+}
+
+/**
+ * Validate task graph integrity:
+ * 1. No self-loops
+ * 2. All blocker IDs exist
+ * 3. No circular dependency loops
+ */
+export function validateTaskGraph(tasks: readonly Task[]): { valid: boolean; error?: string } {
+  const index = byId(tasks);
+  for (const task of tasks) {
+    if (task.blockedBy.includes(task.id)) {
+      return { valid: false, error: `task ${task.id} cannot be blocked by itself` };
+    }
+    for (const blocker of task.blockedBy) {
+      if (!index.has(blocker)) {
+        return { valid: false, error: `task ${task.id} references non-existent blocker ${blocker}` };
+      }
+    }
+  }
+  const cycle = detectDependencyCycle(tasks);
+  if (cycle) {
+    return { valid: false, error: `dependency cycle detected: ${cycle.join(" -> ")}` };
+  }
+  return { valid: true };
+}

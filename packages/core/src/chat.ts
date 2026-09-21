@@ -522,12 +522,15 @@ export async function routeChatTurn(
             ? "brief"
             : "";
 
+  const userTurnId = `turn-${randomBytes(4).toString("hex")}`;
+  const assistantTurnId = `turn-${randomBytes(4).toString("hex")}`;
   const nextSession: ChatSessionFile = {
     ...session,
     turns: [
       ...session.turns,
-      { role: "user", text: redactSecrets(text) },
+      { id: userTurnId, role: "user", text: redactSecrets(text) },
       {
+        id: assistantTurnId,
         role: "assistant",
         text: redactSecrets(proposal ?? output ?? action.type),
         ...(local ? {} : { action }),
@@ -594,4 +597,22 @@ export async function applyChatAction(
     return { applied: true, output: `Filed ${ticket.id}` };
   }
   return { applied: false, output: "" };
+}
+
+export function forkChatSession(
+  session: ChatSessionFile,
+  fromTurnId: string,
+): ChatSessionFile {
+  const targetIdx = session.turns.findIndex((t) => t.id === fromTurnId);
+  if (targetIdx < 0) {
+    refuse(`turn id '${fromTurnId}' not found in chat session`, "legion-cli chat");
+  }
+  const branchId = `branch-${randomBytes(4).toString("hex")}`;
+  const truncatedTurns = session.turns.slice(0, targetIdx + 1).map((t) => ({ ...t }));
+  return {
+    ...session,
+    id: `chat-${randomBytes(4).toString("hex")}`,
+    activeBranchId: branchId,
+    turns: truncatedTurns,
+  };
 }

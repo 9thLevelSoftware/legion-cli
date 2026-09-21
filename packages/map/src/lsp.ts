@@ -19,6 +19,17 @@ export type DetectedLsp = {
   languages: ReadonlySet<string>;
 };
 
+export type LspDiagnostic = {
+  path: string;
+  range: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+  severity: number;
+  message: string;
+  source?: string;
+};
+
 const EXPORT_SYMBOL_KINDS = new Set([
   2, // Module
   3, // Namespace
@@ -316,6 +327,7 @@ class LspClient {
   #pending = new Map<number, Pending>();
   #dead = false;
   #exitError: Error | null = null;
+  #diagnostics = new Map<string, LspDiagnostic[]>();
 
   constructor(child: ChildProcess) {
     this.#child = child;
@@ -348,12 +360,36 @@ class LspClient {
     return this.#exitError;
   }
 
+  get diagnostics(): ReadonlyMap<string, LspDiagnostic[]> {
+    return this.#diagnostics;
+  }
+
   #onMessage(msg: JsonRpc): void {
     if (msg.id !== undefined && msg.method) {
       this.send({ jsonrpc: "2.0", id: msg.id, result: null });
       return;
     }
-    if (msg.id === undefined) return;
+    if (msg.id === undefined) {
+      if (msg.method === "textDocument/publishDiagnostics" && isRecord(msg.params)) {
+        const params = msg.params as { uri?: string; diagnostics?: unknown[] };
+        if (typeof params.uri === "string" && Array.isArray(params.diagnostics)) {
+          const list: LspDiagnostic[] = [];
+          for (const item of params.diagnostics) {
+            if (!isRecord(item)) continue;
+            const range = isRecord(item.range) ? item.range : { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
+            list.push({
+              path: params.uri,
+              range: range as LspDiagnostic["range"],
+              severity: typeof item.severity === "number" ? item.severity : 1,
+              message: typeof item.message === "string" ? item.message : "",
+              source: typeof item.source === "string" ? item.source : undefined,
+            });
+          }
+          this.#diagnostics.set(params.uri, list);
+        }
+      }
+      return;
+    }
     const id = typeof msg.id === "number" ? msg.id : Number(msg.id);
     const pending = this.#pending.get(id);
     if (!pending) return;
@@ -523,6 +559,94 @@ export async function collectLspExports(opts: {
       }
     }
     return exportsByPath;
+  } catch {
+    return null;
+  } finally {
+    client.kill();
+    await client.waitExit(1000);
+    if (client.stillRunning()) {
+      client.kill("SIGKILL");
+      await client.waitExit(1000);
+    }
+  }
+}
+
+export async function collectLspDiagnostics(opts: {
+  projectRoot: string;
+  files: readonly WalkedFile[];
+  command: string;
+  args: readonly string[];
+  deadlineMs?: number;
+  spawnLsp?: LspSpawnFn;
+}): Promise<LspDiagnostic[] | null> {
+  const deadline = Date.now() + (opts.deadlineMs ?? LSP_BUDGET_MS);
+  const files = opts.files.slice(0, MAX_LSP_FILES);
+  let child: ChildProcess;
+  try {
+    const spawnFn = opts.spawnLsp ?? defaultSpawn;
+    child = spawnFn(opts.command, opts.args, opts.projectRoot);
+  } catch {
+    return null;
+  }
+  if (!child.stdin || !child.stdout) {
+    try {
+      child.kill();
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  const client = new LspClient(child);
+  try {
+    if (remaining(deadline) <= 0) return null;
+    await client.request(
+      "initialize",
+      {
+        processId: process.pid,
+        rootUri: pathToFileURL(opts.projectRoot).href,
+        capabilities: {
+          workspace: { workspaceFolders: false },
+          textDocument: {
+            publishDiagnostics: { relatedInformation: true },
+          },
+        },
+      },
+      remaining(deadline),
+    );
+    client.notify("initialized", {});
+
+    for (const file of files) {
+      if (remaining(deadline) <= 0) break;
+      if (client.dead) break;
+      const uri = pathToFileURL(file.absPath).href;
+      client.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: languageIdFor(file.path, file.language),
+          version: 1,
+          text: file.text,
+        },
+      });
+    }
+
+    const waitMs = Math.min(1500, Math.max(100, remaining(deadline)));
+    await new Promise((r) => setTimeout(r, waitMs));
+
+    const allDiags: LspDiagnostic[] = [];
+    for (const list of client.diagnostics.values()) {
+      allDiags.push(...list);
+    }
+
+    if (remaining(deadline) > 0 && !client.dead) {
+      try {
+        await client.request("shutdown", null, Math.min(2000, remaining(deadline)));
+        client.notify("exit", null);
+      } catch {
+        // best-effort
+      }
+    }
+    return allDiags;
   } catch {
     return null;
   } finally {
