@@ -78,6 +78,7 @@ export {
   assumptionPath,
   decisionPath,
   DEFAULT_LOCK_TIMEOUT_MS,
+  MAX_LOCK_HOLD_MS,
   INDEX_DB_BASENAME,
   ingestReceiptPath,
   LEGION_DIR,
@@ -188,7 +189,7 @@ export {
 export { hasSecretPattern, redactSecrets } from "./redact.js";
 export { openIndexDb, queryIndex, rebuildIndex, REBUILD_SQL } from "./sqlite.js";
 export { createLegionStore, LegionStore } from "./store.js";
-export type { LegionReader } from "./store.js";
+export type { LegionReader, LegionStoreOptions, LockClock } from "./store.js";
 export {
   DECISION_FILE_SCHEMA_VERSION,
   DecisionFileSchema,

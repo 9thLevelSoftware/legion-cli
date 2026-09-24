@@ -336,6 +336,7 @@ async function writeSessionFile(engine: LegionEngine, session: ChatSessionFile):
 }
 
 export async function saveChatSession(engine: LegionEngine, session: ChatSessionFile): Promise<void> {
+  // Same project lock as CLI writers: a dashboard LegionStore in this async chain re-enters (F-018).
   await engine.store.withLock(() => writeSessionFile(engine, session));
 }
 

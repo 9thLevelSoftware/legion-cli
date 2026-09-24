@@ -140,6 +140,7 @@ import {
   findLatestTaskResume,
   findSkillsDir,
   finishStartedSpawn,
+  listCacheResumes,
   optionalSkillSpawn,
   refuseIfLiveSkillSpawn,
   resumeRunIsLive,
@@ -341,6 +342,8 @@ export class LegionEngine {
   readonly #fakeHoldWait?: LegionEngineOptions["fakeHoldWait"];
   readonly #fakeOnWait?: () => Promise<void>;
   readonly #fakeVerificationError?: string;
+  readonly #fakeOnVerify?: () => Promise<void>;
+  readonly #fakeOnQa?: () => Promise<void>;
   readonly #fakeHandlePid?: number;
   readonly #verificationTimeoutMs: number;
   #lastPlanReport: ReadinessReport | null = null;
@@ -356,6 +359,8 @@ export class LegionEngine {
     this.#fakeHoldWait = options?.fakeHoldWait;
     this.#fakeOnWait = options?.fakeOnWait;
     this.#fakeVerificationError = options?.fakeVerificationError;
+    this.#fakeOnVerify = options?.fakeOnVerify;
+    this.#fakeOnQa = options?.fakeOnQa;
     this.#fakeHandlePid = options?.fakeHandlePid;
     this.#verificationTimeoutMs = options?.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   }
@@ -1421,7 +1426,7 @@ export class LegionEngine {
   }
 
   async qa(opts: QaOptions = {}): Promise<QAScore> {
-    return this.#mutate(async () => {
+    const prepared = await this.#withLockOrRefuse(async () => {
       await this.#assertNoLiveInProgress("qa");
       const state = await this.#readState();
       const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
@@ -1439,21 +1444,30 @@ export class LegionEngine {
           refuse("no-browser qa requires legion-cli qa checklist", HINT.qaChecklist);
         }
       }
-      this.#lastQaWarnings = [];
-      let score: QAScore;
-      if (opts.score) {
-        score = QAScoreSchema.parse(opts.score);
-      } else {
-        const run = await runProjectQa({
-          projectRoot: this.projectRoot,
-          spec,
-          mode,
-          unitCommand: config.qa.unitCommand,
-          secretEnvNames: configuredApiKeyEnvNames(config),
-        });
-        score = run.score;
-        this.#lastQaWarnings = run.warnings;
-      }
+      return { spec, config, mode };
+    });
+
+    this.#lastQaWarnings = [];
+    let score: QAScore;
+    if (this.#fakeOnQa) await this.#fakeOnQa();
+    if (opts.score) {
+      score = QAScoreSchema.parse(opts.score);
+    } else {
+      const run = await runProjectQa({
+        projectRoot: this.projectRoot,
+        spec: prepared.spec,
+        mode: prepared.mode,
+        unitCommand: prepared.config.qa.unitCommand,
+        secretEnvNames: configuredApiKeyEnvNames(prepared.config),
+      });
+      score = run.score;
+      this.#lastQaWarnings = run.warnings;
+    }
+
+    return this.#withLockOrRefuse(async () => {
+      const state = await this.#readState();
+      const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
+      this.#assertCanQa(state, slice);
       await this.#writeQaScore(score);
       const next: StateFile = {
         ...state,
@@ -1987,9 +2001,7 @@ export class LegionEngine {
   }
 
   async recoverStaleInProgress(): Promise<void> {
-    await this.#withLockOrRefuse(async () => {
-      await this.#recoverDeadInProgressLocked();
-    });
+    await this.#withLockOrRefuse(async () => undefined);
   }
 
   async peekLiveSpawn(): Promise<{ taskId: string } | null> {
@@ -2205,7 +2217,7 @@ export class LegionEngine {
     const lockedConfig = config;
     const waited = started?.spawned ? await waitStartedSpawn(started) : { error: undefined, timedOut: false, durationMs: 0 };
 
-    const result = await this.#withLockOrRefuse(async () => {
+    const post = await this.#withLockOrRefuse(async () => {
       const revert = started?.spawned ? await finishStartedSpawn(started) : null;
       const extras = revert?.extrasReverted ?? [];
       const incident = Boolean(revert?.incident);
@@ -2297,54 +2309,75 @@ export class LegionEngine {
           phase: "executing",
           currentTaskId: lockedTask.id,
         });
-        return finish({
-          taskId: lockedTask.id,
-          status: "blocked",
-          runId,
-          extrasReverted: extras,
-          incident,
-          headMoved,
-          ticketId,
-        });
+        return {
+          kind: "done" as const,
+          result: await finish({
+            taskId: lockedTask.id,
+            status: "blocked",
+            runId,
+            extrasReverted: extras,
+            incident,
+            headMoved,
+            ticketId,
+          }),
+        };
       }
 
       if (waited.error || !started?.spawned) {
         await this.#transitionTaskTo(lockedTask.id, "blocked");
-        return finish({
-          taskId: lockedTask.id,
-          status: "blocked",
-          runId,
-          extrasReverted: extras,
-          incident,
-          headMoved,
-        });
+        return {
+          kind: "done" as const,
+          result: await finish({
+            taskId: lockedTask.id,
+            status: "blocked",
+            runId,
+            extrasReverted: extras,
+            incident,
+            headMoved,
+          }),
+        };
       }
 
       await this.#transitionTaskTo(lockedTask.id, "verifying");
+      return {
+        kind: "verify" as const,
+        runId,
+        durationMs,
+        timedOut,
+        extras,
+        incident,
+        headMoved,
+        spawnAudit,
+        adapterId,
+        resolutionSource,
+      };
+    });
 
-      // Any exception from here on (the runner, the done/blocked transition, promotion, the
-      // STATE write) blocks the task with the reason: nothing may leave it in `verifying`,
-      // which no verb can move on from (F-002, F-008).
-      let verificationPass = false;
-      let reason: string | undefined;
-      const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
-      try {
-        if (this.#fakeVerificationError) throw new Error(this.#fakeVerificationError);
-        const verification = await runVerificationCommands(
-          this.projectRoot,
-          lockedTask.contract.verificationCommands,
-          {
-            timeoutMs: this.#verificationTimeoutMs,
-            runId,
-            secretEnvNames: configuredApiKeyEnvNames(lockedConfig),
-          },
-        );
-        verificationPass = verification.length > 0 && verification.every((run) => run.ok);
-        reason = verificationFailureReason(verification);
-      } catch (err) {
-        verificationPass = false;
-        reason = `verification failed: ${describe(err)}`;
-      }
+    if (post.kind === "done") return { result: post.result, config: lockedConfig };
+
+    let verificationPass = false;
+    let reason: string | undefined;
+    const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+    try {
+      if (this.#fakeOnVerify) await this.#fakeOnVerify();
+      if (this.#fakeVerificationError) throw new Error(this.#fakeVerificationError);
+      const verification = await runVerificationCommands(
+        this.projectRoot,
+        lockedTask.contract.verificationCommands,
+        {
+          timeoutMs: this.#verificationTimeoutMs,
+          runId: post.runId,
+          secretEnvNames: configuredApiKeyEnvNames(lockedConfig),
+        },
+      );
+      verificationPass = verification.length > 0 && verification.every((run) => run.ok);
+      reason = verificationFailureReason(verification);
+    } catch (err) {
+      verificationPass = false;
+      reason = `verification failed: ${describe(err)}`;
+    }
+
+    const result = await this.#withLockOrRefuse(async () => {
       try {
         if (verificationPass) {
           await this.#transitionTaskTo(lockedTask.id, "done");
@@ -2375,16 +2408,42 @@ export class LegionEngine {
         reason = `${reason ? `${reason}; ` : ""}STATE.md not updated: ${describe(err)}`;
       }
 
-      return finish({
+      const current = await this.#readState();
+      await this.#audit(
+        "execute",
+        current.phase,
+        "agent",
+        {
+          durationMs: post.durationMs,
+          timedOut: post.timedOut,
+          status: verificationPass ? "done" : "blocked",
+          runId: post.runId,
+          ...post.spawnAudit,
+          ...(reason ? { reason } : {}),
+        },
+        lockedTask.id,
+      );
+      if (post.timedOut) {
+        await this.#audit(
+          "timeout",
+          current.phase,
+          "agent",
+          { skillId: "execute", durationMs: post.durationMs, ...post.spawnAudit },
+          lockedTask.id,
+        );
+      }
+      return {
         taskId: lockedTask.id,
-        status: verificationPass ? "done" : "blocked",
-        runId,
-        extrasReverted: extras,
-        incident,
-        headMoved,
+        status: (verificationPass ? "done" : "blocked") as ExecuteTaskResult["status"],
+        runId: post.runId,
+        extrasReverted: post.extras,
+        incident: post.incident,
+        headMoved: post.headMoved,
         verificationPass,
+        adapterId: post.adapterId,
+        resolutionSource: post.resolutionSource,
         ...(reason ? { reason } : {}),
-      });
+      };
     });
 
     return { result, config: lockedConfig };
@@ -3389,15 +3448,30 @@ export class LegionEngine {
   async #recoverDeadInProgressLocked(): Promise<void> {
     const state = await this.#readState();
     if (state.phase === "uninitialized") return;
-    const tasks = await this.#listTasks();
+    this.store.resumeScanCount += 1;
+    const resumes = await listCacheResumes(this.projectRoot);
+    const latestByTask = new Map<string, (typeof resumes)[number]>();
+    for (const resume of resumes) {
+      if (!resume.taskId) continue;
+      const prev = latestByTask.get(resume.taskId);
+      if (!prev || resume.startedAt > prev.startedAt) latestByTask.set(resume.taskId, resume);
+    }
+    const candidateIds = new Set(latestByTask.keys());
+    if (state.currentTaskId) candidateIds.add(state.currentTaskId);
     let current = state.currentTaskId ?? null;
     let changedCurrent = false;
-    for (const task of tasks) {
+    for (const taskId of candidateIds) {
+      let task;
+      try {
+        task = (await this.store.readTask(taskId)).data;
+      } catch {
+        continue;
+      }
       if (task.status !== "in_progress" && task.status !== "verifying") continue;
-      const resume = await findLatestTaskResume(this.projectRoot, task.id);
+      const resume = latestByTask.get(task.id);
       // Child pid is dead after wait(); enginePid live means this process is still finishing.
-      // Verification runs under engine.lock, which we now hold, so a `verifying` task whose run
-      // is dead was interrupted (Ctrl-C, crash) and would otherwise be stuck forever.
+      // Verification runs outside engine.lock; a `verifying` task whose run is dead was
+      // interrupted (Ctrl-C, crash) and would otherwise be stuck forever.
       if (resume && resumeRunIsLive(resume)) continue;
       const isCurrent = current === task.id;
       if (!resume && !isCurrent) continue;
@@ -3426,13 +3500,16 @@ export class LegionEngine {
     opts?: { timeoutMs?: number; nextHint?: string },
   ): Promise<T> {
     try {
+      const already = this.store.holdsLock();
       return await this.store.withLock(
         async () => {
-          if (!this.#reconciled) {
-            await this.store.reconcileUnfinished();
-            this.#reconciled = true;
+          if (!already) {
+            if (!this.#reconciled) {
+              await this.store.reconcileUnfinished();
+              this.#reconciled = true;
+            }
+            await this.#recoverDeadInProgressLocked();
           }
-          await this.#recoverDeadInProgressLocked();
           try {
             return await fn();
           } catch (err) {

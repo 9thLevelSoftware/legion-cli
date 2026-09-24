@@ -1,9 +1,11 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { AuditEventSchema, SCHEMA_VERSION, type AuditEvent, type Phase } from "@9thlevelsoftware/legion-cli-schema";
+import { EngineLockedError } from "./errors.js";
 import { abandonReceiptPath, auditDayPath, auditEventsPath, legionPaths, shipReceiptPath } from "./layout.js";
 import { toFsPath } from "./paths.js";
 import { appendAuditChainLine } from "./pre-image.js";
+import { createLegionStore } from "./store.js";
 
 export { abandonReceiptPath, auditDayPath, auditEventsPath, shipReceiptPath };
 
@@ -20,6 +22,18 @@ export async function appendAuditEvent(
     actor: event.actor,
     data: event.data,
   });
+  const store = createLegionStore(projectRoot);
+  if (store.holdsLock()) return appendAuditEventLocked(projectRoot, parsed);
+  try {
+    // timeout 0: re-enter if we hold it; never wait out a refusal that already hit EngineLockedError
+    return await store.withLock(() => appendAuditEventLocked(projectRoot, parsed), { timeoutMs: 0 });
+  } catch (err) {
+    if (err instanceof EngineLockedError) return appendAuditEventLocked(projectRoot, parsed);
+    throw err;
+  }
+}
+
+async function appendAuditEventLocked(projectRoot: string, parsed: AuditEvent): Promise<AuditEvent> {
   const paths = legionPaths(projectRoot);
   await mkdir(paths.auditDir, { recursive: true });
   const jsonl = toFsPath(projectRoot, auditEventsPath());
