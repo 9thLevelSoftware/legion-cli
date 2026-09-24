@@ -68,7 +68,11 @@ export function isTaskReady(task: Task, ctx: ReadyContext): boolean {
   if (fileContractFailsPlan(task.contract.filesAllowed, task.contract.expectedArtifacts)) return false;
   if (unresolvedBlockers(task, ctx.tasks).length > 0) return false;
   if (hasOpenBlockingAssumption(task, ctx)) return false;
-  if (ctx.tasks.some((other) => other.status === "in_progress" && other.id !== task.id)) {
+  if (
+    ctx.tasks.some(
+      (other) => (other.status === "in_progress" || other.status === "verifying") && other.id !== task.id,
+    )
+  ) {
     return false;
   }
   return true;

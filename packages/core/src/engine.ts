@@ -2399,10 +2399,13 @@ export class LegionEngine {
       }
 
       try {
+        const state = await this.#readState();
+        const currentTaskId =
+          state.currentTaskId && state.currentTaskId !== lockedTask.id ? state.currentTaskId : lockedTask.id;
         await this.#writeState({
-          ...(await this.#readState()),
+          ...state,
           phase: "executing",
-          currentTaskId: lockedTask.id,
+          currentTaskId,
         });
       } catch (err) {
         reason = `${reason ? `${reason}; ` : ""}STATE.md not updated: ${describe(err)}`;
@@ -3418,7 +3421,7 @@ export class LegionEngine {
     if (!state.currentTaskId) return null;
     try {
       const task = (await this.store.readTask(state.currentTaskId)).data;
-      if (task.status !== "in_progress") return null;
+      if (task.status !== "in_progress" && task.status !== "verifying") return null;
       return task;
     } catch {
       return null;
@@ -3431,10 +3434,10 @@ export class LegionEngine {
     if (task) {
       const resume = await findLatestTaskResume(this.projectRoot, task.id);
       if (resume && resumeRunIsLive(resume)) {
-        refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
+        refuse(`${action} is refused while ${task.id} is ${task.status}`, HINT.status);
       }
       if (!resume) {
-        refuse(`${action} is refused while ${task.id} is in_progress`, HINT.status);
+        refuse(`${action} is refused while ${task.id} is ${task.status}`, HINT.status);
       }
     }
     await refuseIfLiveSkillSpawn(this.projectRoot, action);
@@ -3448,7 +3451,6 @@ export class LegionEngine {
   async #recoverDeadInProgressLocked(): Promise<void> {
     const state = await this.#readState();
     if (state.phase === "uninitialized") return;
-    this.store.resumeScanCount += 1;
     const resumes = await listCacheResumes(this.projectRoot);
     const latestByTask = new Map<string, (typeof resumes)[number]>();
     for (const resume of resumes) {

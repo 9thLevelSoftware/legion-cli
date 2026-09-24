@@ -737,7 +737,14 @@ export function resumeRunIsLive(resume: Pick<ResumeFile, "pid" | "enginePid" | "
   return resumePidIsLive(resume) || resumeEngineIsLive(resume);
 }
 
+export let listCacheResumesCalls = 0;
+
+export function resetListCacheResumesCalls(): void {
+  listCacheResumesCalls = 0;
+}
+
 export async function listCacheResumes(projectRoot: string): Promise<ResumeFile[]> {
+  listCacheResumesCalls += 1;
   const runsDir = join(projectRoot, ".legion-cli", "cache", "runs");
   let names: string[];
   try {

@@ -264,7 +264,19 @@ test("engine.lock is single-writer and times out", async () => {
   await withTempDir(async (dir) => {
     const a = new LegionStore(dir);
     const b = new LegionStore(dir);
-    await a.acquireLock({ timeoutMs: 200 });
+    let release;
+    const held = new Promise((done) => {
+      release = done;
+    });
+    let inside;
+    const ready = new Promise((done) => {
+      inside = done;
+    });
+    const holding = a.withLock(async () => {
+      inside();
+      await held;
+    });
+    await ready;
     const started = Date.now();
     await assert.rejects(() => b.acquireLock({ timeoutMs: 200 }), (err) => {
       assert.equal(err instanceof EngineLockedError, true);
@@ -272,7 +284,8 @@ test("engine.lock is single-writer and times out", async () => {
       return true;
     });
     assert.ok(Date.now() - started >= 150, "timeout must wait before refusing");
-    await a.releaseLock();
+    release();
+    await holding;
     await b.acquireLock({ timeoutMs: 200 });
     await b.releaseLock();
   });

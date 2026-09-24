@@ -74,7 +74,15 @@ export {
   verificationFailureReason,
 } from "./verify.js";
 export type { VerificationRun } from "./verify.js";
-export { argvSummarySafe, findSkillsDir, optionalSkillSpawn, resolveSkillDir, resumeRunIsLive } from "./spawn.js";
+export {
+  argvSummarySafe,
+  findSkillsDir,
+  listCacheResumesCalls,
+  optionalSkillSpawn,
+  resetListCacheResumesCalls,
+  resolveSkillDir,
+  resumeRunIsLive,
+} from "./spawn.js";
 export {
   WIREFRAME_PALETTE,
   assertWireframeHtml,
