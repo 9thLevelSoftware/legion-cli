@@ -67,6 +67,11 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Require runnable docker backend
+        run: |
+          docker info
+          node --input-type=module -e 'import { detectSandbox } from "./packages/sandbox/dist/index.js"; const d = detectSandbox(); if (d.backend !== "docker" || !d.hardened) { console.error(JSON.stringify(d)); process.exit(1); }'
+
       - name: Typecheck
         run: pnpm typecheck
 

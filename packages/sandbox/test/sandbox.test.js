@@ -10,7 +10,7 @@ import { PathEscapeError } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionConfigSchema } from "@9thlevelsoftware/legion-cli-schema";
 
 import { assertExecuteSandbox, detectSandbox, materializeJail, SandboxError } from "../dist/index.js";
-import { DOCKER_WORKDIR, translateHostPathToDocker } from "../dist/docker.js";
+import { DOCKER_HOST_EXEC_REFUSAL, DOCKER_WORKDIR, translateHostPathToDocker } from "../dist/docker.js";
 
 const HARDENED_REQUIRED =
   "hardened sandbox required (bwrap or seatbelt); copy jail refused without allowNoSandbox or sandbox.allowCopyJail";
@@ -1001,4 +1001,14 @@ test("docker translation maps jail-rel paths and never prefixes /workspace/ onto
   assert.equal(translateHostPathToDocker(hostNode, jail).startsWith(`${DOCKER_WORKDIR}/`), false);
   const inside = process.platform === "win32" ? `${jail}\\src\\main.ts` : `${jail}/src/main.ts`;
   assert.equal(translateHostPathToDocker(inside, jail), `${DOCKER_WORKDIR}/src/main.ts`);
+  assert.equal(translateHostPathToDocker("claude", jail), "claude");
+  const hostClaude = process.platform === "win32" ? "C:\\Tools\\claude.exe" : "/usr/bin/claude";
+  assert.throws(
+    () => translateHostPathToDocker(hostClaude, jail),
+    (err) => {
+      assert.equal(err.name, "SandboxError");
+      assert.equal(err.message, DOCKER_HOST_EXEC_REFUSAL);
+      return true;
+    },
+  );
 });
