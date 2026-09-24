@@ -1561,6 +1561,42 @@ test("unjournaled tasks/** forgery is restored even when allowedRoots lists task
   });
 });
 
+test("engine-journaled new task survives agent overwrite when allowedRoots lists tasks", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.tasksDir, { recursive: true });
+    const taskPath = join(paths.tasksDir, "TSK-0001.md");
+    await openEngineCommand(dir, "cmd-adopt-a");
+    const engineBytes = "status: ready\nengine-task\n";
+    await writeTextFile(taskPath, engineBytes, { root: dir });
+    await writeFile(taskPath, "status: done\nforged-task\n", "utf8");
+    const result = await restoreEngineState(dir, "cmd-adopt-a", {
+      agentAlive: false,
+      jailWritable: false,
+      allowedRoots: [".legion-cli/tasks/**"],
+    });
+    assert.equal(await readFile(taskPath, "utf8"), engineBytes);
+    assert.ok(result.tampered.includes(".legion-cli/tasks/TSK-0001.md"));
+  });
+});
+
+test("agent-only new task file is deleted on restore even when allowedRoots lists tasks", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.tasksDir, { recursive: true });
+    const taskPath = join(paths.tasksDir, "TSK-0002.md");
+    await openEngineCommand(dir, "cmd-adopt-b");
+    await writeFile(taskPath, "status: done\nagent-only\n", "utf8");
+    const result = await restoreEngineState(dir, "cmd-adopt-b", {
+      agentAlive: false,
+      jailWritable: false,
+      allowedRoots: [".legion-cli/tasks/**"],
+    });
+    assert.equal(existsSync(taskPath), false);
+    assert.ok(result.restored.includes(".legion-cli/tasks/TSK-0002.md"));
+  });
+});
+
 test("restoreEngineState refuses an in-window audit rewind", async () => {
   await withTempDir(async (dir) => {
     const paths = legionPaths(dir);

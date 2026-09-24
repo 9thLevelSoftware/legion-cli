@@ -592,19 +592,8 @@ export async function restoreEngineState(
   }
   const extraRoots = command.extraRoots;
   const allowedRoots = opts?.allowedRoots ?? command.extraRoots;
-  let currentPaths = await listRestoreManifestPaths(projectRoot, extraRoots);
-  for (const posix of currentPaths) {
-    if (command.files[posix]) continue;
-    if (!isPinnedEngineSot(posix)) continue;
-    if (posix === ".legion-cli/STATE.md" || posix === ".legion-cli/config.yaml") continue;
-    if (!isContractAllowed(posix, allowedRoots)) continue;
-    const abs = toFsPath(projectRoot, posix);
-    const bytes = await currentBytes(abs);
-    if (!bytes) continue;
-    await journaledWriteFile(projectRoot, abs, bytes);
-  }
+  const currentPaths = await listRestoreManifestPaths(projectRoot, extraRoots);
   const journal = (await listJournalEntries(projectRoot)).filter((entry) => entry.ts >= command.startedAt);
-  currentPaths = await listRestoreManifestPaths(projectRoot, extraRoots);
   const journaledPaths = journal.map((entry) => entry.path).filter((posix) => isRestoreManifestPath(posix, extraRoots));
   const union = new Set([...Object.keys(command.files), ...currentPaths, ...journaledPaths]);
 
