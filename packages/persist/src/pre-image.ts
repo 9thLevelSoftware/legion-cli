@@ -117,6 +117,15 @@ function isExcludedRestorePath(posix: string): boolean {
   return EXCLUDED_PREFIXES.some((prefix) => posix.startsWith(prefix));
 }
 
+/** Pinned engine-SoT: restored even when a skill contract lists the same roots. */
+export function isPinnedEngineSot(posixPath: string): boolean {
+  const posix = toPosixPath(posixPath);
+  if (posix === ".legion-cli/STATE.md" || posix === ".legion-cli/config.yaml") return true;
+  if (posix === ".legion-cli/tasks" || posix.startsWith(".legion-cli/tasks/")) return true;
+  if (posix === ".legion-cli/qa" || posix.startsWith(".legion-cli/qa/")) return true;
+  return false;
+}
+
 /** Pinned restore manifest plus command contract write-paths under `.legion-cli/`. chat/** is out. */
 export function isRestoreManifestPath(posixPath: string, extraRoots: readonly string[] = []): boolean {
   const posix = toPosixPath(posixPath);
@@ -335,6 +344,7 @@ export async function openEngineCommand(
   commandId: string,
   opts?: { extraRoots?: readonly string[] },
 ): Promise<EngineCommandRecord> {
+  await assertStoreRootsNotLinked(projectRoot);
   const extraRoots = [...(opts?.extraRoots ?? [])];
   const files: Record<string, string> = {};
   let hashedFiles = 0;
@@ -563,9 +573,38 @@ export async function restoreEngineState(
   if (!command) {
     throw new RestoreRefusedError(`restore refused: unknown command ${commandId}`);
   }
+  try {
+    await verifyAuditChain(projectRoot);
+  } catch (err) {
+    if (err instanceof AuditTamperError) {
+      try {
+        await writeIncident(projectRoot, {
+          type: "audit-chain",
+          commandId,
+          reason: err.message,
+        });
+      } catch {
+        // still fail closed
+      }
+      throw err;
+    }
+    throw err;
+  }
   const extraRoots = command.extraRoots;
+  const allowedRoots = opts?.allowedRoots ?? command.extraRoots;
+  let currentPaths = await listRestoreManifestPaths(projectRoot, extraRoots);
+  for (const posix of currentPaths) {
+    if (command.files[posix]) continue;
+    if (!isPinnedEngineSot(posix)) continue;
+    if (posix === ".legion-cli/STATE.md" || posix === ".legion-cli/config.yaml") continue;
+    if (!isContractAllowed(posix, allowedRoots)) continue;
+    const abs = toFsPath(projectRoot, posix);
+    const bytes = await currentBytes(abs);
+    if (!bytes) continue;
+    await journaledWriteFile(projectRoot, abs, bytes);
+  }
   const journal = (await listJournalEntries(projectRoot)).filter((entry) => entry.ts >= command.startedAt);
-  const currentPaths = await listRestoreManifestPaths(projectRoot, extraRoots);
+  currentPaths = await listRestoreManifestPaths(projectRoot, extraRoots);
   const journaledPaths = journal.map((entry) => entry.path).filter((posix) => isRestoreManifestPath(posix, extraRoots));
   const union = new Set([...Object.keys(command.files), ...currentPaths, ...journaledPaths]);
 
@@ -621,8 +660,7 @@ export async function restoreEngineState(
       continue;
     }
 
-    const allowedRoots = opts?.allowedRoots ?? command.extraRoots;
-    if (isContractAllowed(posix, allowedRoots)) continue;
+    if (isContractAllowed(posix, allowedRoots) && !isPinnedEngineSot(posix)) continue;
 
     const preDigest = command.files[posix] ?? null;
     if (currentHash === preDigest) continue;
@@ -645,13 +683,10 @@ export async function reconcileUnfinishedCommands(projectRoot: string): Promise<
   const open = await listOpenCommandIds(projectRoot);
   const done: string[] = [];
   for (const id of open) {
-    try {
-      await restoreEngineState(projectRoot, id, { agentAlive: false, jailWritable: false });
-      done.push(id);
-    } catch (err) {
-      if (err instanceof RestoreRefusedError || err instanceof SymlinkRefusedError) continue;
-      throw err;
-    }
+    const rec = await readCommandRecord(projectRoot, id);
+    if (!rec) continue;
+    await restoreEngineState(projectRoot, id, { agentAlive: false, jailWritable: false });
+    done.push(id);
   }
   return done;
 }
@@ -702,7 +737,9 @@ export async function verifyAuditChain(
     raw = await readFile(jsonl, "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    return readAuditChain(projectRoot);
+    const stored = await readAuditChain(projectRoot);
+    if (stored.length > 0) throw new AuditTamperError("audit chain rewind refused");
+    return stored;
   }
   const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
   let digest = GENESIS_DIGEST;

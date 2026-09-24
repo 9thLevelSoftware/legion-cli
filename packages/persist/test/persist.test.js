@@ -25,8 +25,10 @@ import {
   listIncidents,
   listJournalEntries,
   openEngineCommand,
+  reconcileUnfinishedCommands,
   restoreEngineState,
   RestoreRefusedError,
+  writeIncident,
   sha256Content,
   verifyAuditChain,
   writeTextFile,
@@ -1540,6 +1542,96 @@ test("restore refuses while agentAlive or jailWritable", async () => {
   });
 });
 
+test("unjournaled tasks/** forgery is restored even when allowedRoots lists tasks", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.tasksDir, { recursive: true });
+    const taskPath = join(paths.tasksDir, "TSK-0001.md");
+    const original = "status: ready\noriginal-task\n";
+    await writeFile(taskPath, original, "utf8");
+    await openEngineCommand(dir, "cmd-allowed-sot");
+    await writeFile(taskPath, "status: done\nforged-task\n", "utf8");
+    const result = await restoreEngineState(dir, "cmd-allowed-sot", {
+      agentAlive: false,
+      jailWritable: false,
+      allowedRoots: [".legion-cli/tasks/**"],
+    });
+    assert.equal(await readFile(taskPath, "utf8"), original);
+    assert.ok(result.restored.includes(".legion-cli/tasks/TSK-0001.md"));
+  });
+});
+
+test("restoreEngineState refuses an in-window audit rewind", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.tasksDir, { recursive: true });
+    await writeFile(join(paths.tasksDir, "TSK-0001.md"), "ready\n", "utf8");
+    await openEngineCommand(dir, "cmd-audit-rewind");
+    await appendAuditEvent(dir, {
+      ts: "2026-09-01T12:00:00.000Z",
+      type: "execute",
+      phase: "executing",
+      actor: "agent",
+      data: { ok: true },
+    });
+    await appendAuditEvent(dir, {
+      ts: "2026-09-01T12:00:01.000Z",
+      type: "qa",
+      phase: "executing",
+      actor: "user",
+      data: { pass: true },
+    });
+    const jsonl = join(dir, ...auditEventsPath().split("/"));
+    const raw = await readFile(jsonl, "utf8");
+    const first = raw.split(/\r?\n/).filter((line) => line.trim())[0];
+    await writeFile(jsonl, `${first}\n`, "utf8");
+    await assert.rejects(
+      () => restoreEngineState(dir, "cmd-audit-rewind", { agentAlive: false, jailWritable: false }),
+      AuditTamperError,
+    );
+    const incidents = await listIncidents(dir);
+    assert.equal(incidents.some((row) => row.type === "audit-chain"), true);
+  });
+});
+
+test("missing audit jsonl with a stored chain is rewind, not genesis", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, ".legion-cli", "audit"), { recursive: true });
+    await appendAuditEvent(dir, {
+      ts: "2026-09-01T12:00:00.000Z",
+      type: "execute",
+      phase: "executing",
+      actor: "agent",
+      data: { ok: true },
+    });
+    const jsonl = join(dir, ...auditEventsPath().split("/"));
+    await rm(jsonl);
+    await assert.rejects(() => verifyAuditChain(dir), AuditTamperError);
+    const paths = legionPaths(dir);
+    await mkdir(paths.tasksDir, { recursive: true });
+    await writeFile(join(paths.tasksDir, "TSK-0001.md"), "x\n", "utf8");
+    await openEngineCommand(dir, "cmd-missing-jsonl");
+    await assert.rejects(
+      () => restoreEngineState(dir, "cmd-missing-jsonl", { agentAlive: false, jailWritable: false }),
+      AuditTamperError,
+    );
+  });
+});
+
+test("reconcileUnfinishedCommands refuses a missing pre-image blob", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.tasksDir, { recursive: true });
+    const taskPath = join(paths.tasksDir, "TSK-0001.md");
+    await writeFile(taskPath, "original\n", "utf8");
+    await openEngineCommand(dir, "cmd-poison");
+    await writeFile(taskPath, "forged\n", "utf8");
+    await rm(paths.preImageDir, { recursive: true, force: true });
+    await assert.rejects(() => reconcileUnfinishedCommands(dir), RestoreRefusedError);
+    assert.equal(await readFile(taskPath, "utf8"), "forged\n");
+  });
+});
+
 test("pre-image, journal, and incident store writes refuse a junction at the store root", async () => {
   await withTempDir(async (dir) => {
     const paths = legionPaths(dir);
@@ -1560,6 +1652,55 @@ test("pre-image, journal, and incident store writes refuse a junction at the sto
       assert.deepEqual(await readdir(outside), []);
     } finally {
       await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("each store root refuses a junction in isolation", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.indexDir, { recursive: true });
+    await mkdir(paths.tasksDir, { recursive: true });
+    await writeFile(join(paths.tasksDir, "TSK-0001.md"), "x\n", "utf8");
+
+    const plant = async (storeRoot) => {
+      const outside = await mkdtemp(join(tmpdir(), "legion-one-junc-"));
+      await rm(storeRoot, { recursive: true, force: true });
+      await symlink(outside, storeRoot, process.platform === "win32" ? "junction" : "dir");
+      return outside;
+    };
+
+    const preOutside = await plant(paths.preImageDir);
+    try {
+      await assert.rejects(() => openEngineCommand(dir, "cmd-pre-junc"), SymlinkRefusedError);
+      assert.deepEqual(await readdir(preOutside), []);
+    } finally {
+      await rm(paths.preImageDir, { recursive: true, force: true });
+      await rm(preOutside, { recursive: true, force: true });
+    }
+
+    const journalOutside = await plant(paths.journalDir);
+    try {
+      await assert.rejects(
+        () => writeTextFile(join(paths.tasksDir, "TSK-0001.md"), "y\n", { root: dir }),
+        SymlinkRefusedError,
+      );
+      assert.deepEqual(await readdir(journalOutside), []);
+    } finally {
+      await rm(paths.journalDir, { recursive: true, force: true });
+      await rm(journalOutside, { recursive: true, force: true });
+    }
+
+    const incidentOutside = await plant(paths.incidentDir);
+    try {
+      await assert.rejects(
+        () => writeIncident(dir, { type: "tamper", reason: "isolated incident root", path: ".legion-cli/STATE.md" }),
+        SymlinkRefusedError,
+      );
+      assert.deepEqual(await readdir(incidentOutside), []);
+    } finally {
+      await rm(paths.incidentDir, { recursive: true, force: true });
+      await rm(incidentOutside, { recursive: true, force: true });
     }
   });
 });

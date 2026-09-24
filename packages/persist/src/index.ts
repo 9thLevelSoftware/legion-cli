@@ -122,6 +122,7 @@ export {
   assertStoreRootsNotLinked,
   auditLineDigest,
   closeEngineCommand,
+  isPinnedEngineSot,
   isRestoreManifestPath,
   journaledRemove,
   journaledWriteFile,

@@ -38,7 +38,9 @@ import {
   packetPath,
   parseMarkdownDocument,
   PathEscapeError,
+  AuditTamperError,
   EngineLockedError,
+  RestoreRefusedError,
   invalidTaskMessage,
   listTaskFiles,
   nextFileId,
@@ -3427,8 +3429,8 @@ export class LegionEngine {
       return await this.store.withLock(
         async () => {
           if (!this.#reconciled) {
-            this.#reconciled = true;
             await this.store.reconcileUnfinished();
+            this.#reconciled = true;
           }
           await this.#recoverDeadInProgressLocked();
           try {
@@ -3441,7 +3443,7 @@ export class LegionEngine {
         opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : undefined,
       );
     } catch (err) {
-      if (err instanceof EngineLockedError) {
+      if (err instanceof EngineLockedError || err instanceof RestoreRefusedError || err instanceof AuditTamperError) {
         const refuseErr = new LegionRefuseError(err.message, opts?.nextHint ?? HINT.status);
         await this.#auditRefuse(refuseErr);
         throw refuseErr;
