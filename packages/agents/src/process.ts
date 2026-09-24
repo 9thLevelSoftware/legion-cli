@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createWriteStream, realpathSync, type WriteStream } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { AgentError } from "./errors.js";
 import { ABORT_GRACE_MS, DEFAULT_TIMEOUT_MS, type AgentHandle, type AgentJob, type AgentResult } from "./types.js";
@@ -35,6 +35,34 @@ function terminate(pid: number, force: boolean): void {
   else terminateUnix(pid, force);
 }
 
+const DOCKER_WORKDIR = "/workspace";
+
+function dockerWorkdir(prefix: readonly string[]): string | undefined {
+  const index = prefix.indexOf("-w");
+  if (index >= 0 && prefix[index + 1]) return prefix[index + 1];
+  return undefined;
+}
+
+function isNodeExecPath(path: string): boolean {
+  const base = path.replaceAll("\\", "/").split("/").pop() ?? "";
+  return /^node(\.exe)?$/i.test(base);
+}
+
+function translateWrapperInvoke(wrapper: { argvPrefix: readonly string[] }, invoke: string, cwd: string): string {
+  if (dockerWorkdir(wrapper.argvPrefix) !== DOCKER_WORKDIR) return invoke;
+  const rel = relative(cwd, invoke);
+  if (rel && !rel.startsWith("..") && !isAbsolute(rel) && !/^[A-Za-z]:/.test(rel)) {
+    return `${DOCKER_WORKDIR}/${rel.replaceAll("\\", "/")}`;
+  }
+  // Image provides node; never prefix /workspace/ onto a host exec path.
+  if (isNodeExecPath(invoke)) return "node";
+  return invoke;
+}
+
+function powershellExePath(): string {
+  return join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
 function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: WriteStream, stderr: WriteStream): ChildProcess {
   const resolved = resolveBinary(binary) ?? binary;
   const common = {
@@ -51,6 +79,7 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
     } catch {
       invoke = resolved;
     }
+    invoke = translateWrapperInvoke(job.wrapper, invoke, job.cwd);
     return spawn(job.wrapper.bin, [...job.wrapper.argvPrefix, invoke, ...args], {
       ...common,
       stdio: ["ignore", stdout, stderr],
@@ -58,7 +87,18 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
     });
   }
 
-  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
+  if (process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(resolved)) {
+    if (/\.ps1$/i.test(resolved)) {
+      return spawn(
+        powershellExePath(),
+        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", resolved, ...args],
+        {
+          ...common,
+          stdio: ["ignore", stdout, stderr],
+          detached: false,
+        },
+      );
+    }
     const unwrapped = unwrapCmdShim(resolved);
     if (unwrapped) {
       // Real argv array: cmd.exe would truncate a multiline pointer at the first newline.

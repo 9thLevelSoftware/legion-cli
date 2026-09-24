@@ -10,6 +10,7 @@ import { PathEscapeError } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionConfigSchema } from "@9thlevelsoftware/legion-cli-schema";
 
 import { assertExecuteSandbox, detectSandbox, materializeJail, SandboxError } from "../dist/index.js";
+import { DOCKER_WORKDIR, translateHostPathToDocker } from "../dist/docker.js";
 
 const HARDENED_REQUIRED =
   "hardened sandbox required (bwrap or seatbelt); copy jail refused without allowNoSandbox or sandbox.allowCopyJail";
@@ -95,7 +96,7 @@ async function seedProject(dir) {
 
 function spawnInJail(handle, script) {
   const opts = handle.spawnOpts();
-  const command = process.execPath;
+  const command = opts.translateInvoke(process.execPath);
   const args = ["-e", script];
   const spawnOpts = { cwd: opts.cwd, env: opts.env, encoding: "utf8", windowsHide: true, shell: false };
   if (opts.wrapper) {
@@ -990,4 +991,14 @@ test("assertExecuteSandbox fails when config pins copy with requireHardened", ()
       return true;
     },
   );
+});
+
+test("docker translation maps jail-rel paths and never prefixes /workspace/ onto a host exec", () => {
+  const jail = process.platform === "win32" ? "C:\\jails\\run-1" : "/tmp/jails/run-1";
+  const hostNode = process.platform === "win32" ? "C:\\Program Files\\nodejs\\node.exe" : "/usr/bin/node";
+  assert.equal(translateHostPathToDocker(hostNode, jail), "node");
+  assert.notEqual(translateHostPathToDocker(hostNode, jail), `${DOCKER_WORKDIR}/${hostNode}`);
+  assert.equal(translateHostPathToDocker(hostNode, jail).startsWith(`${DOCKER_WORKDIR}/`), false);
+  const inside = process.platform === "win32" ? `${jail}\\src\\main.ts` : `${jail}/src/main.ts`;
+  assert.equal(translateHostPathToDocker(inside, jail), `${DOCKER_WORKDIR}/src/main.ts`);
 });

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { parseCommandLine, runCommand as runArgv, splitCommand } from "@9thlevelsoftware/legion-cli-agents";
 import type { QAScore, Spec } from "@9thlevelsoftware/legion-cli-schema";
 import { extractJsonPayload, reportFailClosed } from "./reports.js";
-import { scoreSpecReports, type QaMode } from "./score.js";
+import { scoreQa, scoreSpecReports, ZERO_TESTS_REASON, type QaMode } from "./score.js";
 import { specHasUi } from "./tags.js";
 
 export const DEFAULT_UNIT_COMMAND = "pnpm test -- --reporter=json";
@@ -152,7 +152,7 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
   }
 
   const failClosed = !unitCapture.started || reportFailClosed(unitReport);
-  const score = scoreSpecReports({
+  const scoreOpts = {
     spec: opts.spec,
     mode: opts.mode,
     playwrightRan,
@@ -162,6 +162,24 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
     createdAt: opts.createdAt,
     evidencePaths,
     failClosed,
-  });
+  };
+  let score;
+  try {
+    score = scoreSpecReports(scoreOpts);
+  } catch (err) {
+    if (!(err instanceof Error) || err.message !== ZERO_TESTS_REASON) throw err;
+    if (!failClosed) warnings.push(ZERO_TESTS_REASON);
+    score = scoreQa({
+      specId: opts.spec.id,
+      mode: opts.mode,
+      specHasUi: specHasUi(opts.spec),
+      playwrightRan,
+      tests: [{ title: `${ZERO_TESTS_REASON} @p0`, ok: false, skipped: false, visualFailure: false, priority: "P0" }],
+      id: opts.id,
+      createdAt: opts.createdAt,
+      evidencePaths,
+      failClosed: true,
+    });
+  }
   return { score, evidencePaths, playwrightRan, warnings };
 }
