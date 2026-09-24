@@ -7,5 +7,5 @@ export { lspSpawnEnv, collectLspDiagnostics } from "./lsp.js";
 export type { LspDiagnostic, LspSpawnFn, ResolveBinaryFn } from "./lsp.js";
 export { parseSource } from "./parse.js";
 export type { ParseResult } from "./parse.js";
-export { computeRepoPageRank, formatRepoMap } from "./repo-map.js";
+export { computeRepoPageRank, formatRepoMap, repoMapWork, resetRepoMapWork } from "./repo-map.js";
 export type { RankedModule, RepoMapOptions } from "./repo-map.js";

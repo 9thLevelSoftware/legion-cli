@@ -3,15 +3,16 @@ import { join } from "node:path";
 import { sliceTasks } from "@9thlevelsoftware/legion-cli-core";
 import { unresolvedBlockers } from "@9thlevelsoftware/legion-cli-graph";
 import {
+  AUDIT_VIEW_CAP,
   createLegionStore,
   invalidTaskMessage,
   listTaskFiles,
+  readAuditEvents,
   toFsPath,
   type LegionStore,
   type TaskFileEntry,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
-  AuditEventSchema,
   IngestReceiptSchema,
   SCHEMA_VERSION,
   type AdapterId,
@@ -175,24 +176,7 @@ function collectBlockers(
 }
 
 async function loadAuditEvents(store: LegionStore, phase: Phase): Promise<AuditEvent[]> {
-  const events: AuditEvent[] = [];
-  const jsonl = join(store.paths.auditDir, "events.jsonl");
-  try {
-    const raw = await readFile(jsonl, "utf8");
-    for (const line of raw.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      try {
-        const parsed = AuditEventSchema.safeParse(JSON.parse(line) as unknown);
-        if (parsed.success) events.push(parsed.data);
-      } catch {
-        continue;
-      }
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      // unreadable jsonl is treated as empty so the viewer still serves
-    }
-  }
+  const events: AuditEvent[] = await readAuditEvents(store.projectRoot, { cap: AUDIT_VIEW_CAP });
 
   const files = await listMarkdown(store.paths.auditDir);
   for (const file of files) {

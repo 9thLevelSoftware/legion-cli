@@ -6,11 +6,11 @@ import {
   createLegionStore,
   invalidTaskMessage,
   listTaskFiles,
+  readAuditEvents,
   type LegionReader,
   type TaskFileEntry,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
-  AuditEventSchema,
   ADAPTER_ID_HELP,
   SCHEMA_VERSION,
   type Assumption,
@@ -307,25 +307,7 @@ export async function readTaskGraph(store: LegionReader, specId?: string) {
 export async function readAuditTrail(store: LegionReader, limit = 100): Promise<AuditEvent[]> {
   await assertInitialized(store);
   const cap = Math.min(Math.max(limit, 1), 1000);
-  const abs = join(store.paths.auditDir, "events.jsonl");
-  let raw: string;
-  try {
-    raw = await readFile(abs, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw err;
-  }
-  const events: AuditEvent[] = [];
-  for (const line of raw.split(/\r?\n/)) {
-    if (line.trim().length === 0) continue;
-    try {
-      const parsed = AuditEventSchema.safeParse(JSON.parse(line));
-      if (parsed.success) events.push(parsed.data);
-    } catch {
-      continue;
-    }
-  }
-  return events.slice(-cap);
+  return readAuditEvents(store.projectRoot, { cap });
 }
 
 function matchWikiPageId(pages: ReturnType<typeof loadWikiPages>, ref: string): string {
