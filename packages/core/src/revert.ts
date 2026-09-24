@@ -1,14 +1,21 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, readdir, readFile, rm, unlink } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import {
   gitDiscoverChanges,
   gitPathExistsAtRef,
   gitRestoreWorktree,
   gitRmWorktree,
+  isGitRepo,
+  isRestoreManifestPath,
+  journaledRemove,
+  openEngineCommand,
+  restoreEngineState,
+  RestoreRefusedError,
   toFsPath,
   toPosixPath,
   tryGitHead,
+  writeTextFile,
 } from "@9thlevelsoftware/legion-cli-persist";
 import { atomicWriteFile } from "./atomic-write.js";
 import { isAllowedPath, isEngineOwned, matchesGlob } from "./contracts.js";
@@ -28,6 +35,10 @@ export type RevertResult = {
   preSpawnRef: string | null;
   sandboxCopied?: string[];
   sandboxDropped?: string[];
+  engineRestored?: string[];
+  tamperIncident?: boolean;
+  repoHalfRefused?: string;
+  filesHashed?: number;
 };
 
 /** Pre-spawn bytes of `.legion-cli/tasks/*.md`, keyed by filename. */
@@ -85,7 +96,7 @@ export async function restoreChangedTaskFiles(
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
-    await writeFile(abs, snap.bytes);
+    await writeTextFile(abs, snap.bytes, { root: resolve(tasksDir, "..", ".."), skipJournal: true });
   }
   rewritten.sort((a, b) => a.localeCompare(b));
   return rewritten;
@@ -94,6 +105,8 @@ export async function restoreChangedTaskFiles(
 export function recordPreSpawnRef(projectRoot: string): string | null {
   return tryGitHead(projectRoot);
 }
+
+export { openEngineCommand, restoreEngineState, RestoreRefusedError };
 
 /** Worktree dirt at spawn start so engine writes (STATE, new tasks) are not extras. */
 export function snapshotDirtyPaths(projectRoot: string, preSpawnRef: string | null): Set<string> {
@@ -205,12 +218,47 @@ export async function revertExtras(opts: {
   gitPolicy?: GitPolicySnapshot;
   dirtyAtStart?: ReadonlySet<string>;
   chatSessions?: ReadonlyMap<string, string>;
+  commandId?: string;
+  extraRoots?: readonly string[];
+  agentAlive?: boolean;
+  jailWritable?: boolean;
 }): Promise<RevertResult> {
   const extrasReverted: string[] = [];
   const headNow = tryGitHead(opts.projectRoot);
   const headMoved = Boolean(opts.preSpawnRef && headNow && headNow !== opts.preSpawnRef);
 
-  const candidates = new Set(gitDiscoverChanges(opts.projectRoot, opts.preSpawnRef));
+  let engineRestored: string[] = [];
+  let tamperIncident = false;
+  let filesHashed = 0;
+  if (opts.commandId) {
+    const engine = await restoreEngineState(opts.projectRoot, opts.commandId, {
+      agentAlive: opts.agentAlive,
+      jailWritable: opts.jailWritable,
+      allowedRoots: opts.allowedRoots,
+    });
+    engineRestored = [...engine.restored, ...engine.tampered, ...engine.reconciled];
+    tamperIncident = engine.tampered.length > 0;
+    filesHashed = engine.filesHashed;
+  }
+
+  let repoHalfRefused: string | undefined;
+  let gitChanges: string[] = [];
+  const git = isGitRepo(opts.projectRoot);
+  if (opts.preSpawnRef && !git) {
+    throw new RestoreRefusedError("git restore refused: not a git repository");
+  }
+  if (git) {
+    try {
+      gitChanges = gitDiscoverChanges(opts.projectRoot, opts.preSpawnRef);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new RestoreRefusedError(`git restore refused: ${message}`);
+    }
+  } else {
+    repoHalfRefused = "git restore refused: not a git repository";
+  }
+
+  const candidates = new Set(gitChanges);
   if (opts.snapshot) {
     const after = await snapshotPaths(opts.projectRoot);
     for (const posix of after) {
@@ -229,11 +277,16 @@ export async function revertExtras(opts: {
 
   const incidents = await gitPolicyIncidents(opts.projectRoot, opts.gitPolicy);
   for (const posix of incidents) candidates.add(posix);
-  let incident = incidents.length > 0;
+  let incident = incidents.length > 0 || tamperIncident;
+
+  const extraRoots = opts.extraRoots ?? opts.allowedRoots.filter((root) => root.startsWith(".legion-cli/"));
 
   for (const posix of candidates) {
     if (posix.startsWith(".git/") || posix === ".git") {
       incident = true;
+      continue;
+    }
+    if (isRestoreManifestPath(posix, extraRoots)) {
       continue;
     }
     if (opts.dirtyAtStart?.has(posix)) {
@@ -246,7 +299,16 @@ export async function revertExtras(opts: {
     await restoreOne(opts.projectRoot, opts.preSpawnRef, posix, opts.chatSessions?.get(posix));
   }
 
-  return { extrasReverted, incident, headMoved, preSpawnRef: opts.preSpawnRef };
+  return {
+    extrasReverted,
+    incident,
+    headMoved,
+    preSpawnRef: opts.preSpawnRef,
+    engineRestored,
+    tamperIncident,
+    repoHalfRefused,
+    filesHashed,
+  };
 }
 
 async function restoreOne(
@@ -261,16 +323,24 @@ async function restoreOne(
     return;
   }
   if (preSpawnRef && gitPathExistsAtRef(projectRoot, preSpawnRef, posix)) {
-    gitRestoreWorktree(projectRoot, preSpawnRef, posix);
+    try {
+      gitRestoreWorktree(projectRoot, preSpawnRef, posix);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new RestoreRefusedError(`git restore refused: ${message}`);
+    }
     return;
   }
   if (preSpawnRef) {
     try {
       gitRmWorktree(projectRoot, posix);
       return;
-    } catch {
-      // untracked extra
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/did not match|pathspec/i.test(message)) {
+        throw new RestoreRefusedError(`git restore refused: ${message}`);
+      }
     }
   }
-  await rm(abs, { recursive: true, force: true });
+  await journaledRemove(projectRoot, abs);
 }

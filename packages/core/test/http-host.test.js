@@ -28,7 +28,7 @@ async function trySymlink(target, path, type) {
 function hostFor(jailRoot, extra = {}) {
   return createHttpToolHost({
     jailRoot,
-    allowedWrites: extra.allowedWrites ?? ["src/x", ".legion-cli/tasks"],
+    allowedWrites: extra.allowedWrites ?? ["src/x"],
     filesForbidden: extra.filesForbidden,
     hardened: extra.hardened ?? false,
     spawnOpts: extra.spawnOpts ?? { cwd: jailRoot, env: process.env },
@@ -63,6 +63,18 @@ test("symlink allowedWrites/x → .env is not read or written through", async ()
     await assert.rejects(() => host.readFile("src/x"), /symlink refused/);
     await assert.rejects(() => host.writeFile("src/x", "pwned\n"), /symlink refused/);
     assert.equal(await readFile(join(dir, ".env"), "utf8"), "SECRET=1\n");
+  });
+});
+
+test("write_file refuses engine-SoT STATE.md and tasks/** even when listed in allowedWrites", async () => {
+  await withTemp(async (dir) => {
+    const host = hostFor(dir, {
+      allowedWrites: [".legion-cli/STATE.md", ".legion-cli/tasks", "src/ok.ts"],
+    });
+    await assert.rejects(() => host.writeFile(".legion-cli/STATE.md", "forged\n"), /implicit forbidden/);
+    await assert.rejects(() => host.writeFile(".legion-cli/tasks/TSK-0001.md", "forged\n"), /implicit forbidden/);
+    await host.writeFile("src/ok.ts", "ok\n");
+    assert.equal(await readFile(join(dir, "src", "ok.ts"), "utf8"), "ok\n");
   });
 });
 

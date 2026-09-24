@@ -27,7 +27,7 @@ import {
   writeMapFile,
 } from "@9thlevelsoftware/legion-cli-map";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   abandonReceiptBody,
@@ -343,6 +343,7 @@ export class LegionEngine {
   readonly #verificationTimeoutMs: number;
   #lastPlanReport: ReadinessReport | null = null;
   #lastQaWarnings: string[] = [];
+  #reconciled = false;
 
   constructor(projectRoot: string, store?: LegionStore, options?: LegionEngineOptions) {
     this.store = store ?? createLegionStore(projectRoot);
@@ -772,10 +773,13 @@ export class LegionEngine {
         const fingerprintsPath = join(this.store.paths.mapDir, "fingerprints.json");
         const architecturePath = join(this.store.paths.mapDir, "ARCHITECTURE.md");
         const existingArch = await readExistingMapFile(architecturePath);
-        await writeMapFile(fingerprintsPath, `${JSON.stringify(generated.fingerprints, null, 2)}\n`);
+        await writeMapFile(fingerprintsPath, `${JSON.stringify(generated.fingerprints, null, 2)}\n`, {
+          root: this.projectRoot,
+        });
         await writeMapFile(
           architecturePath,
           mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints)),
+          { root: this.projectRoot },
         );
         if (revert.incident) {
           refuse("inspect .git — spawn touched .git/", HINT.map);
@@ -1350,8 +1354,17 @@ export class LegionEngine {
         refuse("review requires an active spec", HINT.spec);
       }
       const revert = started?.spawned ? await finishStartedSpawn(started) : null;
-      const rewrittenExistingTaskIds = beforeFiles
-        ? await restoreChangedTaskFiles(this.store.paths.tasksDir, beforeFiles)
+      const restoredTaskIds = (revert?.engineRestored ?? [])
+        .filter((posix) => posix.startsWith(".legion-cli/tasks/") && posix.toLowerCase().endsWith(".md"))
+        .map((posix) => posix.slice(".legion-cli/tasks/".length).replace(/\.md$/i, ""));
+      const taskSnap = beforeFiles;
+      const rewrittenExistingTaskIds = taskSnap
+        ? [
+            ...new Set([
+              ...restoredTaskIds.filter((id) => taskSnap.has(`${id}.md`)),
+              ...(await restoreChangedTaskFiles(this.store.paths.tasksDir, taskSnap)),
+            ]),
+          ].sort((a, b) => a.localeCompare(b))
         : [];
       if (started?.runId) {
         await this.#fileExtrasFromRun(started.runId, specId);
@@ -1776,7 +1789,9 @@ export class LegionEngine {
       });
       await this.store.writeSpec(spec, specMarkdownBody(spec));
       await mkdir(join(this.store.paths.specsDir, specId), { recursive: true });
-      await writeFile(join(this.store.paths.specsDir, specId, "prd.md"), prdBody(answers.mapped), "utf8");
+      await writeTextFile(join(this.store.paths.specsDir, specId, "prd.md"), prdBody(answers.mapped), {
+        root: this.projectRoot,
+      });
       if (!skipWireframes) {
         await this.#writeWireframes(spec, answers.mapped.screens);
       }
@@ -2876,7 +2891,9 @@ export class LegionEngine {
       intentWikiBody(answers.mapped),
     );
     await mkdir(join(this.store.paths.specsDir, specId), { recursive: true });
-    await writeFile(join(this.store.paths.specsDir, specId, "prd.md"), prdBody(answers.mapped), "utf8");
+    await writeTextFile(join(this.store.paths.specsDir, specId, "prd.md"), prdBody(answers.mapped), {
+      root: this.projectRoot,
+    });
   }
 
   async #allocateSpecId(name: string, opts?: { allowExistingDraft?: boolean }): Promise<string> {
@@ -2919,7 +2936,7 @@ export class LegionEngine {
 
   async #writeWireframes(spec: Spec, screens: string[]): Promise<void> {
     const dir = join(this.store.paths.specsDir, spec.id, "wireframes");
-    await writeWireframeFiles(dir, spec, screenPagesFor(screens));
+    await writeWireframeFiles(dir, spec, screenPagesFor(screens), this.projectRoot);
   }
 
   async #ensureWireframePalette(specId: string, screens: string[]): Promise<void> {
@@ -3086,7 +3103,7 @@ export class LegionEngine {
     const dir = join(this.store.paths.qaDir, "scores");
     await mkdir(dir, { recursive: true });
     const abs = join(dir, `${score.id}.json`);
-    await writeFile(abs, `${JSON.stringify(score, null, 2)}\n`, "utf8");
+    await writeTextFile(abs, `${JSON.stringify(score, null, 2)}\n`, { root: this.projectRoot });
   }
 
   async #readLastQa(state: StateFile): Promise<QAScore | null> {
@@ -3409,6 +3426,10 @@ export class LegionEngine {
     try {
       return await this.store.withLock(
         async () => {
+          if (!this.#reconciled) {
+            this.#reconciled = true;
+            await this.store.reconcileUnfinished();
+          }
           await this.#recoverDeadInProgressLocked();
           try {
             return await fn();

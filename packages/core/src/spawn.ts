@@ -26,7 +26,7 @@ import {
   type ResolvedSkillDir,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
-import { isPidAlive, type LegionReader } from "@9thlevelsoftware/legion-cli-persist";
+import { isPidAlive, openEngineCommand, RestoreRefusedError, type LegionReader } from "@9thlevelsoftware/legion-cli-persist";
 import {
   assertExecuteSandbox,
   materializeJail,
@@ -189,6 +189,7 @@ type SpawnRevertCtx = {
   gitPolicy: Awaited<ReturnType<typeof snapshotGitPolicy>>;
   dirtyAtStart: ReturnType<typeof snapshotDirtyPaths>;
   chatSessions: Awaited<ReturnType<typeof snapshotChatSessions>>;
+  commandId: string;
 };
 
 export type StartedSkillSpawn =
@@ -466,6 +467,8 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     skipDesignAppend: assembled.skipDesignAppend,
   });
   const preSpawnRef = recordPreSpawnRef(opts.projectRoot);
+  const extraRoots = allowedRoots.filter((root) => root.startsWith(".legion-cli/"));
+  await openEngineCommand(opts.projectRoot, runId, { extraRoots });
   // Always snapshot the worktree, even when preSpawnRef is set. Gitignored
   // extras are invisible to `git status --exclude-standard`; KD-11 forbids
   // unioning raw `git status --ignored` (that would revert pre-existing ignored files).
@@ -591,6 +594,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       gitPolicy,
       dirtyAtStart,
       chatSessions,
+      commandId: runId,
     },
     resolution,
     binary: tmpl.binary,
@@ -636,8 +640,23 @@ export async function finishStartedSpawn(
       const out = await started.sandbox.copyOut();
       copied = out.copied;
       dropped = out.dropped;
+      await started.sandbox.destroy().catch(() => undefined);
     }
-    const revert = await revertExtras(started.revertCtx);
+    const childPid = started.handle.pid;
+    const agentAlive = Boolean(childPid && childPid !== process.pid && isPidAlive(childPid));
+    let revert;
+    try {
+      revert = await revertExtras({
+        ...started.revertCtx,
+        commandId: started.revertCtx.commandId,
+        extraRoots: started.revertCtx.allowedRoots.filter((root) => root.startsWith(".legion-cli/")),
+        agentAlive,
+        jailWritable: false,
+      });
+    } catch (err) {
+      if (err instanceof RestoreRefusedError) refuse(err.message, HINT.status);
+      throw err;
+    }
     const extrasReverted = new Set(revert.extrasReverted);
     let incident = revert.incident;
     if (started.sandbox) {

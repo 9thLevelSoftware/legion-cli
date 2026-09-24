@@ -42,3 +42,19 @@ export class SymlinkRefusedError extends PersistError {
     this.path = path;
   }
 }
+
+/** Restore refused: agent still alive, jail still writable, or git failed closed. */
+export class RestoreRefusedError extends PersistError {
+  constructor(message: string) {
+    super(message);
+    this.name = "RestoreRefusedError";
+  }
+}
+
+/** Audit digest chain gap or rewrite. Never byte-exact rewind. */
+export class AuditTamperError extends PersistError {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuditTamperError";
+  }
+}

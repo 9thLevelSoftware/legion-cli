@@ -19,6 +19,16 @@ import {
   processIdentity,
   sameProcessStart,
   startedAfterRecorded,
+  atomicWriteFile,
+  AuditTamperError,
+  journalPreWrite,
+  listIncidents,
+  listJournalEntries,
+  openEngineCommand,
+  restoreEngineState,
+  RestoreRefusedError,
+  sha256Content,
+  verifyAuditChain,
   writeTextFile,
   GITIGNORE_ENTRIES,
   GITIGNORE_TEMPLATE,
@@ -581,7 +591,7 @@ test("a write that throws midway leaves the previous STATE.md intact and no temp
       yield "---\nschemaVersion: legion-cli-state/v1\nphase: exec";
       throw new Error("crash mid-write");
     }
-    await assert.rejects(() => writeTextFile(store.paths.stateMd, tornBody(), { root: dir }), /crash mid-write/);
+    await assert.rejects(() => atomicWriteFile(store.paths.stateMd, tornBody(), { root: dir }), /crash mid-write/);
     assert.equal(await readFile(store.paths.stateMd, "utf8"), before);
     assert.deepEqual(
       (await readdir(dirname(store.paths.stateMd))).filter((name) => name.endsWith(".tmp")),
@@ -1452,5 +1462,163 @@ test("git add stages listed paths and not gitignored index/cache", async () => {
     assert.equal(staged.includes("other.ts"), false);
     assert.equal(staged.some((p) => p.startsWith(".legion-cli/index")), false);
     assert.equal(staged.some((p) => p.startsWith(".legion-cli/cache")), false);
+  });
+});
+
+test("pre-image store restores byte-exact content; a digest alone cannot", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.tasksDir, { recursive: true });
+    const taskPath = join(paths.tasksDir, "TSK-0001.md");
+    const original = "original-bytes-please-keep\n";
+    await writeFile(taskPath, original, "utf8");
+    await openEngineCommand(dir, "cmd-pre");
+    await writeFile(taskPath, "forged-done\n", "utf8");
+    const result = await restoreEngineState(dir, "cmd-pre", { agentAlive: false, jailWritable: false });
+    assert.equal(await readFile(taskPath, "utf8"), original);
+    assert.ok(result.restored.includes(".legion-cli/tasks/TSK-0001.md"));
+    assert.equal(sha256Content(await readFile(taskPath)), sha256Content(original));
+  });
+});
+
+test("journaled engine write survives restore; mixed write is a tamper restore of journaled bytes", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.qaDir, { recursive: true });
+    await mkdir(join(paths.qaDir, "scores"), { recursive: true });
+    await openEngineCommand(dir, "cmd-mix");
+    const scorePath = join(paths.qaDir, "scores", "qa-1.json");
+    const engineBytes = '{"id":"qa-1","pass":true}\n';
+    await writeTextFile(scorePath, engineBytes, { root: dir });
+    await writeFile(scorePath, '{"id":"qa-1","pass":false,"forged":true}\n', "utf8");
+    const result = await restoreEngineState(dir, "cmd-mix", { agentAlive: false, jailWritable: false });
+    assert.equal(await readFile(scorePath, "utf8"), engineBytes);
+    assert.ok(result.tampered.includes(".legion-cli/qa/scores/qa-1.json"));
+    const incidents = await listIncidents(dir);
+    assert.equal(incidents.some((row) => row.type === "tamper"), true);
+  });
+});
+
+test("pre-op journal without post restores old-hash (SIGKILL mid-write); landed write is kept", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.tasksDir, { recursive: true });
+    const taskPath = join(paths.tasksDir, "TSK-0001.md");
+    const original = "engine-owned-original\n";
+    await writeFile(taskPath, original, "utf8");
+    await openEngineCommand(dir, "cmd-kill");
+    const intended = "engine-owned-new\n";
+    await journalPreWrite(dir, taskPath, Buffer.from(intended, "utf8"));
+    const rolled = await restoreEngineState(dir, "cmd-kill", { agentAlive: false, jailWritable: false });
+    assert.equal(await readFile(taskPath, "utf8"), original);
+    assert.ok(rolled.reconciled.includes(".legion-cli/tasks/TSK-0001.md"));
+
+    await writeFile(taskPath, original, "utf8");
+    await openEngineCommand(dir, "cmd-kill-landed");
+    const pre = await journalPreWrite(dir, taskPath, Buffer.from(intended, "utf8"));
+    await atomicWriteFile(taskPath, intended, { root: dir });
+    const kept = await restoreEngineState(dir, "cmd-kill-landed", { agentAlive: false, jailWritable: false });
+    assert.equal(await readFile(taskPath, "utf8"), intended);
+    assert.ok(kept.kept.includes(".legion-cli/tasks/TSK-0001.md"));
+    assert.equal(pre.kind, "pre");
+  });
+});
+
+test("restore refuses while agentAlive or jailWritable", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, ".legion-cli", "tasks"), { recursive: true });
+    await writeFile(join(dir, ".legion-cli", "tasks", "TSK-0001.md"), "x\n", "utf8");
+    await openEngineCommand(dir, "cmd-order");
+    await assert.rejects(
+      () => restoreEngineState(dir, "cmd-order", { agentAlive: true, jailWritable: false }),
+      RestoreRefusedError,
+    );
+    await assert.rejects(
+      () => restoreEngineState(dir, "cmd-order", { agentAlive: false, jailWritable: true }),
+      RestoreRefusedError,
+    );
+  });
+});
+
+test("pre-image, journal, and incident store writes refuse a junction at the store root", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.indexDir, { recursive: true });
+    const outside = await mkdtemp(join(tmpdir(), "legion-store-junc-"));
+    try {
+      for (const storeRoot of [paths.preImageDir, paths.journalDir, paths.incidentDir]) {
+        await rm(storeRoot, { recursive: true, force: true });
+        await symlink(outside, storeRoot, process.platform === "win32" ? "junction" : "dir");
+      }
+      await mkdir(paths.tasksDir, { recursive: true });
+      await writeFile(join(paths.tasksDir, "TSK-0001.md"), "x\n", "utf8");
+      await assert.rejects(() => openEngineCommand(dir, "cmd-junc"), SymlinkRefusedError);
+      await assert.rejects(
+        () => writeTextFile(join(paths.tasksDir, "TSK-0001.md"), "y\n", { root: dir }),
+        SymlinkRefusedError,
+      );
+      assert.deepEqual(await readdir(outside), []);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("audit digest chain refuses rewind and middle rewrite", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, ".legion-cli", "audit"), { recursive: true });
+    await appendAuditEvent(dir, {
+      ts: "2026-09-01T12:00:00.000Z",
+      type: "execute",
+      phase: "executing",
+      actor: "agent",
+      data: { ok: true },
+    });
+    await appendAuditEvent(dir, {
+      ts: "2026-09-01T12:00:01.000Z",
+      type: "qa",
+      phase: "executing",
+      actor: "user",
+      data: { pass: true },
+    });
+    const chain = await verifyAuditChain(dir);
+    assert.equal(chain.length, 2);
+    const jsonl = join(dir, ...auditEventsPath().split("/"));
+    const raw = await readFile(jsonl, "utf8");
+    const lines = raw.split(/\r?\n/).filter((line) => line.trim());
+    await writeFile(jsonl, `${lines[0]}\n`, "utf8");
+    await assert.rejects(() => verifyAuditChain(dir), AuditTamperError);
+    await writeFile(jsonl, raw, "utf8");
+    await verifyAuditChain(dir);
+    const mutated = lines.map((line, i) => (i === 0 ? line.replace("execute", "forged") : line)).join("\n") + "\n";
+    await writeFile(jsonl, mutated, "utf8");
+    await assert.rejects(() => verifyAuditChain(dir), AuditTamperError);
+  });
+});
+
+test("cross-instance journaled write is visible to restore", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.tasksDir, { recursive: true });
+    const taskPath = join(paths.tasksDir, "TSK-0001.md");
+    await writeFile(taskPath, "before\n", "utf8");
+    await openEngineCommand(dir, "cmd-cross");
+    const child = join(dir, "journal-child.mjs");
+    const persistHref = pathToFileURL(join(pkgRoot, "dist", "index.js")).href;
+    await writeFile(
+      child,
+      `import { writeTextFile } from ${JSON.stringify(persistHref)};
+await writeTextFile(${JSON.stringify(taskPath)}, "dashboard-post\\n", { root: ${JSON.stringify(dir)} });
+`,
+      "utf8",
+    );
+    const spawned = spawnSync(process.execPath, [child], { encoding: "utf8", windowsHide: true });
+    assert.equal(spawned.status, 0, spawned.stderr);
+    assert.equal(await readFile(taskPath, "utf8"), "dashboard-post\n");
+    const result = await restoreEngineState(dir, "cmd-cross", { agentAlive: false, jailWritable: false });
+    assert.equal(await readFile(taskPath, "utf8"), "dashboard-post\n");
+    assert.ok(result.kept.includes(".legion-cli/tasks/TSK-0001.md"));
+    const entries = await listJournalEntries(dir);
+    assert.ok(entries.some((entry) => entry.path === ".legion-cli/tasks/TSK-0001.md" && entry.kind === "post"));
   });
 });
