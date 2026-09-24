@@ -1921,6 +1921,7 @@ export class LegionEngine {
 
   async undoLastTask(opts?: { taskId?: string }): Promise<UndoResult> {
     return this.#mutate(async () => {
+      await this.#assertNoLiveInProgress("undo");
       const result = await runUndoLastTask({
         projectRoot: this.projectRoot,
         store: this.store,
@@ -2871,7 +2872,7 @@ export class LegionEngine {
   async #clampSpawnedTaskStatuses(createdTaskIds: readonly string[]): Promise<void> {
     for (const id of createdTaskIds) {
       const doc = await this.store.readTask(id);
-      if (doc.data.status === "todo" || doc.data.status === "ready") continue;
+      if (doc.data.status === "todo" || doc.data.status === "ready" || doc.data.status === "compacted") continue;
       const to = canTransitionTaskStatus(doc.data.status, "todo") ? "todo" : "blocked";
       await this.#writeTask({ ...doc.data, status: to }, doc.body);
     }
@@ -2880,7 +2881,7 @@ export class LegionEngine {
   async #clampPlanTaskStatuses(specId: string): Promise<void> {
     const slice = sliceTasks(await this.#listTasks(), specId);
     for (const task of slice) {
-      if (task.status === "todo" || task.status === "ready") continue;
+      if (task.status === "todo" || task.status === "ready" || task.status === "compacted") continue;
       const doc = await this.store.readTask(task.id);
       const to = canTransitionTaskStatus(doc.data.status, "todo") ? "todo" : "blocked";
       await this.#writeTask({ ...doc.data, status: to }, doc.body);
@@ -3195,8 +3196,12 @@ export class LegionEngine {
     let from: TaskStatus | undefined;
     try {
       from = (await this.store.readTask(data.id)).data.status;
-    } catch {
-      from = undefined;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        from = undefined;
+      } else {
+        throw err;
+      }
     }
     if (from !== undefined && from !== data.status) {
       assertTaskStatusTransition(from, data.status);

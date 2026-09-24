@@ -561,6 +561,10 @@ export async function applyChatAction(
   action: ChatAction,
   opts?: { confirmed?: boolean; utterance?: string },
 ): Promise<ChatApplyResult> {
+  const rawType = (action as { type?: string }).type;
+  if (typeof rawType === "string" && ILLEGAL_MODEL_TYPES.has(rawType)) {
+    refuse(`chat cannot apply ${rawType}`, HINT.status);
+  }
   const state = await engine.getState();
   if (state.phase === "uninitialized") {
     refuse("chat is refused until init", HINT.init);

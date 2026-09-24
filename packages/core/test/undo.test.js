@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { listOpenCommandIds } from "@9thlevelsoftware/legion-cli-persist";
 import {
   applyChatAction,
   canTransition,
@@ -14,7 +15,9 @@ import {
   LEGAL_TASK_TRANSITIONS,
   LegionEngine,
   LegionRefuseError,
+  refuse,
   sanitizeChatAction,
+  setUndoGitResetHard,
   SHIP_COMMIT_PREFIX,
   undoLastTask,
 } from "../dist/index.js";
@@ -25,10 +28,37 @@ import {
   initProject,
   makeTask,
   patchState,
+  seedFrozenSpec,
   seedPlanReady,
   withEngine,
+  withFakeAdapter,
   writeTask,
 } from "./helpers.js";
+
+const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
+
+async function writeLiveResume(dir, taskId) {
+  const runId = `live-${taskId}`;
+  const resumeDir = join(dir, ".legion-cli", "cache", "runs", runId);
+  await mkdir(resumeDir, { recursive: true });
+  await writeFile(
+    join(resumeDir, "resume.json"),
+    `${JSON.stringify({
+      schemaVersion: "legion-cli-resume/v1",
+      runId,
+      taskId,
+      skillId: "execute",
+      preSpawnRef: "UNBORN",
+      startedAt: new Date().toISOString(),
+      pid: process.pid,
+      adapterId: "fake",
+      binary: "(in-process)",
+      argvSummary: "{{pointer}}",
+      resolutionSource: "default",
+    })}\n`,
+    "utf8",
+  );
+}
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const coreSrc = join(repoRoot, "packages", "core", "src");
@@ -276,6 +306,142 @@ test("undo after git revert rolls git back when a later store write fails", asyn
   });
 });
 
+test("failed git reset during undo rollback does not restore engine files", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    await writeTask(store, makeTask({ id: "TSK-0002", status: "ready", blockedBy: ["TSK-0001"] }));
+    await patchState(store, { phase: "ready_to_ship" });
+    initGitRepo(dir);
+    await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
+    git(dir, ["add", "shipped.txt"]);
+    git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-checkin`]);
+    const shipHead = gitHead(dir);
+
+    let writes = 0;
+    for (const method of ["writeTask", "writeState"]) {
+      const original = store[method].bind(store);
+      store[method] = async (...args) => {
+        writes += 1;
+        if (writes === 2) throw new Error("injected store failure at step 2");
+        return original(...args);
+      };
+    }
+    setUndoGitResetHard(() => {
+      refuse("git reset failed during undo rollback: injected", "git status");
+    });
+    try {
+      await assert.rejects(() => engine.undoLastTask(), (err) =>
+        isRefuse(err, /git reset failed during undo rollback/, /git status/),
+      );
+      assert.notEqual(gitHead(dir), shipHead);
+      assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
+      assert.equal((await store.readState()).data.phase, "ready_to_ship");
+    } finally {
+      setUndoGitResetHard(null);
+    }
+  });
+});
+
+test("failed undo closes the command so reconcile cannot keep a mix", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    await writeTask(store, makeTask({ id: "TSK-0002", status: "ready", blockedBy: ["TSK-0001"] }));
+    await patchState(store, { phase: "ready_to_ship" });
+
+    let writes = 0;
+    for (const method of ["writeTask", "writeState"]) {
+      const original = store[method].bind(store);
+      store[method] = async (...args) => {
+        writes += 1;
+        if (writes === 2) throw new Error("injected store failure at step 2");
+        return original(...args);
+      };
+    }
+
+    await assert.rejects(() => engine.undoLastTask(), /injected store failure/);
+    assert.equal((await store.readTask("TSK-0001")).data.status, "done");
+    assert.equal((await store.readState()).data.phase, "ready_to_ship");
+    assert.deepEqual(await listOpenCommandIds(dir), []);
+
+    const other = new LegionEngine(dir, store);
+    await other.recoverStaleInProgress();
+    assert.equal((await store.readTask("TSK-0001")).data.status, "done");
+    assert.equal((await store.readTask("TSK-0002")).data.status, "ready");
+    assert.equal((await store.readState()).data.phase, "ready_to_ship");
+  });
+});
+
+test("undo refuses during a live execute", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    await writeTask(
+      store,
+      makeTask({ id: "TSK-0002", status: "in_progress", blockedBy: ["TSK-0001"] }),
+    );
+    await patchState(store, { phase: "executing", currentTaskId: "TSK-0002" });
+    await writeLiveResume(dir, "TSK-0002");
+    await assert.rejects(() => engine.undoLastTask(), (err) =>
+      isRefuse(err, /undo is refused while TSK-0002 is in_progress/, /legion-cli status/),
+    );
+    assert.equal((await store.readTask("TSK-0002")).data.status, "in_progress");
+    assert.equal((await store.readTask("TSK-0001")).data.status, "done");
+  });
+});
+
+test("task recover refuses a live verifying task", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await seedPlanReady(store, { phase: "executing", task: { status: "verifying" }, currentTaskId: "TSK-0001" });
+    await writeLiveResume(dir, "TSK-0001");
+    await assert.rejects(() => engine.recoverTask("TSK-0001"), (err) =>
+      isRefuse(err, /cannot recover TSK-0001 while verification is live/, /legion-cli status/),
+    );
+    assert.equal((await store.readTask("TSK-0001")).data.status, "verifying");
+  });
+});
+
+test("#writeTask does not skip the guard when an existing task read fails", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedPlanReady(store, { phase: "executing", task: { status: "blocked" } });
+    const original = store.readTask.bind(store);
+    let reads = 0;
+    store.readTask = async (id) => {
+      reads += 1;
+      if (reads > 1) throw new Error("corrupt task file");
+      return original(id);
+    };
+    try {
+      await assert.rejects(() => engine.unblockTask("TSK-0001"), /corrupt task file/);
+    } finally {
+      store.readTask = original;
+    }
+    assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+  });
+});
+
+test("plan clamp skips compacted tasks instead of requesting compacted -> blocked", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store }) => {
+        await initProject(engine);
+        await seedFrozenSpec(store);
+        await writeTask(store, makeTask({ id: "TSK-0001", status: "compacted" }));
+        try {
+          await engine.plan();
+        } catch (err) {
+          assert.doesNotMatch(String(err?.message ?? err), /compacted to blocked|from compacted to blocked/);
+        }
+        assert.equal((await store.readTask("TSK-0001")).data.status, "compacted");
+      },
+      { skillsDir },
+    );
+  });
+});
+
 test("abandoned, blocked, and verifying have CLI round-trips back to a working state", async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
@@ -358,12 +524,23 @@ test("refusal matrix: illegal transitions are named refusals across callers", as
 
     const chatDropped = sanitizeChatAction({ type: "execute" }, { phase: "executing", utterance: "execute" });
     assert.equal(chatDropped.type, "next_verb");
+    await assert.rejects(() => applyChatAction(engine, { type: "execute" }), (err) =>
+      isRefuse(err, /chat cannot apply execute/, /legion-cli status/),
+    );
     const applied = await applyChatAction(engine, { type: "status" });
     assert.equal(applied.applied, true);
 
     const packet = await engine.newPacket({ title: "design ask" });
     assert.equal(packet.packet.status, "open");
     assert.equal((await store.readTask("TSK-0001")).data.status, "in_progress");
+
+    await writeLiveResume(engine.projectRoot, "TSK-0001");
+    await patchState(store, { currentTaskId: "TSK-0001" });
+    const verifyingDoc = await store.readTask("TSK-0001");
+    await store.writeTask({ ...verifyingDoc.data, status: "verifying" }, verifyingDoc.body);
+    await assert.rejects(() => engine.recoverTask("TSK-0001"), (err) =>
+      isRefuse(err, /cannot recover TSK-0001 while verification is live/, /legion-cli status/),
+    );
   });
 
   const cliUndo = await readFile(join(repoRoot, "packages", "cli", "src", "undo.ts"), "utf8");
