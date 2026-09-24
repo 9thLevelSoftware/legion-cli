@@ -708,7 +708,11 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       const restEncoded = JSON.stringify({ ...snapshot, audit: [] });
       if (restEncoded === lastRestEncoded && cursor.size !== lastAuditCursor.size) {
         const delta = await readAuditDelta(opts.projectRoot, lastAuditCursor);
+        lastEncoded = encoded;
+        lastRestEncoded = restEncoded;
+        lastAuditCursor = cursor;
         broadcast(`event: audit-delta\ndata: ${JSON.stringify({ events: delta.events, cursor: delta.cursor })}\n\n`);
+        return;
       }
       lastEncoded = encoded;
       lastRestEncoded = restEncoded;

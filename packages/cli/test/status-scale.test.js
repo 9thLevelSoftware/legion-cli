@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -77,5 +77,71 @@ test("F-048 bare status does not read every task file", async () => {
       persistWork.taskFileReads <= 1,
       `bare status read ${persistWork.taskFileReads} task files; bound is 1 (not ${TASK_COUNT})`,
     );
+  });
+});
+
+test("F-048 invalid status: Ready is not a slice task and does not flip next", async () => {
+  await withTempDir(async (dir) => {
+    const engine = createLegionEngine(dir);
+    await engine.init({ name: "Checkin", adapter: "fake" });
+    await allowCopyJail(engine.store);
+    await engine.store.writeState(
+      {
+        schemaVersion: "legion-cli-state/v1",
+        phase: "executing",
+        activeSpecId: "spec-checkin",
+        currentTaskId: null,
+        lastReadiness: "PASS",
+        lastReview: "PASS",
+        lastQaId: null,
+      },
+      "executing\n",
+    );
+    await mkdir(join(dir, ".legion-cli", "tasks"), { recursive: true });
+    const done = makeTask({ id: "TSK-0001", title: "done work", status: "done" });
+    await writeMarkdownFile(join(dir, ".legion-cli", "tasks", "TSK-0001.md"), done, "done\n", { root: dir });
+    await writeFile(
+      join(dir, ".legion-cli", "tasks", "TSK-0099.md"),
+      `---
+schemaVersion: legion-cli-task/v1
+id: TSK-0099
+title: broken
+status: Ready
+type: feature
+priority: P0
+specId: spec-checkin
+blockedBy: []
+blocks: []
+contract:
+  filesAllowed:
+    - src/main.ts
+  filesForbidden:
+    - .git/**
+  expectedArtifacts:
+    - src/main.ts
+  verificationCommands:
+    - pnpm test
+assignee: agent
+notes: ""
+---
+
+invalid
+`,
+      "utf8",
+    );
+    const chunks = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk, ...rest) => {
+      chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return orig(chunk, ...rest);
+    };
+    try {
+      await runStatus(cliOpts(dir));
+    } finally {
+      process.stdout.write = orig;
+    }
+    const payload = JSON.parse(chunks.join(""));
+    assert.equal(payload.next.run, "legion-cli qa");
+    assert.equal(payload.blockers.length, 0);
   });
 });

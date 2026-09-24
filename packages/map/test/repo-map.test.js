@@ -70,6 +70,17 @@ function denseModules(n, importsPer = 3) {
   }));
 }
 
+test("A-007 50k computeRepoPageRank", { skip: process.env.LEGION_A007_GATE !== "1" }, () => {
+  const n = 50_000;
+  resetRepoMapWork();
+  const t0 = Date.now();
+  const ranked = computeRepoPageRank(denseModules(n, 2));
+  const ms = Date.now() - t0;
+  assert.equal(ranked.length, n);
+  assert.ok(ms <= 10_000 * 2, `computeRepoPageRank ${ms}ms exceeds A-007 budget`);
+  process.stdout.write(`A007_MEASUREMENTS ${JSON.stringify([{ step: "computeRepoPageRank", ms, files: n }])}\n`);
+});
+
 test("F-024 suffix-scan iterations stay O(n) not O(n^2*k)", () => {
   const n = 40;
   const importsPer = 3;

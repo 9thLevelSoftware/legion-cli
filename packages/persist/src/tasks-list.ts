@@ -46,6 +46,8 @@ export type TaskSummary = {
   title: string;
   specId: string;
   adapter?: string | null;
+  /** False when frontmatter fails TaskSchema (engine `#listTasks` drops these). */
+  ok: boolean;
 };
 
 type TaskSummaryIndex = {
@@ -60,6 +62,18 @@ function summariesAbs(projectRoot: string): string {
 }
 
 function summaryFromFrontmatter(file: string, frontmatter: unknown): TaskSummary {
+  const parsed = TaskSchema.safeParse(frontmatter);
+  if (parsed.success) {
+    return {
+      id: parsed.data.id,
+      file,
+      status: parsed.data.status,
+      title: parsed.data.title,
+      specId: parsed.data.specId,
+      adapter: parsed.data.adapter ?? null,
+      ok: true,
+    };
+  }
   const rec = frontmatter && typeof frontmatter === "object" ? (frontmatter as Record<string, unknown>) : {};
   const id = typeof rec.id === "string" && rec.id ? rec.id : file.replace(/\.md$/i, "");
   return {
@@ -69,6 +83,7 @@ function summaryFromFrontmatter(file: string, frontmatter: unknown): TaskSummary
     title: typeof rec.title === "string" ? rec.title : "",
     specId: typeof rec.specId === "string" ? rec.specId : "",
     adapter: typeof rec.adapter === "string" ? rec.adapter : null,
+    ok: false,
   };
 }
 
@@ -83,6 +98,7 @@ function summaryFromContents(file: string, contents: string | Buffer): TaskSumma
       status: "",
       title: "",
       specId: "",
+      ok: false,
     };
   }
 }
@@ -142,14 +158,21 @@ export async function listTaskSummaries(projectRoot: string): Promise<TaskSummar
     }
   }
   for (const file of names) {
-    if (index.files[file]) continue;
+    if (index.files[file] && typeof index.files[file].ok === "boolean") continue;
     const abs = join(dir, file);
     try {
       const raw = await retryFsOp(() => readTextFile(abs));
       persistWork.parseAttempts += 1;
       index.files[file] = summaryFromContents(file, raw);
     } catch {
-      index.files[file] = { id: file.replace(/\.md$/i, ""), file, status: "", title: "", specId: "" };
+      index.files[file] = {
+        id: file.replace(/\.md$/i, ""),
+        file,
+        status: "",
+        title: "",
+        specId: "",
+        ok: false,
+      };
     }
     dirty = true;
   }

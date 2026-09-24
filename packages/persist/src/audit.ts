@@ -58,11 +58,10 @@ async function appendAuditDay(projectRoot: string, event: AuditEvent): Promise<v
   try {
     // The header is written only by whoever creates the day file.
     await writeFile(abs, `# ${day}\n\n${line}`, { encoding: "utf8", flag: "wx" });
-    return;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    await appendFile(abs, line, "utf8");
   }
-  await appendFile(abs, line, "utf8");
   await retainAuditDayFiles(projectRoot, Date.now(), day);
 }
 

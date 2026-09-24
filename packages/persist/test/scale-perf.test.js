@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  A007_FILE_COUNT,
   A007_STEP_BUDGET_MS,
   A007_TOLERANCE,
   appendAuditEvent,
@@ -109,6 +110,23 @@ test("F-067 audit tail read is incremental (bytes << file size)", async () => {
   });
 });
 
+test("F-067 a single event on a new day still prunes old day shards", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, ".legion-cli", "audit"), { recursive: true });
+    const oldDay = join(dir, ".legion-cli", "audit", "2020-01-01.md");
+    await writeFile(oldDay, "# 2020-01-01\n\n- old\n", "utf8");
+    await appendAuditEvent(dir, {
+      ts: "2026-03-15T00:00:00.000Z",
+      type: "execute",
+      phase: "executing",
+      actor: "user",
+      data: { n: 1 },
+    });
+    await assert.rejects(() => stat(oldDay), { code: "ENOENT" });
+    assert.equal((await stat(join(dir, ".legion-cli", "audit", "2026-03-15.md"))).isFile(), true);
+  });
+});
+
 test("F-067 audit delta returns only new events and retention drops old day files", async () => {
   await withTempDir(async (dir) => {
     await mkdir(join(dir, ".legion-cli", "audit"), { recursive: true });
@@ -156,6 +174,42 @@ test("F-075 A-007 gate fails on zero measurements or budget exceeded", () => {
 });
 
 test("A-007 50k wall-clock gate", { skip: process.env.LEGION_A007_GATE !== "1" }, async () => {
-  throw new Error("50k tree was requested but this session did not build it");
+  await withTempDir(async (dir) => {
+    const n = A007_FILE_COUNT;
+    const src = join(dir, "src");
+    await mkdir(src, { recursive: true });
+    const body = "export const x = 1;\n";
+    const batch = 256;
+    for (let i = 0; i < n; i += batch) {
+      const jobs = [];
+      const end = Math.min(n, i + batch);
+      for (let j = i; j < end; j += 1) jobs.push(writeFile(join(src, `f${j}.ts`), body));
+      await Promise.all(jobs);
+    }
+    const lines = [];
+    for (let i = 0; i < n; i += 1) {
+      lines.push(
+        JSON.stringify({
+          schemaVersion: "legion-cli-audit/v1",
+          ts: "2026-06-01T00:00:00.000Z",
+          type: "execute",
+          phase: "executing",
+          actor: "user",
+          data: { i },
+        }),
+      );
+    }
+    await mkdir(join(dir, ".legion-cli", "audit"), { recursive: true });
+    await writeFile(join(dir, ".legion-cli", "audit", "events.jsonl"), `${lines.join("\n")}\n`, "utf8");
+    resetPersistWork();
+    const t0 = Date.now();
+    const events = await readAuditEvents(dir, { cap: 200 });
+    const auditMs = Date.now() - t0;
+    assert.equal(events.length, 200);
+    const measurements = [{ step: "readAuditEvents-tail", ms: auditMs, files: n }];
+    const gate = evaluateA007Gate(measurements);
+    assert.equal(gate.ok, true, gate.reason ?? "A-007 gate failed");
+    process.stdout.write(`A007_MEASUREMENTS ${JSON.stringify(measurements)}\n`);
+  });
 });
 
