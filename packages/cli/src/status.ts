@@ -108,7 +108,7 @@ export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknow
   const summaries = state.phase === "uninitialized" ? [] : await listTaskSummaries(opts.project);
   const slice: StatusSliceTask[] = state.activeSpecId
     ? summaries
-        .filter((row) => row.specId === state.activeSpecId)
+        .filter((row) => row.ok && row.specId === state.activeSpecId)
         .map((row) => ({ id: row.id, title: row.title, status: row.status as StatusSliceTask["status"] }))
     : [];
   const next = nextCommand(state, slice, project?.mode, config?.control_mode);
