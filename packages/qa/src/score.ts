@@ -27,6 +27,9 @@ export type ScoreQaInput = {
 
 const NO_BROWSER_CAP = 70;
 
+/** Named refusal: a report with no tests is not a vacuous pass. */
+export const ZERO_TESTS_REASON = "zero-tests report is not a pass";
+
 function passRate(passed: number, failed: number): number {
   const denom = passed + failed;
   return denom === 0 ? 1 : passed / denom;
@@ -69,6 +72,10 @@ export function scoreQa(input: ScoreQaInput): QAScore {
   const failClosed =
     input.failClosed === true ||
     (input.tests === undefined && input.unitReport !== undefined && reportFailClosed(input.unitReport));
+
+  if (tests.length === 0) {
+    throw new Error(ZERO_TESTS_REASON);
+  }
 
   const p0 = bucketCounts(tests, "P0");
   if (failClosed) p0.failed = Math.max(p0.failed, 1);
