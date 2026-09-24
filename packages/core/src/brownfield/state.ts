@@ -70,6 +70,15 @@ export async function readRun(store: LegionStore, runId: string): Promise<Brownf
 export async function writeRun(projectRoot: string, run: BrownfieldRun): Promise<BrownfieldRun> {
   const next = BrownfieldRunSchema.parse({ ...run, updatedAt: nowIso() });
   const abs = storeAbs(projectRoot, runResumePath(next.runId));
+  if (existsSync(abs)) {
+    let prev: BrownfieldRun;
+    try {
+      prev = BrownfieldRunSchema.parse(JSON.parse(await readFile(abs, "utf8")));
+    } catch {
+      refuse(`brownfield run ${next.runId}: resume.json is not valid JSON`, HINT.brownfieldResume);
+    }
+    assertBrownfieldCanTransition(prev.phase, next.phase, HINT.brownfieldState(next.runId));
+  }
   await mkdir(dirname(abs), { recursive: true });
   await writeFile(abs, `${JSON.stringify(next, null, 2)}\n`, "utf8");
   return next;

@@ -13,7 +13,7 @@ import {
   writeTextFile,
   type LegionStore,
 } from "@9thlevelsoftware/legion-cli-persist";
-import { HINT, refuse } from "./errors.js";
+import { HINT, LegionRefuseError, refuse } from "./errors.js";
 import { assertCanTransition } from "./phases.js";
 import { SHIP_COMMIT_PREFIX } from "./ship.js";
 import { assertTaskStatusTransition, statusAfterUndoDependency } from "./tasks.js";
@@ -58,12 +58,22 @@ function gitRevertNoEdit(root: string, sha: string): void {
   }
 }
 
-function gitResetHard(root: string, ref: string): void {
-  spawnSync("git", ["reset", "--hard", ref], {
+function defaultGitResetHard(root: string, ref: string): void {
+  const result = spawnSync("git", ["reset", "--hard", ref], {
     cwd: root,
     encoding: "utf8",
     windowsHide: true,
   });
+  if (result.status !== 0) {
+    refuse(`git reset failed during undo rollback: ${(result.stderr || result.stdout).trim()}`, "git status");
+  }
+}
+
+let gitResetHardFn: (root: string, ref: string) => void = defaultGitResetHard;
+
+/** Test seam: inject a failing `git reset --hard` without depending on OS file locks. */
+export function setUndoGitResetHard(fn: ((root: string, ref: string) => void) | null): void {
+  gitResetHardFn = fn ?? defaultGitResetHard;
 }
 
 function appendNote(notes: string, line: string): string {
@@ -87,14 +97,24 @@ async function writeTaskStatus(
   );
 }
 
-async function restoreUndoPreimages(root: string, commandId: string): Promise<void> {
+type UndoPreimage = { posix: string; bytes: Buffer };
+
+async function loadUndoPreimages(root: string, commandId: string): Promise<UndoPreimage[]> {
   const command = await readCommandRecord(root, commandId);
-  if (!command) return;
-  for (const [posix, digest] of Object.entries(command.files)) {
-    const bytes = await readBlob(root, digest);
-    await writeTextFile(toFsPath(root, posix), bytes.toString("utf8"), { root });
+  if (!command) {
+    refuse("undo rollback: command journal missing", HINT.undo);
   }
-  await closeEngineCommand(root, commandId);
+  const out: UndoPreimage[] = [];
+  for (const [posix, digest] of Object.entries(command.files)) {
+    out.push({ posix, bytes: await readBlob(root, digest) });
+  }
+  return out;
+}
+
+async function restoreUndoPreimages(root: string, preimages: readonly UndoPreimage[]): Promise<void> {
+  for (const { posix, bytes } of preimages) {
+    await writeTextFile(toFsPath(root, posix), bytes, { root, skipJournal: true });
+  }
 }
 
 async function rollbackUndo(
@@ -102,9 +122,23 @@ async function rollbackUndo(
   commandId: string,
   priorHead: string | null,
   gitReverted: boolean,
+  preimages: readonly UndoPreimage[],
 ): Promise<void> {
-  if (gitReverted && priorHead) gitResetHard(root, priorHead);
-  await restoreUndoPreimages(root, commandId);
+  let rollbackErr: unknown;
+  try {
+    if (gitReverted && priorHead) gitResetHardFn(root, priorHead);
+    await restoreUndoPreimages(root, preimages);
+  } catch (err) {
+    rollbackErr = err;
+  }
+  try {
+    await closeEngineCommand(root, commandId);
+  } catch (closeErr) {
+    rollbackErr ??= closeErr;
+  }
+  if (!rollbackErr) return;
+  if (rollbackErr instanceof LegionRefuseError) throw rollbackErr;
+  refuse(`undo rollback failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`, HINT.undo);
 }
 
 async function undoLastTaskLocked(opts: {
@@ -150,6 +184,7 @@ async function undoLastTaskLocked(opts: {
 
   const commandId = `undo-${randomBytes(8).toString("hex")}`;
   await openEngineCommand(root, commandId);
+  const preimages = await loadUndoPreimages(root, commandId);
   const priorHead = head?.sha ?? null;
   let gitReverted = false;
 
@@ -213,8 +248,9 @@ async function undoLastTaskLocked(opts: {
     };
   } catch (err) {
     try {
-      await rollbackUndo(root, commandId, priorHead, gitReverted);
+      await rollbackUndo(root, commandId, priorHead, gitReverted, preimages);
     } catch (rollbackErr) {
+      if (rollbackErr instanceof LegionRefuseError) throw rollbackErr;
       if (err instanceof Error) err.cause = rollbackErr;
     }
     throw err;
