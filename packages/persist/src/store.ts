@@ -74,43 +74,89 @@ export interface LegionReader {
   readWikiPage(storePath: string): Promise<MarkdownDoc<WikiPage>>;
 }
 
+export type LockClock = { now: () => number };
+
+export type LegionStoreOptions = {
+  /** Injected clock for lock-hold measurement (KD-3). Acquire timeouts stay on wall time. */
+  clock?: LockClock;
+};
+
 type Hold = { lock: HeldLock; releaseMutex: () => void };
+
+type SharedLock = {
+  tail: Promise<void>;
+  hold: Hold | null;
+};
+
+const lockContext = new AsyncLocalStorage<Hold>();
+const sharedLocks = new Map<string, SharedLock>();
+
+function sharedLockFor(lockPath: string): SharedLock {
+  let slot = sharedLocks.get(lockPath);
+  if (!slot) {
+    slot = { tail: Promise.resolve(), hold: null };
+    sharedLocks.set(lockPath, slot);
+  }
+  return slot;
+}
+
+const REENTERED: Hold = {
+  lock: { token: "", release: async () => undefined },
+  releaseMutex: () => undefined,
+};
 
 export class LegionStore implements LegionReader {
   readonly projectRoot: string;
   readonly paths: LegionPaths;
-  /** Tail of the in-process queue: each holder resolves its link when it releases. */
-  #tail: Promise<void> = Promise.resolve();
-  /** The current holder; nested `withLock` in the same async chain re-enters it. */
-  #hold: Hold | null = null;
-  #context = new AsyncLocalStorage<Hold>();
-  /** Holds taken with bare `acquireLock()` (no async scope to re-enter), released LIFO. */
+  readonly #clock: LockClock;
+  readonly #slot: SharedLock;
+  /** Holds taken with bare `acquireLock()` on this instance, released LIFO. */
   #bare: Hold[] = [];
+  /** Injected-clock duration of the most recent top-level hold. */
+  lastHoldMs = 0;
+  /** Max injected-clock hold across top-level `withLock` calls since {@link resetHoldStats}. */
+  maxHoldMs = 0;
+  /** `listCacheResumes` calls attributed to this store (F-054). */
+  resumeScanCount = 0;
 
-  constructor(projectRoot: string) {
+  constructor(projectRoot: string, opts?: LegionStoreOptions) {
     this.projectRoot = resolve(projectRoot);
     this.paths = legionPaths(this.projectRoot);
+    this.#clock = opts?.clock ?? { now: () => Date.now() };
+    this.#slot = sharedLockFor(this.paths.lock);
   }
 
-  /** True inside `withLock` on this store, in the same async chain that took the lock. */
-  holdsLock(): boolean {
-    const hold = this.#context.getStore();
-    return hold !== undefined && hold === this.#hold;
+  resetHoldStats(): void {
+    this.lastHoldMs = 0;
+    this.maxHoldMs = 0;
+    this.resumeScanCount = 0;
   }
 
   /**
-   * One writer per process (promise-chain mutex), then one per project (engine.lock).
-   * A waiter here counts against the same `timeoutMs` as the file lock.
+   * True in the async chain that took this project's lock, including a nested
+   * `withLock` on a different `LegionStore` for the same path (F-018).
+   * A same-instance `acquireLock` also counts so nested `withLock` re-enters (F-050).
+   */
+  holdsLock(): boolean {
+    const hold = lockContext.getStore();
+    if (hold !== undefined && hold === this.#slot.hold) return true;
+    return this.#bare.some((item) => item === this.#slot.hold);
+  }
+
+  /**
+   * One writer per process (promise-chain mutex keyed by lock path), then one per
+   * project (engine.lock). A waiter here counts against the same `timeoutMs` as the file lock.
    */
   async #take(opts?: { timeoutMs?: number }): Promise<Hold> {
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
     const started = Date.now();
-    const previous = this.#tail;
+    const slot = this.#slot;
+    const previous = slot.tail;
     let releaseMutex!: () => void;
     const mine = new Promise<void>((done) => {
       releaseMutex = done;
     });
-    this.#tail = previous.then(() => mine);
+    slot.tail = previous.then(() => mine);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const turn = await Promise.race([
       previous.then(() => true),
@@ -127,7 +173,7 @@ export class LegionStore implements LegionReader {
       const remaining = Math.max(0, timeoutMs - (Date.now() - started));
       const lock = await acquireEngineLock(this.paths.lock, { timeoutMs: remaining });
       const hold = { lock, releaseMutex };
-      this.#hold = hold;
+      slot.hold = hold;
       return hold;
     } catch (err) {
       releaseMutex();
@@ -136,7 +182,8 @@ export class LegionStore implements LegionReader {
   }
 
   async #give(hold: Hold): Promise<void> {
-    if (this.#hold === hold) this.#hold = null;
+    if (hold === REENTERED) return;
+    if (this.#slot.hold === hold) this.#slot.hold = null;
     try {
       await hold.lock.release();
     } finally {
@@ -146,6 +193,10 @@ export class LegionStore implements LegionReader {
 
   /** Low-level: take the lock outside `withLock`. Pair with {@link releaseLock}. */
   async acquireLock(opts?: { timeoutMs?: number }): Promise<void> {
+    if (this.holdsLock()) {
+      this.#bare.push(REENTERED);
+      return;
+    }
     this.#bare.push(await this.#take(opts));
   }
 
@@ -157,9 +208,13 @@ export class LegionStore implements LegionReader {
   async withLock<T>(fn: () => Promise<T>, opts?: { timeoutMs?: number }): Promise<T> {
     if (this.holdsLock()) return fn();
     const hold = await this.#take(opts);
+    const t0 = this.#clock.now();
     try {
-      return await this.#context.run(hold, fn);
+      return await lockContext.run(hold, fn);
     } finally {
+      const held = Math.max(0, this.#clock.now() - t0);
+      this.lastHoldMs = held;
+      this.maxHoldMs = Math.max(this.maxHoldMs, held);
       await this.#give(hold);
     }
   }
@@ -339,6 +394,6 @@ export class LegionStore implements LegionReader {
   }
 }
 
-export function createLegionStore(projectRoot: string): LegionStore {
-  return new LegionStore(projectRoot);
+export function createLegionStore(projectRoot: string, opts?: LegionStoreOptions): LegionStore {
+  return new LegionStore(projectRoot, opts);
 }
