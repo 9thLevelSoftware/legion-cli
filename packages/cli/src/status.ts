@@ -1,21 +1,10 @@
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import { EXPOSE_BIND, LOOPBACK_BIND, readLiveServe } from "@9thlevelsoftware/legion-cli-dashboard";
+import { listTaskSummaries } from "@9thlevelsoftware/legion-cli-persist";
 import type { AdapterId, LegionConfig, ProjectFile, StateFile } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
-import { collectBlockers, nextCommand, statusExitCode } from "./next.js";
-
-async function readCurrentTaskAdapter(
-  engine: ReturnType<typeof createLegionEngine>,
-  currentTaskId: string | null | undefined,
-): Promise<AdapterId | null> {
-  if (!currentTaskId) return null;
-  try {
-    return (await engine.store.readTask(currentTaskId)).data.adapter ?? null;
-  } catch {
-    return null;
-  }
-}
+import { collectBlockers, nextCommand, statusExitCode, type StatusSliceTask } from "./next.js";
 
 async function readOptionalProject(engine: ReturnType<typeof createLegionEngine>): Promise<ProjectFile | null> {
   if (!(await engine.store.pathExists(".legion-cli/PROJECT.md"))) return null;
@@ -116,12 +105,18 @@ export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknow
   const state = await engine.getState();
   const project = state.phase === "uninitialized" ? null : await readOptionalProject(engine);
   const config = await readOptionalConfig(engine);
-  const slice = state.phase === "uninitialized" ? [] : await engine.listSliceTasks();
+  const summaries = state.phase === "uninitialized" ? [] : await listTaskSummaries(opts.project);
+  const slice: StatusSliceTask[] = state.activeSpecId
+    ? summaries
+        .filter((row) => row.specId === state.activeSpecId)
+        .map((row) => ({ id: row.id, title: row.title, status: row.status as StatusSliceTask["status"] }))
+    : [];
   const next = nextCommand(state, slice, project?.mode, config?.control_mode);
   const blockers = collectBlockers(state.lastReadiness, state.lastReview, slice);
   const { viewer, live: viewerLive } = await liveViewer(opts.project);
   const code = statusExitCode(state.lastReadiness, slice);
-  const currentTaskAdapter = await readCurrentTaskAdapter(engine, state.currentTaskId);
+  const current = summaries.find((row) => row.id === state.currentTaskId);
+  const currentTaskAdapter = (current?.adapter as AdapterId | null | undefined) ?? null;
 
   if (opts.json) {
     writeJson({

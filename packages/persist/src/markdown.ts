@@ -65,7 +65,27 @@ export function parseWithSchema<T>(
   return result.data;
 }
 
+/** Deterministic work counters (KD-3). Never a timer. */
+export const persistWork = {
+  parseAttempts: 0,
+  taskFileReads: 0,
+  auditBytesRead: 0,
+};
+
+export function resetPersistWork(): void {
+  persistWork.parseAttempts = 0;
+  persistWork.taskFileReads = 0;
+  persistWork.auditBytesRead = 0;
+}
+
+const TASK_MARKDOWN_RE = /(?:^|[\\/])\.legion-cli[\\/]tasks[\\/][^\\/]+\.md$/i;
+
+export function isTaskMarkdownPath(absPath: string): boolean {
+  return TASK_MARKDOWN_RE.test(absPath);
+}
+
 export async function readTextFile(absPath: string): Promise<string> {
+  if (isTaskMarkdownPath(absPath)) persistWork.taskFileReads += 1;
   return readFile(absPath, "utf8");
 }
 
@@ -88,19 +108,25 @@ export async function writeTextFile(
 ): Promise<void> {
   if (opts.skipJournal) {
     await atomicWriteFile(absPath, contents, { root: opts.root });
-    return;
+  } else {
+    await journaledWriteFile(opts.root, absPath, contents, { commandId: opts.commandId });
   }
-  await journaledWriteFile(opts.root, absPath, contents, { commandId: opts.commandId });
+  if (isTaskMarkdownPath(absPath)) {
+    try {
+      const { rememberTaskWrite } = await import("./tasks-list.js");
+      await rememberTaskWrite(opts.root, absPath, contents);
+    } catch {
+      // derived cache
+    }
+  }
 }
 
 export const SOT_READ_ATTEMPTS = 5;
 export const SOT_READ_RETRY_MS = 20;
 
 /**
- * Read and parse a source-of-truth file, retrying up to 5 x 20 ms when the parse fails (a
- * concurrent writer outside the lock, or a hand edit mid-save) and, on win32, when the read hits
- * ENOENT or a sharing violation during another process's rename. POSIX renames are atomic, so a
- * missing file there is final and is not retried.
+ * Read a source-of-truth file. Retry only win32 I/O races (ENOENT / sharing during rename).
+ * Parse/validation errors are deterministic: one attempt (F-025). POSIX rename is atomic.
  */
 async function readParsed<T>(absPath: string, parse: (raw: string) => T): Promise<T> {
   let lastErr: unknown;
@@ -117,11 +143,8 @@ async function readParsed<T>(absPath: string, parse: (raw: string) => T): Promis
       }
       throw err;
     }
-    try {
-      return parse(raw);
-    } catch (err) {
-      lastErr = err;
-    }
+    persistWork.parseAttempts += 1;
+    return parse(raw);
   }
   throw lastErr;
 }

@@ -24,22 +24,41 @@ export {
   sameProcessStart,
   startedAfterRecorded,
 } from "./process-identity.js";
-export { invalidTaskMessage, listTaskFiles } from "./tasks-list.js";
-export type { TaskFileEntry } from "./tasks-list.js";
+export {
+  invalidTaskMessage,
+  listTaskFiles,
+  listTaskSummaries,
+  rememberTaskWrite,
+  TASK_SUMMARIES_STORE,
+} from "./tasks-list.js";
+export type { TaskFileEntry, TaskSummary } from "./tasks-list.js";
 export {
   abandonReceiptBody,
   abandonReceiptPath,
   appendAuditEvent,
+  AUDIT_RETENTION_DAYS,
+  AUDIT_VIEW_CAP,
   auditDayFromTs,
   auditDayPath,
   auditEventsPath,
   formatAuditDayLine,
+  readAuditCursor,
+  readAuditDelta,
   readAuditEvents,
+  readAuditEventsDetailed,
+  retainAuditDayFiles,
   shipReceiptBody,
   shipReceiptPath,
   summarizeAuditMetrics,
 } from "./audit.js";
-export type { LocalMetrics } from "./audit.js";
+export type { AuditCursor, AuditReadOpts, AuditReadResult, LocalMetrics } from "./audit.js";
+export {
+  A007_FILE_COUNT,
+  A007_STEP_BUDGET_MS,
+  A007_TOLERANCE,
+  evaluateA007Gate,
+} from "./perf-harness.js";
+export type { A007GateResult, A007Measurement } from "./perf-harness.js";
 export {
   commitIngest,
   commitPaths,
@@ -106,11 +125,14 @@ export type { HeldLock } from "./lock.js";
 export {
   formatMarkdownDocument,
   formatYamlDocument,
+  isTaskMarkdownPath,
   parseMarkdownDocument,
   parseYamlDocument,
   parseWithSchema,
+  persistWork,
   readMarkdownFile,
   readYamlFile,
+  resetPersistWork,
   SOT_READ_ATTEMPTS,
   SOT_READ_RETRY_MS,
   writeMarkdownFile,

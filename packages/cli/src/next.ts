@@ -82,9 +82,11 @@ const NEXT_BY_PHASE: Record<Phase, NextCommand> = {
   },
 };
 
+export type StatusSliceTask = Pick<Task, "id" | "title" | "status">;
+
 export function nextCommand(
   state: StateFile,
-  slice: readonly Task[],
+  slice: readonly StatusSliceTask[],
   mode?: "greenfield" | "brownfield",
   controlMode?: ControlMode,
 ): NextCommand {
@@ -110,7 +112,7 @@ export function nextCommand(
 
 export function statusExitCode(
   lastReadiness: Readiness | null | undefined,
-  slice: readonly Task[],
+  slice: readonly StatusSliceTask[],
 ): number {
   if (slice.some((task) => task.status === "blocked")) return 2;
   if (lastReadiness === "FAIL") return 1;
@@ -126,7 +128,7 @@ export type Blocker = {
 export function collectBlockers(
   lastReadiness: Readiness | null | undefined,
   lastReview: ReviewVerdict | null | undefined,
-  slice: readonly Task[],
+  slice: readonly StatusSliceTask[],
 ): Blocker[] {
   const blockers: Blocker[] = [];
   if (lastReadiness === "FAIL") {
