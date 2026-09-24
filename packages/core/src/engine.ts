@@ -152,7 +152,7 @@ import {
 } from "./spawn.js";
 import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
 import { compactTaskBody, outcomeFromTask } from "./compact.js";
-import { assertTaskStatusTransition } from "./tasks.js";
+import { assertTaskStatusTransition, canTransitionTaskStatus } from "./tasks.js";
 import {
   ensureRegressionTest,
   fixFilesAllowed,
@@ -165,10 +165,12 @@ import {
   displayStagedRoots,
   ghAvailable,
   shipAddPaths,
+  shipCommitMessage,
   tryCreatePullRequest,
   unionDoneFilesAllowed,
   unrelatedDirty,
 } from "./ship.js";
+import { undoLastTask as runUndoLastTask, type UndoResult } from "./undo.js";
 import type {
   Actor,
   AmendTaskOptions,
@@ -559,9 +561,10 @@ export class LegionEngine {
     return this.#mutate(async () => {
       await this.#assertNoLiveInProgress("spec new");
       const state = await this.#readState();
-      if (state.phase !== "shipped") {
-        refuse("Start a new spec after this one ships", HINT.specNew);
+      if (state.phase !== "shipped" && state.phase !== "abandoned") {
+        refuse("Start a new spec after this one ships or is abandoned", HINT.specNew);
       }
+      assertCanTransition(state.phase, "intent_draft");
       if (state.activeSpecId) {
         try {
           const specDoc = await this.store.readSpec(state.activeSpecId);
@@ -844,7 +847,7 @@ export class LegionEngine {
           if (doc.data.status !== "done") continue;
           assertTaskStatusTransition(doc.data.status, "compacted");
           const outcome = outcomeFromTask(doc.data.notes, doc.body);
-          await this.store.writeTask({ ...doc.data, status: "compacted" }, compactTaskBody(doc.data.title, outcome));
+          await this.#writeTask({ ...doc.data, status: "compacted" }, compactTaskBody(doc.data.title, outcome));
           compacted.push({ id: doc.data.id, title: doc.data.title });
         }
         if (compacted.length > 0) {
@@ -1188,7 +1191,7 @@ export class LegionEngine {
           refuse(`cannot amend task: ${graphCheck.error}`, HINT.amend);
         }
       }
-      await this.store.writeTask(nextTask, doc.body);
+      await this.#writeTask(nextTask, doc.body);
       const state = await this.#readState();
       let controlMode: ControlMode = "guarded";
       try {
@@ -1916,25 +1919,98 @@ export class LegionEngine {
     });
   }
 
-  async setTaskStatus(taskId: string, status: TaskStatus): Promise<void> {
+  async undoLastTask(opts?: { taskId?: string }): Promise<UndoResult> {
     return this.#mutate(async () => {
-      if (status === "compacted") {
-        refuse("use legion-cli context compact", HINT.compact);
-      }
-      const doc = await this.store.readTask(taskId);
-      assertTaskStatusTransition(doc.data.status, status);
+      const result = await runUndoLastTask({
+        projectRoot: this.projectRoot,
+        store: this.store,
+        taskId: opts?.taskId,
+      });
       const state = await this.#readState();
-      const before = sliceTasks(await this.#listTasks(), state.activeSpecId);
-      const wasTerminal = isSliceTerminal(before);
-      await this.store.writeTask({ ...doc.data, status }, doc.body);
-      const after = sliceTasks(await this.#listTasks(), state.activeSpecId);
-      if (!wasTerminal || isSliceTerminal(after)) return;
-      const next: StateFile = { ...state };
-      if (state.lastReview === "PASS") next.lastReview = "FAIL";
-      if (state.phase === "ready_to_ship") next.phase = "executing";
-      if (next.lastReview !== state.lastReview || next.phase !== state.phase) {
-        await this.#writeState(next);
+      await this.#audit("undo", state.phase, "user", {
+        taskId: result.taskId,
+        commitSha: result.commitSha,
+      });
+      return result;
+    });
+  }
+
+  async unblockTask(taskId: string): Promise<Task> {
+    return this.#mutate(async () => {
+      await this.#assertNoLiveInProgress("task unblock");
+      let doc: { data: Task; body: string };
+      try {
+        doc = await this.store.readTask(taskId);
+      } catch {
+        refuse(`unknown task ${taskId}`, HINT.taskUnblock);
       }
+      if (doc.data.status !== "blocked") {
+        refuse(`cannot unblock task ${taskId} from ${doc.data.status}`, HINT.taskUnblock);
+      }
+      const state = await this.#readState();
+      const slice = sliceTasks(await this.#listTasks(), state.activeSpecId);
+      const unresolved = doc.data.blockedBy.filter((id) => {
+        const blocker = slice.find((task) => task.id === id);
+        return blocker && blocker.status !== "done" && blocker.status !== "compacted";
+      });
+      if (unresolved.length > 0) {
+        refuse(`cannot unblock ${taskId}: still blocked by ${unresolved.join(", ")}`, HINT.blockers);
+      }
+      const before = slice;
+      const wasTerminal = isSliceTerminal(before);
+      await this.#writeTask({ ...doc.data, status: "todo" }, doc.body);
+      let controlMode: ControlMode = "guarded";
+      try {
+        controlMode = (await this.#readConfig()).control_mode;
+      } catch {
+        controlMode = "guarded";
+      }
+      await this.#promoteReadyTasks(doc.data.specId, state.phase, controlMode);
+      const after = sliceTasks(await this.#listTasks(), state.activeSpecId);
+      if (wasTerminal && !isSliceTerminal(after)) {
+        const next: StateFile = { ...state };
+        if (state.lastReview === "PASS") next.lastReview = "FAIL";
+        if (state.phase === "ready_to_ship") {
+          assertCanTransition(state.phase, "executing");
+          next.phase = "executing";
+        }
+        if (next.lastReview !== state.lastReview || next.phase !== state.phase) {
+          await this.#writeState(next);
+        }
+      }
+      await this.#audit("unblock", (await this.#readState()).phase, "user", { from: "blocked" }, taskId);
+      return (await this.store.readTask(taskId)).data;
+    });
+  }
+
+  async recoverTask(taskId: string): Promise<Task> {
+    return this.#mutate(async () => {
+      let doc: { data: Task; body: string };
+      try {
+        doc = await this.store.readTask(taskId);
+      } catch {
+        refuse(`unknown task ${taskId}`, HINT.taskRecover);
+      }
+      if (doc.data.status !== "verifying") {
+        refuse(`cannot recover task ${taskId} from ${doc.data.status}`, HINT.taskRecover);
+      }
+      const resume = await findLatestTaskResume(this.projectRoot, taskId);
+      if (resume && resumeRunIsLive(resume)) {
+        refuse(`cannot recover ${taskId} while verification is live`, HINT.status);
+      }
+      await this.#writeTask({ ...doc.data, status: "blocked" }, doc.body);
+      const state = await this.#readState();
+      if (state.currentTaskId === taskId) {
+        await this.#writeState({ ...state, currentTaskId: null });
+      }
+      await this.#audit(
+        "recover",
+        (await this.#readState()).phase,
+        "user",
+        { from: "verifying", to: "blocked", reason: "human recover" },
+        taskId,
+      );
+      return (await this.store.readTask(taskId)).data;
     });
   }
 
@@ -2502,14 +2578,14 @@ export class LegionEngine {
     if (doc.data.status === to) return;
     if (to === "blocked") {
       assertTaskStatusTransition(doc.data.status, "blocked");
-      await this.store.writeTask({ ...doc.data, status: "blocked" }, doc.body);
+      await this.#writeTask({ ...doc.data, status: "blocked" }, doc.body);
       return;
     }
     let currentIdx = forward.indexOf(doc.data.status);
     const targetIdx = forward.indexOf(to);
     if (currentIdx === -1 || targetIdx === -1 || currentIdx > targetIdx) {
       assertTaskStatusTransition(doc.data.status, to);
-      await this.store.writeTask({ ...doc.data, status: to }, doc.body);
+      await this.#writeTask({ ...doc.data, status: to }, doc.body);
       return;
     }
     while (currentIdx < targetIdx) {
@@ -2517,7 +2593,7 @@ export class LegionEngine {
       if (!next) break;
       doc = await this.store.readTask(taskId);
       assertTaskStatusTransition(doc.data.status, next);
-      await this.store.writeTask({ ...doc.data, status: next }, doc.body);
+      await this.#writeTask({ ...doc.data, status: next }, doc.body);
       currentIdx += 1;
     }
   }
@@ -2707,11 +2783,11 @@ export class LegionEngine {
       };
       coerced = true;
     }
-    await this.store.writeTask(ticket, taskMarkdownBody(ticket));
+    await this.#writeTask(ticket, taskMarkdownBody(ticket));
     if (parentId) {
       const parentDoc = await this.store.readTask(parentId);
       if (!parentDoc.data.blocks.includes(id)) {
-        await this.store.writeTask(
+        await this.#writeTask(
           { ...parentDoc.data, blocks: [...parentDoc.data.blocks, id] },
           parentDoc.body,
         );
@@ -2796,7 +2872,8 @@ export class LegionEngine {
     for (const id of createdTaskIds) {
       const doc = await this.store.readTask(id);
       if (doc.data.status === "todo" || doc.data.status === "ready") continue;
-      await this.store.writeTask({ ...doc.data, status: "todo" }, doc.body);
+      const to = canTransitionTaskStatus(doc.data.status, "todo") ? "todo" : "blocked";
+      await this.#writeTask({ ...doc.data, status: to }, doc.body);
     }
   }
 
@@ -2805,7 +2882,8 @@ export class LegionEngine {
     for (const task of slice) {
       if (task.status === "todo" || task.status === "ready") continue;
       const doc = await this.store.readTask(task.id);
-      await this.store.writeTask({ ...doc.data, status: "todo" }, doc.body);
+      const to = canTransitionTaskStatus(doc.data.status, "todo") ? "todo" : "blocked";
+      await this.#writeTask({ ...doc.data, status: to }, doc.body);
     }
   }
 
@@ -2831,7 +2909,7 @@ export class LegionEngine {
       if (doc.data.status !== "ready") {
         assertTaskStatusTransition(doc.data.status, "ready");
         const ready = { ...doc.data, status: "ready" as const };
-        await this.store.writeTask(ready, doc.body);
+        await this.#writeTask(ready, doc.body);
         return ready;
       }
     }
@@ -2846,13 +2924,13 @@ export class LegionEngine {
       if (task.status === "todo" && isTaskReady(task, readyCtx)) {
         const doc = await this.store.readTask(task.id);
         assertTaskStatusTransition(doc.data.status, "ready");
-        await this.store.writeTask({ ...doc.data, status: "ready" }, doc.body);
+        await this.#writeTask({ ...doc.data, status: "ready" }, doc.body);
         continue;
       }
       if (task.status === "ready" && !isTaskReady(task, readyCtx)) {
         const doc = await this.store.readTask(task.id);
         assertTaskStatusTransition(doc.data.status, "todo");
-        await this.store.writeTask({ ...doc.data, status: "todo" }, doc.body);
+        await this.#writeTask({ ...doc.data, status: "todo" }, doc.body);
       }
     }
   }
@@ -3113,6 +3191,19 @@ export class LegionEngine {
     await this.store.writeState(state, stateBody(state));
   }
 
+  async #writeTask(data: Task, body: string): Promise<void> {
+    let from: TaskStatus | undefined;
+    try {
+      from = (await this.store.readTask(data.id)).data.status;
+    } catch {
+      from = undefined;
+    }
+    if (from !== undefined && from !== data.status) {
+      assertTaskStatusTransition(from, data.status);
+    }
+    await this.store.writeTask(data, body);
+  }
+
   async #readConfig(): Promise<LegionConfig> {
     return this.store.readConfig();
   }
@@ -3314,6 +3405,7 @@ export class LegionEngine {
       receiptPath,
     };
 
+    assertCanTransition(state.phase, "shipped");
     await this.#writeState({
       ...state,
       phase: "shipped",
@@ -3338,13 +3430,13 @@ export class LegionEngine {
       gitAdd(this.projectRoot, [".legion-cli"]);
       receipt.staged = gitStagedPaths(this.projectRoot);
       if (opts.commit && gitHasStaged(this.projectRoot)) {
-        receipt.commitSha = gitCommitIndex(this.projectRoot, `legion-cli ship: ${specId || "spec"}`);
+        receipt.commitSha = gitCommitIndex(this.projectRoot, shipCommitMessage(specId));
         receipt.committed = true;
       }
     }
 
     if (opts.pr) {
-      const title = `legion-cli ship: ${specId || "spec"}`;
+      const title = shipCommitMessage(specId);
       const body = [
         `Ship receipt for ${specId || "spec"}.`,
         `QA mode: ${qaMode ?? "none"}`,

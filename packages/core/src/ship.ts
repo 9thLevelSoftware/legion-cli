@@ -5,6 +5,13 @@ import type { Task } from "@9thlevelsoftware/legion-cli-schema";
 
 const LEGION_PREFIX = ".legion-cli";
 
+/** Engine-authored ship commits. Undo refuses any other conventional-commit disguise. */
+export const SHIP_COMMIT_PREFIX = "legion-cli ship:";
+
+export function shipCommitMessage(specId: string): string {
+  return `${SHIP_COMMIT_PREFIX} ${specId || "spec"}`;
+}
+
 export function unionDoneFilesAllowed(tasks: readonly Task[]): string[] {
   const paths = new Set<string>();
   for (const task of tasks) {

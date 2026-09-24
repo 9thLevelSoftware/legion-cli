@@ -27,6 +27,13 @@ export function assertTaskStatusTransition(from: TaskStatus, to: TaskStatus): vo
   }
 }
 
+/** Dependent of an undone task: ready rewinds; in-flight work parks at blocked. */
+export function statusAfterUndoDependency(from: TaskStatus): TaskStatus | null {
+  if (from === "ready") return "todo";
+  if (from === "in_progress" || from === "verifying") return "blocked";
+  return null;
+}
+
 export const OPEN_TASK_STATUSES = ["todo", "ready", "in_progress", "verifying"] as const;
 
 export function isTerminalTaskStatus(status: TaskStatus): boolean {

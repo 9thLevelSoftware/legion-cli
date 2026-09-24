@@ -255,11 +255,7 @@ test("setTaskStatus compacted is refused; garden and compact refuse uninitialize
 
     await initProject(engine);
     await writeTask(store, makeTask({ status: "done" }), "Done body.\n");
-    await assert.rejects(() => engine.setTaskStatus("TSK-0001", "compacted"), (err) => {
-      assert.equal(err instanceof LegionRefuseError, true);
-      assert.match(err.nextHint, /context compact/);
-      return true;
-    });
+    assert.equal(typeof engine.setTaskStatus, "undefined");
     assert.equal((await store.readTask("TSK-0001")).data.status, "done");
   });
 });

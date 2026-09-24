@@ -109,7 +109,9 @@ export { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from ".
 export {
   displayStagedRoots,
   isShipAllowedPath,
+  SHIP_COMMIT_PREFIX,
   shipAddPaths,
+  shipCommitMessage,
   unrelatedDirty,
   unionDoneFilesAllowed,
 } from "./ship.js";
@@ -119,6 +121,7 @@ export {
   isTerminalTaskStatus,
   LEGAL_TASK_TRANSITIONS,
   OPEN_TASK_STATUSES,
+  statusAfterUndoDependency,
 } from "./tasks.js";
 export * from "./brownfield/index.js";
 export type {

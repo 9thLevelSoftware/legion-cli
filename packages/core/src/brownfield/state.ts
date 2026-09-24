@@ -9,6 +9,7 @@ import {
   BrownfieldRunPhaseSchema,
   BrownfieldRunSchema,
   type BrownfieldRun,
+  type BrownfieldRunPhase,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { HINT, refuse } from "../errors.js";
 import type { BrownfieldEffort } from "../types.js";
@@ -104,6 +105,36 @@ const SETTABLE_STATE_KEYS = new Set([
   "baseBranch",
 ]);
 
+/**
+ * Documented skill loops (design ↔ review) and forward skips are legal; complete is terminal.
+ * execute/verify still need a design review (assertPhaseAllowed).
+ */
+export const LEGAL_BROWNFIELD_PHASE_TRANSITIONS: Readonly<
+  Record<BrownfieldRunPhase, readonly BrownfieldRunPhase[]>
+> = {
+  intent: ["plan", "analysis", "assumptions", "design", "review", "present", "execute", "verify", "complete"],
+  plan: ["intent", "analysis", "assumptions", "design", "review", "present", "execute", "verify", "complete"],
+  analysis: ["intent", "plan", "assumptions", "design", "review", "present", "execute", "verify", "complete"],
+  assumptions: ["intent", "plan", "analysis", "design", "review", "present", "execute", "verify", "complete"],
+  design: ["intent", "plan", "analysis", "assumptions", "review", "present", "execute", "verify", "complete"],
+  review: ["intent", "plan", "analysis", "assumptions", "design", "present", "execute", "verify", "complete"],
+  present: ["intent", "plan", "analysis", "assumptions", "design", "review", "execute", "verify", "complete"],
+  execute: ["intent", "plan", "analysis", "assumptions", "design", "review", "present", "verify", "complete"],
+  verify: ["intent", "plan", "analysis", "assumptions", "design", "review", "present", "execute", "complete"],
+  complete: [],
+};
+
+export function canTransitionBrownfield(from: BrownfieldRunPhase, to: BrownfieldRunPhase): boolean {
+  if (from === to) return true;
+  return LEGAL_BROWNFIELD_PHASE_TRANSITIONS[from]?.includes(to) ?? false;
+}
+
+export function assertBrownfieldCanTransition(from: BrownfieldRunPhase, to: BrownfieldRunPhase, hint: string): void {
+  if (!canTransitionBrownfield(from, to)) {
+    refuse(`cannot transition brownfield from ${from} to ${to}`, hint);
+  }
+}
+
 /** Apply `state <id> key=value` updates. Only whitelisted keys and `meta.<key>` are writable. */
 export function applyStateSet(run: BrownfieldRun, pairs: [string, unknown][], hint: string): BrownfieldRun {
   const next: BrownfieldRun = { ...run, meta: { ...run.meta } };
@@ -123,6 +154,7 @@ export function applyStateSet(run: BrownfieldRun, pairs: [string, unknown][], hi
       if (!phase.success) {
         refuse(`brownfield state: phase must be one of ${BrownfieldRunPhaseSchema.options.join("|")}`, hint);
       }
+      assertBrownfieldCanTransition(next.phase, phase.data, hint);
       next.phase = phase.data;
       continue;
     }
@@ -148,8 +180,8 @@ async function completedNodeCount(projectRoot: string, runId: string): Promise<n
 }
 
 /**
- * No ordering table (the skill loops design ↔ review, skips execute, re-enters on resume); only
- * two hard refusals: execute/verify need a design review, and verify needs a completed PR.
+ * Extra gates on top of LEGAL_BROWNFIELD_PHASE_TRANSITIONS: execute/verify need a design review,
+ * and verify needs a completed PR.
  */
 export async function assertPhaseAllowed(
   projectRoot: string,
