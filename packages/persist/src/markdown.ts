@@ -3,6 +3,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { ZodType } from "zod";
 import { atomicWriteFile, isWin32BusyError } from "./atomic-write.js";
 import { PersistValidationError } from "./errors.js";
+import { journaledWriteFile } from "./pre-image.js";
 
 export type MarkdownDoc<T> = {
   data: T;
@@ -74,11 +75,22 @@ export type WriteTextOpts = {
    * so no caller can silently get the weaker target-and-parent check (KD-8).
    */
   root: string;
+  /** Restore applies bytes through this funnel without re-attributing them as engine writes. */
+  skipJournal?: boolean;
+  commandId?: string | null;
 };
 
-/** Atomic (temp + fsync + rename) and link-refusing; see {@link atomicWriteFile}. */
-export async function writeTextFile(absPath: string, contents: string, opts: WriteTextOpts): Promise<void> {
-  await atomicWriteFile(absPath, contents, { root: opts.root });
+/** Atomic (temp + fsync + rename) and link-refusing; journaled for engine-SoT paths. */
+export async function writeTextFile(
+  absPath: string,
+  contents: string | Buffer,
+  opts: WriteTextOpts,
+): Promise<void> {
+  if (opts.skipJournal) {
+    await atomicWriteFile(absPath, contents, { root: opts.root });
+    return;
+  }
+  await journaledWriteFile(opts.root, absPath, contents, { commandId: opts.commandId });
 }
 
 export const SOT_READ_ATTEMPTS = 5;

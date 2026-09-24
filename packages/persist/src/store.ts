@@ -28,7 +28,9 @@ import type {
   Task,
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { ZodType } from "zod";
+import { assertNoLinkInPath } from "./atomic-write.js";
 import { EngineLockedError, PersistError } from "./errors.js";
+import { reconcileUnfinishedCommands } from "./pre-image.js";
 import { commitIngest, isGitRepo } from "./git.js";
 import { ingestFiles, type IngestDocument } from "./ingest.js";
 import {
@@ -162,6 +164,11 @@ export class LegionStore implements LegionReader {
     }
   }
 
+  /** Startup tail-replay of unfinished command journals. Bounded to pending entries. */
+  async reconcileUnfinished(): Promise<string[]> {
+    return this.withLock(() => reconcileUnfinishedCommands(this.projectRoot));
+  }
+
   async pathExists(storePath: string): Promise<boolean> {
     try {
       await access(toFsPath(this.projectRoot, storePath));
@@ -176,9 +183,11 @@ export class LegionStore implements LegionReader {
   }
 
   writeMarkdown(storePath: string, data: unknown, body: string): Promise<void> {
-    return this.withLock(() =>
-      writeMarkdownFile(toFsPath(this.projectRoot, storePath), data, body, { root: this.projectRoot }),
-    );
+    return this.withLock(async () => {
+      const abs = toFsPath(this.projectRoot, storePath);
+      await assertNoLinkInPath(abs, { root: this.projectRoot });
+      await writeMarkdownFile(abs, data, body, { root: this.projectRoot });
+    });
   }
 
   readYaml<T>(storePath: string, schema: ZodType<T>): Promise<T> {
@@ -186,9 +195,11 @@ export class LegionStore implements LegionReader {
   }
 
   writeYaml(storePath: string, data: unknown): Promise<void> {
-    return this.withLock(() =>
-      writeYamlFile(toFsPath(this.projectRoot, storePath), data, { root: this.projectRoot }),
-    );
+    return this.withLock(async () => {
+      const abs = toFsPath(this.projectRoot, storePath);
+      await assertNoLinkInPath(abs, { root: this.projectRoot });
+      await writeYamlFile(abs, data, { root: this.projectRoot });
+    });
   }
 
   readProject(): Promise<MarkdownDoc<ProjectFile>> {
