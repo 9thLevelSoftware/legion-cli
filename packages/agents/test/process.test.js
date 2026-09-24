@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { DOCKER_HOST_EXEC_REFUSAL, DOCKER_WORKDIR } from "@9thlevelsoftware/legion-cli-sandbox";
 import { GenericAdapter } from "../dist/index.js";
 import { pkgRoot, setupRun, withTempDir } from "./helpers.js";
 
@@ -48,6 +50,47 @@ test("Windows .ps1 spawn runs through the wrapper-extension branch", { skip: pro
     const result = await handle.wait();
     assert.equal(result.exitCode, 0, await readFile(result.stderrPath, "utf8"));
     assert.equal(await readFile(join(dir, "ps1-ran.txt"), "utf8"), "ok\n");
+  });
+});
+
+test("docker wrapper invoke is translated by sandbox translateWrapperInvoke", async () => {
+  await withTempDir(async (dir) => {
+    const recorder = join(dir, "record-argv.js");
+    await writeFile(
+      recorder,
+      'require("fs").writeFileSync(require("path").join(process.cwd(), "wrapper-argv.json"), JSON.stringify(process.argv.slice(2)));\n',
+      "utf8",
+    );
+    const { job } = await setupRun(dir);
+    job.wrapper = {
+      bin: process.execPath,
+      argvPrefix: [recorder, "-w", DOCKER_WORKDIR, "node:22-alpine"],
+    };
+    const adapter = new GenericAdapter({ binary: process.execPath, args: ["{{pointer}}"] });
+    const handle = await adapter.spawn(job);
+    const result = await handle.wait();
+    assert.equal(result.exitCode, 0, await readFile(result.stderrPath, "utf8"));
+    const argv = JSON.parse(await readFile(join(dir, "wrapper-argv.json"), "utf8"));
+    assert.equal(argv.includes("node"), true);
+    assert.equal(
+      argv.some((arg) => String(arg).startsWith(`${DOCKER_WORKDIR}/`)),
+      false,
+    );
+
+    const outside = await mkdtemp(join(tmpdir(), "legion-hostbin-"));
+    try {
+      const hostClaude = join(outside, "claude.exe");
+      await writeFile(hostClaude, "", "utf8");
+      const refused = await setupRun(dir, { runId: "run-claude" });
+      refused.job.wrapper = { bin: process.execPath, argvPrefix: ["-w", DOCKER_WORKDIR] };
+      const claude = new GenericAdapter({ binary: hostClaude, args: ["{{pointer}}"] });
+      await assert.rejects(() => claude.spawn(refused.job), (err) => {
+        assert.equal(err.message, DOCKER_HOST_EXEC_REFUSAL);
+        return true;
+      });
+    } finally {
+      await rm(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    }
   });
 });
 
@@ -107,25 +150,50 @@ test("Windows .cmd/.ps1 process-group abort kills descendants (taskkill /PID /T)
   });
 });
 
-test("suite reports 14 package legs, no-bail runner, quarantine register, and publish guard", async () => {
-  const root = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
-  const agentsMd = await readFile(join(repoRoot, "AGENTS.md"), "utf8");
-  const ci = await readFile(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
+function yamlJob(ci, name) {
+  const start = ci.search(new RegExp(`^  ${name}:`, "m"));
+  assert.ok(start >= 0, `missing job ${name}`);
+  const from = ci.indexOf("\n", start) + 1;
+  const rest = ci.slice(from);
+  const next = rest.search(/\n  [A-Za-z#]/);
+  return next === -1 ? rest : rest.slice(0, next);
+}
 
-  assert.equal(root.scripts.test, "pnpm -r --no-bail run test");
-  assert.doesNotMatch(root.scripts.test, /--filter/);
-  const packageDirs = await readdir(join(repoRoot, "packages"));
+test("recursive runner inventory is 14 package legs", async () => {
+  const workspace = await readFile(join(repoRoot, "pnpm-workspace.yaml"), "utf8");
+  assert.match(workspace, /^\s*-\s+"packages\/\*"/m);
+  const pnpmArgs = ["list", "-r", "--depth", "-1", "--json"];
+  const listing = process.env.npm_execpath
+    ? spawnSync(process.execPath, [process.env.npm_execpath, ...pnpmArgs], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        shell: false,
+        windowsHide: true,
+      })
+    : spawnSync("pnpm", pnpmArgs, {
+        cwd: repoRoot,
+        encoding: "utf8",
+        shell: true,
+        windowsHide: true,
+      });
+  assert.equal(listing.status, 0, listing.stderr || listing.error?.message);
+  const listed = JSON.parse(listing.stdout);
+  const workspacePkgs = listed.filter((entry) => entry.name !== "product-engineer-helper");
+  assert.equal(workspacePkgs.length, EXPECTED_PACKAGE_LEGS);
   const legs = [];
-  for (const name of packageDirs) {
-    try {
-      const pkg = JSON.parse(await readFile(join(repoRoot, "packages", name, "package.json"), "utf8"));
-      if (pkg.scripts?.test) legs.push(pkg.name);
-    } catch {
-      // not a package
-    }
+  for (const entry of workspacePkgs) {
+    const pkg = JSON.parse(await readFile(join(entry.path, "package.json"), "utf8"));
+    assert.ok(pkg.scripts?.test, `${pkg.name} missing test script`);
+    legs.push(pkg.name);
   }
   assert.equal(legs.length, EXPECTED_PACKAGE_LEGS);
+});
 
+test("root test script, quarantine register, and publish guard", async () => {
+  const root = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
+  const agentsMd = await readFile(join(repoRoot, "AGENTS.md"), "utf8");
+  assert.equal(root.scripts.test, "pnpm -r --no-bail run test");
+  assert.doesNotMatch(root.scripts.test, /--filter/);
   assert.ok(Array.isArray(root.legionQuarantine));
   assert.equal(root.legionQuarantine.length, EXPECTED_QUARANTINE_COUNT);
   for (const entry of root.legionQuarantine) {
@@ -137,7 +205,6 @@ test("suite reports 14 package legs, no-bail runner, quarantine register, and pu
     assert.ok(entry.owningPr >= 1);
     assert.match(String(entry.failBy), /^\d{4}-\d{2}-\d{2}$/);
   }
-
   assert.equal(root.private, true);
   assert.ok(Array.isArray(root.legionPublishAllowlist));
   assert.ok(root.legionPublishAllowlist.length > 0);
@@ -145,9 +212,17 @@ test("suite reports 14 package legs, no-bail runner, quarantine register, and pu
   assert.equal(root.legionPublishAllowlist.includes("@9thlevelsoftware/legion-cli-http"), false);
   assert.match(agentsMd, /legionPublishAllowlist/);
   assert.match(agentsMd, /"private": true/);
+});
 
-  assert.match(ci, /linux-docker/);
+test("CI linux-docker is required and macos is droppable", async () => {
+  const ci = await readFile(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
+  const linux = yamlJob(ci, "linux-docker");
+  const macos = yamlJob(ci, "macos");
+  assert.doesNotMatch(linux, /continue-on-error/);
+  assert.match(macos, /continue-on-error:\s*true/);
+  assert.match(linux, /docker info/);
+  assert.match(linux, /detectSandbox/);
+  assert.match(linux, /backend !== "docker"/);
   assert.match(ci, /Q-WIN-DOCKER/);
   assert.match(ci, /macos-latest/);
-  assert.match(ci, /continue-on-error:\s*true/);
 });

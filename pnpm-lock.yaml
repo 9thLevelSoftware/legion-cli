@@ -65,6 +65,9 @@ importers:
       '@9thlevelsoftware/legion-cli-persist':
         specifier: workspace:*
         version: link:../persist
+      '@9thlevelsoftware/legion-cli-sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@9thlevelsoftware/legion-cli-schema':
         specifier: workspace:*
         version: link:../schema

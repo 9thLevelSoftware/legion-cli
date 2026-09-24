@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { isAbsolute, relative } from "node:path";
+import { SandboxError } from "./errors.js";
 import { findOnPath } from "./sandbox.js";
 
-/** Container workdir for the jailRoot bind. Host paths must be translated into this namespace. */
 export const DOCKER_WORKDIR = "/workspace";
+export const DOCKER_HOST_EXEC_REFUSAL = "docker jail refuses a host exec path that is not the image node";
 
 export function findRunnableDocker(): string | undefined {
   const bin = findOnPath("docker", true);
@@ -22,17 +23,18 @@ function isNodeExecPath(hostPath: string): boolean {
   return /^node(\.exe)?$/i.test(base);
 }
 
-/**
- * Map a host path into the docker jail. A host exec path is never prefixed with
- * `/workspace/` — the image provides `node`, and a drive-letter path is not a jail rel.
- */
+function isPathName(hostPath: string): boolean {
+  return !hostPath.includes("/") && !hostPath.includes("\\") && !/^[A-Za-z]:/.test(hostPath);
+}
+
 export function translateHostPathToDocker(hostPath: string, jailRoot: string): string {
   const rel = relative(jailRoot, hostPath);
   if (rel && !rel.startsWith("..") && !isAbsolute(rel) && !/^[A-Za-z]:/.test(rel)) {
     return `${DOCKER_WORKDIR}/${rel.replaceAll("\\", "/")}`;
   }
   if (isNodeExecPath(hostPath)) return "node";
-  return hostPath;
+  if (isPathName(hostPath)) return hostPath;
+  throw new SandboxError(DOCKER_HOST_EXEC_REFUSAL);
 }
 
 export function dockerWorkdir(prefix: readonly string[]): string | undefined {
