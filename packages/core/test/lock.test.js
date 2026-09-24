@@ -12,7 +12,7 @@ import {
   EngineLockedError,
   MAX_LOCK_HOLD_MS,
 } from "@9thlevelsoftware/legion-cli-persist";
-import { LegionEngine } from "../dist/index.js";
+import { LegionEngine, LegionRefuseError, listCacheResumesCalls, resetListCacheResumesCalls } from "../dist/index.js";
 import {
   initGitRepo,
   initProject,
@@ -193,7 +193,19 @@ test("F-047: a dead-pid lock is stolen; a live lock is refused with a hint", asy
     }, { timeoutMs: 400 });
 
     const holder = createLegionStore(dir);
-    await holder.acquireLock({ timeoutMs: 200 });
+    let release;
+    const held = new Promise((done) => {
+      release = done;
+    });
+    let inside;
+    const ready = new Promise((done) => {
+      inside = done;
+    });
+    const holding = holder.withLock(async () => {
+      inside();
+      await held;
+    });
+    await ready;
     try {
       await assert.rejects(
         () => store.withLock(async () => {}, { timeoutMs: 200 }),
@@ -204,7 +216,28 @@ test("F-047: a dead-pid lock is stolen; a live lock is refused with a hint", asy
         },
       );
     } finally {
-      await holder.releaseLock();
+      release();
+      await holding;
+    }
+  });
+});
+
+test("F-050: acquireLock then nested withLock on another store re-enters", async () => {
+  await withEngine(async ({ dir, store }) => {
+    const engine = new LegionEngine(dir, store);
+    await initProject(engine);
+    const other = createLegionStore(dir);
+    await store.acquireLock({ timeoutMs: 400 });
+    try {
+      assert.equal(store.holdsLock(), true, "holder must report holdsLock");
+      assert.equal(other.holdsLock(), true, "peer store must re-enter after acquireLock");
+      await other.withLock(async () => {
+        const state = await other.readState();
+        await other.writeState({ ...state.data, currentTaskId: "TSK-cross" }, state.body);
+      }, { timeoutMs: 400 });
+      assert.equal((await store.readState()).data.currentTaskId, "TSK-cross");
+    } finally {
+      await store.releaseLock();
     }
   });
 });
@@ -265,14 +298,101 @@ test("F-054: dead-in-progress recovery scans cache/runs once per lock, not per t
         "utf8",
       );
     }
-    store.resetHoldStats();
+    resetListCacheResumesCalls();
     await engine.recoverStaleInProgress();
     assert.equal(
-      store.resumeScanCount,
+      listCacheResumesCalls,
       1,
-      `resume scan must be once per lock, not per task (got ${store.resumeScanCount})`,
+      `listCacheResumes must run once per lock, not per task (got ${listCacheResumesCalls})`,
     );
     assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
     assert.equal((await store.readTask("TSK-0002")).data.status, "blocked");
+  });
+});
+
+test("second execute is refused while a task is verifying", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ dir, store }) => {
+      let secondErr;
+      const engine = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeOnVerify: async () => {
+          assert.equal((await store.readTask("TSK-0001")).data.status, "verifying");
+          const other = new LegionEngine(dir, undefined, { skillsDir });
+          try {
+            await other.execute("auto");
+          } catch (err) {
+            secondErr = err;
+          }
+        },
+      });
+      await initProject(engine);
+      await seedPlanReady(store, {
+        extraTasks: [
+          makeTask({
+            id: "TSK-0002",
+            title: "sibling",
+            status: "ready",
+            contract: {
+              filesAllowed: ["src/other.ts"],
+              expectedArtifacts: ["src/other.ts"],
+              verificationCommands: [passingVerificationCommand()],
+            },
+          }),
+        ],
+        task: {
+          contract: {
+            filesAllowed: ["src/main.ts"],
+            expectedArtifacts: ["src/main.ts"],
+            verificationCommands: [passingVerificationCommand()],
+          },
+        },
+      });
+      initGitRepo(dir);
+      const first = await engine.execute("auto");
+      assert.equal(first.status, "done");
+      assert.equal(secondErr instanceof LegionRefuseError, true, String(secondErr));
+      assert.match(secondErr.message, /TSK-0001 is verifying/);
+      assert.equal((await store.readTask("TSK-0002")).data.status, "ready");
+    });
+  });
+});
+
+test("post-verify STATE.md does not clobber a newer currentTaskId", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ dir, store }) => {
+      const engine = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeOnVerify: async () => {
+          const state = await store.readState();
+          await store.writeState({ ...state.data, currentTaskId: "TSK-0002" }, state.body);
+        },
+      });
+      await initProject(engine);
+      await seedPlanReady(store, {
+        extraTasks: [
+          makeTask({
+            id: "TSK-0002",
+            title: "sibling",
+            status: "ready",
+            contract: {
+              filesAllowed: ["src/other.ts"],
+              expectedArtifacts: ["src/other.ts"],
+              verificationCommands: [passingVerificationCommand()],
+            },
+          }),
+        ],
+        task: {
+          contract: {
+            filesAllowed: ["src/main.ts"],
+            expectedArtifacts: ["src/main.ts"],
+            verificationCommands: [passingVerificationCommand()],
+          },
+        },
+      });
+      initGitRepo(dir);
+      await engine.execute("auto");
+      assert.equal((await store.readState()).data.currentTaskId, "TSK-0002");
+    });
   });
 });

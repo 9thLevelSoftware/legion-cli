@@ -86,6 +86,8 @@ type Hold = { lock: HeldLock; releaseMutex: () => void };
 type SharedLock = {
   tail: Promise<void>;
   hold: Hold | null;
+  /** acquireLock holds on this path; any store in this process re-enters. */
+  bareCount: number;
 };
 
 const lockContext = new AsyncLocalStorage<Hold>();
@@ -94,7 +96,7 @@ const sharedLocks = new Map<string, SharedLock>();
 function sharedLockFor(lockPath: string): SharedLock {
   let slot = sharedLocks.get(lockPath);
   if (!slot) {
-    slot = { tail: Promise.resolve(), hold: null };
+    slot = { tail: Promise.resolve(), hold: null, bareCount: 0 };
     sharedLocks.set(lockPath, slot);
   }
   return slot;
@@ -116,9 +118,6 @@ export class LegionStore implements LegionReader {
   lastHoldMs = 0;
   /** Max injected-clock hold across top-level `withLock` calls since {@link resetHoldStats}. */
   maxHoldMs = 0;
-  /** `listCacheResumes` calls attributed to this store (F-054). */
-  resumeScanCount = 0;
-
   constructor(projectRoot: string, opts?: LegionStoreOptions) {
     this.projectRoot = resolve(projectRoot);
     this.paths = legionPaths(this.projectRoot);
@@ -129,7 +128,6 @@ export class LegionStore implements LegionReader {
   resetHoldStats(): void {
     this.lastHoldMs = 0;
     this.maxHoldMs = 0;
-    this.resumeScanCount = 0;
   }
 
   /**
@@ -140,7 +138,8 @@ export class LegionStore implements LegionReader {
   holdsLock(): boolean {
     const hold = lockContext.getStore();
     if (hold !== undefined && hold === this.#slot.hold) return true;
-    return this.#bare.some((item) => item === this.#slot.hold);
+    if (this.#bare.some((item) => item === this.#slot.hold)) return true;
+    return this.#slot.hold !== null && this.#slot.bareCount > 0;
   }
 
   /**
@@ -192,21 +191,31 @@ export class LegionStore implements LegionReader {
   }
 
   /** Low-level: take the lock outside `withLock`. Pair with {@link releaseLock}. */
-  async acquireLock(opts?: { timeoutMs?: number }): Promise<void> {
+  acquireLock(opts?: { timeoutMs?: number }): Promise<void> {
     if (this.holdsLock()) {
       this.#bare.push(REENTERED);
-      return;
+      this.#slot.bareCount += 1;
+      return Promise.resolve();
     }
-    this.#bare.push(await this.#take(opts));
+    return this.#take(opts).then((hold) => {
+      this.#bare.push(hold);
+      this.#slot.bareCount += 1;
+      lockContext.enterWith(hold);
+    });
   }
 
   async releaseLock(): Promise<void> {
     const hold = this.#bare.pop();
+    if (this.#slot.bareCount > 0) this.#slot.bareCount -= 1;
     if (hold) await this.#give(hold);
   }
 
-  async withLock<T>(fn: () => Promise<T>, opts?: { timeoutMs?: number }): Promise<T> {
+  withLock<T>(fn: () => Promise<T>, opts?: { timeoutMs?: number }): Promise<T> {
     if (this.holdsLock()) return fn();
+    return this.#runLocked(fn, opts);
+  }
+
+  async #runLocked<T>(fn: () => Promise<T>, opts?: { timeoutMs?: number }): Promise<T> {
     const hold = await this.#take(opts);
     const t0 = this.#clock.now();
     try {

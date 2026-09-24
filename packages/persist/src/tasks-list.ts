@@ -52,7 +52,6 @@ async function peekFrontmatter(abs: string): Promise<unknown> {
 /**
  * Every `*.md` under `.legion-cli/tasks/`, sorted by name. An unreadable or invalid file is an
  * `ok:false` entry, never dropped, so gates fail closed and viewers can show it.
- * Resume recovery does not call this per task (F-054: one `cache/runs` scan per lock).
  */
 export async function listTaskFiles(projectRoot: string): Promise<TaskFileEntry[]> {
   const dir = legionPaths(projectRoot).tasksDir;
