@@ -561,6 +561,8 @@ export function createProgram(): Command {
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .option("--route <name>", "named adapter route (expanded at write)")
     .option("--clear-adapter", "omit Task.adapter")
+    .option("--unblock", "blocked -> ready/todo")
+    .option("--recover", "verifying -> blocked when the serial window is dead")
     .allowExcessArguments(false)
     .action(async (id: string, opts, cmd: Command) => {
       const flags = opts as {
@@ -573,6 +575,8 @@ export function createProgram(): Command {
         adapter?: string;
         route?: string;
         clearAdapter?: boolean;
+        unblock?: boolean;
+        recover?: boolean;
       };
       const code = await runTaskAmend(resolveOpts(cmd), id, flags);
       process.exitCode = code;

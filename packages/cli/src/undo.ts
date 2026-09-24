@@ -1,5 +1,4 @@
-import { undoLastTask } from "@9thlevelsoftware/legion-cli-core";
-import { createLegionStore } from "@9thlevelsoftware/legion-cli-persist";
+import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 
@@ -8,10 +7,8 @@ export type UndoOpts = CliOpts & {
 };
 
 export async function runUndo(opts: UndoOpts): Promise<number> {
-  const store = createLegionStore(opts.project);
-  const result = await undoLastTask({
-    projectRoot: opts.project,
-    store,
+  const engine = createLegionEngine(opts.project);
+  const result = await engine.undoLastTask({
     taskId: opts.task,
   });
 

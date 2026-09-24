@@ -117,7 +117,7 @@ test("executing stays until every slice task is done or blocked", async () => {
       assert.equal((await engine.getState()).phase, "executing");
       assert.equal((await store.readTask("TSK-0001")).data.status, "done");
 
-      await engine.setTaskStatus("TSK-0002", "blocked");
+      await writeTask(store, { ...(await store.readTask("TSK-0002")).data, status: "blocked" });
       assert.equal((await engine.getState()).phase, "executing");
 
       const slice = await engine.listSliceTasks();
@@ -190,9 +190,7 @@ test("review PASS only if spawn created zero new tasks", async () => {
       },
     );
 
-    await engine.setTaskStatus("TSK-0003", "in_progress");
-    await engine.setTaskStatus("TSK-0003", "verifying");
-    await engine.setTaskStatus("TSK-0003", "done");
+    await writeTask(store, { ...(await store.readTask("TSK-0003")).data, status: "done" });
     await assert.rejects(
       () => engine.qa({ score: makeQaScore() }),
       (err) => {
@@ -467,13 +465,11 @@ test("reopening a blocked slice task after review PASS invalidates lastReview", 
     assert.equal(review.verdict, "PASS");
     assert.equal((await engine.getState()).lastReview, "PASS");
 
-    await engine.setTaskStatus("TSK-0002", "ready");
+    await engine.unblockTask("TSK-0002");
     assert.equal((await engine.getState()).lastReview, "FAIL");
     assert.equal((await engine.getState()).phase, "executing");
 
-    await engine.setTaskStatus("TSK-0002", "in_progress");
-    await engine.setTaskStatus("TSK-0002", "verifying");
-    await engine.setTaskStatus("TSK-0002", "done");
+    await writeTask(store, { ...(await store.readTask("TSK-0002")).data, status: "done" });
     await assert.rejects(
       () => engine.qa({ score: makeQaScore() }),
       (err) => {

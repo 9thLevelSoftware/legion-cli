@@ -56,7 +56,7 @@ const ALWAYS_ON = [
 const BOARD_EXTRAS = [
   ["next", "What is unblocked?", ""],
   ["ticket create", "Park extra work", "--parent, --title, --from-agent, --type, --priority, --adapter, --route"],
-  ["task amend", "Human changes a file contract", "--allow-deps, --adapter, --route, --clear-adapter"],
+  ["task amend", "Human changes a file contract", "--allow-deps, --adapter, --route, --clear-adapter, --unblock, --recover"],
   ["undo", "Revert last completed task or Legion commit", "--task"],
   ["recipe list", "List available workflow recipes", ""],
   ["recipe run <name>", "Execute a workflow recipe", "--param"],
