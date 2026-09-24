@@ -291,6 +291,41 @@ test("engine.lock is single-writer and times out", async () => {
   });
 });
 
+test("acquireLock does not let a sibling withLock overlap", async () => {
+  await withTempDir(async (dir) => {
+    const a = new LegionStore(dir);
+    const b = new LegionStore(dir);
+    let inside = 0;
+    let overlap = false;
+    let release;
+    const held = new Promise((done) => {
+      release = done;
+    });
+    let ready;
+    const started = new Promise((done) => {
+      ready = done;
+    });
+    const holding = Promise.resolve().then(async () => {
+      await a.acquireLock({ timeoutMs: 400 });
+      ready();
+      inside += 1;
+      if (inside > 1) overlap = true;
+      await held;
+      inside -= 1;
+      await a.releaseLock();
+    });
+    await started;
+    await assert.rejects(() => b.withLock(async () => {
+      inside += 1;
+      if (inside > 1) overlap = true;
+      inside -= 1;
+    }, { timeoutMs: 200 }), EngineLockedError);
+    assert.equal(overlap, false);
+    release();
+    await holding;
+  });
+});
+
 test("fresh empty or invalid engine.lock files wait rather than steal", async () => {
   await withTempDir(async (dir) => {
     const store = new LegionStore(dir);

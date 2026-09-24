@@ -222,6 +222,46 @@ test("F-047: a dead-pid lock is stolen; a live lock is refused with a hint", asy
   });
 });
 
+test("F-050: sibling withLock does not run inside another chain's acquireLock", async () => {
+  await withEngine(async ({ dir, store }) => {
+    const engine = new LegionEngine(dir, store);
+    await initProject(engine);
+    const other = createLegionStore(dir);
+    let inside = 0;
+    let overlap = false;
+    let release;
+    const held = new Promise((done) => {
+      release = done;
+    });
+    let ready;
+    const started = new Promise((done) => {
+      ready = done;
+    });
+    const holding = Promise.resolve().then(async () => {
+      await store.acquireLock({ timeoutMs: 400 });
+      ready();
+      inside += 1;
+      if (inside > 1) overlap = true;
+      await held;
+      inside -= 1;
+      await store.releaseLock();
+    });
+    await started;
+    await assert.rejects(
+      () =>
+        other.withLock(async () => {
+          inside += 1;
+          if (inside > 1) overlap = true;
+          inside -= 1;
+        }, { timeoutMs: 200 }),
+      EngineLockedError,
+    );
+    assert.equal(overlap, false, "sibling withLock overlapped an acquireLock hold");
+    release();
+    await holding;
+  });
+});
+
 test("F-050: acquireLock then nested withLock on another store re-enters", async () => {
   await withEngine(async ({ dir, store }) => {
     const engine = new LegionEngine(dir, store);

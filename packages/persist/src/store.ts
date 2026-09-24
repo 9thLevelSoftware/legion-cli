@@ -82,24 +82,28 @@ export type LegionStoreOptions = {
 };
 
 type Hold = { lock: HeldLock; releaseMutex: () => void };
+type BareTicket = { kind: "bare"; slot: SharedLock; live: boolean };
+type LockScope = Hold | BareTicket;
 
 type SharedLock = {
   tail: Promise<void>;
   hold: Hold | null;
-  /** acquireLock holds on this path; any store in this process re-enters. */
-  bareCount: number;
 };
 
-const lockContext = new AsyncLocalStorage<Hold>();
+const lockContext = new AsyncLocalStorage<LockScope>();
 const sharedLocks = new Map<string, SharedLock>();
 
 function sharedLockFor(lockPath: string): SharedLock {
   let slot = sharedLocks.get(lockPath);
   if (!slot) {
-    slot = { tail: Promise.resolve(), hold: null, bareCount: 0 };
+    slot = { tail: Promise.resolve(), hold: null };
     sharedLocks.set(lockPath, slot);
   }
   return slot;
+}
+
+function isBareTicket(ctx: LockScope | undefined): ctx is BareTicket {
+  return Boolean(ctx && "kind" in ctx && ctx.kind === "bare");
 }
 
 const REENTERED: Hold = {
@@ -131,15 +135,14 @@ export class LegionStore implements LegionReader {
   }
 
   /**
-   * True in the async chain that took this project's lock, including a nested
-   * `withLock` on a different `LegionStore` for the same path (F-018).
-   * A same-instance `acquireLock` also counts so nested `withLock` re-enters (F-050).
+   * True in this async chain only: nested `withLock` / `acquireLock` on any store
+   * for the same path re-enters. A sibling chain must not see this as held.
    */
   holdsLock(): boolean {
-    const hold = lockContext.getStore();
-    if (hold !== undefined && hold === this.#slot.hold) return true;
-    if (this.#bare.some((item) => item === this.#slot.hold)) return true;
-    return this.#slot.hold !== null && this.#slot.bareCount > 0;
+    const ctx = lockContext.getStore();
+    if (!ctx) return false;
+    if (isBareTicket(ctx)) return ctx.slot === this.#slot && ctx.live;
+    return ctx === this.#slot.hold;
   }
 
   /**
@@ -194,20 +197,31 @@ export class LegionStore implements LegionReader {
   acquireLock(opts?: { timeoutMs?: number }): Promise<void> {
     if (this.holdsLock()) {
       this.#bare.push(REENTERED);
-      this.#slot.bareCount += 1;
       return Promise.resolve();
     }
-    return this.#take(opts).then((hold) => {
-      this.#bare.push(hold);
-      this.#slot.bareCount += 1;
-      lockContext.enterWith(hold);
-    });
+    // Non-async so enterWith sticks on the caller's chain, not a sibling.
+    const ticket: BareTicket = { kind: "bare", slot: this.#slot, live: false };
+    lockContext.enterWith(ticket);
+    return this.#take(opts).then(
+      (hold) => {
+        this.#bare.push(hold);
+        ticket.live = true;
+      },
+      (err) => {
+        lockContext.enterWith(undefined as unknown as LockScope);
+        throw err;
+      },
+    );
   }
 
-  async releaseLock(): Promise<void> {
+  releaseLock(): Promise<void> {
     const hold = this.#bare.pop();
-    if (this.#slot.bareCount > 0) this.#slot.bareCount -= 1;
-    if (hold) await this.#give(hold);
+    if (hold === REENTERED || !hold) return Promise.resolve();
+    const ctx = lockContext.getStore();
+    if (isBareTicket(ctx) && ctx.slot === this.#slot) {
+      lockContext.enterWith(undefined as unknown as LockScope);
+    }
+    return this.#give(hold);
   }
 
   withLock<T>(fn: () => Promise<T>, opts?: { timeoutMs?: number }): Promise<T> {
