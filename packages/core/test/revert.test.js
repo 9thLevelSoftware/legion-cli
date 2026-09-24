@@ -8,6 +8,7 @@ import test from "node:test";
 import { mkdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 
 import { appendAuditEvent, RestoreRefusedError, sha256Content } from "@9thlevelsoftware/legion-cli-persist";
+import { LegionRefuseError } from "../dist/errors.js";
 import {
   openEngineCommand,
   restoreChangedTaskFiles,
@@ -15,6 +16,7 @@ import {
   revertExtras,
   snapshotTaskFiles,
 } from "../dist/revert.js";
+import { finishStartedSpawn } from "../dist/spawn.js";
 import {
   initGitRepo,
   initProject,
@@ -239,6 +241,51 @@ test("restore entry point refuses while the agent tree is alive or the jail is w
     await assert.rejects(
       () => restoreEngineState(dir, "cmd-alive", { agentAlive: false, jailWritable: true }),
       RestoreRefusedError,
+    );
+  });
+});
+
+test("finishStartedSpawn refuses restore when jail destroy fails", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    await openEngineCommand(dir, "run-jail");
+    await assert.rejects(
+      () =>
+        finishStartedSpawn({
+          spawned: true,
+          runId: "run-jail",
+          handle: { pid: null, wait: async () => ({ exitCode: 0, timedOut: false, aborted: false }), abort: async () => undefined },
+          started: Date.now(),
+          revertCtx: {
+            projectRoot: dir,
+            preSpawnRef: null,
+            allowedRoots: [],
+            filesForbidden: undefined,
+            snapshot: undefined,
+            gitPolicy: { config: null, hooks: {} },
+            dirtyAtStart: new Set(),
+            chatSessions: new Map(),
+            commandId: "run-jail",
+          },
+          resolution: { id: "fake", source: "default" },
+          binary: "(in-process)",
+          argvSummary: "",
+          sandbox: {
+            backend: "copy",
+            hardened: false,
+            jailRoot: dir,
+            spawnOpts: () => ({ cwd: dir, env: process.env, translateInvoke: (invoke) => invoke }),
+            copyOut: async () => ({ copied: [], dropped: [] }),
+            destroy: async () => {
+              throw new Error("destroy failed");
+            },
+          },
+        }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /jail is writable/);
+        return true;
+      },
     );
   });
 });

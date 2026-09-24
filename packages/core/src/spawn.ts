@@ -26,7 +26,13 @@ import {
   type ResolvedSkillDir,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
-import { isPidAlive, openEngineCommand, RestoreRefusedError, type LegionReader } from "@9thlevelsoftware/legion-cli-persist";
+import {
+  AuditTamperError,
+  isPidAlive,
+  openEngineCommand,
+  RestoreRefusedError,
+  type LegionReader,
+} from "@9thlevelsoftware/legion-cli-persist";
 import {
   assertExecuteSandbox,
   materializeJail,
@@ -640,7 +646,14 @@ export async function finishStartedSpawn(
       const out = await started.sandbox.copyOut();
       copied = out.copied;
       dropped = out.dropped;
-      await started.sandbox.destroy().catch(() => undefined);
+    }
+    let jailWritable = false;
+    if (started.sandbox) {
+      try {
+        await started.sandbox.destroy();
+      } catch {
+        jailWritable = true;
+      }
     }
     const childPid = started.handle.pid;
     const agentAlive = Boolean(childPid && childPid !== process.pid && isPidAlive(childPid));
@@ -651,10 +664,10 @@ export async function finishStartedSpawn(
         commandId: started.revertCtx.commandId,
         extraRoots: started.revertCtx.allowedRoots.filter((root) => root.startsWith(".legion-cli/")),
         agentAlive,
-        jailWritable: false,
+        jailWritable,
       });
     } catch (err) {
-      if (err instanceof RestoreRefusedError) refuse(err.message, HINT.status);
+      if (err instanceof RestoreRefusedError || err instanceof AuditTamperError) refuse(err.message, HINT.status);
       throw err;
     }
     const extrasReverted = new Set(revert.extrasReverted);
