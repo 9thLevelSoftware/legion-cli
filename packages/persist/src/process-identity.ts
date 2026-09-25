@@ -12,7 +12,7 @@ export const PROCESS_START_TOLERANCE_MS = 5_000;
 
 export const PROC_READ_MAX_BYTES = 64 * 1024;
 export const PROC_READ_TIMEOUT_MS = 5_000;
-export const IDENTITY_TIMEOUT_MS = 5_000;
+export const IDENTITY_TIMEOUT_MS = 20_000;
 
 const LINUX_CLK_TCK = 100;
 
@@ -114,19 +114,31 @@ async function linuxStartedAt(pid: number): Promise<number | null> {
   return parseLinuxStartedAt(stat, procStat);
 }
 
+/** Windows PowerShell 5.1 writes UTF-16LE to a pipe. UTF-8 decoding makes Date.parse fail. */
+function decodeProcessText(stdout: string | Buffer): string {
+  const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return buf.toString("utf16le");
+  if (buf.length >= 4 && buf[1] === 0 && buf[3] === 0) return buf.toString("utf16le");
+  return buf.toString("utf8");
+}
+
 function run(file: string, args: string[], env: NodeJS.ProcessEnv): Promise<string | null> {
   return new Promise((done) => {
     execFile(
       file,
       args,
       {
-        encoding: "utf8",
+        encoding: "buffer",
         windowsHide: true,
         timeout: IDENTITY_TIMEOUT_MS,
         maxBuffer: PROC_READ_MAX_BYTES,
         env,
       },
-      (err, stdout) => done(err ? null : String(stdout).trim()),
+      (err, stdout) => {
+        if (err || stdout == null || stdout.length === 0) return done(null);
+        const text = decodeProcessText(stdout).replace(/^\uFEFF/, "").trim();
+        done(text.length ? text : null);
+      },
     );
   });
 }
@@ -145,12 +157,15 @@ export async function processIdentity(pid: number): Promise<number | null> {
       [
         "-NoProfile",
         "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
         "-Command",
-        `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { $p.CreationDate.ToUniversalTime().ToString('o') }`,
+        `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
       ],
       identitySpawnEnv(),
     );
-    const ms = out ? Date.parse(out) : Number.NaN;
+    const line = out?.split(/\r?\n/).map((row) => row.trim()).find((row) => Number.isFinite(Date.parse(row)));
+    const ms = line ? Date.parse(line) : Number.NaN;
     return Number.isFinite(ms) ? ms : null;
   }
   const env = identitySpawnEnv();
