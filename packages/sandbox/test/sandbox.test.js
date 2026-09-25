@@ -10,7 +10,7 @@ import { PathEscapeError } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionConfigSchema } from "@9thlevelsoftware/legion-cli-schema";
 
 import { assertExecuteSandbox, detectSandbox, materializeJail, SandboxError } from "../dist/index.js";
-import { DOCKER_HOST_EXEC_REFUSAL, DOCKER_WORKDIR, translateHostPathToDocker } from "../dist/docker.js";
+import { DOCKER_HOST_EXEC_REFUSAL, DOCKER_WORKDIR, dockerArgvPrefix, dockerRunUser, translateHostPathToDocker } from "../dist/docker.js";
 
 const HARDENED_REQUIRED =
   "hardened sandbox required (bwrap or seatbelt); copy jail refused without allowNoSandbox or sandbox.allowCopyJail";
@@ -1011,4 +1011,16 @@ test("docker translation maps jail-rel paths and never prefixes /workspace/ onto
       return true;
     },
   );
+});
+
+test("docker jail runs as the host user so cap-drop ALL can write owned files", () => {
+  const prefix = dockerArgvPrefix({ jailRoot: "/tmp/jail" });
+  const user = dockerRunUser();
+  if (process.platform === "win32") {
+    assert.equal(user.length, 0);
+    assert.equal(prefix.includes("--user"), false);
+    return;
+  }
+  assert.deepEqual(prefix.slice(prefix.indexOf("--user"), prefix.indexOf("--user") + 2), user);
+  assert.equal(prefix.at(-1), "node:22-alpine");
 });
