@@ -93,6 +93,7 @@ import {
   ADAPTER_ID_HELP,
   ControlModeSchema,
   QAScoreSchema,
+  SURGICAL_MIGRATION_HINT,
   SCHEMA_VERSION,
   type AdapterId,
   type Assumption,
@@ -3186,9 +3187,13 @@ export class LegionEngine {
     if (trimmed === "autonomous") {
       refuse("Autonomous mode is not allowed", HINT.controlMode);
     }
+    if (trimmed === "surgical") {
+      refuse(SURGICAL_MIGRATION_HINT, HINT.controlMode);
+    }
     const parsed = ControlModeSchema.safeParse(trimmed);
     if (!parsed.success) {
-      refuse(`control_mode ${trimmed || mode} is rejected`, HINT.controlMode);
+      const hint = parsed.error.issues[0]?.message;
+      refuse(hint && hint.length > 0 ? hint : `control_mode ${trimmed || mode} is rejected`, HINT.controlMode);
     }
     return parsed.data;
   }

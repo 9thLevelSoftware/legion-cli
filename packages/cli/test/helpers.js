@@ -35,7 +35,7 @@ export function sanitizeDoctor(text) {
     .replace(/^(ok  |FAIL)  git \(.+\)$/m, "$1  git (<version>)")
     .replace(/^  legion-cli\n(?:    .+\n)+/m, "  legion-cli\n    <paths>\n")
     .replace(/^  legion\n(?:    .+\n)+/m, "  legion\n    <paths>\n")
-    .replace(/^(ok  |FAIL)  sandbox \(.+\)$/m, "$1  sandbox (<backend>)")
+    .replace(/^(ok  |FAIL|warn)  sandbox \(.+\)$/m, "$1  sandbox (<backend>)")
     .replace(/^Sandbox     .+$/m, "Sandbox     <backend>")
     .replace(/^Playwright  .+$/m, "Playwright  <playwright>")
     .replace(/^  claude       .+$/m, "  claude       <detect>")

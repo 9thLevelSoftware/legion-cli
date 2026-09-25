@@ -29,13 +29,14 @@ export {
   startedAfterRecorded,
 } from "./process-identity.js";
 export {
+  classifyTaskFileError,
   invalidTaskMessage,
   listTaskFiles,
   listTaskSummaries,
   rememberTaskWrite,
   TASK_SUMMARIES_STORE,
 } from "./tasks-list.js";
-export type { TaskFileEntry, TaskSummary } from "./tasks-list.js";
+export type { TaskFileEntry, TaskFileErrorKind, TaskSummary } from "./tasks-list.js";
 export {
   abandonReceiptBody,
   abandonReceiptPath,

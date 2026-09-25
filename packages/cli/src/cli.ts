@@ -177,8 +177,8 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("control-mode").description("Show or set guarded|surgical|advisory"))
-    .argument("[mode]", "guarded | surgical | advisory")
+  addGlobalOptions(program.command("control-mode").description("Show or set guarded|advisory"))
+    .argument("[mode]", "guarded | advisory")
     .allowExcessArguments(false)
     .action(async (mode: string | undefined, _opts, cmd: Command) => {
       const code = await runControlMode(resolveOpts(cmd), mode);
@@ -858,8 +858,8 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("repl").description("Sandboxed interactive REPL"))
-    .option("--lang <language>", "node | python | sh", "node")
+  addGlobalOptions(program.command("repl").description("Host-mode interactive REPL (NO SANDBOX; secrets visible to typed code)"))
+    .option("--lang <language>", "node | python", "node")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
       const flags = opts as { lang?: string };

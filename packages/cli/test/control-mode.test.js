@@ -23,7 +23,7 @@ test("help --all lists control-mode in always-on, not later or v0 gap", () => {
   assert.match(out, /Shipped adjacent[\s\S]*\bmap\b/);
 });
 
-test("control-mode shows default guarded and sets surgical|advisory", async () => {
+test("control-mode shows default guarded and sets advisory", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(init.status, 0, init.stderr);
@@ -37,13 +37,6 @@ test("control-mode shows default guarded and sets surgical|advisory", async () =
     assert.equal(JSON.parse(jsonShow.stdout).control_mode, "guarded");
 
     const engine = createLegionEngine(dir);
-    const surgical = runCli(["control-mode", "surgical", "--project", dir]);
-    assert.equal(surgical.status, 0, surgical.stderr);
-    assert.match(normalize(surgical.stdout), /^control_mode: surgical$/m);
-    assert.match(normalize(surgical.stdout), /^Next: legion-cli doctor$/m);
-    assert.equal((await engine.store.readConfig()).control_mode, "surgical");
-    assert.equal((await engine.store.readProject()).data.controlMode, "surgical");
-
     const jsonSet = runCli(["control-mode", "advisory", "--project", dir, "--json"]);
     assert.equal(jsonSet.status, 0, jsonSet.stderr);
     const payload = JSON.parse(jsonSet.stdout);
@@ -52,6 +45,23 @@ test("control-mode shows default guarded and sets surgical|advisory", async () =
     assert.equal(payload.next, "legion-cli doctor");
     assert.equal((await engine.store.readConfig()).control_mode, "advisory");
     assert.equal((await engine.store.readProject()).data.controlMode, "advisory");
+  });
+});
+
+test("control-mode surgical is refused with a named migration hint to guarded", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+
+    const surgical = runCli(["control-mode", "surgical", "--project", dir]);
+    assert.equal(surgical.status, 1);
+    const err = normalize(surgical.stderr);
+    assert.match(err, /control_mode surgical is removed; migrate to guarded/);
+    assert.match(err, /Next: legion-cli control-mode/);
+
+    const engine = createLegionEngine(dir);
+    assert.equal((await engine.store.readConfig()).control_mode, "guarded");
+    assert.equal((await engine.store.readProject()).data.controlMode, "guarded");
   });
 });
 
