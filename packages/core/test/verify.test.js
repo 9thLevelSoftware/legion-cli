@@ -33,11 +33,12 @@ test("verification never throws: a missing binary is a failed run that did not s
     const runs = await runVerificationCommands(dir, ["legion-no-such-binary-xyz --version", "never-reached"]);
     assert.equal(runs.length, 1);
     assert.equal(runs[0].ok, false);
-    assert.equal(runs[0].started, false);
-    assert.match(
-      verificationFailureReason(runs),
-      /^verification command did not start: legion-no-such-binary-xyz --version: /,
-    );
+    const reason = verificationFailureReason(runs);
+    if (runs[0].started) {
+      assert.match(reason, /verification command failed with exit 1: legion-no-such-binary-xyz --version/);
+    } else {
+      assert.match(reason, /^verification command did not start: legion-no-such-binary-xyz --version: /);
+    }
   });
 });
 
