@@ -1,15 +1,17 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const SECRET_PATTERNS: { name: string; re: RegExp }[] = [
-  { name: "aws-access-key", re: /AKIA[0-9A-Z]{16}/g },
-  { name: "sk-proj", re: /\bsk-proj-[A-Za-z0-9_-]{8,}/g },
-  { name: "sk-ant", re: /\bsk-ant-[A-Za-z0-9_-]{8,}/g },
-  { name: "sk", re: /\bsk-[A-Za-z0-9]{20,}/g },
-  { name: "xai", re: /\bxai-[A-Za-z0-9]{20,}/g },
-  { name: "private-key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
-  { name: "ghp", re: /ghp_[A-Za-z0-9]+/g },
-  { name: "github_pat", re: /github_pat_[A-Za-z0-9_]+/g },
+export const MAX_SECRET_WALK_DEPTH = 16;
+
+const SECRET_PATTERNS: { name: string; source: string }[] = [
+  { name: "aws-access-key", source: "AKIA[0-9A-Z]{16}" },
+  { name: "sk-proj", source: "\\bsk-proj-[A-Za-z0-9_-]{8,}" },
+  { name: "sk-ant", source: "\\bsk-ant-[A-Za-z0-9_-]{8,}" },
+  { name: "sk", source: "\\bsk-[A-Za-z0-9]{20,}" },
+  { name: "xai", source: "\\bxai-[A-Za-z0-9]{20,}" },
+  { name: "private-key", source: "-----BEGIN [A-Z ]*PRIVATE KEY-----" },
+  { name: "ghp", source: "ghp_[A-Za-z0-9]+" },
+  { name: "github_pat", source: "github_pat_[A-Za-z0-9_]+" },
 ];
 
 export type SecretHit = {
@@ -17,25 +19,37 @@ export type SecretHit = {
   name: string;
 };
 
-async function walkFiles(dir: string): Promise<string[]> {
-  let entries: string[];
+async function walkFiles(dir: string, depth = 0): Promise<string[]> {
+  if (depth > MAX_SECRET_WALK_DEPTH) return [];
+  let names: string[];
   try {
-    entries = await readdir(dir);
+    names = await readdir(dir);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;
   }
   const files: string[] = [];
-  for (const name of entries) {
+  for (const name of names) {
     const abs = join(dir, name);
-    const info = await stat(abs);
+    let info;
+    try {
+      info = await lstat(abs);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw err;
+    }
+    if (info.isSymbolicLink()) continue;
     if (info.isDirectory()) {
-      files.push(...(await walkFiles(abs)));
+      files.push(...(await walkFiles(abs, depth + 1)));
     } else if (info.isFile()) {
       files.push(abs);
     }
   }
   return files;
+}
+
+function hasSecret(text: string, source: string): boolean {
+  return new RegExp(source).test(text);
 }
 
 export async function scanWikiSecrets(wikiDir: string): Promise<SecretHit[]> {
@@ -49,8 +63,7 @@ export async function scanWikiSecrets(wikiDir: string): Promise<SecretHit[]> {
       continue;
     }
     for (const pattern of SECRET_PATTERNS) {
-      pattern.re.lastIndex = 0;
-      if (pattern.re.test(text)) {
+      if (hasSecret(text, pattern.source)) {
         hits.push({ file, name: pattern.name });
       }
     }

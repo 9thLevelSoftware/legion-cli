@@ -11,6 +11,8 @@ export {
 } from "./sandbox.js";
 export {
   DOCKER_HOST_EXEC_REFUSAL,
+  DOCKER_PIDS_LIMIT,
+  DOCKER_PINNED_IMAGE,
   DOCKER_WORKDIR,
   dockerArgvPrefix,
   findRunnableDocker,

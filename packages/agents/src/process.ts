@@ -40,11 +40,19 @@ function powershellExePath(): string {
   return join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
+function spawnEnv(job: AgentJob): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(job.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
 function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: WriteStream, stderr: WriteStream): ChildProcess {
   const resolved = resolveBinary(binary) ?? binary;
   const common = {
     cwd: job.cwd,
-    env: job.env,
+    env: spawnEnv(job),
     windowsHide: true,
     shell: false,
   } as const;

@@ -164,8 +164,10 @@ import { defaultTicketContract, parseExtraJson, taskMarkdownBody, ticketFromInpu
 import {
   displayStagedRoots,
   ghAvailable,
+  SHIP_STAGED_CHANGED,
   shipAddPaths,
   shipCommitMessage,
+  shipProductIndexFingerprint,
   tryCreatePullRequest,
   unionDoneFilesAllowed,
   unrelatedDirty,
@@ -3363,6 +3365,7 @@ export class LegionEngine {
       diff: "",
       unrelatedUnchanged: true,
       unrelated: [],
+      productFingerprint: "",
     };
     if (!isGitRepo(this.projectRoot)) return empty;
 
@@ -3379,6 +3382,7 @@ export class LegionEngine {
       diff: gitDiffCached(this.projectRoot),
       unrelatedUnchanged: unrelated.length === 0,
       unrelated,
+      productFingerprint: shipProductIndexFingerprint(this.projectRoot),
     };
   }
 
@@ -3394,6 +3398,13 @@ export class LegionEngine {
     opts: ShipOptions,
     preview: ShipPreview,
   ): Promise<ShipReceipt> {
+    if (isGitRepo(this.projectRoot)) {
+      const actual = shipProductIndexFingerprint(this.projectRoot);
+      if (actual !== preview.productFingerprint) {
+        refuse(SHIP_STAGED_CHANGED, HINT.ship);
+      }
+    }
+
     const lastQa = await this.#readLastQa(state);
     const specId = state.activeSpecId ?? "";
     const shippedAt = nowIso();

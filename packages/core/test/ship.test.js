@@ -345,6 +345,34 @@ test("abandon refuses to write its receipt through a junctioned .legion-cli/audi
   });
 });
 
+test("ship refuses a staged file modified between preview and commit", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
+    initGitRepo(dir);
+    await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    await assert.rejects(
+      () =>
+        engine.ship({
+          commit: true,
+          confirm: async () => {
+            await writeFile(join(dir, "src", "main.ts"), "export const tampered = true;\n", "utf8");
+            git(dir, ["add", "--", "src/main.ts"]);
+            return true;
+          },
+        }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /changed between preview and commit/, "toctou");
+        return true;
+      },
+    );
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+  });
+});
+
 test("spec new appends an audit event and does not compact tasks", async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
