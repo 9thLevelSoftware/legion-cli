@@ -108,11 +108,13 @@ export class HttpAdapter {
   }
 
   async detect(): Promise<DetectResult> {
-    return { ok: false, reason: "adapter.http is not a spawnable CLI (no HTTP completions client)" };
+    const reason = httpAdapterNotReadyReason(this.#config);
+    if (reason) return { ok: false, reason };
+    return { ok: true, version: this.#config?.model };
   }
 
-  async spawn(_job: HttpAgentJob): Promise<HttpAgentHandle> {
-    throw new HttpAdapterError("adapter.http is not a spawnable CLI (no HTTP completions client)");
+  async spawn(job: HttpAgentJob): Promise<HttpAgentHandle> {
+    return new HttpHandle((signal) => this.#run(job, signal), job.timeoutMs);
   }
 
   async #run(job: HttpAgentJob, signal: AbortSignal): Promise<HttpAgentResult> {

@@ -4,7 +4,6 @@
   "description": "Legion CLI OpenAI-compatible HTTP adapter (apiKeyEnv, SSRF-bounded, tool-loop)",
   "type": "module",
   "license": "MIT",
-  "private": true,
   "engines": {
     "node": ">=22"
   },
@@ -24,6 +23,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm run build && node --test test/*.test.js",
     "prepublishOnly": "pnpm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "repository": {
     "type": "git",

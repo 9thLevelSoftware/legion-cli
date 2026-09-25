@@ -5,8 +5,9 @@ export const RUN_COMMAND_TIMEOUT_MS = 60_000;
 export const MAX_RUN_COMMAND_BYTES = 64 * 1024;
 export const MAX_TOOL_RESULT_CHARS = 64 * 1024;
 
-const RUN_COMMAND_ALLOWLIST = new Set(["node", "pnpm", "npm", "npx", "pytest", "python", "go", "cargo"]);
-const RUN_COMMAND_DENYLIST = new Set([
+const RUN_COMMAND_ALLOWLIST = new Set(["node", "nodejs", "pnpm", "npm", "npx", "pytest", "python", "python3", "go", "cargo"]);
+/** argv[0] basenames that never run, even if later added to the allowlist. */
+export const RUN_COMMAND_DENIED_BINS = [
   "git",
   "ssh",
   "chmod",
@@ -17,7 +18,21 @@ const RUN_COMMAND_DENYLIST = new Set([
   "curl",
   "wscript",
   "cscript",
-]);
+] as const;
+const RUN_COMMAND_DENYLIST = new Set<string>(RUN_COMMAND_DENIED_BINS);
+
+/** node -e / --eval (and -p) is arbitrary code; argv[0] allowlist is not enough. */
+const NODE_EVAL_FLAGS = new Set(["-e", "--eval", "-p", "--print", "--eval-module"]);
+const PYTHON_EVAL_FLAGS = new Set(["-c"]);
+
+function flagName(arg: string): string {
+  const eq = arg.indexOf("=");
+  return eq === -1 ? arg : arg.slice(0, eq);
+}
+
+function argsHaveDeniedFlag(args: readonly string[], denied: Set<string>): boolean {
+  return args.some((arg) => denied.has(flagName(arg)));
+}
 
 export type OpenAiTool = {
   type: "function";
@@ -41,7 +56,13 @@ function commandBasename(bin: string): string {
 export function isRunCommandAllowed(argv: readonly string[]): boolean {
   const base = commandBasename(argv[0] ?? "");
   if (!base || RUN_COMMAND_DENYLIST.has(base)) return false;
-  return RUN_COMMAND_ALLOWLIST.has(base);
+  if (!RUN_COMMAND_ALLOWLIST.has(base)) return false;
+  const rest = argv.slice(1);
+  if ((base === "node" || base === "nodejs") && argsHaveDeniedFlag(rest, NODE_EVAL_FLAGS)) return false;
+  if ((base === "python" || base === "python3" || base === "pytest") && argsHaveDeniedFlag(rest, PYTHON_EVAL_FLAGS)) {
+    return false;
+  }
+  return true;
 }
 
 const FILE_PATH_PARAM = {

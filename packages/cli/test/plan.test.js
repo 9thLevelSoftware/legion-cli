@@ -310,18 +310,18 @@ function withNamedHttp(config, name) {
   };
 }
 
-test("task amend --route http named adapter refuses", async () => {
+test("task amend --route http named adapter persists http", async () => {
   await withTempDir(async (dir) => {
     const engine = await seedFrozen(dir);
     await engine.store.writeConfig(withNamedHttp(await engine.store.readConfig(), "remote"));
     runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     const result = runCli(["task", "amend", "TSK-0001", "--route", "remote", "--project", dir]);
-    assert.equal(result.status, 1, result.stderr);
-    assert.match(normalize(result.stderr), /adapter http is not selectable yet/);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal((await engine.store.readTask("TSK-0001")).data.adapter, "http");
   });
 });
 
-test("ticket create --route http named adapter refuses", async () => {
+test("ticket create --route http named adapter persists http", async () => {
   await withTempDir(async (dir) => {
     const engine = await seedFrozen(dir);
     await engine.store.writeConfig(withNamedHttp(await engine.store.readConfig(), "remote"));
@@ -336,8 +336,10 @@ test("ticket create --route http named adapter refuses", async () => {
       "--route",
       "remote",
     ]);
-    assert.equal(result.status, 1, result.stderr);
-    assert.match(normalize(result.stderr), /adapter http is not selectable yet/);
+    assert.equal(result.status, 0, result.stderr);
+    const created = result.stdout.match(/Filed (TSK-\d+)/);
+    assert.ok(created, result.stdout);
+    assert.equal((await engine.store.readTask(created[1])).data.adapter, "http");
   });
 });
 
