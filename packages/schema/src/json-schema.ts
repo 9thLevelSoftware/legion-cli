@@ -19,6 +19,7 @@ import {
   PacketSchema,
   ProjectFileSchema,
   QAScoreSchema,
+  RecipesLockSchema,
   ResumeFileSchema,
   ServeFileSchema,
   SessionBriefSchema,
@@ -65,6 +66,7 @@ export const JSON_SCHEMA_FILES = [
   "chat-action",
   "chat-session",
   "serve-file",
+  "recipes-lock",
 ] as const;
 
 export type JsonSchemaFileName = (typeof JSON_SCHEMA_FILES)[number];
@@ -102,6 +104,7 @@ const schemaByFile = {
   "chat-action": ChatActionSchema,
   "chat-session": ChatSessionFileSchema,
   "serve-file": ServeFileSchema,
+  "recipes-lock": RecipesLockSchema,
 } as const satisfies Record<JsonSchemaFileName, z.ZodType>;
 
 export function toLegionJsonSchema(schema: z.ZodType): Record<string, unknown> {

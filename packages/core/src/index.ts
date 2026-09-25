@@ -25,7 +25,14 @@ export {
 export type { ChatApplyResult, ChatRouteOpts, ChatTurnKind, ChatTurnResult } from "./chat.js";
 export { setUndoGitResetHard, undoLastTask } from "./undo.js";
 export type { UndoResult } from "./undo.js";
-export { loadRecipe, runRecipe } from "./recipes.js";
+export {
+  COMMUNITY_RECIPE_LOCK_MESSAGE,
+  RECIPE_ARGV_ONLY_MESSAGE,
+  assertRecipeExecutionPolicy,
+  loadRecipe,
+  recipesLockPath,
+  runRecipe,
+} from "./recipes.js";
 export type { RecipeExecutionResult } from "./recipes.js";
 export { createLegionEngine, DISTILL_SOURCE_MAX_CHARS, LegionEngine } from "./engine.js";
 export type { MapLspMode, MapOptions, MapResult } from "./map.js";
@@ -70,11 +77,14 @@ export {
 } from "./fix.js";
 export {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
+  resetVerificationWork,
+  resolveVerificationTrustTier,
   runVerificationCommands,
   splitCommand,
   verificationFailureReason,
+  verificationWork,
 } from "./verify.js";
-export type { VerificationRun } from "./verify.js";
+export type { VerificationRun, VerificationTrustPosture } from "./verify.js";
 export {
   argvSummarySafe,
   findSkillsDir,

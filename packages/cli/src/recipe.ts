@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { loadRecipe, runRecipe } from "@9thlevelsoftware/legion-cli-core";
+import { assertRecipeExecutionPolicy, loadRecipe, runRecipe } from "@9thlevelsoftware/legion-cli-core";
 import { LegionMcpClientPool } from "@9thlevelsoftware/legion-cli-mcp";
 import { createLegionStore } from "@9thlevelsoftware/legion-cli-persist";
 import type { CliOpts } from "./io.js";
@@ -55,6 +55,7 @@ export async function runRecipeRun(recipeName: string, opts: RecipeRunOpts): Pro
   }
 
   const recipe = await loadRecipe(recipeName, opts.project);
+  await assertRecipeExecutionPolicy({ projectRoot: opts.project, recipe });
 
   // Parse CLI params: --param key=value
   const parsedParams: Record<string, unknown> = {};

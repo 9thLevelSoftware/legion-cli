@@ -11,7 +11,11 @@ import {
   toPosixPath,
   toProjectRelativePosix,
 } from "@9thlevelsoftware/legion-cli-persist";
-import { isConcretePosixRepoRelativePath, type LegionConfig } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  isConcretePosixRepoRelativePath,
+  type LegionConfig,
+  type SandboxConfig,
+} from "@9thlevelsoftware/legion-cli-schema";
 import { dockerArgvPrefix, findRunnableDocker, translateHostPathToDocker } from "./docker.js";
 import { SandboxError } from "./errors.js";
 
@@ -178,6 +182,229 @@ export function assertExecuteSandbox(config: LegionConfig, flags: { allowNoSandb
   if (config.sandbox.requireHardened && !hardened && !config.sandbox.allowCopyJail) {
     throw new SandboxError(HARDENED_REQUIRED);
   }
+}
+
+export type VerifyTrustTier = "hardened-bwrap" | "hardened-seatbelt" | "hardened-docker" | "allowlist";
+
+export type VerificationTrustFlags = {
+  /** Ignored: verify never requires --allow-no-sandbox. */
+  allowNoSandbox?: boolean;
+  platform?: NodeJS.Platform;
+  dockerAvailable?: boolean;
+  bwrapAvailable?: boolean;
+  seatbeltAvailable?: boolean;
+};
+
+export type VerificationTrustPosture = {
+  tier: VerifyTrustTier;
+  note: string;
+  backend: SandboxBackend | "host";
+  /** Copy jail is execute opt-in only; verify never copies the tree (A-007). */
+  copyJail: false;
+  error?: string;
+};
+
+export type VerificationWrapper = {
+  bin: string;
+  argvPrefix: string[];
+  translateInvoke?: (invoke: string) => string;
+};
+
+export const ALLOWLIST_TRUST_TIER_NOTE =
+  "trust-tier: allowlist — verificationCommands run with your privileges (argv-only, shell-refused, scrubbed env); not a sandbox. Agent-authored verification is not a trust boundary.";
+
+export const WINDOWS_ALLOWLIST_TRUST_TIER_NOTE =
+  "trust-tier: allowlist — Windows without Docker: verificationCommands run with your privileges (argv-only, shell-refused, scrubbed env); not a sandbox. Agent-authored verification is not a trust boundary.";
+
+function allowlistPosture(platform: NodeJS.Platform, note?: string): VerificationTrustPosture {
+  return {
+    tier: "allowlist",
+    note:
+      note ??
+      (platform === "win32" ? WINDOWS_ALLOWLIST_TRUST_TIER_NOTE : ALLOWLIST_TRUST_TIER_NOTE),
+    backend: "host",
+    copyJail: false,
+  };
+}
+
+/**
+ * Per-platform verify posture (KD-4). requireHardened is execute's gate, not verify's:
+ * applying it here would make --allow-no-sandbox the de-facto Windows invocation.
+ * Docker is opt-in (`sandbox.backend: docker`); auto never selects it. Copy jail is never used.
+ */
+export function resolveVerificationTrustTier(
+  sandbox: Pick<SandboxConfig, "backend" | "allowCopyJail" | "requireHardened">,
+  flags: VerificationTrustFlags = {},
+): VerificationTrustPosture {
+  const platform = flags.platform ?? process.platform;
+  const docker = flags.dockerAvailable ?? Boolean(findRunnableDocker());
+  const bwrap = flags.bwrapAvailable ?? Boolean(findRunnableBwrap());
+  const seatbelt =
+    flags.seatbeltAvailable ?? (platform === "darwin" && Boolean(findOnPath("sandbox-exec", true)));
+
+  if (sandbox.backend === "docker") {
+    if (docker) {
+      return {
+        tier: "hardened-docker",
+        note: "trust-tier: hardened-docker — verification runs under pinned Docker (opt-in)",
+        backend: "docker",
+        copyJail: false,
+      };
+    }
+    return {
+      tier: "hardened-docker",
+      note: "trust-tier: hardened-docker — pinned Docker backend is not available",
+      backend: "docker",
+      copyJail: false,
+      error: "pinned docker backend is not available for verification",
+    };
+  }
+
+  if (sandbox.backend === "bwrap") {
+    if (bwrap) {
+      return {
+        tier: "hardened-bwrap",
+        note: "trust-tier: hardened-bwrap — verification runs under bubblewrap",
+        backend: "bwrap",
+        copyJail: false,
+      };
+    }
+    return {
+      tier: "hardened-bwrap",
+      note: "trust-tier: hardened-bwrap — hardened bwrap is not available",
+      backend: "bwrap",
+      copyJail: false,
+      error: "hardened bwrap is not available for verification",
+    };
+  }
+
+  if (sandbox.backend === "seatbelt") {
+    if (seatbelt) {
+      return {
+        tier: "hardened-seatbelt",
+        note: "trust-tier: hardened-seatbelt — verification runs under seatbelt",
+        backend: "seatbelt",
+        copyJail: false,
+      };
+    }
+    return {
+      tier: "hardened-seatbelt",
+      note: "trust-tier: hardened-seatbelt — seatbelt is not available",
+      backend: "seatbelt",
+      copyJail: false,
+      error: "hardened seatbelt is not available for verification",
+    };
+  }
+
+  if (sandbox.backend === "auto" && platform === "linux" && bwrap) {
+    return {
+      tier: "hardened-bwrap",
+      note: "trust-tier: hardened-bwrap — verification runs under bubblewrap",
+      backend: "bwrap",
+      copyJail: false,
+    };
+  }
+  if (sandbox.backend === "auto" && platform === "darwin" && seatbelt) {
+    return {
+      tier: "hardened-seatbelt",
+      note: "trust-tier: hardened-seatbelt — verification runs under seatbelt",
+      backend: "seatbelt",
+      copyJail: false,
+    };
+  }
+
+  if (sandbox.backend === "auto" && platform === "linux" && !bwrap) {
+    return allowlistPosture(
+      platform,
+      "trust-tier: allowlist — hardened bwrap unavailable; verificationCommands run with your privileges (argv-only, shell-refused, scrubbed env); not a sandbox",
+    );
+  }
+
+  return allowlistPosture(platform);
+}
+
+function verificationBwrapArgvPrefix(projectRoot: string): string[] {
+  const root = resolve(projectRoot);
+  const args = [
+    "--die-with-parent",
+    "--unshare-user",
+    "--unshare-pid",
+    "--unshare-uts",
+    "--unshare-ipc",
+    "--dev",
+    "/dev",
+  ];
+  if (existsSync("/proc")) args.push("--proc", "/proc");
+  for (const path of SYSTEM_RO_BINDS) {
+    if (existsSync(path)) args.push("--ro-bind", path, path);
+  }
+  const execReal = tryRealpath(process.execPath);
+  if (execReal) {
+    args.push("--ro-bind", execReal, execReal);
+    const dir = dirname(execReal);
+    if (!isUnsafeDirname(dir, root)) args.push("--ro-bind", dir, dir);
+  }
+  args.push("--bind", root, root, "--chdir", root, "--");
+  return args;
+}
+
+function verificationSeatbeltProfile(projectRoot: string): string {
+  const root = JSON.stringify(resolve(projectRoot));
+  const reads = [
+    root,
+    ...SYSTEM_RO_BINDS.filter((path) => existsSync(path)).map((path) => JSON.stringify(path)),
+  ];
+  return [
+    "(version 1)",
+    "(deny default)",
+    "(allow process*)",
+    "(allow sysctl-read)",
+    "(allow network*)",
+    `(allow file-read* ${reads.map((path) => `(subpath ${path})`).join(" ")})`,
+    `(allow file-write* (subpath ${root}))`,
+    `(allow file-ioctl (subpath ${root}))`,
+    "",
+  ].join("\n");
+}
+
+/** In-place wrapper: binds the project, never copies it (copy cost stays 0). */
+export async function prepareVerificationWrapper(
+  projectRoot: string,
+  runId: string,
+  posture: VerificationTrustPosture,
+): Promise<VerificationWrapper | undefined> {
+  const root = resolve(projectRoot);
+  if (posture.backend === "host" || posture.error) return undefined;
+  if (posture.backend === "bwrap") {
+    const bin = findRunnableBwrap();
+    if (!bin) return undefined;
+    return { bin, argvPrefix: verificationBwrapArgvPrefix(root) };
+  }
+  if (posture.backend === "docker") {
+    const bin = findRunnableDocker();
+    if (!bin) return undefined;
+    return {
+      bin,
+      argvPrefix: dockerArgvPrefix({ jailRoot: root }),
+      translateInvoke: (invoke: string) => translateHostPathToDocker(invoke, root),
+    };
+  }
+  const bin = findOnPath("sandbox-exec", true);
+  if (!bin) return undefined;
+  const safeId = assertSafeRunId(runId);
+  const profilePath = join(legionPaths(root).cacheDir, "runs", safeId, "verify.sb");
+  await mkdir(dirname(profilePath), { recursive: true });
+  try {
+    const st = await lstat(profilePath);
+    if (st.isSymbolicLink() || !st.isFile()) {
+      throw new SandboxError("sandbox profile path is unsafe");
+    }
+    await rm(profilePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  await writeFile(profilePath, verificationSeatbeltProfile(root), { encoding: "utf8", flag: "wx" });
+  return { bin, argvPrefix: ["-f", profilePath, "--"] };
 }
 
 function assertPolicyPath(posix: string): string {
