@@ -348,11 +348,24 @@ function verificationBwrapArgvPrefix(projectRoot: string): string[] {
   return args;
 }
 
-function verificationSeatbeltProfile(projectRoot: string): string {
-  const root = JSON.stringify(resolve(projectRoot));
+function verificationExecReadPaths(projectRoot: string): string[] {
+  const root = resolve(projectRoot);
+  const paths: string[] = [];
+  const execReal = tryRealpath(process.execPath);
+  if (!execReal) return paths;
+  paths.push(execReal);
+  const dir = dirname(execReal);
+  if (!isUnsafeDirname(dir, root)) paths.push(dir);
+  return paths;
+}
+
+export function verificationSeatbeltProfile(projectRoot: string): string {
+  const root = resolve(projectRoot);
+  const rootJson = JSON.stringify(root);
   const reads = [
-    root,
+    rootJson,
     ...SYSTEM_RO_BINDS.filter((path) => existsSync(path)).map((path) => JSON.stringify(path)),
+    ...verificationExecReadPaths(root).map((path) => JSON.stringify(path)),
   ];
   return [
     "(version 1)",
@@ -361,8 +374,8 @@ function verificationSeatbeltProfile(projectRoot: string): string {
     "(allow sysctl-read)",
     "(allow network*)",
     `(allow file-read* ${reads.map((path) => `(subpath ${path})`).join(" ")})`,
-    `(allow file-write* (subpath ${root}))`,
-    `(allow file-ioctl (subpath ${root}))`,
+    `(allow file-write* (subpath ${rootJson}))`,
+    `(allow file-ioctl (subpath ${rootJson}))`,
     "",
   ].join("\n");
 }

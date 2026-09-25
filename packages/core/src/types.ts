@@ -318,6 +318,8 @@ export type ExecuteTaskResult = {
   verificationPass?: boolean;
   /** Why the task was blocked by verification, e.g. "verification command did not start: …". */
   reason?: string;
+  /** Named KD-4 posture; printed on the verification PASS/blocked line. */
+  trustTierNote?: string;
   adapterId?: AdapterId;
   resolutionSource?: AdapterResolutionSource;
 };

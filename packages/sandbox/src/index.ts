@@ -7,6 +7,7 @@ export {
   materializeJail,
   prepareVerificationWrapper,
   resolveVerificationTrustTier,
+  verificationSeatbeltProfile,
 } from "./sandbox.js";
 export {
   DOCKER_HOST_EXEC_REFUSAL,

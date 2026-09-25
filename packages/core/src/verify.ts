@@ -3,7 +3,9 @@ import { parseCommandLine, runCommand, splitCommand } from "@9thlevelsoftware/le
 import {
   prepareVerificationWrapper,
   resolveVerificationTrustTier,
+  SandboxError,
   type VerificationTrustPosture,
+  type VerificationWrapper,
 } from "@9thlevelsoftware/legion-cli-sandbox";
 import { SandboxConfigSchema, type SandboxConfig } from "@9thlevelsoftware/legion-cli-schema";
 
@@ -51,6 +53,8 @@ export type VerificationOpts = {
   dockerAvailable?: boolean;
   bwrapAvailable?: boolean;
   seatbeltAvailable?: boolean;
+  /** Test seam: skip prepareVerificationWrapper. */
+  wrapper?: VerificationWrapper;
 };
 
 function attachPosture(
@@ -96,8 +100,8 @@ export async function runVerificationCommands(
     return runs;
   }
 
-  const wrapper = await prepareVerificationWrapper(cwd, runId, posture);
-  if (posture.backend !== "host" && !wrapper) {
+  const wrapper = opts?.wrapper ?? (await prepareVerificationWrapper(cwd, runId, posture));
+  if (!opts?.wrapper && posture.backend !== "host" && !wrapper) {
     const command = commands[0] ?? "";
     runs.push(
       attachPosture(
@@ -125,8 +129,21 @@ export async function runVerificationCommands(
     const logStore = `.legion-cli/cache/runs/${runId}/verify-${index + 1}.log`;
     let argv = parsed.argv;
     if (wrapper) {
-      const invoke = wrapper.translateInvoke ? wrapper.translateInvoke(argv[0] ?? "") : (argv[0] ?? "");
-      argv = [wrapper.bin, ...wrapper.argvPrefix, invoke, ...argv.slice(1)];
+      try {
+        const invoke = wrapper.translateInvoke ? wrapper.translateInvoke(argv[0] ?? "") : (argv[0] ?? "");
+        argv = [wrapper.bin, ...wrapper.argvPrefix, invoke, ...argv.slice(1)];
+      } catch (err) {
+        if (err instanceof SandboxError) {
+          runs.push(
+            attachPosture(
+              { command, ok: false, started: false, status: null, error: err.message },
+              posture,
+            ),
+          );
+          break;
+        }
+        throw err;
+      }
     }
     const result = await runCommand(argv, {
       cwd,

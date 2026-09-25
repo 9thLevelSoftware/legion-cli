@@ -1,21 +1,35 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { A007_FILE_COUNT, evaluateA007Gate } from "@9thlevelsoftware/legion-cli-persist";
+import {
+  DOCKER_HOST_EXEC_REFUSAL,
+  translateHostPathToDocker,
+  verificationSeatbeltProfile,
+} from "@9thlevelsoftware/legion-cli-sandbox";
 import { LegionConfigSchema } from "@9thlevelsoftware/legion-cli-schema";
 
 import {
   LegionRefuseError,
+  loadRecipe,
   resolveVerificationTrustTier,
   runRecipe,
   runVerificationCommands,
   verificationWork,
 } from "../dist/index.js";
-import { quoteArg, withEngine } from "./helpers.js";
+import {
+  initGitRepo,
+  initProject,
+  quoteArg,
+  seedPlanReady,
+  withEngine,
+  withFakeAdapter,
+} from "./helpers.js";
 
 const DEFAULT_SANDBOX = LegionConfigSchema.parse({
   schemaVersion: "legion-cli-config/v1",
@@ -209,6 +223,169 @@ test("community recipe with a verified recipes.lock runs argv-only", async () =>
     const result = await runRecipe({ projectRoot: dir, recipe });
     assert.equal(result.success, true);
     assert.equal(result.stepsRun, 1);
+  });
+});
+
+test("community recipe from a non-canonical path is refused", async () => {
+  await withEngine(async ({ dir }) => {
+    const yaml = [
+      "schemaVersion: legion-cli-recipe/v1",
+      "name: community-recipe",
+      "description: locked community fixture",
+      "origin: community",
+      "steps:",
+      "  - id: step-1",
+      "    description: run",
+      "    action: command",
+      `    tool: ${JSON.stringify(`${quoteArg(process.execPath)} -e process.exit(0)`)}`,
+      "",
+    ].join("\n");
+    const recipeDir = join(dir, ".legion-cli", "recipes");
+    await mkdir(recipeDir, { recursive: true });
+    const canonical = join(recipeDir, "community-recipe.yaml");
+    await writeFile(canonical, yaml, "utf8");
+    const sha256 = createHash("sha256").update(await readFile(canonical)).digest("hex");
+    await writeFile(
+      join(dir, ".legion-cli", "recipes.lock"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-recipes-lock/v1",
+        recipes: { "community-recipe": { sha256 } },
+      })}\n`,
+      "utf8",
+    );
+    const outside = join(dir, "other.yaml");
+    const hostile = yaml.replace("process.exit(0)", "require('fs').writeFileSync('PWNED','x')");
+    await writeFile(outside, hostile, "utf8");
+    await assert.rejects(
+      () => loadRecipe(outside, dir),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /must be \.legion-cli\/recipes/, "community-canonical-path");
+        return true;
+      },
+    );
+    assert.equal(existsSync(join(dir, "PWNED")), false, "community-canonical-path");
+  });
+});
+
+test("community recipe executes locked canonical bytes, not a hostile in-memory object", async () => {
+  await withEngine(async ({ dir }) => {
+    const yaml = [
+      "schemaVersion: legion-cli-recipe/v1",
+      "name: community-recipe",
+      "description: locked community fixture",
+      "origin: community",
+      "steps:",
+      "  - id: step-1",
+      "    description: run",
+      "    action: command",
+      `    tool: ${JSON.stringify(`${quoteArg(process.execPath)} -e process.exit(0)`)}`,
+      "",
+    ].join("\n");
+    const recipeDir = join(dir, ".legion-cli", "recipes");
+    await mkdir(recipeDir, { recursive: true });
+    const canonical = join(recipeDir, "community-recipe.yaml");
+    await writeFile(canonical, yaml, "utf8");
+    const sha256 = createHash("sha256").update(await readFile(canonical)).digest("hex");
+    await writeFile(
+      join(dir, ".legion-cli", "recipes.lock"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-recipes-lock/v1",
+        recipes: { "community-recipe": { sha256 } },
+      })}\n`,
+      "utf8",
+    );
+    const hostile = {
+      schemaVersion: "legion-cli-recipe/v1",
+      name: "community-recipe",
+      description: "locked community fixture",
+      origin: "community",
+      parameters: {},
+      steps: [
+        {
+          id: "step-1",
+          description: "run",
+          action: "command",
+          tool: `${quoteArg(process.execPath)} -e ${quoteArg("require('fs').writeFileSync('PWNED','x')")}`,
+        },
+      ],
+    };
+    const result = await runRecipe({ projectRoot: dir, recipe: hostile });
+    assert.equal(result.success, true, "community-canonical-bytes");
+    assert.equal(existsSync(join(dir, "PWNED")), false, "community-canonical-bytes");
+  });
+});
+
+test("recipe command steps start PATH shims through runCommand", async () => {
+  await withEngine(async ({ dir }) => {
+    const result = await runRecipe({
+      projectRoot: dir,
+      recipe: localRecipe("pnpm --version"),
+    });
+    assert.equal(result.success, true, result.error ?? result.stepOutputs[0]?.output ?? "recipe-cmd-shim");
+    assert.match(result.stepOutputs[0]?.output ?? "", /\d+\.\d+/, "recipe-cmd-shim");
+  });
+});
+
+test("seatbelt verify profile allows reading process.execPath", async () => {
+  await withEngine(async ({ dir }) => {
+    const profile = verificationSeatbeltProfile(dir);
+    const execReal = realpathSync(process.execPath);
+    assert.ok(profile.includes(JSON.stringify(execReal)), "seatbelt-exec-path");
+  });
+});
+
+test("execute result carries the human-visible trust-tier note", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await seedPlanReady(store, {
+        task: {
+          contract: {
+            filesAllowed: ["src/main.ts"],
+            expectedArtifacts: ["src/main.ts"],
+            verificationCommands: [passingCommand()],
+          },
+        },
+      });
+      initGitRepo(dir);
+      const result = await engine.execute("auto");
+      assert.equal(result.status, "done");
+      assert.match(result.tasks[0]?.trustTierNote ?? "", /trust-tier:/, "human-visible");
+    });
+  });
+});
+
+test("verify wrapper source never calls materializeJail or copyTree", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const verifySrc = readFileSync(join(here, "..", "src", "verify.ts"), "utf8");
+  const sandboxSrc = readFileSync(join(here, "..", "..", "sandbox", "src", "sandbox.ts"), "utf8");
+  const start = sandboxSrc.indexOf("export async function prepareVerificationWrapper");
+  const end = sandboxSrc.indexOf("function assertPolicyPath", start);
+  assert.ok(start >= 0 && end > start, "no-copy-jail");
+  const wrapperSrc = sandboxSrc.slice(start, end);
+  assert.doesNotMatch(verifySrc, /\bmaterializeJail\b/, "no-copy-jail");
+  assert.doesNotMatch(verifySrc, /\bcopyTree\b/, "no-copy-jail");
+  assert.doesNotMatch(wrapperSrc, /\bmaterializeJail\b/, "no-copy-jail");
+  assert.doesNotMatch(wrapperSrc, /\bcopyTree\b/, "no-copy-jail");
+  assert.doesNotMatch(wrapperSrc, /\bcopySparsePath\b/, "no-copy-jail");
+});
+
+test("opt-in docker translateInvoke throw is a started:false run", async () => {
+  await withEngine(async ({ dir }) => {
+    const hostExec = process.platform === "win32" ? "C:\\Windows\\System32\\notepad.exe" : "/usr/bin/true";
+    const runs = await runVerificationCommands(dir, [hostExec], {
+      sandbox: { ...DEFAULT_SANDBOX, backend: "docker" },
+      dockerAvailable: true,
+      wrapper: {
+        bin: "docker",
+        argvPrefix: ["run", "--rm", "node:22-alpine"],
+        translateInvoke: (invoke) => translateHostPathToDocker(invoke, dir),
+      },
+    });
+    assert.equal(runs[0]?.started, false, "docker-translate-started-false");
+    assert.equal(runs[0]?.ok, false, "docker-translate-started-false");
+    assert.equal(runs[0]?.error, DOCKER_HOST_EXEC_REFUSAL, "docker-translate-started-false");
   });
 });
 

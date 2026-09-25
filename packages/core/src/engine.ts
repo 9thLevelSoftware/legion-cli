@@ -2436,6 +2436,7 @@ export class LegionEngine {
 
     let verificationPass = false;
     let reason: string | undefined;
+    let trustTierNote: string | undefined;
     const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
     try {
       if (this.#fakeOnVerify) await this.#fakeOnVerify();
@@ -2452,6 +2453,7 @@ export class LegionEngine {
       );
       verificationPass = verification.length > 0 && verification.every((run) => run.ok);
       reason = verificationFailureReason(verification);
+      trustTierNote = verification.find((run) => run.trustTierNote)?.trustTierNote;
     } catch (err) {
       verificationPass = false;
       reason = `verification failed: ${describe(err)}`;
@@ -2503,6 +2505,7 @@ export class LegionEngine {
           runId: post.runId,
           ...post.spawnAudit,
           ...(reason ? { reason } : {}),
+          ...(trustTierNote ? { trustTierNote } : {}),
         },
         lockedTask.id,
       );
@@ -2526,6 +2529,7 @@ export class LegionEngine {
         adapterId: post.adapterId,
         resolutionSource: post.resolutionSource,
         ...(reason ? { reason } : {}),
+        ...(trustTierNote ? { trustTierNote } : {}),
       };
     });
 
