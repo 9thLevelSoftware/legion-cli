@@ -360,9 +360,9 @@ The engine **stops and asks on the TTY** (numbered prompt, max two questions). v
 | Intent confirmation | User answers `Y` to the printed brief | Yes — no `intent_ready` without it |
 | Product decisions | `legion-cli discuss` Y/n; `--yes` refuses (no spawn, no phase change) | Yes |
 | Spec approval | `legion-cli spec approve` | Yes |
-| Unplanned dependency | Diff of `package.json`, `pnpm-lock.yaml`, `package-lock.json`, `yarn.lock` | Yes |
-| Schema | Path match `**/migrations/**` or `**/*.sql` outside contract | Yes |
-| Infrastructure | Path match `.github/workflows/**`, `Dockerfile`, `**/fly.toml`, `**/render.yaml` outside contract | Yes |
+| Unplanned dependency | Diff of `package.json`, `pnpm-lock.yaml`, `package-lock.json`, `yarn.lock` | Planned — not a separate detector (scope revert only if the path is out of contract) |
+| Schema | Path match `**/migrations/**` or `**/*.sql` outside contract | Planned — not a separate detector |
+| Infrastructure | Path match `.github/workflows/**`, `Dockerfile`, `**/fly.toml`, `**/render.yaml` outside contract | Planned — not a separate detector |
 | Scope | Path not in `filesAllowed` ∪ `expectedArtifacts` | Yes |
 | Deletion | Tracked file deleted that is not in `filesAllowed` | Yes |
 | Skipping QA / degraded QA | `--allow-degraded-qa` | Yes |

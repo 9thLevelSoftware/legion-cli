@@ -104,7 +104,7 @@ export {
   palettePresent,
   uniqueScreenPages,
 } from "./wireframes.js";
-export { SKIP_WIREFRAMES_NOTE } from "./spec-build.js";
+export { SKIP_WIREFRAMES_NOTE, buildSpecFromIntent, specMarkdownBody, quoteDecision } from "./spec-build.js";
 export {
   assertCanTransition,
   assertLegalPhase,

@@ -1,7 +1,17 @@
+import { createHash } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { writeTextFile } from "@9thlevelsoftware/legion-cli-persist";
+import {
+  LspDiagnosticsFileSchema,
+  SCHEMA_VERSION,
+  type BoundLspDiagnostic,
+  type LspDiagnosticsFile,
+} from "@9thlevelsoftware/legion-cli-schema";
+import { MAP_HINT, refuse } from "./errors.js";
 import { parseSource } from "./parse.js";
 import type { WalkedFile } from "./walk.js";
 
@@ -657,4 +667,98 @@ export async function collectLspDiagnostics(opts: {
       await client.waitExit(1000);
     }
   }
+}
+
+export type DiagnosticSourceFile = {
+  path: string;
+  text: string;
+  absPath?: string;
+};
+
+export function sourceIdentityHash(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+function resolveDiagnosticPath(diagPath: string, files: readonly DiagnosticSourceFile[]): string | null {
+  for (const file of files) {
+    if (file.path === diagPath) return file.path;
+    if (file.absPath && pathToFileURL(file.absPath).href === diagPath) return file.path;
+  }
+  return null;
+}
+
+export function bindDiagnosticsToSources(
+  diagnostics: readonly LspDiagnostic[],
+  files: readonly DiagnosticSourceFile[],
+): BoundLspDiagnostic[] {
+  const hashByPath = new Map(files.map((file) => [file.path, sourceIdentityHash(file.text)]));
+  const bound: BoundLspDiagnostic[] = [];
+  for (const item of diagnostics) {
+    const path = resolveDiagnosticPath(item.path, files);
+    if (!path) refuse(`diagnostic has no source identity for ${item.path}`, MAP_HINT.sourceIdentity);
+    const sourceHash = hashByPath.get(path);
+    if (!sourceHash) refuse(`diagnostic has no source identity for ${path}`, MAP_HINT.sourceIdentity);
+    bound.push({
+      path,
+      sourceHash,
+      range: item.range,
+      severity: item.severity,
+      message: item.message,
+      ...(item.source ? { source: item.source } : {}),
+    });
+  }
+  return bound;
+}
+
+export function assertDiagnosticsSourceIdentity(
+  bound: readonly BoundLspDiagnostic[],
+  files: readonly DiagnosticSourceFile[],
+): void {
+  const hashByPath = new Map(files.map((file) => [file.path, sourceIdentityHash(file.text)]));
+  for (const item of bound) {
+    const current = hashByPath.get(item.path);
+    if (current !== item.sourceHash) {
+      refuse(`mismatched source hash for ${item.path}`, MAP_HINT.sourceIdentity);
+    }
+  }
+}
+
+export async function persistLspDiagnostics(opts: {
+  absPath: string;
+  projectRoot: string;
+  diagnostics: readonly BoundLspDiagnostic[];
+  generatedAt?: string;
+}): Promise<LspDiagnosticsFile> {
+  const file = LspDiagnosticsFileSchema.parse({
+    schemaVersion: SCHEMA_VERSION.lspDiagnostics,
+    generatedAt: opts.generatedAt ?? new Date().toISOString(),
+    diagnostics: opts.diagnostics,
+  });
+  await writeTextFile(opts.absPath, `${JSON.stringify(file, null, 2)}\n`, { root: opts.projectRoot });
+  return file;
+}
+
+export async function loadPersistedLspDiagnostics(opts: {
+  absPath: string;
+  files: readonly DiagnosticSourceFile[];
+}): Promise<LspDiagnosticsFile> {
+  let raw: string;
+  try {
+    raw = await readFile(opts.absPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      refuse("persisted diagnostics are missing", MAP_HINT.sourceIdentity);
+    }
+    throw err;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    refuse("persisted diagnostics are not JSON", MAP_HINT.sourceIdentity);
+  }
+  const file = LspDiagnosticsFileSchema.safeParse(parsed);
+  if (!file.success) refuse("persisted diagnostics failed schema", MAP_HINT.sourceIdentity);
+  assertDiagnosticsSourceIdentity(file.data.diagnostics, opts.files);
+  return file.data;
 }
