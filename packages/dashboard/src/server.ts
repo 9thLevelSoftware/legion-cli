@@ -7,8 +7,11 @@ import {
   createLegionStore,
   isPidAlive,
   PathEscapeError,
+  readAuditCursor,
+  readAuditDelta,
   serveJsonPath,
   toFsPath,
+  type AuditCursor,
 } from "@9thlevelsoftware/legion-cli-persist";
 import { SCHEMA_VERSION, ServeFileSchema, type ServeFile } from "@9thlevelsoftware/legion-cli-schema";
 import {
@@ -365,6 +368,8 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
   const webmcp = opts.webmcp === true || config?.flags.webmcp === true;
   const sseClients = new Set<SseClient>();
   let lastEncoded = "";
+  let lastRestEncoded = "";
+  let lastAuditCursor: AuditCursor = { size: 0, mtimeMs: 0 };
   let closed = false;
   let boundPort = port;
 
@@ -492,6 +497,8 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       try {
         const snapshot = await loadSnapshot(opts.projectRoot);
         lastEncoded = JSON.stringify(snapshot);
+        lastRestEncoded = JSON.stringify({ ...snapshot, audit: [] });
+        lastAuditCursor = await readAuditCursor(opts.projectRoot);
         initial += `event: state\ndata: ${lastEncoded}\n\n`;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -691,14 +698,26 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
   const tick = async (): Promise<void> => {
     if (closed || sseClients.size === 0) return;
     try {
+      const cursor = await readAuditCursor(opts.projectRoot);
       const snapshot = await loadSnapshot(opts.projectRoot);
       const encoded = JSON.stringify(snapshot);
-      if (encoded !== lastEncoded) {
-        lastEncoded = encoded;
-        broadcast(`event: state\ndata: ${encoded}\n\n`);
-      } else {
+      if (encoded === lastEncoded) {
         broadcast(`: ping\n\n`);
+        return;
       }
+      const restEncoded = JSON.stringify({ ...snapshot, audit: [] });
+      if (restEncoded === lastRestEncoded && cursor.size !== lastAuditCursor.size) {
+        const delta = await readAuditDelta(opts.projectRoot, lastAuditCursor);
+        lastEncoded = encoded;
+        lastRestEncoded = restEncoded;
+        lastAuditCursor = cursor;
+        broadcast(`event: audit-delta\ndata: ${JSON.stringify({ events: delta.events, cursor: delta.cursor })}\n\n`);
+        return;
+      }
+      lastEncoded = encoded;
+      lastRestEncoded = restEncoded;
+      lastAuditCursor = cursor;
+      broadcast(`event: state\ndata: ${encoded}\n\n`);
     } catch {
       broadcast(`: ping\n\n`);
     }

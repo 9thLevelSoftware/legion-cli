@@ -9,6 +9,7 @@ import {
   applyChatAction,
   createChatSession,
   gateChatAction,
+  idleTurnsFromSession,
   LegionEngine,
   LegionRefuseError,
   resumeOrCreateChatSession,
@@ -175,6 +176,22 @@ test("intent_ready intent_answer is dropped", async () => {
     assert.equal(turn.action.type, "next_verb");
     assert.equal(turn.kind, "dropped");
   });
+});
+
+test("idleTurnsFromSession is a linear reverse count", () => {
+  const turns = [];
+  for (let i = 0; i < 40; i++) {
+    turns.push({ id: `u${i}`, role: "user", text: `hello ${i}` });
+    turns.push({
+      id: `a${i}`,
+      role: "assistant",
+      text: "next_verb",
+      action: { type: "next_verb" },
+    });
+  }
+  assert.equal(idleTurnsFromSession({ schemaVersion: "legion-cli-chat/v1", id: "chat-x", startedAt: "t", turns }), 40);
+  turns[turns.length - 2] = { id: "u-status", role: "user", text: "/status" };
+  assert.equal(idleTurnsFromSession({ schemaVersion: "legion-cli-chat/v1", id: "chat-x", startedAt: "t", turns }), 0);
 });
 
 test("four idle turns pause after the read", async () => {

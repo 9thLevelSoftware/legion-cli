@@ -299,18 +299,19 @@ export function ruleRouteChat(input: {
   return null;
 }
 
-function idleTurnsFromSession(session: ChatSessionFile): number {
+export function idleTurnsFromSession(session: ChatSessionFile): number {
+  const turns = session.turns;
+  const userBefore: Array<string | undefined> = new Array(turns.length);
+  let lastUser: string | undefined;
+  for (let i = 0; i < turns.length; i++) {
+    userBefore[i] = lastUser;
+    if (turns[i].role === "user") lastUser = turns[i].text;
+  }
   let count = 0;
-  for (let i = session.turns.length - 1; i >= 0; i--) {
-    const turn = session.turns[i];
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
     if (turn.role !== "assistant") continue;
-    let userText: string | undefined;
-    for (let j = i - 1; j >= 0; j--) {
-      if (session.turns[j].role === "user") {
-        userText = session.turns[j].text;
-        break;
-      }
-    }
+    const userText = userBefore[i];
     if (userText !== undefined && isRequestedRead(userText)) break;
     if (turn.action?.type !== "next_verb" && turn.action?.type !== "search") break;
     count += 1;

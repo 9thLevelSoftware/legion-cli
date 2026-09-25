@@ -16,6 +16,7 @@ export {
   createChatSession,
   forkChatSession,
   gateChatAction,
+  idleTurnsFromSession,
   isChatProposalAction,
   resumeOrCreateChatSession,
   routeChatTurn,

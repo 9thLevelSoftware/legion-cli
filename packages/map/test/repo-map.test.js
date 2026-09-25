@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { computeRepoPageRank, formatRepoMap } from "../dist/index.js";
+import { computeRepoPageRank, formatRepoMap, repoMapWork, resetRepoMapWork } from "../dist/index.js";
 
 test("computeRepoPageRank ranks hub modules higher than leaf modules", () => {
   const dummyHash = "0".repeat(64);
@@ -58,3 +58,40 @@ test("formatRepoMap respects character budget and renders ranked list", () => {
   assert.match(formatted, /src\/utils\.ts \(rank: 1\.00\)/);
   assert.match(formatted, /src\/core\.ts \(rank: 0\.60\)/);
 });
+
+function denseModules(n, importsPer = 3) {
+  const dummyHash = "0".repeat(64);
+  return Array.from({ length: n }, (_, i) => ({
+    path: `src/m${i}.ts`,
+    language: "ts",
+    exports: [`e${i}`],
+    imports: Array.from({ length: importsPer }, (_, k) => `m${(i + k + 1) % n}`),
+    hash: dummyHash,
+  }));
+}
+
+test("A-007 50k computeRepoPageRank", { skip: process.env.LEGION_A007_GATE !== "1" }, () => {
+  const n = 50_000;
+  resetRepoMapWork();
+  const t0 = Date.now();
+  const ranked = computeRepoPageRank(denseModules(n, 2));
+  const ms = Date.now() - t0;
+  assert.equal(ranked.length, n);
+  assert.ok(ms <= 10_000 * 2, `computeRepoPageRank ${ms}ms exceeds A-007 budget`);
+  process.stdout.write(`A007_MEASUREMENTS ${JSON.stringify([{ step: "computeRepoPageRank", ms, files: n }])}\n`);
+});
+
+test("F-024 suffix-scan iterations stay O(n) not O(n^2*k)", () => {
+  const n = 40;
+  const importsPer = 3;
+  resetRepoMapWork();
+  const ranked = computeRepoPageRank(denseModules(n, importsPer));
+  assert.equal(ranked.length, n);
+  // Memoized import index: no pairwise suffix scan. Bound is n.
+  // Fail-first: inner j-loop is n*k*n = 4800.
+  assert.ok(
+    repoMapWork.suffixScanIterations <= n,
+    `suffix-scan iterations ${repoMapWork.suffixScanIterations} exceed O(n) bound ${n}`,
+  );
+});
+
