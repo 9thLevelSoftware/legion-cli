@@ -193,12 +193,16 @@ test("init --adapter http writes config and plan completes a governed HTTP tool 
       assert.equal(config.adapter.http?.apiKeyEnv, KEY_ENV);
       assert.equal(config.adapter.http?.model, "local-e2e");
       assert.equal(config.adapter.http?.allowLoopback, true);
-      assert.equal(config.sandbox.allowCopyJail, true);
+      assert.equal(config.sandbox.allowCopyJail, process.platform === "win32");
       assert.equal(config.sandbox.requireHardened, true);
       assert.equal(Object.hasOwn(config.adapter.http ?? {}, "apiKey"), false);
       const yaml = await readFile(join(dir, ".legion-cli", "config.yaml"), "utf8");
       assert.match(yaml, new RegExp(`apiKeyEnv:\\s*${KEY_ENV}`));
-      assert.match(yaml, /allowCopyJail:\s*true/);
+      if (process.platform === "win32") {
+        assert.match(yaml, /allowCopyJail:\s*true/);
+      } else {
+        assert.doesNotMatch(yaml, /allowCopyJail:\s*true/);
+      }
       assert.equal(yaml.includes(KEY_VALUE), false, `config.yaml must not contain the value of ${KEY_ENV}`);
       assert.doesNotMatch(yaml, /^\s*apiKey:/m);
 

@@ -5,7 +5,23 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { defaultAllowCopyJail } from "../dist/index.js";
 import { seedFrozenSpec, withEngine, writeTask, makeTask } from "./helpers.js";
+
+const srcRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
+
+test("http init allowCopyJail is win32-only", () => {
+  assert.equal(defaultAllowCopyJail("http", "win32"), true);
+  assert.equal(defaultAllowCopyJail("http", "linux"), false);
+  assert.equal(defaultAllowCopyJail("http", "darwin"), false);
+  assert.equal(defaultAllowCopyJail("fake", "win32"), false);
+  assert.equal(defaultAllowCopyJail("claude", "linux"), false);
+});
+
+test("engine.init uses defaultAllowCopyJail so linux http stays closed", async () => {
+  const src = await readFile(join(srcRoot, "engine.ts"), "utf8");
+  assert.match(src, /allowCopyJail:\s*opts\.allowCopyJail \?\? defaultAllowCopyJail\(opts\.adapter\)/);
+});
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
 const KEY_ENV = "LEGION_HTTP_CORE_E2E_KEY";
@@ -100,7 +116,7 @@ test("plan with adapter.default http completes a governed HTTP tool round-trip",
           },
         });
         const config = await store.readConfig();
-        assert.equal(config.sandbox.allowCopyJail, true);
+        assert.equal(config.sandbox.allowCopyJail, process.platform === "win32");
         assert.equal(config.adapter.http?.apiKeyEnv, KEY_ENV);
         assert.equal(Object.hasOwn(config.adapter.http ?? {}, "apiKey"), false);
         const yaml = await readFile(join(dir, ".legion-cli", "config.yaml"), "utf8");

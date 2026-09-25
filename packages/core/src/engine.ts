@@ -147,6 +147,7 @@ import {
   spawnableAdapterRefuseMessage,
   startSkillSpawn,
   waitStartedSpawn,
+  defaultAllowCopyJail,
   type OptionalSpawnResult,
   type StartedSkillSpawn,
 } from "./spawn.js";
@@ -455,7 +456,7 @@ export class LegionEngine {
         flags: { mcpApps: false, webmcp: false, parallelExecute: false },
         sandbox: {
           requireHardened: true,
-          allowCopyJail: opts.allowCopyJail ?? opts.adapter === "http",
+          allowCopyJail: opts.allowCopyJail ?? defaultAllowCopyJail(opts.adapter),
           backend: "auto",
           skills: ["execute"],
         },

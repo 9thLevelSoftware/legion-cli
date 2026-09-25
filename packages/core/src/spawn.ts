@@ -65,6 +65,14 @@ import {
 
 export { findSkillsDir };
 
+/** Copy-jail hatch is win32+http only. Linux http keeps the closed spawn-CLI default. */
+export function defaultAllowCopyJail(
+  adapter: AdapterId,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return adapter === "http" && platform === "win32";
+}
+
 export async function resolveSkillDir(opts: {
   projectRoot: string;
   skillId: SkillId;
