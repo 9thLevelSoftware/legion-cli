@@ -207,7 +207,19 @@ test("context compact refuses while engine.lock is held", async () => {
     await initProject(engine);
     await writeTask(store, makeTask({ status: "done" }), "Verbose log to compact.\n");
     const other = createLegionStore(dir);
-    await other.acquireLock({ timeoutMs: 200 });
+    let release;
+    const held = new Promise((done) => {
+      release = done;
+    });
+    let inside;
+    const ready = new Promise((done) => {
+      inside = done;
+    });
+    const holding = other.withLock(async () => {
+      inside();
+      await held;
+    });
+    await ready;
     try {
       await assert.rejects(
         () => engine.compactContext({ timeoutMs: 200 }),
@@ -222,7 +234,8 @@ test("context compact refuses while engine.lock is held", async () => {
       assert.equal(doc.data.status, "done");
       assert.match(doc.body, /Verbose log to compact/);
     } finally {
-      await other.releaseLock();
+      release();
+      await holding;
     }
   });
 });

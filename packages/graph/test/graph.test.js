@@ -130,6 +130,8 @@ test("§4.1 ready requires done blockers, verification, concrete files, phase, a
     contract: { filesAllowed: ["src/board.ts"], expectedArtifacts: ["src/board.ts"] },
   });
   assert.equal(isTaskReady(other, ctx([running, other])), false);
+  const verifying = task({ id: "TSK-0001", status: "verifying" });
+  assert.equal(isTaskReady(other, ctx([verifying, other])), false);
 });
 
 test("open blocking user assumption in the subgraph blocks ready", () => {

@@ -1,7 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCommandLine, runCommand as runArgv, splitCommand } from "@9thlevelsoftware/legion-cli-agents";
-import { writeTextFile } from "@9thlevelsoftware/legion-cli-persist";
+import { createLegionStore, writeTextFile } from "@9thlevelsoftware/legion-cli-persist";
 import type { QAScore, Spec } from "@9thlevelsoftware/legion-cli-schema";
 import { extractJsonPayload, reportFailClosed } from "./reports.js";
 import { scoreQa, scoreSpecReports, ZERO_TESTS_REASON, type QaMode } from "./score.js";
@@ -105,7 +105,7 @@ async function writeEvidence(projectRoot: string, abs: string, capture: CommandC
     payload !== null
       ? `${JSON.stringify(payload, null, 2)}\n`
       : capture.stdout || capture.stderr || `${JSON.stringify({ error: "no reporter json", status: capture.status })}\n`;
-  await writeTextFile(abs, body, { root: projectRoot });
+  await createLegionStore(projectRoot).withLock(() => writeTextFile(abs, body, { root: projectRoot }));
   return payload;
 }
 

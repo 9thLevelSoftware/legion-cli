@@ -41,6 +41,10 @@ export type LegionEngineOptions = {
   fakeHandlePid?: number;
   /** Test-only, like the other fake* seams: verification throws this message. */
   fakeVerificationError?: string;
+  /** Test-only: runs during verify (lock-free after F-026). Injected-clock advance lives here. */
+  fakeOnVerify?: () => Promise<void>;
+  /** Test-only: runs during qa (lock-free after F-026). Injected-clock advance lives here. */
+  fakeOnQa?: () => Promise<void>;
   verificationTimeoutMs?: number;
 };
 
