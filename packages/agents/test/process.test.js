@@ -41,7 +41,7 @@ test("Windows .ps1 spawn runs through the wrapper-extension branch", { skip: pro
     const script = join(dir, "echo-ran.ps1");
     await writeFile(
       script,
-      '[System.IO.File]::WriteAllText((Join-Path (Get-Location) "ps1-ran.txt"), "ok`n")\n',
+      "Set-Content -LiteralPath (Join-Path (Get-Location) 'ps1-ran.txt') -Value \"ok\" -NoNewline\n",
       "utf8",
     );
     const { job } = await setupRun(dir);
@@ -49,7 +49,7 @@ test("Windows .ps1 spawn runs through the wrapper-extension branch", { skip: pro
     const handle = await adapter.spawn(job);
     const result = await handle.wait();
     assert.equal(result.exitCode, 0, await readFile(result.stderrPath, "utf8"));
-    assert.equal(await readFile(join(dir, "ps1-ran.txt"), "utf8"), "ok\n");
+    assert.match(await readFile(join(dir, "ps1-ran.txt"), "utf8"), /^ok\r?\n?$/);
   });
 });
 
@@ -101,13 +101,8 @@ test("Windows .cmd/.ps1 process-group abort kills descendants (taskkill /PID /T)
       script,
       [
         `$exe = ${JSON.stringify(process.execPath)}`,
-        "$psi = New-Object System.Diagnostics.ProcessStartInfo",
-        "$psi.FileName = $exe",
-        "$psi.Arguments = '-e setInterval(()=>{},1000)'",
-        "$psi.UseShellExecute = $false",
-        "$psi.CreateNoWindow = $true",
-        "$p = [Diagnostics.Process]::Start($psi)",
-        "[System.IO.File]::WriteAllText((Join-Path (Get-Location) 'child-pid.txt'), [string]$p.Id)",
+        "$p = Start-Process -FilePath $exe -ArgumentList '-e','setInterval(()=>{},1000)' -PassThru -WindowStyle Hidden",
+        "Set-Content -LiteralPath (Join-Path (Get-Location) 'child-pid.txt') -Value $p.Id -NoNewline",
         "while ($true) { Start-Sleep -Seconds 60 }",
         "",
       ].join("\n"),
