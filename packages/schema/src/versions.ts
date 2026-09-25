@@ -25,6 +25,7 @@ export const SCHEMA_VERSION = {
   packet: "legion-cli-packet/v1",
   map: "legion-cli-map/v1",
   fingerprint: "legion-cli-fingerprint/v1",
+  lspDiagnostics: "legion-cli-lsp-diagnostics/v1",
   skillOverlay: "legion-cli-skill-overlay/v1",
   chatSession: "legion-cli-chat/v1",
   serve: "legion-cli-serve/v1",

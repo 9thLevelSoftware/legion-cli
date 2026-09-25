@@ -12,6 +12,7 @@ export const MAP_HINT = {
   noLsp: "legion-cli map --no-lsp",
   concretePaths: "concrete paths",
   doctor: "legion-cli doctor",
+  sourceIdentity: "legion-cli map --refresh",
 } as const;
 
 export function refuse(message: string, nextHint: string): never {

@@ -347,6 +347,13 @@ export const AcceptanceCriterionSchema = z.object({
 });
 export type AcceptanceCriterion = z.infer<typeof AcceptanceCriterionSchema>;
 
+export const DiscussDecisionSchema = z.object({
+  id: z.string().min(1),
+  statement: z.string().min(1),
+  status: z.enum(["proposed", "accepted", "rejected"]),
+});
+export type DiscussDecision = z.infer<typeof DiscussDecisionSchema>;
+
 export const SpecSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.spec),
   id: z.string().min(1),
@@ -362,6 +369,7 @@ export const SpecSchema = z.object({
   wireframesIndex: z.string().nullable().optional(),
   frozenAt: z.string().nullable().optional(),
   frozenBy: z.string().nullable().optional(),
+  decisions: z.array(DiscussDecisionSchema).optional(),
 });
 export type Spec = z.infer<typeof SpecSchema>;
 
@@ -409,13 +417,6 @@ export const AssumptionSchema = z.object({
   createdIn: z.string().min(1),
 });
 export type Assumption = z.infer<typeof AssumptionSchema>;
-
-export const DiscussDecisionSchema = z.object({
-  id: z.string().min(1),
-  statement: z.string().min(1),
-  status: z.enum(["proposed", "accepted", "rejected"]),
-});
-export type DiscussDecision = z.infer<typeof DiscussDecisionSchema>;
 
 export const DiscussFileSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.discuss),
@@ -810,6 +811,35 @@ export const FingerprintFileSchema = z
   })
   .strict();
 export type FingerprintFile = z.infer<typeof FingerprintFileSchema>;
+
+const LspRangePosSchema = z.object({
+  line: z.number().int().min(0),
+  character: z.number().int().min(0),
+});
+
+export const BoundLspDiagnosticSchema = z
+  .object({
+    path: ConcretePosixPathSchema,
+    sourceHash: Sha256HexSchema,
+    range: z.object({
+      start: LspRangePosSchema,
+      end: LspRangePosSchema,
+    }),
+    severity: z.number().int(),
+    message: z.string(),
+    source: z.string().min(1).optional(),
+  })
+  .strict();
+export type BoundLspDiagnostic = z.infer<typeof BoundLspDiagnosticSchema>;
+
+export const LspDiagnosticsFileSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.lspDiagnostics),
+    generatedAt: z.string().min(1),
+    diagnostics: z.array(BoundLspDiagnosticSchema).max(10_000),
+  })
+  .strict();
+export type LspDiagnosticsFile = z.infer<typeof LspDiagnosticsFileSchema>;
 
 export const SkillOverlayPinSchema = z
   .object({

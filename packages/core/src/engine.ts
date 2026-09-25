@@ -1804,12 +1804,14 @@ export class LegionEngine {
           kind: "behavior" as const,
           priority: "P1" as const,
         }));
+      const discuss = await this.#loadDiscuss();
       const spec = buildSpecFromIntent({
         specId,
         title: project.data.name,
         mapped: answers.mapped,
         extraAcceptance,
         skipWireframes,
+        decisions: discuss.decisions,
       });
       await this.store.writeSpec(spec, specMarkdownBody(spec));
       await mkdir(join(this.store.paths.specsDir, specId), { recursive: true });

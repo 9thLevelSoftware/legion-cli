@@ -20,6 +20,7 @@ import {
   BrownfieldRunSchema,
   FileContractSchema,
   FingerprintFileSchema,
+  LspDiagnosticsFileSchema,
   JSON_SCHEMA_FILES,
   LegionConfigSchema,
   legionJsonSchemas,
@@ -149,6 +150,7 @@ test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.packet, "legion-cli-packet/v1");
   assert.equal(SCHEMA_VERSION.map, "legion-cli-map/v1");
   assert.equal(SCHEMA_VERSION.fingerprint, "legion-cli-fingerprint/v1");
+  assert.equal(SCHEMA_VERSION.lspDiagnostics, "legion-cli-lsp-diagnostics/v1");
   assert.equal(SCHEMA_VERSION.skillOverlay, "legion-cli-skill-overlay/v1");
   assert.equal(SCHEMA_VERSION.chatSession, "legion-cli-chat/v1");
   assert.equal(SCHEMA_VERSION.serve, "legion-cli-serve/v1");
@@ -1464,6 +1466,32 @@ test("FingerprintFileSchema, SkillOverlayPinSchema, ChatAction, ServeFileSchema"
   assert.equal(FingerprintFileSchema.safeParse({ ...fingerprints, schemaVersion: "legion-cli-map/v1" }).success, false);
   assert.equal(FingerprintFileSchema.safeParse({ ...fingerprints, rootHash: "not-a-hash" }).success, false);
   assert.equal(FingerprintFileSchema.safeParse({ ...fingerprints, extra: true }).success, false);
+
+  const diagnostics = LspDiagnosticsFileSchema.parse({
+    schemaVersion: "legion-cli-lsp-diagnostics/v1",
+    generatedAt: "2026-09-17T00:00:00Z",
+    diagnostics: [
+      {
+        path: "src/auth.ts",
+        sourceHash: hash,
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+        severity: 1,
+        message: "unused",
+      },
+    ],
+  });
+  assert.equal(diagnostics.diagnostics[0].sourceHash, hash);
+  assert.equal(
+    LspDiagnosticsFileSchema.safeParse({ ...diagnostics, schemaVersion: "legion-cli-fingerprint/v1" }).success,
+    false,
+  );
+  assert.equal(
+    LspDiagnosticsFileSchema.safeParse({
+      ...diagnostics,
+      diagnostics: [{ ...diagnostics.diagnostics[0], sourceHash: "not-a-hash" }],
+    }).success,
+    false,
+  );
 
   const localPin = SkillOverlayPinSchema.parse({
     schemaVersion: "legion-cli-skill-overlay/v1",
