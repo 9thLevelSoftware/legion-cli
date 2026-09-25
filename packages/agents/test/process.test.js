@@ -100,14 +100,13 @@ test("Windows .cmd/.ps1 process-group abort kills descendants (taskkill /PID /T)
   await withTempDir(async (dir) => {
     const script = join(dir, "sleep-tree.ps1");
     await writeFile(
+      join(dir, "child.js"),
+      "require('node:fs').writeFileSync('child-pid.txt', String(process.pid)); setInterval(() => {}, 1000);\n",
+      "utf8",
+    );
+    await writeFile(
       script,
-      [
-        `$exe = ${JSON.stringify(process.execPath)}`,
-        "$p = Start-Process -FilePath $exe -ArgumentList '-e','setInterval(()=>{},1000)' -PassThru -WindowStyle Hidden",
-        "Set-Content -LiteralPath (Join-Path (Get-Location) 'child-pid.txt') -Value $p.Id -NoNewline",
-        "while ($true) { Start-Sleep -Seconds 60 }",
-        "",
-      ].join("\n"),
+      ["param($pointer)", `$exe = ${JSON.stringify(process.execPath)}`, "& $exe child.js", ""].join("\n"),
       "utf8",
     );
     const { job } = await setupRun(dir, { timeoutMs: 60_000 });
