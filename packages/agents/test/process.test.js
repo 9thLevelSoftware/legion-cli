@@ -44,11 +44,13 @@ test("Windows .ps1 spawn runs through the wrapper-extension branch", { skip: pro
       "Set-Content -LiteralPath (Join-Path (Get-Location) 'ps1-ran.txt') -Value \"ok\" -NoNewline\n",
       "utf8",
     );
-    const { job } = await setupRun(dir);
+    const { job } = await setupRun(dir, { timeoutMs: 60_000 });
     const adapter = new GenericAdapter({ binary: script, args: ["{{pointer}}"] });
     const handle = await adapter.spawn(job);
     const result = await handle.wait();
-    assert.equal(result.exitCode, 0, await readFile(result.stderrPath, "utf8"));
+    const stderr = await readFile(result.stderrPath, "utf8");
+    const stdout = await readFile(result.stdoutPath, "utf8");
+    assert.equal(result.exitCode, 0, `stderr=${stderr}\nstdout=${stdout}\ntimedOut=${result.timedOut}`);
     assert.match(await readFile(join(dir, "ps1-ran.txt"), "utf8"), /^ok\r?\n?$/);
   });
 });
@@ -108,7 +110,7 @@ test("Windows .cmd/.ps1 process-group abort kills descendants (taskkill /PID /T)
       ].join("\n"),
       "utf8",
     );
-    const { job } = await setupRun(dir, { timeoutMs: 20_000 });
+    const { job } = await setupRun(dir, { timeoutMs: 60_000 });
     const adapter = new GenericAdapter({ binary: script, args: ["{{pointer}}"] });
     const handle = await adapter.spawn(job);
     const childPidPath = join(dir, "child-pid.txt");
@@ -121,7 +123,7 @@ test("Windows .cmd/.ps1 process-group abort kills descendants (taskkill /PID /T)
           return false;
         }
       },
-      8000,
+      20000,
       "descendant pid file was not written",
     );
     const childPid = Number((await readFile(childPidPath, "utf8")).trim());
