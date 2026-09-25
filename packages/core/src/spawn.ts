@@ -26,7 +26,13 @@ import {
   type ResolvedSkillDir,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
-import { isPidAlive, type LegionReader } from "@9thlevelsoftware/legion-cli-persist";
+import {
+  AuditTamperError,
+  isPidAlive,
+  openEngineCommand,
+  RestoreRefusedError,
+  type LegionReader,
+} from "@9thlevelsoftware/legion-cli-persist";
 import {
   assertExecuteSandbox,
   materializeJail,
@@ -46,7 +52,7 @@ import {
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
-import { createHttpToolHost } from "./http-host.js";
+import { createHttpToolHost, httpAllowedWrites } from "./http-host.js";
 import {
   recordPreSpawnRef,
   revertExtras,
@@ -58,6 +64,14 @@ import {
 } from "./revert.js";
 
 export { findSkillsDir };
+
+/** Copy-jail hatch is win32+http only. Linux http keeps the closed spawn-CLI default. */
+export function defaultAllowCopyJail(
+  adapter: AdapterId,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return adapter === "http" && platform === "win32";
+}
 
 export async function resolveSkillDir(opts: {
   projectRoot: string;
@@ -189,6 +203,7 @@ type SpawnRevertCtx = {
   gitPolicy: Awaited<ReturnType<typeof snapshotGitPolicy>>;
   dirtyAtStart: ReturnType<typeof snapshotDirtyPaths>;
   chatSessions: Awaited<ReturnType<typeof snapshotChatSessions>>;
+  commandId: string;
 };
 
 export type StartedSkillSpawn =
@@ -466,6 +481,8 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     skipDesignAppend: assembled.skipDesignAppend,
   });
   const preSpawnRef = recordPreSpawnRef(opts.projectRoot);
+  const extraRoots = allowedRoots.filter((root) => root.startsWith(".legion-cli/"));
+  await openEngineCommand(opts.projectRoot, runId, { extraRoots });
   // Always snapshot the worktree, even when preSpawnRef is set. Gitignored
   // extras are invisible to `git status --exclude-standard`; KD-11 forbids
   // unioning raw `git status --ignored` (that would revert pre-existing ignored files).
@@ -563,7 +580,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         ? {
             httpHost: createHttpToolHost({
               jailRoot: sandbox.jailRoot,
-              allowedWrites,
+              allowedWrites: httpAllowedWrites(allowedWrites),
               filesForbidden,
               hardened: sandbox.hardened,
               spawnOpts: spawnOpts ?? { cwd: sandbox.jailRoot, env },
@@ -591,6 +608,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       gitPolicy,
       dirtyAtStart,
       chatSessions,
+      commandId: runId,
     },
     resolution,
     binary: tmpl.binary,
@@ -637,7 +655,29 @@ export async function finishStartedSpawn(
       copied = out.copied;
       dropped = out.dropped;
     }
-    const revert = await revertExtras(started.revertCtx);
+    let jailWritable = false;
+    if (started.sandbox) {
+      try {
+        await started.sandbox.destroy();
+      } catch {
+        jailWritable = true;
+      }
+    }
+    const childPid = started.handle.pid;
+    const agentAlive = Boolean(childPid && childPid !== process.pid && isPidAlive(childPid));
+    let revert;
+    try {
+      revert = await revertExtras({
+        ...started.revertCtx,
+        commandId: started.revertCtx.commandId,
+        extraRoots: started.revertCtx.allowedRoots.filter((root) => root.startsWith(".legion-cli/")),
+        agentAlive,
+        jailWritable,
+      });
+    } catch (err) {
+      if (err instanceof RestoreRefusedError || err instanceof AuditTamperError) refuse(err.message, HINT.status);
+      throw err;
+    }
     const extrasReverted = new Set(revert.extrasReverted);
     let incident = revert.incident;
     if (started.sandbox) {
@@ -705,7 +745,14 @@ export function resumeRunIsLive(resume: Pick<ResumeFile, "pid" | "enginePid" | "
   return resumePidIsLive(resume) || resumeEngineIsLive(resume);
 }
 
+export let listCacheResumesCalls = 0;
+
+export function resetListCacheResumesCalls(): void {
+  listCacheResumesCalls = 0;
+}
+
 export async function listCacheResumes(projectRoot: string): Promise<ResumeFile[]> {
+  listCacheResumesCalls += 1;
   const runsDir = join(projectRoot, ".legion-cli", "cache", "runs");
   let names: string[];
   try {

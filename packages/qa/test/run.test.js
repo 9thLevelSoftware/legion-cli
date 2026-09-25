@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { runProjectQa } from "../dist/index.js";
@@ -20,6 +22,16 @@ async function withTempDir(fn) {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+test("qa evidence writes take the store lock; the command run does not", () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "run.ts"), "utf8");
+  const writeEvidence = src.slice(src.indexOf("async function writeEvidence"), src.indexOf("export async function runProjectQa"));
+  assert.match(writeEvidence, /createLegionStore\([^)]*\)\.withLock/);
+  assert.match(writeEvidence, /writeTextFile/);
+  const runBody = src.slice(src.indexOf("export async function runProjectQa"));
+  const commandRegion = runBody.slice(0, runBody.indexOf("writeEvidence"));
+  assert.doesNotMatch(commandRegion, /withLock/);
+});
 
 test("an unstartable unit command says why and scores P0 failed", async () => {
   await withTempDir(async (dir) => {

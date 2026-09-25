@@ -1,9 +1,11 @@
 export {
+  AuditTamperError,
   EngineLockedError,
   MinisignError,
   PathEscapeError,
   PersistError,
   PersistValidationError,
+  RestoreRefusedError,
   SymlinkRefusedError,
 } from "./errors.js";
 export {
@@ -16,28 +18,52 @@ export {
 } from "./atomic-write.js";
 export { nextFileId } from "./ids.js";
 export {
+  identitySpawnEnv,
+  IDENTITY_TIMEOUT_MS,
   ownProcessStartedAt,
   PROCESS_START_TOLERANCE_MS,
   processIdentity,
+  PROC_READ_MAX_BYTES,
+  PROC_READ_TIMEOUT_MS,
   sameProcessStart,
   startedAfterRecorded,
 } from "./process-identity.js";
-export { invalidTaskMessage, listTaskFiles } from "./tasks-list.js";
-export type { TaskFileEntry } from "./tasks-list.js";
+export {
+  classifyTaskFileError,
+  invalidTaskMessage,
+  listTaskFiles,
+  listTaskSummaries,
+  rememberTaskWrite,
+  TASK_SUMMARIES_STORE,
+} from "./tasks-list.js";
+export type { TaskFileEntry, TaskFileErrorKind, TaskSummary } from "./tasks-list.js";
 export {
   abandonReceiptBody,
   abandonReceiptPath,
   appendAuditEvent,
+  AUDIT_RETENTION_DAYS,
+  AUDIT_VIEW_CAP,
   auditDayFromTs,
   auditDayPath,
   auditEventsPath,
   formatAuditDayLine,
+  readAuditCursor,
+  readAuditDelta,
   readAuditEvents,
+  readAuditEventsDetailed,
+  retainAuditDayFiles,
   shipReceiptBody,
   shipReceiptPath,
   summarizeAuditMetrics,
 } from "./audit.js";
-export type { LocalMetrics } from "./audit.js";
+export type { AuditCursor, AuditReadOpts, AuditReadResult, LocalMetrics } from "./audit.js";
+export {
+  A007_FILE_COUNT,
+  A007_STEP_BUDGET_MS,
+  A007_TOLERANCE,
+  evaluateA007Gate,
+} from "./perf-harness.js";
+export type { A007GateResult, A007Measurement } from "./perf-harness.js";
 export {
   commitIngest,
   commitPaths,
@@ -76,6 +102,7 @@ export {
   assumptionPath,
   decisionPath,
   DEFAULT_LOCK_TIMEOUT_MS,
+  MAX_LOCK_HOLD_MS,
   INDEX_DB_BASENAME,
   ingestReceiptPath,
   LEGION_DIR,
@@ -103,11 +130,14 @@ export type { HeldLock } from "./lock.js";
 export {
   formatMarkdownDocument,
   formatYamlDocument,
+  isTaskMarkdownPath,
   parseMarkdownDocument,
   parseYamlDocument,
   parseWithSchema,
+  persistWork,
   readMarkdownFile,
   readYamlFile,
+  resetPersistWork,
   SOT_READ_ATTEMPTS,
   SOT_READ_RETRY_MS,
   writeMarkdownFile,
@@ -115,6 +145,42 @@ export {
   writeYamlFile,
 } from "./markdown.js";
 export type { MarkdownDoc, WriteTextOpts } from "./markdown.js";
+export {
+  appendAuditChainLine,
+  assertStoreRootsNotLinked,
+  auditLineDigest,
+  closeEngineCommand,
+  isPinnedEngineSot,
+  isRestoreManifestPath,
+  journaledRemove,
+  journaledWriteFile,
+  journalPostWrite,
+  journalPreWrite,
+  listIncidents,
+  listJournalEntries,
+  listOpenCommandIds,
+  listRestoreManifestPaths,
+  openEngineCommand,
+  posixFromAbs,
+  readAuditChain,
+  readBlob,
+  readCommandRecord,
+  reconcileUnfinishedCommands,
+  restoreEngineState,
+  sha256Content,
+  shouldJournalPath,
+  verifyAuditChain,
+  writeIncident,
+} from "./pre-image.js";
+export type {
+  AuditChainState,
+  EngineCommandRecord,
+  EngineRestoreResult,
+  IncidentRecord,
+  JournalEntry,
+  JournalKind,
+  JournalOp,
+} from "./pre-image.js";
 export {
   assertInsideProject,
   assertResolvedInside,
@@ -148,9 +214,9 @@ export {
   verifyMinisign,
 } from "./minisign.js";
 export { hasSecretPattern, redactSecrets } from "./redact.js";
-export { openIndexDb, queryIndex, rebuildIndex, REBUILD_SQL } from "./sqlite.js";
+export { indexDbUsable, openIndexDb, queryIndex, rebuildIndex, REBUILD_SQL } from "./sqlite.js";
 export { createLegionStore, LegionStore } from "./store.js";
-export type { LegionReader } from "./store.js";
+export type { LegionReader, LegionStoreOptions, LockClock } from "./store.js";
 export {
   DECISION_FILE_SCHEMA_VERSION,
   DecisionFileSchema,

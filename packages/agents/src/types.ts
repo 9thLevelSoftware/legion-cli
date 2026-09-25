@@ -12,7 +12,7 @@ import {
 export type { AdapterResolutionSource, ExtraAdapterId, SkillId };
 
 export type AgentAdapterId = AdapterId;
-export type SpawnableAdapterId = Exclude<AgentAdapterId, "http">;
+export type SpawnableAdapterId = AgentAdapterId;
 
 export type AdapterResolution = {
   id: AgentAdapterId;
@@ -20,9 +20,9 @@ export type AdapterResolution = {
 };
 
 export const DETECT_ADAPTER_IDS = ADAPTER_IDS;
-export const SPAWNABLE_ADAPTER_IDS = ADAPTER_IDS.filter((id): id is SpawnableAdapterId => id !== "http");
+export const SPAWNABLE_ADAPTER_IDS = ADAPTER_IDS;
 export { EXTRA_ADAPTER_IDS };
-export const DETECT_ONLY_ADAPTER_IDS = ["http"] as const satisfies readonly AgentAdapterId[];
+export const DETECT_ONLY_ADAPTER_IDS = [] as const satisfies readonly AgentAdapterId[];
 
 export const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 export const ABORT_GRACE_MS = 5_000;

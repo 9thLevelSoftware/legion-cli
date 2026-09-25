@@ -7,13 +7,20 @@ import test from "node:test";
 
 import {
   applyChatAction,
+  chatActionPhaseRefusal,
+  chatResumeRetryableMessage,
   createChatSession,
   gateChatAction,
+  idleTurnsFromSession,
   LegionEngine,
   LegionRefuseError,
+  loadChatSession,
+  persistForkedChatSession,
   resumeOrCreateChatSession,
+  saveChatSession,
   routeChatTurn,
   sanitizeChatAction,
+  scanChatSessions,
 } from "../dist/index.js";
 import { initProject, patchState, withEngine, withFakeAdapter } from "./helpers.js";
 
@@ -136,45 +143,83 @@ test("four unsolicited search fixtures pause", async () => {
   });
 });
 
-test("fabricated intent_answer in discuss phase is dropped", async () => {
+test("out-of-phase intent_answer is a named refusal, not a silent next_verb", async () => {
   await withEngine(async ({ dir, engine, store }) => {
     await initProject(engine);
     await patchState(store, { phase: "discussing" });
-    const gated = gateChatAction(
-      { type: "intent_answer", answers: ["ok"] },
-      { phase: "discussing", utterance: "ok" },
+    assert.throws(
+      () =>
+        gateChatAction(
+          { type: "intent_answer", answers: ["ok"] },
+          { phase: "discussing", utterance: "ok" },
+        ),
+      (err) => {
+        assert.equal(err.name, "LegionRefuseError");
+        assert.equal(err.message, chatActionPhaseRefusal("intent_answer", "discussing"));
+        return true;
+      },
     );
-    assert.equal(gated.type, "next_verb");
-    const turn = await routeChatTurn(engine, createChatSession(), "ok", {
-      fixtureAction: { type: "intent_answer", answers: ["ok"] },
-    });
-    assert.equal(turn.action.type, "next_verb");
-    assert.equal(turn.kind, "dropped");
-    const applied = await applyChatAction(
-      engine,
-      { type: "intent_answer", answers: ["ok"] },
-      { confirmed: true, utterance: "ok" },
+    await assert.rejects(
+      () =>
+        routeChatTurn(engine, createChatSession(), "ok", {
+          fixtureAction: { type: "intent_answer", answers: ["ok"] },
+        }),
+      (err) => {
+        assert.equal(err.name, "LegionRefuseError");
+        assert.match(err.message, /chat action intent_answer is refused in phase discussing/);
+        return true;
+      },
     );
-    assert.equal(applied.applied, false);
+    await assert.rejects(
+      () =>
+        applyChatAction(
+          engine,
+          { type: "intent_answer", answers: ["ok"] },
+          { confirmed: true, utterance: "ok" },
+        ),
+      (err) => {
+        assert.equal(err.name, "LegionRefuseError");
+        assert.match(err.message, /chat action intent_answer is refused in phase discussing/);
+        return true;
+      },
+    );
     assert.equal(existsSync(join(dir, ".legion-cli", "wiki", "product", "intent-answers.yaml")), false);
   });
 });
 
-test("intent_ready intent_answer is dropped", async () => {
+test("intent_ready intent_answer is a named refusal", async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
     await patchState(store, { phase: "intent_ready" });
-    const gated = gateChatAction(
-      { type: "intent_answer", answers: ["ok"] },
-      { phase: "intent_ready", utterance: "ok" },
+    assert.throws(
+      () =>
+        gateChatAction(
+          { type: "intent_answer", answers: ["ok"] },
+          { phase: "intent_ready", utterance: "ok" },
+        ),
+      (err) => {
+        assert.equal(err.name, "LegionRefuseError");
+        assert.match(err.message, /chat action intent_answer is refused in phase intent_ready/);
+        return true;
+      },
     );
-    assert.equal(gated.type, "next_verb");
-    const turn = await routeChatTurn(engine, createChatSession(), "ok", {
-      fixtureAction: { type: "intent_answer", answers: ["ok"] },
-    });
-    assert.equal(turn.action.type, "next_verb");
-    assert.equal(turn.kind, "dropped");
   });
+});
+
+test("idleTurnsFromSession is a linear reverse count", () => {
+  const turns = [];
+  for (let i = 0; i < 40; i++) {
+    turns.push({ id: `u${i}`, role: "user", text: `hello ${i}` });
+    turns.push({
+      id: `a${i}`,
+      role: "assistant",
+      text: "next_verb",
+      action: { type: "next_verb" },
+    });
+  }
+  assert.equal(idleTurnsFromSession({ schemaVersion: "legion-cli-chat/v1", id: "chat-x", startedAt: "t", turns }), 40);
+  turns[turns.length - 2] = { id: "u-status", role: "user", text: "/status" };
+  assert.equal(idleTurnsFromSession({ schemaVersion: "legion-cli-chat/v1", id: "chat-x", startedAt: "t", turns }), 0);
 });
 
 test("four idle turns pause after the read", async () => {
@@ -221,11 +266,18 @@ test("extra keys are stripped and fabricated intent_answer is dropped", () => {
   );
   assert.equal(fabricated.type, "next_verb");
 
-  const wrongPhase = sanitizeChatAction(
-    { type: "intent_answer", answers: ["hello there"] },
-    { phase: "initialized", utterance: "hello there" },
+  assert.throws(
+    () =>
+      sanitizeChatAction(
+        { type: "intent_answer", answers: ["hello there"] },
+        { phase: "initialized", utterance: "hello there" },
+      ),
+    (err) => {
+      assert.equal(err.name, "LegionRefuseError");
+      assert.match(err.message, /chat action intent_answer is refused in phase initialized/);
+      return true;
+    },
   );
-  assert.equal(wrongPhase.type, "next_verb");
 
   const substring = sanitizeChatAction(
     { type: "intent_answer", answers: ["foo"] },
@@ -383,4 +435,98 @@ test("spawn-planted chat session JSON is reverted and not resumed", async () => 
       );
     });
   });
+});
+
+test("two concurrent forks persist distinct branch IDs and both are resumable", async () => {
+  await withEngine(async ({ engine }) => {
+    await initProject(engine);
+    const parent = await resumeOrCreateChatSession(engine);
+    parent.turns = [
+      { id: "turn-1", role: "user", text: "one" },
+      { id: "turn-2", role: "assistant", text: "two" },
+    ];
+    await saveChatSession(engine, parent);
+    const [a, b] = await Promise.all([
+      persistForkedChatSession(engine, parent, "turn-1"),
+      persistForkedChatSession(engine, parent, "turn-1"),
+    ]);
+    assert.notEqual(a.id, b.id);
+    assert.notEqual(a.activeBranchId, b.activeBranchId);
+    assert.ok(a.activeBranchId.startsWith("branch-"));
+    assert.ok(b.activeBranchId.startsWith("branch-"));
+    const loadedA = await loadChatSession(engine, a.id);
+    const loadedB = await loadChatSession(engine, b.id);
+    assert.equal(loadedA.activeBranchId, a.activeBranchId);
+    assert.equal(loadedB.activeBranchId, b.activeBranchId);
+    assert.equal(loadedA.parentSessionId, parent.id);
+    assert.equal(loadedB.parentSessionId, parent.id);
+    assert.notEqual(a.startedAt, parent.startedAt);
+    assert.notEqual(b.startedAt, parent.startedAt);
+    assert.notEqual(a.startedAt, b.startedAt);
+    assert.ok(a.startedAt > parent.startedAt);
+    assert.ok(b.startedAt > parent.startedAt);
+  });
+});
+
+test("default resume after fork opens the fork, not the parent", async () => {
+  await withEngine(async ({ engine }) => {
+    await initProject(engine);
+    const parent = await resumeOrCreateChatSession(engine);
+    parent.turns = [
+      { id: "turn-1", role: "user", text: "one" },
+      { id: "turn-2", role: "assistant", text: "two" },
+    ];
+    await saveChatSession(engine, parent);
+    const forked = await persistForkedChatSession(engine, parent, "turn-1");
+    assert.ok(forked.startedAt > parent.startedAt, "fork startedAt must be later than parent");
+    const resumed = await resumeOrCreateChatSession(engine);
+    assert.equal(resumed.id, forked.id);
+    assert.equal(resumed.activeBranchId, forked.activeBranchId);
+  });
+});
+
+test("appendChatBranch refuses to overwrite a corrupt branches.json", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    const parent = await resumeOrCreateChatSession(engine);
+    parent.turns = [{ id: "turn-1", role: "user", text: "one" }];
+    await saveChatSession(engine, parent);
+    const branchesPath = join(dir, ".legion-cli", "chat", "branches.json");
+    const corrupt = "{not json";
+    await mkdir(join(dir, ".legion-cli", "chat"), { recursive: true });
+    await writeFile(branchesPath, corrupt, "utf8");
+    await assert.rejects(
+      () => persistForkedChatSession(engine, parent, "turn-1"),
+      (err) => {
+        assert.equal(err.name, "LegionRefuseError");
+        assert.match(err.message, /branches\.json is not valid JSON; not overwriting/);
+        return true;
+      },
+    );
+    assert.equal(await readFile(branchesPath, "utf8"), corrupt);
+  });
+});
+
+test("transient EBUSY during chat resume is a retryable error", async () => {
+  const busy = Object.assign(new Error("resource busy or locked"), { code: "EBUSY" });
+  assert.match(chatResumeRetryableMessage(busy), /retryable \(EBUSY\)/);
+  await assert.rejects(
+    () =>
+      scanChatSessions("/unused", {
+        readdir: async () => {
+          throw busy;
+        },
+        readFile: async () => {
+          throw new Error("unused");
+        },
+        lstat: async () => {
+          throw new Error("unused");
+        },
+      }),
+    (err) => {
+      assert.equal(err.name, "LegionRefuseError");
+      assert.match(err.message, /chat session resume is retryable \(EBUSY\)/);
+      return true;
+    },
+  );
 });

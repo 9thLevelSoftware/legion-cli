@@ -17,6 +17,14 @@
     "activeBranchId": {
       "type": "string"
     },
+    "parentSessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "forkedFromTurnId": {
+      "type": "string",
+      "minLength": 1
+    },
     "turns": {
       "type": "array",
       "items": {

@@ -1,9 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCommandLine, runCommand as runArgv, splitCommand } from "@9thlevelsoftware/legion-cli-agents";
+import { createLegionStore, writeTextFile } from "@9thlevelsoftware/legion-cli-persist";
 import type { QAScore, Spec } from "@9thlevelsoftware/legion-cli-schema";
 import { extractJsonPayload, reportFailClosed } from "./reports.js";
-import { scoreSpecReports, type QaMode } from "./score.js";
+import { scoreQa, scoreSpecReports, ZERO_TESTS_REASON, type QaMode } from "./score.js";
 import { specHasUi } from "./tags.js";
 
 export const DEFAULT_UNIT_COMMAND = "pnpm test -- --reporter=json";
@@ -98,14 +99,13 @@ export type ProjectQaResult = {
   warnings: string[];
 };
 
-async function writeEvidence(abs: string, capture: CommandCapture): Promise<unknown> {
+async function writeEvidence(projectRoot: string, abs: string, capture: CommandCapture): Promise<unknown> {
   const payload = extractJsonPayload(capture.stdout) ?? extractJsonPayload(capture.stderr);
   const body =
     payload !== null
       ? `${JSON.stringify(payload, null, 2)}\n`
       : capture.stdout || capture.stderr || `${JSON.stringify({ error: "no reporter json", status: capture.status })}\n`;
-  await mkdir(join(abs, ".."), { recursive: true });
-  await writeFile(abs, body, "utf8");
+  await createLegionStore(projectRoot).withLock(() => writeTextFile(abs, body, { root: projectRoot }));
   return payload;
 }
 
@@ -128,7 +128,7 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
     warnings.push(`unit command timed out after ${timeoutMs} ms and was stopped`);
   }
   const unitAbs = join(qaDir, "unit.json");
-  const unitReport = await writeEvidence(unitAbs, unitCapture);
+  const unitReport = await writeEvidence(opts.projectRoot, unitAbs, unitCapture);
   evidencePaths.push(".legion-cli/qa/unit.json");
 
   const needsPlaywright = opts.mode === "full" && specHasUi(opts.spec);
@@ -146,13 +146,13 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
       warnings.push(`playwright command timed out after ${timeoutMs} ms and was stopped`);
     }
     const pwAbs = join(qaDir, "playwright.json");
-    playwrightReport = await writeEvidence(pwAbs, pwCapture);
+    playwrightReport = await writeEvidence(opts.projectRoot, pwAbs, pwCapture);
     evidencePaths.push(".legion-cli/qa/playwright.json");
     playwrightRan = Boolean(pwCapture.started && playwrightReport && typeof playwrightReport === "object");
   }
 
   const failClosed = !unitCapture.started || reportFailClosed(unitReport);
-  const score = scoreSpecReports({
+  const scoreOpts = {
     spec: opts.spec,
     mode: opts.mode,
     playwrightRan,
@@ -162,6 +162,24 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
     createdAt: opts.createdAt,
     evidencePaths,
     failClosed,
-  });
+  };
+  let score;
+  try {
+    score = scoreSpecReports(scoreOpts);
+  } catch (err) {
+    if (!(err instanceof Error) || err.message !== ZERO_TESTS_REASON) throw err;
+    if (!failClosed) warnings.push(ZERO_TESTS_REASON);
+    score = scoreQa({
+      specId: opts.spec.id,
+      mode: opts.mode,
+      specHasUi: specHasUi(opts.spec),
+      playwrightRan,
+      tests: [{ title: `${ZERO_TESTS_REASON} @p0`, ok: false, skipped: false, visualFailure: false, priority: "P0" }],
+      id: opts.id,
+      createdAt: opts.createdAt,
+      evidencePaths,
+      failClosed: true,
+    });
+  }
   return { score, evidencePaths, playwrightRan, warnings };
 }

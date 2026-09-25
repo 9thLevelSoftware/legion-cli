@@ -3,15 +3,16 @@ import { join } from "node:path";
 import { sliceTasks } from "@9thlevelsoftware/legion-cli-core";
 import { unresolvedBlockers } from "@9thlevelsoftware/legion-cli-graph";
 import {
+  AUDIT_VIEW_CAP,
   createLegionStore,
   invalidTaskMessage,
   listTaskFiles,
+  readAuditEvents,
   toFsPath,
   type LegionStore,
   type TaskFileEntry,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
-  AuditEventSchema,
   IngestReceiptSchema,
   SCHEMA_VERSION,
   type AdapterId,
@@ -78,7 +79,7 @@ export type DashboardSnapshot = {
   /** Set when STATE.md exists but could not be read even after retries; phase is then a placeholder. */
   stateError: string | null;
   /** Task files that are not valid tasks: listed, never dropped (fail closed). */
-  invalidTasks: Array<{ file: string; error: string }>;
+  invalidTasks: Array<{ file: string; error: string; kind?: string }>;
   graph: { nodes: string[]; edges: Array<{ from: string; to: string }> };
   audit: AuditEvent[];
   spec: { id: string; title: string; status: Spec["status"]; body: string } | null;
@@ -175,24 +176,7 @@ function collectBlockers(
 }
 
 async function loadAuditEvents(store: LegionStore, phase: Phase): Promise<AuditEvent[]> {
-  const events: AuditEvent[] = [];
-  const jsonl = join(store.paths.auditDir, "events.jsonl");
-  try {
-    const raw = await readFile(jsonl, "utf8");
-    for (const line of raw.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      try {
-        const parsed = AuditEventSchema.safeParse(JSON.parse(line) as unknown);
-        if (parsed.success) events.push(parsed.data);
-      } catch {
-        continue;
-      }
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      // unreadable jsonl is treated as empty so the viewer still serves
-    }
-  }
+  const events: AuditEvent[] = await readAuditEvents(store.projectRoot, { cap: AUDIT_VIEW_CAP });
 
   const files = await listMarkdown(store.paths.auditDir);
   for (const file of files) {
@@ -299,7 +283,7 @@ export async function loadSnapshot(
     tasks,
     blockers: collectBlockers(state, tasks, invalid),
     stateError,
-    invalidTasks: invalid.map((entry) => ({ file: entry.file, error: entry.error })),
+    invalidTasks: invalid.map((entry) => ({ file: entry.file, error: entry.error, kind: entry.kind })),
     graph: { nodes: tasks.map((task) => task.id), edges },
     audit: await loadAuditEvents(store, state.phase),
     ...specView,

@@ -1,8 +1,9 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createWriteStream, realpathSync, type WriteStream } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { translateWrapperInvoke } from "@9thlevelsoftware/legion-cli-sandbox";
 import { AgentError } from "./errors.js";
 import { ABORT_GRACE_MS, DEFAULT_TIMEOUT_MS, type AgentHandle, type AgentJob, type AgentResult } from "./types.js";
 import { cmdScriptLaunch, resolveBinary, unwrapCmdShim } from "./which.js";
@@ -35,11 +36,23 @@ function terminate(pid: number, force: boolean): void {
   else terminateUnix(pid, force);
 }
 
+function powershellExePath(): string {
+  return join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+function spawnEnv(job: AgentJob): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(job.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
 function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: WriteStream, stderr: WriteStream): ChildProcess {
   const resolved = resolveBinary(binary) ?? binary;
   const common = {
     cwd: job.cwd,
-    env: job.env,
+    env: spawnEnv(job),
     windowsHide: true,
     shell: false,
   } as const;
@@ -51,6 +64,7 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
     } catch {
       invoke = resolved;
     }
+    invoke = translateWrapperInvoke(job.wrapper, invoke, job.cwd);
     return spawn(job.wrapper.bin, [...job.wrapper.argvPrefix, invoke, ...args], {
       ...common,
       stdio: ["ignore", stdout, stderr],
@@ -58,7 +72,18 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
     });
   }
 
-  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
+  if (process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(resolved)) {
+    if (/\.ps1$/i.test(resolved)) {
+      return spawn(
+        powershellExePath(),
+        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", resolved, ...args],
+        {
+          ...common,
+          stdio: ["ignore", stdout, stderr],
+          detached: false,
+        },
+      );
+    }
     const unwrapped = unwrapCmdShim(resolved);
     if (unwrapped) {
       // Real argv array: cmd.exe would truncate a multiline pointer at the first newline.

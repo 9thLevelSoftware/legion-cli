@@ -13,12 +13,14 @@ import {
   DiscussFileSchema,
   FileContractSchema,
   FingerprintFileSchema,
+  LspDiagnosticsFileSchema,
   IngestReceiptSchema,
   IntentAnswersFileSchema,
   LegionConfigSchema,
   PacketSchema,
   ProjectFileSchema,
   QAScoreSchema,
+  RecipesLockSchema,
   ResumeFileSchema,
   ServeFileSchema,
   SessionBriefSchema,
@@ -61,10 +63,12 @@ export const JSON_SCHEMA_FILES = [
   "design-active",
   "packet",
   "fingerprint-file",
+  "lsp-diagnostics-file",
   "skill-overlay-pin",
   "chat-action",
   "chat-session",
   "serve-file",
+  "recipes-lock",
 ] as const;
 
 export type JsonSchemaFileName = (typeof JSON_SCHEMA_FILES)[number];
@@ -98,10 +102,12 @@ const schemaByFile = {
   "design-active": DesignActiveSchema,
   packet: PacketSchema,
   "fingerprint-file": FingerprintFileSchema,
+  "lsp-diagnostics-file": LspDiagnosticsFileSchema,
   "skill-overlay-pin": SkillOverlayPinSchema,
   "chat-action": ChatActionSchema,
   "chat-session": ChatSessionFileSchema,
   "serve-file": ServeFileSchema,
+  "recipes-lock": RecipesLockSchema,
 } as const satisfies Record<JsonSchemaFileName, z.ZodType>;
 
 export function toLegionJsonSchema(schema: z.ZodType): Record<string, unknown> {

@@ -19,6 +19,21 @@ function matchesAllowed(posix: string, allowed: readonly string[]): boolean {
   return allowed.some((entry) => posix === entry || posix.startsWith(`${entry}/`));
 }
 
+/** Kernel-owned SoT: never a write_file target, even if listed in allowedWrites. */
+export function engineSotRefuseReason(posix: string): string | null {
+  if (posix === ".legion-cli/STATE.md") return `engine-SoT refused: ${posix}`;
+  if (posix === ".legion-cli/config.yaml") return `engine-SoT refused: ${posix}`;
+  if (posix === ".legion-cli/tasks" || posix.startsWith(".legion-cli/tasks/")) {
+    return `engine-SoT refused: ${posix}`;
+  }
+  return null;
+}
+
+/** HTTP host grant list: drop engine-SoT and other implicit-forbidden paths. */
+export function httpAllowedWrites(paths: readonly string[]): string[] {
+  return paths.filter((posix) => !engineSotRefuseReason(posix) && !isImplicitForbidden(posix));
+}
+
 function assertJailPosix(posix: string): string {
   const stored = toStorePath(posix);
   if (!stored || stored === ".") {
@@ -69,6 +84,8 @@ export function createHttpToolHost(opts: HttpHostOpts): HttpToolHost {
     },
     async writeFile(posix, contents) {
       const rel = assertJailPosix(posix);
+      const sot = engineSotRefuseReason(rel);
+      if (sot) throw new Error(sot);
       if (isImplicitForbidden(rel)) {
         throw new Error(`implicit forbidden: ${rel}`);
       }

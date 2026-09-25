@@ -99,8 +99,9 @@ test("execute one ready task and stay executing", async () => {
     const out = normalize(result.stdout);
     assert.match(out, /Starting TSK-0001 \(in\/out button\) via fake\./);
     assert.match(out, /Verification PASS/);
+    assert.match(out, /trust-tier:/, "human-visible");
     assert.match(out, /Dashboard: http:\/\/127\.0\.0\.1:7420/);
-    assert.doesNotMatch(out, /OS isolation|sandbox/i);
+    assert.doesNotMatch(out, /OS isolation/i);
     const engine = createLegionEngine(dir);
     assert.equal((await engine.getState()).phase, "executing");
     assert.equal((await engine.store.readTask("TSK-0001")).data.status, "done");
@@ -167,15 +168,16 @@ test("execute --allow-no-sandbox without TTY refuses", async () => {
   });
 });
 
-test("execute --allow-no-sandbox with piped Y runs", async () => {
+test("execute --allow-no-sandbox with piped Y still requires a TTY", async () => {
   await withTempDir(async (dir) => {
     await seedPlanReady(dir);
     const result = runCli(["execute", "--allow-no-sandbox", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
       input: "Y\n",
     });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.match(normalize(result.stdout), /Verification PASS/);
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /requires a TTY/);
+    assert.match(normalize(result.stderr), /--allow-no-sandbox/);
   });
 });
 

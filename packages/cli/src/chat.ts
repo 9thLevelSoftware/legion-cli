@@ -2,7 +2,7 @@ import {
   applyChatAction,
   createLegionEngine,
   findSkillsDir,
-  forkChatSession,
+  persistForkedChatSession,
   HINT,
   isChatProposalAction,
   refuse,
@@ -176,7 +176,7 @@ export async function runChat(opts: CliOpts, flags: ChatFlags): Promise<number> 
   try {
     let session = await resumeOrCreateChatSession(engine);
     if (flags.fork) {
-      session = forkChatSession(session, flags.fork);
+      session = await persistForkedChatSession(engine, session, flags.fork);
       writeOut(`Forked chat session into branch ${session.activeBranchId} at turn ${flags.fork}.`);
     }
     if (once !== undefined) {

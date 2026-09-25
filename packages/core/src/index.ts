@@ -5,6 +5,7 @@ export {
   isAllowedPath,
   isEngineOwned,
   isImplicitForbidden,
+  isRestoreManifestPath,
   matchesGlob,
   skillContract,
 } from "./contracts.js";
@@ -12,19 +13,36 @@ export { COMPACT_AUDIT_POINTER, compactTaskBody, outcomeFromTask } from "./compa
 export {
   applyChatAction,
   buildChatPrompt,
+  chatActionPhaseRefusal,
+  chatResumeRetryableMessage,
   createChatSession,
   forkChatSession,
   gateChatAction,
+  idleTurnsFromSession,
   isChatProposalAction,
+  loadChatSession,
+  persistForkedChatSession,
   resumeOrCreateChatSession,
+  saveChatSession,
   routeChatTurn,
   sanitizeChatAction,
+  scanChatSessions,
 } from "./chat.js";
 export type { ChatApplyResult, ChatRouteOpts, ChatTurnKind, ChatTurnResult } from "./chat.js";
-export { undoLastTask } from "./undo.js";
+export { setUndoGitResetHard, undoLastTask } from "./undo.js";
 export type { UndoResult } from "./undo.js";
-export { loadRecipe, runRecipe } from "./recipes.js";
-export type { RecipeExecutionResult } from "./recipes.js";
+export {
+  COMMUNITY_RECIPE_LOCK_MESSAGE,
+  COMMUNITY_RECIPE_PATH_MESSAGE,
+  RECIPE_ARGV_ONLY_MESSAGE,
+  assertRecipeExecutionPolicy,
+  canonicalCommunityRecipePath,
+  loadRecipe,
+  loadRecipeFile,
+  recipesLockPath,
+  runRecipe,
+} from "./recipes.js";
+export type { LoadedRecipe, RecipeExecutionResult } from "./recipes.js";
 export { createLegionEngine, DISTILL_SOURCE_MAX_CHARS, LegionEngine } from "./engine.js";
 export type { MapLspMode, MapOptions, MapResult } from "./map.js";
 export {
@@ -47,7 +65,10 @@ export {
 } from "./intent.js";
 export {
   HEAD_MOVED_WARNING,
+  openEngineCommand,
   restoreChangedTaskFiles,
+  restoreEngineState,
+  RestoreRefusedError,
   revertExtras,
   snapshotTaskFiles,
 } from "./revert.js";
@@ -65,19 +86,31 @@ export {
 } from "./fix.js";
 export {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
+  resetVerificationWork,
+  resolveVerificationTrustTier,
   runVerificationCommands,
   splitCommand,
   verificationFailureReason,
+  verificationWork,
 } from "./verify.js";
-export type { VerificationRun } from "./verify.js";
-export { argvSummarySafe, findSkillsDir, optionalSkillSpawn, resolveSkillDir, resumeRunIsLive } from "./spawn.js";
+export type { VerificationRun, VerificationTrustPosture } from "./verify.js";
+export {
+  argvSummarySafe,
+  defaultAllowCopyJail,
+  findSkillsDir,
+  listCacheResumesCalls,
+  optionalSkillSpawn,
+  resetListCacheResumesCalls,
+  resolveSkillDir,
+  resumeRunIsLive,
+} from "./spawn.js";
 export {
   WIREFRAME_PALETTE,
   assertWireframeHtml,
   palettePresent,
   uniqueScreenPages,
 } from "./wireframes.js";
-export { SKIP_WIREFRAMES_NOTE } from "./spec-build.js";
+export { SKIP_WIREFRAMES_NOTE, buildSpecFromIntent, specMarkdownBody, quoteDecision } from "./spec-build.js";
 export {
   assertCanTransition,
   assertLegalPhase,
@@ -97,7 +130,11 @@ export { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from ".
 export {
   displayStagedRoots,
   isShipAllowedPath,
+  SHIP_COMMIT_PREFIX,
+  SHIP_STAGED_CHANGED,
   shipAddPaths,
+  shipCommitMessage,
+  shipProductIndexFingerprint,
   unrelatedDirty,
   unionDoneFilesAllowed,
 } from "./ship.js";
@@ -107,6 +144,7 @@ export {
   isTerminalTaskStatus,
   LEGAL_TASK_TRANSITIONS,
   OPEN_TASK_STATUSES,
+  statusAfterUndoDependency,
 } from "./tasks.js";
 export * from "./brownfield/index.js";
 export type {

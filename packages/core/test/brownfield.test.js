@@ -847,6 +847,27 @@ test("run phases: execute/verify need a design review, verify needs a completed 
   });
 });
 
+test("brownfield complete can re-enter execute for pr-plan and still refuses merge", async () => {
+  await withEngine(async (ctx) => {
+    await setupProject(ctx);
+    const { dir, engine } = ctx;
+    await engine.brownfield({ runId: "c0c0c0c0", execute: true });
+    await seedReady(dir, "c0c0c0c0");
+    assert.equal((await engine.brownfieldState("c0c0c0c0", ["phase=complete"])).state.phase, "complete");
+    await engine.brownfieldPrPlan("c0c0c0c0");
+    assert.equal((await engine.brownfieldState("c0c0c0c0")).state.phase, "execute");
+    assert.equal((await engine.brownfieldState("c0c0c0c0", ["phase=complete"])).state.phase, "complete");
+    await seedFile(
+      dir,
+      "c0c0c0c0",
+      "analysis/code.md",
+      "# Code\n\n## Findings\n\n### F-001\n- Severity: major\n- Evidence: x\n- Suggestion: y\n",
+    );
+    await assertRefuses(engine.brownfieldMerge("c0c0c0c0"), /cannot transition brownfield from complete to assumptions/);
+    assert.equal((await engine.brownfieldState("c0c0c0c0")).state.phase, "complete");
+  });
+});
+
 test("evidence writes tests.md and security.md with redaction and no audit without a lockfile", async () => {
   await withEngine(async (ctx) => {
     await setupProject(ctx);

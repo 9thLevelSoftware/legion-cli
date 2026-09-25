@@ -13,6 +13,8 @@ import {
   ChatProposalActionSchema,
   ChatReadActionSchema,
   ChatSessionFileSchema,
+  ControlModeSchema,
+  SURGICAL_MIGRATION_HINT,
   computeQaPass,
   DesignSystemPackageSchema,
   BrownfieldDagSchema,
@@ -20,6 +22,7 @@ import {
   BrownfieldRunSchema,
   FileContractSchema,
   FingerprintFileSchema,
+  LspDiagnosticsFileSchema,
   JSON_SCHEMA_FILES,
   LegionConfigSchema,
   legionJsonSchemas,
@@ -56,6 +59,21 @@ function readFixture(name) {
 function readSnapshot(name) {
   return JSON.parse(readFileSync(join(pkgRoot, "test", "snapshots", name), "utf8"));
 }
+
+test("ControlModeSchema deletes surgical with a named migration hint to guarded", () => {
+  const src = readFileSync(join(pkgRoot, "src", "versions.ts"), "utf8");
+  const decl = /export const ControlModeSchema = z\.enum\(\[([^\]]+)\]/.exec(src);
+  assert.ok(decl, "ControlModeSchema enum declaration is at packages/schema/src/versions.ts");
+  assert.match(decl[1], /"guarded"/);
+  assert.match(decl[1], /"advisory"/);
+  assert.doesNotMatch(decl[1], /"surgical"/);
+  assert.equal(ControlModeSchema.safeParse("guarded").success, true);
+  assert.equal(ControlModeSchema.safeParse("advisory").success, true);
+  const surgical = ControlModeSchema.safeParse("surgical");
+  assert.equal(surgical.success, false);
+  assert.match(surgical.success ? "" : (surgical.error.issues[0]?.message ?? ""), /migrate to guarded/);
+  assert.equal(SURGICAL_MIGRATION_HINT, "control_mode surgical is removed; migrate to guarded");
+});
 
 test("PROJECT.md frontmatter snapshot", () => {
   const parsed = parseFrontmatter(readFixture("PROJECT.md"));
@@ -149,9 +167,12 @@ test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.packet, "legion-cli-packet/v1");
   assert.equal(SCHEMA_VERSION.map, "legion-cli-map/v1");
   assert.equal(SCHEMA_VERSION.fingerprint, "legion-cli-fingerprint/v1");
+  assert.equal(SCHEMA_VERSION.lspDiagnostics, "legion-cli-lsp-diagnostics/v1");
   assert.equal(SCHEMA_VERSION.skillOverlay, "legion-cli-skill-overlay/v1");
   assert.equal(SCHEMA_VERSION.chatSession, "legion-cli-chat/v1");
   assert.equal(SCHEMA_VERSION.serve, "legion-cli-serve/v1");
+  assert.equal(SCHEMA_VERSION.recipe, "legion-cli-recipe/v1");
+  assert.equal(SCHEMA_VERSION.recipesLock, "legion-cli-recipes-lock/v1");
   assert.equal("sandbox" in SCHEMA_VERSION, false);
 });
 
@@ -1193,7 +1214,7 @@ test("ADAPTER_IDS includes http and spawn extras stay strict", () => {
     "minimax",
     "http",
   ]);
-  assert.equal(ADAPTER_ID_HELP, "claude|generic|fake|grok|openai|codex|mimo|minimax");
+  assert.equal(ADAPTER_ID_HELP, "claude|generic|fake|grok|openai|codex|mimo|minimax|http");
   const configBase = { schemaVersion: "legion-cli-config/v1" };
   assert.equal(
     LegionConfigSchema.safeParse({ ...configBase, adapter: { default: "http" } }).success,
@@ -1462,6 +1483,32 @@ test("FingerprintFileSchema, SkillOverlayPinSchema, ChatAction, ServeFileSchema"
   assert.equal(FingerprintFileSchema.safeParse({ ...fingerprints, schemaVersion: "legion-cli-map/v1" }).success, false);
   assert.equal(FingerprintFileSchema.safeParse({ ...fingerprints, rootHash: "not-a-hash" }).success, false);
   assert.equal(FingerprintFileSchema.safeParse({ ...fingerprints, extra: true }).success, false);
+
+  const diagnostics = LspDiagnosticsFileSchema.parse({
+    schemaVersion: "legion-cli-lsp-diagnostics/v1",
+    generatedAt: "2026-09-17T00:00:00Z",
+    diagnostics: [
+      {
+        path: "src/auth.ts",
+        sourceHash: hash,
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+        severity: 1,
+        message: "unused",
+      },
+    ],
+  });
+  assert.equal(diagnostics.diagnostics[0].sourceHash, hash);
+  assert.equal(
+    LspDiagnosticsFileSchema.safeParse({ ...diagnostics, schemaVersion: "legion-cli-fingerprint/v1" }).success,
+    false,
+  );
+  assert.equal(
+    LspDiagnosticsFileSchema.safeParse({
+      ...diagnostics,
+      diagnostics: [{ ...diagnostics.diagnostics[0], sourceHash: "not-a-hash" }],
+    }).success,
+    false,
+  );
 
   const localPin = SkillOverlayPinSchema.parse({
     schemaVersion: "legion-cli-skill-overlay/v1",

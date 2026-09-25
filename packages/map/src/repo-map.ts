@@ -14,6 +14,13 @@ export type RepoMapOptions = {
   iterations?: number;
 };
 
+/** Pairwise suffix-scan iterations in `computeRepoPageRank` (F-024 / KD-3 work counter). */
+export const repoMapWork = { suffixScanIterations: 0 };
+
+export function resetRepoMapWork(): void {
+  repoMapWork.suffixScanIterations = 0;
+}
+
 /**
  * Computes PageRank centrality over repository module dependency graph.
  * Identifies architectural "hubs" that are heavily referenced across the codebase.
@@ -28,33 +35,44 @@ export function computeRepoPageRank(
   const damping = opts.dampingFactor ?? 0.85;
   const iterations = opts.iterations ?? 20;
 
-  // Map paths to indices
-  const pathToIdx = new Map<string, number>();
-  modules.forEach((mod, idx) => pathToIdx.set(mod.path, idx));
+  // Suffix keys (path + every trailing segment) → module indices, first-j-wins.
+  const importIndex = new Map<string, number[]>();
+  for (let j = 0; j < n; j++) {
+    const path = modules[j].path.replaceAll("\\", "/");
+    let rest = path;
+    while (true) {
+      const hits = importIndex.get(rest);
+      if (hits) hits.push(j);
+      else importIndex.set(rest, [j]);
+      const slash = rest.indexOf("/");
+      if (slash < 0) break;
+      rest = rest.slice(slash + 1);
+    }
+  }
 
-  // Adjacency and out-degrees
-  // Edge v -> u exists if v imports u (u is referenced by v)
   const incoming = Array.from({ length: n }, () => [] as number[]);
   const outDegree = new Array<number>(n).fill(0);
 
   for (let i = 0; i < n; i++) {
     const mod = modules[i];
-    for (const imp of mod.imports) {
-      // Find matching module by relative or suffix path
-      for (let j = 0; j < n; j++) {
-        if (i === j) continue;
-        const candidate = modules[j].path;
-        if (
-          candidate === imp ||
-          candidate.endsWith(`/${imp}`) ||
-          candidate.endsWith(`/${imp}.ts`) ||
-          candidate.endsWith(`/${imp}.js`)
-        ) {
-          incoming[j].push(i);
-          outDegree[i]++;
-          break;
+    for (const rawImp of mod.imports) {
+      const imp = rawImp.replaceAll("\\", "/");
+      const keys = [imp, `${imp}.ts`, `${imp}.js`];
+      let resolved: number | undefined;
+      for (const key of keys) {
+        const hits = importIndex.get(key);
+        if (!hits) continue;
+        for (const j of hits) {
+          if (j !== i) {
+            resolved = j;
+            break;
+          }
         }
+        if (resolved !== undefined) break;
       }
+      if (resolved === undefined) continue;
+      incoming[resolved].push(i);
+      outDegree[i]++;
     }
   }
 
@@ -76,8 +94,10 @@ export function computeRepoPageRank(
     ranks = nextRanks;
   }
 
-  // Normalize ranks so highest is 1.0 (or proportional)
-  const maxRank = Math.max(...ranks, 1e-6);
+  let maxRank = 1e-6;
+  for (const rank of ranks) {
+    if (rank > maxRank) maxRank = rank;
+  }
 
   return modules
     .map((mod, idx) => ({

@@ -25,10 +25,12 @@ export const SCHEMA_VERSION = {
   packet: "legion-cli-packet/v1",
   map: "legion-cli-map/v1",
   fingerprint: "legion-cli-fingerprint/v1",
+  lspDiagnostics: "legion-cli-lsp-diagnostics/v1",
   skillOverlay: "legion-cli-skill-overlay/v1",
   chatSession: "legion-cli-chat/v1",
   serve: "legion-cli-serve/v1",
   recipe: "legion-cli-recipe/v1",
+  recipesLock: "legion-cli-recipes-lock/v1",
 } as const;
 
 export type SchemaVersion = (typeof SCHEMA_VERSION)[keyof typeof SCHEMA_VERSION];
@@ -64,7 +66,15 @@ export const TaskStatusSchema = z.enum([
 ]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
-export const ControlModeSchema = z.enum(["guarded", "surgical", "advisory"]);
+/** Old configs that still name `surgical` fail closed with this hint; never coerced. */
+export const SURGICAL_MIGRATION_HINT = "control_mode surgical is removed; migrate to guarded";
+
+export const ControlModeSchema = z.enum(["guarded", "advisory"], {
+  error: (iss) =>
+    iss.input === "surgical"
+      ? SURGICAL_MIGRATION_HINT
+      : `control_mode ${String(iss.input ?? "")} is rejected`,
+});
 export type ControlMode = z.infer<typeof ControlModeSchema>;
 
 export const SkillIdSchema = z.enum([
@@ -108,8 +118,8 @@ export const ADAPTER_IDS = [
 ] as const;
 export const AdapterIdSchema = z.enum(ADAPTER_IDS);
 export type AdapterId = z.infer<typeof AdapterIdSchema>;
-/** Spawn-selectable ids for CLI help / `--adapter`. `http` is detect-only. */
-export const ADAPTER_ID_HELP = ADAPTER_IDS.filter((id) => id !== "http").join("|");
+/** Spawn-selectable ids for CLI help / `--adapter`. */
+export const ADAPTER_ID_HELP = ADAPTER_IDS.join("|");
 
 /** Subscription coding CLIs spawned by PATH name. Frozen vendor argv lives in agents `FROZEN_ARGV_TABLE`. */
 export const EXTRA_ADAPTER_IDS = ["grok", "openai", "codex", "mimo", "minimax"] as const;

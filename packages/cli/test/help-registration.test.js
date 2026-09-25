@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { createProgram } from "../dist/cli.js";
 import { normalize, runCli } from "./helpers.js";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 // `brownfield init` is an alias of bare `brownfield`; help documents it on the `brownfield` row.
 const UNLISTED_ALIASES = new Set(["brownfield init"]);
@@ -114,4 +119,33 @@ test("every help --all and layer-1 help entry is a registered command", () => {
   assert.ok(entries.length > 40, `parsed too few help rows (${entries.length}); did the help format change?`);
   const unknown = entries.filter((path) => !commands.has(path));
   assert.deepEqual(unknown, [], `listed in help-all.ts but not registered: ${unknown.join(", ")}`);
+});
+
+test("docs and help match registered commands and do not advertise surgical", () => {
+  const readme = readFileSync(join(repoRoot, "README.md"), "utf8");
+  const agents = readFileSync(join(repoRoot, "AGENTS.md"), "utf8");
+  const help = normalize(runCli(["help", "--all"]).stdout);
+  const executeHelp = normalize(runCli(["help", "execute"]).stdout);
+  const fixHelp = normalize(runCli(["help", "fix"]).stdout);
+  const replHelp = normalize(runCli(["help", "repl"]).stdout);
+  const rows = helpAllRows();
+  const commands = registeredCommands();
+
+  assert.doesNotMatch(help, /guarded\|surgical\|advisory/);
+  assert.doesNotMatch(readme, /guarded\|surgical\|advisory/);
+  assert.doesNotMatch(agents, /guarded\|surgical\|advisory/);
+  assert.match(help, /guarded\|advisory/);
+  const executeRow = rows.find((row) => row.path === "execute");
+  const fixRow = rows.find((row) => row.path === "fix");
+  assert.match(executeRow?.description ?? "", /allow-no-sandbox \(TTY confirmation\)/);
+  assert.match(fixRow?.description ?? "", /allow-no-sandbox \(TTY confirmation\)/);
+  assert.match(executeHelp, /allow-no-sandbox/);
+  assert.match(fixHelp, /allow-no-sandbox/);
+  assert.match(replHelp, /NO SANDBOX/i);
+  assert.doesNotMatch(replHelp, /Sandboxed interactive REPL/);
+  assert.match(readme, /\$env:LEGION_CLI_ADAPTER/);
+  for (const extra of ["chat", "undo", "recipe", "repl", "map", "wireframe"]) {
+    assert.ok(commands.has(extra) || rows.some((row) => row.path === extra || row.path.startsWith(`${extra} `)), extra);
+    assert.match(readme, new RegExp(`\\b${extra}\\b`));
+  }
 });

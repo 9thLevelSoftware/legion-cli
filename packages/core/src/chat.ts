@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { lstat, mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCachePaths } from "@9thlevelsoftware/legion-cli-agents";
-import { ensureGitignore, redactSecrets, toFsPath } from "@9thlevelsoftware/legion-cli-persist";
+import { ensureGitignore, redactSecrets, retryFsOp, toFsPath } from "@9thlevelsoftware/legion-cli-persist";
 import {
   ChatActionSchema,
   ChatProposalActionSchema,
@@ -17,7 +17,7 @@ import {
 } from "@9thlevelsoftware/legion-cli-schema";
 import { renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { atomicWriteFile } from "./atomic-write.js";
-import { HINT, refuse } from "./errors.js";
+import { HINT, LegionRefuseError, refuse } from "./errors.js";
 import type { LegionEngine } from "./engine.js";
 import { isSliceTerminal } from "./slice.js";
 import type { DecisionInput, NewTicket } from "./types.js";
@@ -60,6 +60,16 @@ export type ChatRouteOpts = {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/** Strictly increasing, always later than `parentStartedAt`, unique across concurrent forks. */
+let lastForkMs = 0;
+function forkStartedAt(parentStartedAt: string): string {
+  const parentMs = Date.parse(parentStartedAt);
+  const floor = Number.isFinite(parentMs) ? parentMs + 1 : 0;
+  const ms = Math.max(Date.now(), floor, lastForkMs + 1);
+  lastForkMs = ms;
+  return new Date(ms).toISOString();
 }
 
 function newSessionId(): string {
@@ -246,15 +256,33 @@ function parseRawAction(raw: unknown): ChatAction | null {
   return parsed.success ? parsed.data : null;
 }
 
-/** Single gate for drop vs keep of intent_answer (router, sanitize, apply). */
+const CHAT_ACTION_PHASES: Record<ChatAction["type"], readonly Phase[] | "any"> = {
+  status: "any",
+  search: "any",
+  next_verb: "any",
+  intent_answer: ["intent_draft"],
+  discuss_decide: ["discussing"],
+  assume_answer: "any",
+  ticket: ["plan_ready", "executing"],
+};
+
+export function chatActionPhaseRefusal(type: string, phase: Phase): string {
+  return `chat action ${type} is refused in phase ${phase}`;
+}
+
+/** Phase gate: out-of-phase actions refuse. Fabricated intent answers still drop to next_verb. */
 export function gateChatAction(
   action: ChatAction,
   ctx: { phase: Phase; utterance?: string },
 ): ChatAction {
-  if (action.type !== "intent_answer") return action;
-  if (ctx.phase !== "intent_draft") return { type: "next_verb" };
-  if (ctx.utterance !== undefined && !answersAreParseOf(action.answers, ctx.utterance)) {
-    return { type: "next_verb" };
+  const allowed = CHAT_ACTION_PHASES[action.type];
+  if (allowed !== "any" && !allowed.includes(ctx.phase)) {
+    refuse(chatActionPhaseRefusal(action.type, ctx.phase), HINT.chat);
+  }
+  if (action.type === "intent_answer") {
+    if (ctx.utterance !== undefined && !answersAreParseOf(action.answers, ctx.utterance)) {
+      return { type: "next_verb" };
+    }
   }
   return action;
 }
@@ -278,7 +306,7 @@ export function ruleRouteChat(input: {
   if (slash) return slash;
   const natural = parseNaturalRead(input.utterance);
   if (natural) return natural;
-  if (input.nextQuestions.length > 0) {
+  if (input.phase === "intent_draft" && input.nextQuestions.length > 0) {
     const answers = splitAnswerLines(input.utterance);
     if (answers.length > 0) {
       const gated = gateChatAction(
@@ -299,18 +327,19 @@ export function ruleRouteChat(input: {
   return null;
 }
 
-function idleTurnsFromSession(session: ChatSessionFile): number {
+export function idleTurnsFromSession(session: ChatSessionFile): number {
+  const turns = session.turns;
+  const userBefore: Array<string | undefined> = new Array(turns.length);
+  let lastUser: string | undefined;
+  for (let i = 0; i < turns.length; i++) {
+    userBefore[i] = lastUser;
+    if (turns[i].role === "user") lastUser = turns[i].text;
+  }
   let count = 0;
-  for (let i = session.turns.length - 1; i >= 0; i--) {
-    const turn = session.turns[i];
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
     if (turn.role !== "assistant") continue;
-    let userText: string | undefined;
-    for (let j = i - 1; j >= 0; j--) {
-      if (session.turns[j].role === "user") {
-        userText = session.turns[j].text;
-        break;
-      }
-    }
+    const userText = userBefore[i];
     if (userText !== undefined && isRequestedRead(userText)) break;
     if (turn.action?.type !== "next_verb" && turn.action?.type !== "search") break;
     count += 1;
@@ -339,31 +368,79 @@ export async function saveChatSession(engine: LegionEngine, session: ChatSession
   await engine.store.withLock(() => writeSessionFile(engine, session));
 }
 
+export function chatResumeRetryableMessage(err: unknown): string | null {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "EBUSY" || code === "EPERM" || code === "EACCES") {
+    return `chat session resume is retryable (${code})`;
+  }
+  return null;
+}
+
+export type ChatDirIo = {
+  readdir: typeof readdir;
+  readFile: typeof readFile;
+  lstat: typeof lstat;
+};
+
+export async function scanChatSessions(
+  dir: string,
+  io: ChatDirIo = { readdir, readFile, lstat },
+): Promise<ChatSessionFile[]> {
+  let names: string[];
+  try {
+    names = (await retryFsOp(() => io.readdir(dir))).filter((name) => ENGINE_SESSION_FILE.test(name));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    const retry = chatResumeRetryableMessage(err);
+    if (retry) refuse(retry, HINT.chatRetry);
+    throw err;
+  }
+  const sessions: ChatSessionFile[] = [];
+  for (const name of names) {
+    const abs = join(dir, name);
+    try {
+      const st = await retryFsOp(() => io.lstat(abs));
+      if (st.isSymbolicLink()) continue;
+      const raw = await retryFsOp(() => io.readFile(abs, "utf8"));
+      const parsed = ChatSessionFileSchema.safeParse(JSON.parse(raw));
+      if (!parsed.success) continue;
+      if (parsed.data.id !== name.slice(0, -".json".length)) continue;
+      sessions.push(withTurnIds(parsed.data));
+    } catch (err) {
+      const retry = chatResumeRetryableMessage(err);
+      if (retry) refuse(retry, HINT.chatRetry);
+      // skip corrupt or unreadable session files
+    }
+  }
+  return sessions;
+}
+
+export async function loadChatSession(engine: LegionEngine, id: string): Promise<ChatSessionFile> {
+  const abs = toFsPath(engine.projectRoot, chatSessionPath(id));
+  try {
+    const raw = await retryFsOp(() => readFile(abs, "utf8"));
+    const parsed = ChatSessionFileSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success || parsed.data.id !== id) {
+      refuse(`chat session '${id}' is not readable`, HINT.chat);
+    }
+    return withTurnIds(parsed.data);
+  } catch (err) {
+    if (err instanceof LegionRefuseError) throw err;
+    const retry = chatResumeRetryableMessage(err);
+    if (retry) refuse(retry, HINT.chatRetry);
+    refuse(`chat session '${id}' is not readable`, HINT.chat);
+  }
+}
+
 export async function resumeOrCreateChatSession(engine: LegionEngine): Promise<ChatSessionFile> {
   await ensureGitignore(engine.projectRoot);
   return engine.store.withLock(async () => {
     const dir = engine.store.paths.chatDir;
     await mkdir(dir, { recursive: true });
-    let names: string[] = [];
-    try {
-      names = (await readdir(dir)).filter((name) => ENGINE_SESSION_FILE.test(name));
-    } catch {
-      names = [];
-    }
+    const sessions = await scanChatSessions(dir);
     let latest: ChatSessionFile | null = null;
-    for (const name of names) {
-      const abs = join(dir, name);
-      try {
-        const st = await lstat(abs);
-        if (st.isSymbolicLink()) continue;
-        const raw = await readFile(abs, "utf8");
-        const parsed = ChatSessionFileSchema.safeParse(JSON.parse(raw));
-        if (!parsed.success) continue;
-        if (parsed.data.id !== name.slice(0, -".json".length)) continue;
-        if (!latest || parsed.data.startedAt > latest.startedAt) latest = parsed.data;
-      } catch {
-        // skip unreadable session files
-      }
+    for (const session of sessions) {
+      if (!latest || session.startedAt > latest.startedAt) latest = session;
     }
     if (latest) return latest;
     const created = createChatSession();
@@ -561,6 +638,10 @@ export async function applyChatAction(
   action: ChatAction,
   opts?: { confirmed?: boolean; utterance?: string },
 ): Promise<ChatApplyResult> {
+  const rawType = (action as { type?: string }).type;
+  if (typeof rawType === "string" && ILLEGAL_MODEL_TYPES.has(rawType)) {
+    refuse(`chat cannot apply ${rawType}`, HINT.status);
+  }
   const state = await engine.getState();
   if (state.phase === "uninitialized") {
     refuse("chat is refused until init", HINT.init);
@@ -599,20 +680,100 @@ export async function applyChatAction(
   return { applied: false, output: "" };
 }
 
+function withTurnIds(session: ChatSessionFile): ChatSessionFile {
+  return {
+    ...session,
+    turns: session.turns.map((turn, i) => (turn.id ? turn : { ...turn, id: `legacy-${i}` })),
+  };
+}
+
+function resolveForkIndex(session: ChatSessionFile, fromTurnId: string): number {
+  const withIds = withTurnIds(session);
+  const byId = withIds.turns.findIndex((turn) => turn.id === fromTurnId);
+  if (byId >= 0) return byId;
+  const asIndex = Number(fromTurnId);
+  if (Number.isInteger(asIndex) && asIndex >= 0 && asIndex < withIds.turns.length) return asIndex;
+  return -1;
+}
+
 export function forkChatSession(
   session: ChatSessionFile,
   fromTurnId: string,
 ): ChatSessionFile {
-  const targetIdx = session.turns.findIndex((t) => t.id === fromTurnId);
+  const withIds = withTurnIds(session);
+  const targetIdx = resolveForkIndex(withIds, fromTurnId);
   if (targetIdx < 0) {
-    refuse(`turn id '${fromTurnId}' not found in chat session`, "legion-cli chat");
+    refuse(`turn id '${fromTurnId}' not found in chat session`, HINT.chat);
   }
   const branchId = `branch-${randomBytes(4).toString("hex")}`;
-  const truncatedTurns = session.turns.slice(0, targetIdx + 1).map((t) => ({ ...t }));
+  const truncatedTurns = withIds.turns.slice(0, targetIdx + 1).map((t) => ({ ...t }));
   return {
-    ...session,
-    id: `chat-${randomBytes(4).toString("hex")}`,
+    ...withIds,
+    id: newSessionId(),
+    startedAt: forkStartedAt(session.startedAt),
+    parentSessionId: session.id,
+    forkedFromTurnId: fromTurnId,
     activeBranchId: branchId,
     turns: truncatedTurns,
   };
+}
+
+type ChatBranchRecord = {
+  parentSessionId: string;
+  fromTurnId: string;
+  childSessionId: string;
+  branchId: string;
+};
+
+async function appendChatBranch(engine: LegionEngine, record: ChatBranchRecord): Promise<void> {
+  const rel = ".legion-cli/chat/branches.json";
+  const abs = toFsPath(engine.projectRoot, rel);
+  let records: ChatBranchRecord[] = [];
+  try {
+    const raw = await readFile(abs, "utf8");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      refuse("chat branches.json is not valid JSON; not overwriting", HINT.chat);
+    }
+    const branches =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as { branches?: unknown }).branches
+        : undefined;
+    if (!Array.isArray(branches)) {
+      refuse("chat branches.json is not a branch index; not overwriting", HINT.chat);
+    }
+    records = branches as ChatBranchRecord[];
+  } catch (err) {
+    if (err instanceof LegionRefuseError) throw err;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      records = [];
+    } else {
+      const retry = chatResumeRetryableMessage(err);
+      if (retry) refuse(retry, HINT.chatRetry);
+      refuse("chat branches.json is unreadable; not overwriting", HINT.chat);
+    }
+  }
+  records.push(record);
+  const body = redactSecrets(`${JSON.stringify({ branches: records }, null, 2)}\n`);
+  await atomicWriteFile(abs, body, { symlinkMessage: "chat branches path is a symlink", root: engine.projectRoot });
+}
+
+export async function persistForkedChatSession(
+  engine: LegionEngine,
+  session: ChatSessionFile,
+  fromTurnId: string,
+): Promise<ChatSessionFile> {
+  const forked = forkChatSession(session, fromTurnId);
+  await engine.store.withLock(async () => {
+    await writeSessionFile(engine, forked);
+    await appendChatBranch(engine, {
+      parentSessionId: session.id,
+      fromTurnId,
+      childSessionId: forked.id,
+      branchId: forked.activeBranchId ?? "",
+    });
+  });
+  return forked;
 }

@@ -35,7 +35,7 @@ export function sanitizeDoctor(text) {
     .replace(/^(ok  |FAIL)  git \(.+\)$/m, "$1  git (<version>)")
     .replace(/^  legion-cli\n(?:    .+\n)+/m, "  legion-cli\n    <paths>\n")
     .replace(/^  legion\n(?:    .+\n)+/m, "  legion\n    <paths>\n")
-    .replace(/^(ok  |FAIL)  sandbox \(.+\)$/m, "$1  sandbox (<backend>)")
+    .replace(/^(ok  |FAIL|warn)  sandbox \(.+\)$/m, "$1  sandbox (<backend>)")
     .replace(/^Sandbox     .+$/m, "Sandbox     <backend>")
     .replace(/^Playwright  .+$/m, "Playwright  <playwright>")
     .replace(/^  claude       .+$/m, "  claude       <detect>")
@@ -77,8 +77,9 @@ export async function allowCopyJail(store) {
 
 /**
  * Seed `sandbox.allowCopyJail: true` in an initialized project so doctor's sandbox
- * check passes on hosts without bwrap/seatbelt (Windows). Use it in doctor tests whose
- * subject is not the sandbox; the sandbox FAIL path has its own deterministic test.
+ * check is ok (not advisory/warn) on hosts without bwrap/seatbelt (Windows). Use it
+ * in doctor tests whose subject is not the sandbox; the unhardened advisory path
+ * has its own deterministic test.
  */
 export async function allowCopyJailIn(dir) {
   await allowCopyJail(createLegionEngine(dir).store);

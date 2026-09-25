@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
@@ -571,7 +571,13 @@ test("init --adapter http persists adapter.http and pid is not spawned", async (
     assert.equal(config.adapter.http?.model, "gpt-4");
     assert.equal(config.adapter.http?.apiKeyEnv, "OPENAI_API_KEY");
     assert.equal(config.adapter.http?.allowLoopback, false);
+    assert.equal(config.sandbox.allowCopyJail, process.platform === "win32");
+    assert.equal(config.sandbox.requireHardened, true);
     assert.equal(config.adapter.http?.apiKey, undefined);
+    const yaml = await readFile(join(dir, ".legion-cli", "config.yaml"), "utf8");
+    assert.equal(Object.hasOwn(config.adapter.http ?? {}, "apiKey"), false);
+    assert.match(yaml, /apiKeyEnv:\s*OPENAI_API_KEY/);
+    assert.doesNotMatch(yaml, /^\s*apiKey:/m);
   });
 });
 

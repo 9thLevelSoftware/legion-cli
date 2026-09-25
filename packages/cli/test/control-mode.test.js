@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
@@ -23,7 +25,7 @@ test("help --all lists control-mode in always-on, not later or v0 gap", () => {
   assert.match(out, /Shipped adjacent[\s\S]*\bmap\b/);
 });
 
-test("control-mode shows default guarded and sets surgical|advisory", async () => {
+test("control-mode shows default guarded and sets advisory", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(init.status, 0, init.stderr);
@@ -37,13 +39,6 @@ test("control-mode shows default guarded and sets surgical|advisory", async () =
     assert.equal(JSON.parse(jsonShow.stdout).control_mode, "guarded");
 
     const engine = createLegionEngine(dir);
-    const surgical = runCli(["control-mode", "surgical", "--project", dir]);
-    assert.equal(surgical.status, 0, surgical.stderr);
-    assert.match(normalize(surgical.stdout), /^control_mode: surgical$/m);
-    assert.match(normalize(surgical.stdout), /^Next: legion-cli doctor$/m);
-    assert.equal((await engine.store.readConfig()).control_mode, "surgical");
-    assert.equal((await engine.store.readProject()).data.controlMode, "surgical");
-
     const jsonSet = runCli(["control-mode", "advisory", "--project", dir, "--json"]);
     assert.equal(jsonSet.status, 0, jsonSet.stderr);
     const payload = JSON.parse(jsonSet.stdout);
@@ -52,6 +47,50 @@ test("control-mode shows default guarded and sets surgical|advisory", async () =
     assert.equal(payload.next, "legion-cli doctor");
     assert.equal((await engine.store.readConfig()).control_mode, "advisory");
     assert.equal((await engine.store.readProject()).data.controlMode, "advisory");
+  });
+});
+
+test("control-mode surgical is refused with a named migration hint to guarded", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+
+    const surgical = runCli(["control-mode", "surgical", "--project", dir]);
+    assert.equal(surgical.status, 1);
+    const err = normalize(surgical.stderr);
+    assert.match(err, /control_mode surgical is removed; migrate to guarded/);
+    assert.match(err, /Next: legion-cli control-mode/);
+
+    const engine = createLegionEngine(dir);
+    assert.equal((await engine.store.readConfig()).control_mode, "guarded");
+    assert.equal((await engine.store.readProject()).data.controlMode, "guarded");
+  });
+});
+
+test("old config.yaml with surgical prints migrate-to-guarded on status and doctor", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const configPath = join(dir, ".legion-cli", "config.yaml");
+    const current = await readFile(configPath, "utf8");
+    const next = /control_mode\s*:/.test(current)
+      ? current.replace(/control_mode\s*:[^\n]*/, "control_mode: surgical")
+      : `${current.trimEnd()}\ncontrol_mode: surgical\n`;
+    await writeFile(configPath, next, "utf8");
+    assert.match(await readFile(configPath, "utf8"), /control_mode:\s*surgical/);
+
+    const status = runCli(["status", "--project", dir]);
+    assert.equal(status.status, 1, status.stderr);
+    assert.match(normalize(status.stderr), /migrate to guarded/);
+
+    const shown = runCli(["control-mode", "--project", dir]);
+    assert.equal(shown.status, 1, shown.stderr);
+    assert.match(normalize(shown.stderr), /migrate to guarded/);
+
+    const doctor = runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.equal(doctor.status, 1, `${doctor.stdout}\n${doctor.stderr}`);
+    const doctorOut = normalize(`${doctor.stdout}\n${doctor.stderr}`);
+    assert.match(doctorOut, /migrate to guarded/);
   });
 });
 

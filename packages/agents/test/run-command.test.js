@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
@@ -214,7 +214,8 @@ test("resolveBinary prefers .exe/.com/.cmd/.bat over an extensionless or .js hit
     const saved = process.env.PATH;
     process.env.PATH = `${dir};${saved}`;
     try {
-      assert.equal(resolveBinary("legionprobe")?.toLowerCase(), join(dir, "legionprobe.cmd").toLowerCase());
+      const found = resolveBinary("legionprobe");
+      assert.equal(basename(found ?? "").toLowerCase(), "legionprobe.cmd");
     } finally {
       process.env.PATH = saved;
     }

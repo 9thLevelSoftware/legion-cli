@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { appendAuditEvent } from "@9thlevelsoftware/legion-cli-persist";
 import { ServeFileSchema } from "@9thlevelsoftware/legion-cli-schema";
 import {
   ENGINE_WRITE_METHODS,
@@ -418,6 +419,47 @@ test("POST /engine/ticket persists type/priority and refuses invalid enums witho
   });
 });
 
+test("POST /engine/* asserts each refused engine transition", async () => {
+  await withStore(async ({ dir }) => {
+    await withServer(dir, async ({ handle }) => {
+      const token = handle.token;
+
+      const unknownParent = await enginePost(
+        handle,
+        "/engine/ticket",
+        { title: "park extra", parentId: "TSK-9999" },
+        { token },
+      );
+      assert.equal(unknownParent.status, 400);
+      const parentBody = await unknownParent.json();
+      assert.match(parentBody.error, /unknown parent TSK-9999/);
+      assert.match(parentBody.next, /legion-cli ticket create/);
+
+      const unknownPage = await enginePost(
+        handle,
+        "/engine/wikiTrust",
+        { pageId: "ingested/missing-page" },
+        { token },
+      );
+      assert.equal(unknownPage.status, 400);
+      const pageBody = await unknownPage.json();
+      assert.match(pageBody.error, /unknown page/);
+      assert.match(pageBody.next, /legion-cli show/);
+
+      const unknownTick = await enginePost(
+        handle,
+        "/engine/qaChecklist",
+        { ticks: ["AC-NOPE"] },
+        { token },
+      );
+      assert.equal(unknownTick.status, 400);
+      const tickBody = await unknownTick.json();
+      assert.match(tickBody.error, /unknown acceptance criterion AC-NOPE/);
+      assert.match(tickBody.next, /legion-cli qa checklist/);
+    });
+  });
+});
+
 test("POST /engine/* returns 409 while a live spawn is in_progress", async () => {
   await withStore(async ({ dir, store }) => {
     const live = (await store.readTask("TSK-0002")).data;
@@ -508,6 +550,63 @@ test("SSE streams state; audit events appear on GET /audit", async () => {
       assert.match(chunk, /event: state/);
       assert.match(chunk, /"readOnly":true/);
     });
+  });
+});
+
+test("SSE audit-delta tick does not also send event: state", async () => {
+  await withStore(async ({ dir }) => {
+    await withServer(
+      dir,
+      async ({ handle }) => {
+        const res = await fetch(`${handle.url}/events`, {
+          headers: { Origin: originFor(handle) },
+        });
+        assert.equal(res.status, 200);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let chunk = "";
+        const readAvailable = async () => {
+          const { value, done } = await reader.read();
+          if (done || !value) return done;
+          chunk += decoder.decode(value, { stream: true });
+          return false;
+        };
+        try {
+          while (!chunk.includes("event: state")) {
+            const done = await readAvailable();
+            if (done) break;
+          }
+          assert.match(chunk, /event: state/);
+          const marked = chunk.length;
+          await appendAuditEvent(dir, {
+            ts: new Date().toISOString(),
+            type: "execute",
+            phase: "executing",
+            actor: "user",
+            data: { sse: true },
+          });
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          for (;;) {
+            const result = await Promise.race([
+              reader.read().then((r) => ({ kind: "read", ...r })),
+              new Promise((resolve) => setTimeout(() => resolve({ kind: "idle" }), 100)),
+            ]);
+            if (result.kind === "idle" || result.done) break;
+            if (result.value) chunk += decoder.decode(result.value, { stream: true });
+          }
+          const rest = chunk.slice(marked);
+          assert.match(rest, /event: audit-delta/);
+          assert.equal(
+            rest.includes("event: state"),
+            false,
+            "audit-delta tick must not also broadcast event: state",
+          );
+        } finally {
+          await reader.cancel();
+        }
+      },
+      { pollMs: 80 },
+    );
   });
 });
 

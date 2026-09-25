@@ -41,6 +41,10 @@ export type LegionEngineOptions = {
   fakeHandlePid?: number;
   /** Test-only, like the other fake* seams: verification throws this message. */
   fakeVerificationError?: string;
+  /** Test-only: runs during verify (lock-free after F-026). Injected-clock advance lives here. */
+  fakeOnVerify?: () => Promise<void>;
+  /** Test-only: runs during qa (lock-free after F-026). Injected-clock advance lives here. */
+  fakeOnQa?: () => Promise<void>;
   verificationTimeoutMs?: number;
 };
 
@@ -284,6 +288,7 @@ export type ShipPreview = {
   diff: string;
   unrelatedUnchanged: boolean;
   unrelated: string[];
+  productFingerprint: string;
 };
 
 export type ShipOptions = {
@@ -314,6 +319,8 @@ export type ExecuteTaskResult = {
   verificationPass?: boolean;
   /** Why the task was blocked by verification, e.g. "verification command did not start: …". */
   reason?: string;
+  /** Named KD-4 posture; printed on the verification PASS/blocked line. */
+  trustTierNote?: string;
   adapterId?: AdapterId;
   resolutionSource?: AdapterResolutionSource;
 };

@@ -15,6 +15,7 @@ import {
   listResolvedSkillCatalog,
 } from "@9thlevelsoftware/legion-cli-agents";
 import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { httpAdapterNotReadyReason, isHttpAdapterReady } from "@9thlevelsoftware/legion-cli-http";
 import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
   readAuditEvents,
@@ -40,6 +41,8 @@ import { isSpawnableBinary, listOnPath, pathLegionIsLegionCli, runBounded, runTo
 
 export type DoctorCheck = {
   ok: boolean;
+  /** Unhardened sandbox is a warning, not a doctor FAIL. */
+  advisory?: boolean;
   label: string;
   detail: string;
 };
@@ -131,7 +134,7 @@ function isConfiguredSpawnable(config: LegionConfig, id: AdapterId): boolean {
     if (!spec?.binary) return false;
     return argsIncludePointer(genericArgsOrDefault(spec.args ?? [])) && isSpawnableBinary(spec.binary);
   }
-  if (id === "http") return false;
+  if (id === "http") return isHttpAdapterReady(config.adapter.http);
   return extraOnPath(id, config) && extraArgvOk(id, config);
 }
 
@@ -242,7 +245,7 @@ async function loadConfig(engine: ReturnType<typeof createLegionEngine>): Promis
 }
 
 function formatCheck(check: DoctorCheck): string {
-  const mark = check.ok ? "ok  " : "FAIL";
+  const mark = check.advisory ? "warn" : check.ok ? "ok  " : "FAIL";
   return `${mark}  ${check.label} (${check.detail})`;
 }
 
@@ -475,23 +478,25 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
 
   const detectedSandbox = detectSandbox();
   let sandboxOk = true;
+  let sandboxAdvisory = false;
   let sandboxDetail = `${detectedSandbox.backend}, hardened=${detectedSandbox.hardened}`;
   if (config) {
     try {
       assertExecuteSandbox(config, {});
     } catch (err) {
-      sandboxOk = false;
+      sandboxAdvisory = true;
       sandboxDetail = err instanceof Error ? err.message : String(err);
       warnings.push(
         `sandbox config cannot satisfy requireHardened (${config.sandbox.backend}); guarded execute needs --allow-no-sandbox or sandbox.allowCopyJail`,
       );
     }
-  } else if (detectedSandbox.backend === "copy") {
-    sandboxOk = false;
+  } else if (detectedSandbox.backend === "copy" || !detectedSandbox.hardened) {
+    sandboxAdvisory = true;
     warnings.push("sandbox is not hardened; guarded execute needs --allow-no-sandbox or sandbox.allowCopyJail");
   }
   checks.push({
     ok: sandboxOk,
+    ...(sandboxAdvisory ? { advisory: true } : {}),
     label: "sandbox",
     detail: sandboxDetail,
   });
@@ -589,7 +594,11 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       : "(unset)",
     fake: fakeSpawnable() ? "spawnable (LEGION_CLI_ADAPTER=fake)" : "not spawnable (set LEGION_CLI_ADAPTER=fake)",
     ...extraLabels,
-    http: !config?.adapter.http ? "not configured" : "not spawnable (detect-only)",
+    http: !config?.adapter.http
+      ? "not configured"
+      : isHttpAdapterReady(config.adapter.http)
+        ? "spawnable"
+        : (httpAdapterNotReadyReason(config.adapter.http) ?? "not spawnable"),
   };
 
   const ok = checks.every((check) => check.ok);

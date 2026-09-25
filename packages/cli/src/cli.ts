@@ -177,8 +177,8 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("control-mode").description("Show or set guarded|surgical|advisory"))
-    .argument("[mode]", "guarded | surgical | advisory")
+  addGlobalOptions(program.command("control-mode").description("Show or set guarded|advisory"))
+    .argument("[mode]", "guarded | advisory")
     .allowExcessArguments(false)
     .action(async (mode: string | undefined, _opts, cmd: Command) => {
       const code = await runControlMode(resolveOpts(cmd), mode);
@@ -561,6 +561,8 @@ export function createProgram(): Command {
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .option("--route <name>", "named adapter route (expanded at write)")
     .option("--clear-adapter", "omit Task.adapter")
+    .option("--unblock", "blocked -> ready/todo")
+    .option("--recover", "verifying -> blocked when the serial window is dead")
     .allowExcessArguments(false)
     .action(async (id: string, opts, cmd: Command) => {
       const flags = opts as {
@@ -573,6 +575,8 @@ export function createProgram(): Command {
         adapter?: string;
         route?: string;
         clearAdapter?: boolean;
+        unblock?: boolean;
+        recover?: boolean;
       };
       const code = await runTaskAmend(resolveOpts(cmd), id, flags);
       process.exitCode = code;
@@ -854,8 +858,8 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("repl").description("Sandboxed interactive REPL"))
-    .option("--lang <language>", "node | python | sh", "node")
+  addGlobalOptions(program.command("repl").description("Host-mode interactive REPL (NO SANDBOX; secrets visible to typed code)"))
+    .option("--lang <language>", "node | python", "node")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
       const flags = opts as { lang?: string };

@@ -28,7 +28,9 @@ import type {
   Task,
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { ZodType } from "zod";
+import { assertNoLinkInPath } from "./atomic-write.js";
 import { EngineLockedError, PersistError } from "./errors.js";
+import { reconcileUnfinishedCommands } from "./pre-image.js";
 import { commitIngest, isGitRepo } from "./git.js";
 import { ingestFiles, type IngestDocument } from "./ingest.js";
 import {
@@ -72,43 +74,91 @@ export interface LegionReader {
   readWikiPage(storePath: string): Promise<MarkdownDoc<WikiPage>>;
 }
 
+export type LockClock = { now: () => number };
+
+export type LegionStoreOptions = {
+  /** Injected clock for lock-hold measurement (KD-3). Acquire timeouts stay on wall time. */
+  clock?: LockClock;
+};
+
 type Hold = { lock: HeldLock; releaseMutex: () => void };
+type BareTicket = { kind: "bare"; slot: SharedLock; live: boolean };
+type LockScope = Hold | BareTicket;
+
+type SharedLock = {
+  tail: Promise<void>;
+  hold: Hold | null;
+};
+
+const lockContext = new AsyncLocalStorage<LockScope>();
+const sharedLocks = new Map<string, SharedLock>();
+
+function sharedLockFor(lockPath: string): SharedLock {
+  let slot = sharedLocks.get(lockPath);
+  if (!slot) {
+    slot = { tail: Promise.resolve(), hold: null };
+    sharedLocks.set(lockPath, slot);
+  }
+  return slot;
+}
+
+function isBareTicket(ctx: LockScope | undefined): ctx is BareTicket {
+  return Boolean(ctx && "kind" in ctx && ctx.kind === "bare");
+}
+
+const REENTERED: Hold = {
+  lock: { token: "", release: async () => undefined },
+  releaseMutex: () => undefined,
+};
 
 export class LegionStore implements LegionReader {
   readonly projectRoot: string;
   readonly paths: LegionPaths;
-  /** Tail of the in-process queue: each holder resolves its link when it releases. */
-  #tail: Promise<void> = Promise.resolve();
-  /** The current holder; nested `withLock` in the same async chain re-enters it. */
-  #hold: Hold | null = null;
-  #context = new AsyncLocalStorage<Hold>();
-  /** Holds taken with bare `acquireLock()` (no async scope to re-enter), released LIFO. */
+  readonly #clock: LockClock;
+  readonly #slot: SharedLock;
+  /** Holds taken with bare `acquireLock()` on this instance, released LIFO. */
   #bare: Hold[] = [];
-
-  constructor(projectRoot: string) {
+  /** Injected-clock duration of the most recent top-level hold. */
+  lastHoldMs = 0;
+  /** Max injected-clock hold across top-level `withLock` calls since {@link resetHoldStats}. */
+  maxHoldMs = 0;
+  constructor(projectRoot: string, opts?: LegionStoreOptions) {
     this.projectRoot = resolve(projectRoot);
     this.paths = legionPaths(this.projectRoot);
+    this.#clock = opts?.clock ?? { now: () => Date.now() };
+    this.#slot = sharedLockFor(this.paths.lock);
   }
 
-  /** True inside `withLock` on this store, in the same async chain that took the lock. */
-  holdsLock(): boolean {
-    const hold = this.#context.getStore();
-    return hold !== undefined && hold === this.#hold;
+  resetHoldStats(): void {
+    this.lastHoldMs = 0;
+    this.maxHoldMs = 0;
   }
 
   /**
-   * One writer per process (promise-chain mutex), then one per project (engine.lock).
-   * A waiter here counts against the same `timeoutMs` as the file lock.
+   * True in this async chain only: nested `withLock` / `acquireLock` on any store
+   * for the same path re-enters. A sibling chain must not see this as held.
+   */
+  holdsLock(): boolean {
+    const ctx = lockContext.getStore();
+    if (!ctx) return false;
+    if (isBareTicket(ctx)) return ctx.slot === this.#slot && ctx.live;
+    return ctx === this.#slot.hold;
+  }
+
+  /**
+   * One writer per process (promise-chain mutex keyed by lock path), then one per
+   * project (engine.lock). A waiter here counts against the same `timeoutMs` as the file lock.
    */
   async #take(opts?: { timeoutMs?: number }): Promise<Hold> {
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
     const started = Date.now();
-    const previous = this.#tail;
+    const slot = this.#slot;
+    const previous = slot.tail;
     let releaseMutex!: () => void;
     const mine = new Promise<void>((done) => {
       releaseMutex = done;
     });
-    this.#tail = previous.then(() => mine);
+    slot.tail = previous.then(() => mine);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const turn = await Promise.race([
       previous.then(() => true),
@@ -125,7 +175,7 @@ export class LegionStore implements LegionReader {
       const remaining = Math.max(0, timeoutMs - (Date.now() - started));
       const lock = await acquireEngineLock(this.paths.lock, { timeoutMs: remaining });
       const hold = { lock, releaseMutex };
-      this.#hold = hold;
+      slot.hold = hold;
       return hold;
     } catch (err) {
       releaseMutex();
@@ -134,7 +184,8 @@ export class LegionStore implements LegionReader {
   }
 
   async #give(hold: Hold): Promise<void> {
-    if (this.#hold === hold) this.#hold = null;
+    if (hold === REENTERED) return;
+    if (this.#slot.hold === hold) this.#slot.hold = null;
     try {
       await hold.lock.release();
     } finally {
@@ -143,23 +194,57 @@ export class LegionStore implements LegionReader {
   }
 
   /** Low-level: take the lock outside `withLock`. Pair with {@link releaseLock}. */
-  async acquireLock(opts?: { timeoutMs?: number }): Promise<void> {
-    this.#bare.push(await this.#take(opts));
+  acquireLock(opts?: { timeoutMs?: number }): Promise<void> {
+    if (this.holdsLock()) {
+      this.#bare.push(REENTERED);
+      return Promise.resolve();
+    }
+    // Non-async so enterWith sticks on the caller's chain, not a sibling.
+    const ticket: BareTicket = { kind: "bare", slot: this.#slot, live: false };
+    lockContext.enterWith(ticket);
+    return this.#take(opts).then(
+      (hold) => {
+        this.#bare.push(hold);
+        ticket.live = true;
+      },
+      (err) => {
+        lockContext.enterWith(undefined as unknown as LockScope);
+        throw err;
+      },
+    );
   }
 
-  async releaseLock(): Promise<void> {
+  releaseLock(): Promise<void> {
     const hold = this.#bare.pop();
-    if (hold) await this.#give(hold);
+    if (hold === REENTERED || !hold) return Promise.resolve();
+    const ctx = lockContext.getStore();
+    if (isBareTicket(ctx) && ctx.slot === this.#slot) {
+      lockContext.enterWith(undefined as unknown as LockScope);
+    }
+    return this.#give(hold);
   }
 
-  async withLock<T>(fn: () => Promise<T>, opts?: { timeoutMs?: number }): Promise<T> {
+  withLock<T>(fn: () => Promise<T>, opts?: { timeoutMs?: number }): Promise<T> {
     if (this.holdsLock()) return fn();
+    return this.#runLocked(fn, opts);
+  }
+
+  async #runLocked<T>(fn: () => Promise<T>, opts?: { timeoutMs?: number }): Promise<T> {
     const hold = await this.#take(opts);
+    const t0 = this.#clock.now();
     try {
-      return await this.#context.run(hold, fn);
+      return await lockContext.run(hold, fn);
     } finally {
+      const held = Math.max(0, this.#clock.now() - t0);
+      this.lastHoldMs = held;
+      this.maxHoldMs = Math.max(this.maxHoldMs, held);
       await this.#give(hold);
     }
+  }
+
+  /** Startup tail-replay of unfinished command journals. Bounded to pending entries. */
+  async reconcileUnfinished(): Promise<string[]> {
+    return this.withLock(() => reconcileUnfinishedCommands(this.projectRoot));
   }
 
   async pathExists(storePath: string): Promise<boolean> {
@@ -176,9 +261,11 @@ export class LegionStore implements LegionReader {
   }
 
   writeMarkdown(storePath: string, data: unknown, body: string): Promise<void> {
-    return this.withLock(() =>
-      writeMarkdownFile(toFsPath(this.projectRoot, storePath), data, body, { root: this.projectRoot }),
-    );
+    return this.withLock(async () => {
+      const abs = toFsPath(this.projectRoot, storePath);
+      await assertNoLinkInPath(abs, { root: this.projectRoot });
+      await writeMarkdownFile(abs, data, body, { root: this.projectRoot });
+    });
   }
 
   readYaml<T>(storePath: string, schema: ZodType<T>): Promise<T> {
@@ -186,9 +273,11 @@ export class LegionStore implements LegionReader {
   }
 
   writeYaml(storePath: string, data: unknown): Promise<void> {
-    return this.withLock(() =>
-      writeYamlFile(toFsPath(this.projectRoot, storePath), data, { root: this.projectRoot }),
-    );
+    return this.withLock(async () => {
+      const abs = toFsPath(this.projectRoot, storePath);
+      await assertNoLinkInPath(abs, { root: this.projectRoot });
+      await writeYamlFile(abs, data, { root: this.projectRoot });
+    });
   }
 
   readProject(): Promise<MarkdownDoc<ProjectFile>> {
@@ -328,6 +417,6 @@ export class LegionStore implements LegionReader {
   }
 }
 
-export function createLegionStore(projectRoot: string): LegionStore {
-  return new LegionStore(projectRoot);
+export function createLegionStore(projectRoot: string, opts?: LegionStoreOptions): LegionStore {
+  return new LegionStore(projectRoot, opts);
 }
