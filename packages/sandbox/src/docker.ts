@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { userInfo } from "node:os";
 import { isAbsolute, relative } from "node:path";
 import { SandboxError } from "./errors.js";
 import { findOnPath } from "./sandbox.js";
@@ -9,13 +10,24 @@ export const DOCKER_HOST_EXEC_REFUSAL = "docker jail refuses a host exec path th
 export function findRunnableDocker(): string | undefined {
   const bin = findOnPath("docker", true);
   if (!bin) return undefined;
-  const probe = spawnSync(bin, ["info", "--format", "{{.ServerVersion}}"], {
+  const probe = spawnSync(bin, ["info", "--format", "{{.OSType}}"], {
+    encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     timeout: 3000,
     windowsHide: true,
   });
   if (probe.error || probe.status !== 0) return undefined;
+  // A Windows-container daemon accepts `docker info` but cannot run the Linux jail image.
+  if (String(probe.stdout ?? "").trim().toLowerCase() !== "linux") return undefined;
   return bin;
+}
+
+/** Match the host uid so --cap-drop ALL can still write the jail it owns. */
+export function dockerRunUser(): string[] {
+  if (process.platform === "win32") return [];
+  const info = userInfo();
+  if (info.uid < 0 || info.gid < 0) return [];
+  return ["--user", `${info.uid}:${info.gid}`];
 }
 
 function isNodeExecPath(hostPath: string): boolean {
@@ -72,6 +84,7 @@ export function dockerArgvPrefix(opts: {
     `${opts.jailRoot}:${DOCKER_WORKDIR}:rw`,
     "-w",
     DOCKER_WORKDIR,
+    ...dockerRunUser(),
   ];
   if (opts.env) {
     for (const [k, v] of Object.entries(opts.env)) {
