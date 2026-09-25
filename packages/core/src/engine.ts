@@ -1546,9 +1546,11 @@ export class LegionEngine {
         refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.fix);
       }
       await ensureRegressionTest(this.projectRoot, testPath, title);
+      const fixConfig = await this.#readConfig();
       const red = await runVerificationCommands(this.projectRoot, [verifyCmd], {
         runId: `fix-${Date.now()}`,
-        secretEnvNames: configuredApiKeyEnvNames(await this.#readConfig()),
+        secretEnvNames: configuredApiKeyEnvNames(fixConfig),
+        sandbox: fixConfig.sandbox,
       });
       if (red[0]?.ok) {
         refuse("this does not reproduce", HINT.fix);
@@ -2434,6 +2436,7 @@ export class LegionEngine {
 
     let verificationPass = false;
     let reason: string | undefined;
+    let trustTierNote: string | undefined;
     const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
     try {
       if (this.#fakeOnVerify) await this.#fakeOnVerify();
@@ -2445,10 +2448,12 @@ export class LegionEngine {
           timeoutMs: this.#verificationTimeoutMs,
           runId: post.runId,
           secretEnvNames: configuredApiKeyEnvNames(lockedConfig),
+          sandbox: lockedConfig.sandbox,
         },
       );
       verificationPass = verification.length > 0 && verification.every((run) => run.ok);
       reason = verificationFailureReason(verification);
+      trustTierNote = verification.find((run) => run.trustTierNote)?.trustTierNote;
     } catch (err) {
       verificationPass = false;
       reason = `verification failed: ${describe(err)}`;
@@ -2500,6 +2505,7 @@ export class LegionEngine {
           runId: post.runId,
           ...post.spawnAudit,
           ...(reason ? { reason } : {}),
+          ...(trustTierNote ? { trustTierNote } : {}),
         },
         lockedTask.id,
       );
@@ -2523,6 +2529,7 @@ export class LegionEngine {
         adapterId: post.adapterId,
         resolutionSource: post.resolutionSource,
         ...(reason ? { reason } : {}),
+        ...(trustTierNote ? { trustTierNote } : {}),
       };
     });
 

@@ -92,6 +92,7 @@ export async function runExecute(
     } else {
       writeOut(outcome.reason ? `${outcome.taskId} blocked: ${outcome.reason}` : `${outcome.taskId} blocked.`);
     }
+    if (outcome.trustTierNote) writeOut(outcome.trustTierNote);
   }
   for (const warning of result.warnings) writeOut(warning);
   if (flags.untilBlocked && isSliceTerminal(slice) && !blocked) {

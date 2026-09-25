@@ -152,6 +152,8 @@ test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.skillOverlay, "legion-cli-skill-overlay/v1");
   assert.equal(SCHEMA_VERSION.chatSession, "legion-cli-chat/v1");
   assert.equal(SCHEMA_VERSION.serve, "legion-cli-serve/v1");
+  assert.equal(SCHEMA_VERSION.recipe, "legion-cli-recipe/v1");
+  assert.equal(SCHEMA_VERSION.recipesLock, "legion-cli-recipes-lock/v1");
   assert.equal("sandbox" in SCHEMA_VERSION, false);
 });
 

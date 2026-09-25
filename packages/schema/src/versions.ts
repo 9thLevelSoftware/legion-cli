@@ -29,6 +29,7 @@ export const SCHEMA_VERSION = {
   chatSession: "legion-cli-chat/v1",
   serve: "legion-cli-serve/v1",
   recipe: "legion-cli-recipe/v1",
+  recipesLock: "legion-cli-recipes-lock/v1",
 } as const;
 
 export type SchemaVersion = (typeof SCHEMA_VERSION)[keyof typeof SCHEMA_VERSION];
