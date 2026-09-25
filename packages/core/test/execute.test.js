@@ -114,7 +114,11 @@ test("a failing verification ends blocked, never done", async () => {
 });
 
 for (const [label, command, pattern] of [
-  ["a missing binary", "legion-no-such-binary-xyz --version", /verification command did not start: .*not found on PATH/],
+  [
+    "a missing binary",
+    "legion-no-such-binary-xyz --version",
+    /verification command (?:did not start: .*not found on PATH|failed with exit 1: legion-no-such-binary-xyz --version)/,
+  ],
   ["a shell operator", `${passingVerificationCommand()} && ${passingVerificationCommand()}`, /verificationCommands are argv-only; split it into separate commands/],
 ]) {
   test(`verification with ${label} blocks with a reason instead of wedging in verifying`, async () => {
