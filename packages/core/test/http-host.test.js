@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { MAX_RUN_COMMAND_BYTES, toolsForJob } from "@9thlevelsoftware/legion-cli-http";
-import { createHttpToolHost } from "../dist/http-host.js";
+import { dispatchToolCall, MAX_RUN_COMMAND_BYTES, RUN_COMMAND_DENIED_BINS, toolsForJob } from "@9thlevelsoftware/legion-cli-http";
+import { createHttpToolHost, engineSotRefuseReason, httpAllowedWrites } from "../dist/http-host.js";
 
 async function withTemp(fn) {
   const dir = await mkdtemp(join(tmpdir(), "legion-http-host-"));
@@ -71,11 +71,55 @@ test("write_file refuses engine-SoT STATE.md and tasks/** even when listed in al
     const host = hostFor(dir, {
       allowedWrites: [".legion-cli/STATE.md", ".legion-cli/tasks", "src/ok.ts"],
     });
-    await assert.rejects(() => host.writeFile(".legion-cli/STATE.md", "forged\n"), /implicit forbidden/);
-    await assert.rejects(() => host.writeFile(".legion-cli/tasks/TSK-0001.md", "forged\n"), /implicit forbidden/);
+    await assert.rejects(() => host.writeFile(".legion-cli/STATE.md", "forged\n"), /engine-SoT refused: \.legion-cli\/STATE\.md/);
+    await assert.rejects(
+      () => host.writeFile(".legion-cli/tasks/TSK-0001.md", "forged\n"),
+      /engine-SoT refused: \.legion-cli\/tasks\/TSK-0001\.md/,
+    );
     await host.writeFile("src/ok.ts", "ok\n");
     assert.equal(await readFile(join(dir, "src", "ok.ts"), "utf8"), "ok\n");
+    assert.equal(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8").catch((err) => err.code), "ENOENT");
   });
+});
+
+test("dispatchToolCall write_file to engine-SoT returns the named refusal", async () => {
+  await withTemp(async (dir) => {
+    const host = hostFor(dir, {
+      allowedWrites: [".legion-cli/STATE.md", ".legion-cli/tasks", "src/ok.ts"],
+    });
+    const state = await dispatchToolCall(
+      {
+        id: "c1",
+        type: "function",
+        function: { name: "write_file", arguments: JSON.stringify({ path: ".legion-cli/STATE.md", contents: "forged\n" }) },
+      },
+      host,
+      "plan",
+    );
+    assert.match(state, /engine-SoT refused: \.legion-cli\/STATE\.md/);
+    const task = await dispatchToolCall(
+      {
+        id: "c2",
+        type: "function",
+        function: {
+          name: "write_file",
+          arguments: JSON.stringify({ path: ".legion-cli/tasks/TSK-0001.md", contents: "forged\n" }),
+        },
+      },
+      host,
+      "plan",
+    );
+    assert.match(task, /engine-SoT refused: \.legion-cli\/tasks\/TSK-0001\.md/);
+  });
+});
+
+test("httpAllowedWrites drops engine-SoT paths", () => {
+  assert.deepEqual(
+    httpAllowedWrites(["src/ok.ts", ".legion-cli/STATE.md", ".legion-cli/tasks", ".legion-cli/tasks/TSK-0001.md", ".legion-cli/plans"]),
+    ["src/ok.ts", ".legion-cli/plans"],
+  );
+  assert.match(engineSotRefuseReason(".legion-cli/STATE.md") ?? "", /engine-SoT refused/);
+  assert.match(engineSotRefuseReason(".legion-cli/tasks/TSK-0001.md") ?? "", /engine-SoT refused/);
 });
 
 test("run_command is on the tool list only when the host is hardened", () => {
@@ -95,6 +139,40 @@ test("run_command is on the tool list only when the host is hardened", () => {
     ["read_file", "write_file", "list_dir", "run_command"],
   );
 });
+
+test("win32/copy-jail host offers no run_command", () => {
+  const copy = hostFor("/tmp/jail", { hardened: false });
+  assert.equal(copy.runCommand, undefined);
+  if (process.platform === "win32") {
+    assert.equal(copy.runCommand, undefined);
+  }
+});
+
+test("http host run_command refuses node -e", async () => {
+  await withTemp(async (dir) => {
+    const host = hostFor(dir, {
+      hardened: true,
+      spawnOpts: { cwd: dir, env: process.env, wrapper: { bin: process.execPath, argvPrefix: [] } },
+    });
+    const result = await host.runCommand([process.execPath, "-e", "process.exit(0)"]);
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /not allowlisted/);
+  });
+});
+
+for (const bin of RUN_COMMAND_DENIED_BINS) {
+  test(`http host run_command refuses ${bin}`, async () => {
+    await withTemp(async (dir) => {
+      const host = hostFor(dir, {
+        hardened: true,
+        spawnOpts: { cwd: dir, env: process.env, wrapper: { bin: process.execPath, argvPrefix: [] } },
+      });
+      const result = await host.runCommand([bin]);
+      assert.equal(result.exitCode, 1);
+      assert.match(result.stderr, /not allowlisted/);
+    });
+  });
+}
 
 test("run_command kills and truncates when stdout exceeds the cap", async () => {
   await withTemp(async (dir) => {

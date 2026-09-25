@@ -48,8 +48,8 @@ test("fake detect is ok only when LEGION_CLI_ADAPTER=fake", async () => {
 });
 
 test("extra adapters detect assumed PATH binaries and are no longer detect-only", async () => {
-  assert.deepEqual([...DETECT_ONLY_ADAPTER_IDS], ["http"]);
-  assert.equal(isDetectOnly("http"), true);
+  assert.deepEqual([...DETECT_ONLY_ADAPTER_IDS], []);
+  assert.equal(isDetectOnly("http"), false);
   for (const id of EXTRA_ADAPTER_IDS) {
     const adapter = createAdapter(id);
     assert.equal(adapter.id, id);
@@ -298,7 +298,7 @@ test("createAdapter http detect is not ok until adapter.http + env are set", asy
   assert.equal(adapter.binary, "(http)");
   const detected = await adapter.detect();
   assert.equal(detected.ok, false);
-  assert.match(detected.reason ?? "", /no HTTP completions client/);
+  assert.match(detected.reason ?? "", /not configured/);
   const previous = process.env.OPENAI_API_KEY;
   try {
     process.env.OPENAI_API_KEY = "sk-test";
@@ -310,7 +310,8 @@ test("createAdapter http detect is not ok until adapter.http + env are set", asy
         allowLoopback: false,
       },
     });
-    assert.equal((await ready.detect()).ok, false);
+    const readyDetected = await ready.detect();
+    assert.equal(readyDetected.ok, true, readyDetected.reason);
     assert.equal(await isResolvedAdapterSpawnable({
       adapter: {
         default: "http",
@@ -320,7 +321,7 @@ test("createAdapter http detect is not ok until adapter.http + env are set", asy
           apiKeyEnv: "OPENAI_API_KEY",
         },
       },
-    }), false);
+    }), true);
   } finally {
     if (previous === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previous;

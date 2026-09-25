@@ -52,7 +52,7 @@ import {
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
-import { createHttpToolHost } from "./http-host.js";
+import { createHttpToolHost, httpAllowedWrites } from "./http-host.js";
 import {
   recordPreSpawnRef,
   revertExtras,
@@ -572,7 +572,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         ? {
             httpHost: createHttpToolHost({
               jailRoot: sandbox.jailRoot,
-              allowedWrites,
+              allowedWrites: httpAllowedWrites(allowedWrites),
               filesForbidden,
               hardened: sandbox.hardened,
               spawnOpts: spawnOpts ?? { cwd: sandbox.jailRoot, env },
