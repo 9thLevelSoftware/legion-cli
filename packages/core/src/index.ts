@@ -27,13 +27,16 @@ export { setUndoGitResetHard, undoLastTask } from "./undo.js";
 export type { UndoResult } from "./undo.js";
 export {
   COMMUNITY_RECIPE_LOCK_MESSAGE,
+  COMMUNITY_RECIPE_PATH_MESSAGE,
   RECIPE_ARGV_ONLY_MESSAGE,
   assertRecipeExecutionPolicy,
+  canonicalCommunityRecipePath,
   loadRecipe,
+  loadRecipeFile,
   recipesLockPath,
   runRecipe,
 } from "./recipes.js";
-export type { RecipeExecutionResult } from "./recipes.js";
+export type { LoadedRecipe, RecipeExecutionResult } from "./recipes.js";
 export { createLegionEngine, DISTILL_SOURCE_MAX_CHARS, LegionEngine } from "./engine.js";
 export type { MapLspMode, MapOptions, MapResult } from "./map.js";
 export {

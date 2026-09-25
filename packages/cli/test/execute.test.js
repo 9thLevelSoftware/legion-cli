@@ -99,8 +99,9 @@ test("execute one ready task and stay executing", async () => {
     const out = normalize(result.stdout);
     assert.match(out, /Starting TSK-0001 \(in\/out button\) via fake\./);
     assert.match(out, /Verification PASS/);
+    assert.match(out, /trust-tier:/, "human-visible");
     assert.match(out, /Dashboard: http:\/\/127\.0\.0\.1:7420/);
-    assert.doesNotMatch(out, /OS isolation|sandbox/i);
+    assert.doesNotMatch(out, /OS isolation/i);
     const engine = createLegionEngine(dir);
     assert.equal((await engine.getState()).phase, "executing");
     assert.equal((await engine.store.readTask("TSK-0001")).data.status, "done");
