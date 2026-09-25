@@ -11,6 +11,8 @@ import {
   LegionRefuseError,
   WIREFRAME_PALETTE,
   palettePresent,
+  quoteDecision,
+  specMarkdownBody,
   splitMustNotAndOutOfScope,
 } from "../dist/index.js";
 import { initProject, withEngine, writeUnspawnableGrok } from "./helpers.js";
@@ -132,6 +134,30 @@ test("templates produce a valid Spec without a spawn", async () => {
     await engine.approveSpec(spec.id, { id: "human" });
     assert.equal((await engine.getState()).phase, "spec_frozen");
     assert.equal((await store.readSpec(spec.id)).data.status, "frozen");
+  });
+});
+
+test("spec drafted after a discuss decision quotes that decision", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await fillFullIntent(engine);
+    const proposed = await engine.startDiscuss();
+    assert.ok(proposed.length > 0);
+    const target = proposed[0];
+    await engine.discuss(
+      proposed.map((item, i) => ({ id: item.id, status: i === 0 ? "accepted" : "rejected" })),
+    );
+    const spec = await engine.draftSpec({ skipWireframes: true });
+    const quoted = quoteDecision({ ...target, status: "accepted" });
+    const escaped = quoted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(specMarkdownBody(spec), new RegExp(escaped));
+    const onDisk = await store.readSpec(spec.id);
+    assert.match(onDisk.body, new RegExp(escaped));
+    assert.ok(
+      spec.decisions?.some(
+        (item) => item.id === target.id && item.status === "accepted" && item.statement === target.statement,
+      ),
+    );
   });
 });
 

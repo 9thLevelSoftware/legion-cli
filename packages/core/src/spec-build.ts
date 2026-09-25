@@ -1,4 +1,13 @@
-import { SCHEMA_VERSION, type AcceptanceCriterion, type IntentMapped, type Spec } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  SCHEMA_VERSION,
+  type AcceptanceCriterion,
+  type DiscussDecision,
+  type IntentMapped,
+  type Spec,
+} from "@9thlevelsoftware/legion-cli-schema";
+import { capturedDecisions, quoteDecision } from "./discuss.js";
+
+export { capturedDecisions, quoteDecision };
 
 export function buildSpecFromIntent(opts: {
   specId: string;
@@ -6,6 +15,7 @@ export function buildSpecFromIntent(opts: {
   mapped: IntentMapped;
   extraAcceptance?: AcceptanceCriterion[];
   skipWireframes: boolean;
+  decisions?: readonly DiscussDecision[];
 }): Spec {
   const p0: AcceptanceCriterion[] = opts.mapped.mustBeTrue.map((statement, i) => ({
     id: `AC-P0-${String(i + 1).padStart(2, "0")}`,
@@ -29,6 +39,7 @@ export function buildSpecFromIntent(opts: {
       priority: "P0",
     });
   }
+  const decisions = capturedDecisions(opts.decisions);
   return {
     schemaVersion: SCHEMA_VERSION.spec,
     id: opts.specId,
@@ -44,6 +55,7 @@ export function buildSpecFromIntent(opts: {
     wireframesIndex: opts.skipWireframes ? null : "wireframes/INDEX.html",
     frozenAt: null,
     frozenBy: null,
+    decisions,
   };
 }
 
@@ -75,8 +87,15 @@ export function specMarkdownBody(spec: Spec): string {
     ``,
     `## Acceptance`,
     ac,
+    ...decisionMarkdown(spec),
     ...skip,
   ].join("\n");
+}
+
+function decisionMarkdown(spec: Spec): string[] {
+  const decisions = spec.decisions ?? [];
+  if (decisions.length === 0) return [];
+  return ["", "## Decisions", "", ...decisions.map((item) => `- ${quoteDecision(item)}`)];
 }
 
 export function clearSkipWireframesNote(body: string): string {

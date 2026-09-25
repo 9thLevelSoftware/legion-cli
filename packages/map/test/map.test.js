@@ -9,10 +9,14 @@ import {
   GENERATED_END,
   GENERATED_START,
   MapError,
+  bindDiagnosticsToSources,
   fingerprintHash,
   generateMap,
+  loadPersistedLspDiagnostics,
   lspSpawnEnv,
   parseSource,
+  persistLspDiagnostics,
+  sourceIdentityHash,
   writeMapFile,
 } from "../dist/index.js";
 import {
@@ -340,6 +344,35 @@ test("parseSource captures JS side-effect imports, CJS object keys, and multi-bi
   assert.equal(js.exports.includes("second"), true);
   assert.equal(js.exports.includes("foo"), true);
   assert.equal(js.exports.includes("bar"), true);
+});
+
+test("persisted diagnostics reject a mismatched source hash", async () => {
+  await withTempDir(async (dir) => {
+    const files = [{ path: "src/auth.ts", text: THREE_TS["src/auth.ts"] }];
+    const diagnostics = [
+      {
+        path: "src/auth.ts",
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+        severity: 1,
+        message: "unused",
+      },
+    ];
+    const bound = bindDiagnosticsToSources(diagnostics, files);
+    assert.equal(bound[0].sourceHash, sourceIdentityHash(files[0].text));
+    const absPath = join(dir, ".legion-cli", "map", "diagnostics.json");
+    await mkdir(dirname(absPath), { recursive: true });
+    await persistLspDiagnostics({ absPath, projectRoot: dir, diagnostics: bound });
+    const loaded = await loadPersistedLspDiagnostics({ absPath, files });
+    assert.equal(loaded.diagnostics[0].sourceHash, bound[0].sourceHash);
+    await assert.rejects(
+      () => loadPersistedLspDiagnostics({ absPath, files: [{ path: "src/auth.ts", text: "export const changed = 1;\n" }] }),
+      (err) => {
+        assert.equal(err instanceof MapError, true);
+        assert.match(err.message, /mismatched source hash for src\/auth\.ts/);
+        return true;
+      },
+    );
+  });
 });
 
 test("LSP spawn env drops SSH_AUTH_SOCK and API keys", () => {
