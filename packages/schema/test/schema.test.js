@@ -13,6 +13,8 @@ import {
   ChatProposalActionSchema,
   ChatReadActionSchema,
   ChatSessionFileSchema,
+  ControlModeSchema,
+  SURGICAL_MIGRATION_HINT,
   computeQaPass,
   DesignSystemPackageSchema,
   BrownfieldDagSchema,
@@ -57,6 +59,21 @@ function readFixture(name) {
 function readSnapshot(name) {
   return JSON.parse(readFileSync(join(pkgRoot, "test", "snapshots", name), "utf8"));
 }
+
+test("ControlModeSchema deletes surgical with a named migration hint to guarded", () => {
+  const src = readFileSync(join(pkgRoot, "src", "versions.ts"), "utf8");
+  const decl = /export const ControlModeSchema = z\.enum\(\[([^\]]+)\]/.exec(src);
+  assert.ok(decl, "ControlModeSchema enum declaration is at packages/schema/src/versions.ts");
+  assert.match(decl[1], /"guarded"/);
+  assert.match(decl[1], /"advisory"/);
+  assert.doesNotMatch(decl[1], /"surgical"/);
+  assert.equal(ControlModeSchema.safeParse("guarded").success, true);
+  assert.equal(ControlModeSchema.safeParse("advisory").success, true);
+  const surgical = ControlModeSchema.safeParse("surgical");
+  assert.equal(surgical.success, false);
+  assert.match(surgical.success ? "" : (surgical.error.issues[0]?.message ?? ""), /migrate to guarded/);
+  assert.equal(SURGICAL_MIGRATION_HINT, "control_mode surgical is removed; migrate to guarded");
+});
 
 test("PROJECT.md frontmatter snapshot", () => {
   const parsed = parseFrontmatter(readFixture("PROJECT.md"));

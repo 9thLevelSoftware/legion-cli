@@ -168,15 +168,16 @@ test("execute --allow-no-sandbox without TTY refuses", async () => {
   });
 });
 
-test("execute --allow-no-sandbox with piped Y runs", async () => {
+test("execute --allow-no-sandbox with piped Y still requires a TTY", async () => {
   await withTempDir(async (dir) => {
     await seedPlanReady(dir);
     const result = runCli(["execute", "--allow-no-sandbox", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
       input: "Y\n",
     });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.match(normalize(result.stdout), /Verification PASS/);
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /requires a TTY/);
+    assert.match(normalize(result.stderr), /--allow-no-sandbox/);
   });
 });
 

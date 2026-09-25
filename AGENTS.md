@@ -15,7 +15,20 @@
 - Supported invocation: `pnpm exec legion-cli`.
 - `init` requires `--adapter` (or a TTY prompt). Two brownfield surfaces (document both; do not merge): (1) `init --mode brownfield` sets `project.mode` and next-command (10-verb `execute` stays **in-place**); (2) `legion-cli brownfield` is the audit bookkeeping extra (effort 1–5; every init refreshes the codebase map, `--lsp` requires a language server; specialists are launched by the orchestrating agent via `skills/brownfield`, not by the engine; `--execute` means per-PR worktrees under `.legion-cli/worktrees/<run>/pr-N/`, the only worktree path). `skills/brownfield/` is a Claude Code skill, not an engine spawn skill: it is not in `SkillIdSchema`.
 - Parent verbs `wiki` / `ticket` / `task` / `context` / `run` / `skills` print `requires <sub>` + `Next:` (same pattern as `packet` / `assume`).
-- `legion-cli control-mode` is shipped (show / set `guarded|surgical|advisory`; refuse `autonomous`; engine under lock).
+- `legion-cli control-mode` is shipped (show / set `guarded|advisory`; refuse `autonomous` and `surgical` with a migrate-to-guarded hint; engine under lock).
 - Extra adapters (`grok` / `openai` / `codex` / `mimo` / `minimax`) spawn with **verified vendor argv** (`grok -p`, `codex exec`, `mimo run`, `mcode exec`; `{{pointer}}` required). Nested extra config is `.strict()`. AdapterId `http` is an in-process OpenAI-compat client (`packages/http`): `init --adapter http --http-base-url --http-model --http-api-key-env` writes `adapter.http` (`baseUrl`, `model`, `apiKeyEnv`; no inline `apiKey`; SSRF-bounded) and lifecycle spawn runs the governed tool loop. Spawn CLIs remain the default.
 - Node 22+, ESM, pnpm workspaces (`packageManager: pnpm@9`).
 - CI: typecheck + test on `ubuntu-latest` (bwrap) and `windows-latest` (Node 22). The Linux Docker leg is required and green. The Windows-Docker leg is a named deferral (`Q-WIN-DOCKER` in root `legionQuarantine`). The macOS leg is best-effort and droppable (`continue-on-error`). Schema `build` is `tsc` only; after editing `packages/schema/src/schemas.ts` run `pnpm --filter @9thlevelsoftware/legion-cli-schema run build && pnpm --filter @9thlevelsoftware/legion-cli-schema run emit` and commit `packages/schema/json/*.json` (the schema test compares the committed files). Every `help-all.ts` row must be a registered command and vice versa (`help-registration.test.js`). Publish: git tag `v*` only; GitHub Actions trusted publisher; `pnpm publish -r --access public` with provenance. No publish from untagged main. No long-lived npm token. Publish only packages on `legionPublishAllowlist`; never the private root.
+
+## Working loop
+
+- **Build:** `pnpm install && pnpm -r run build`.
+- **Typecheck:** `pnpm typecheck`.
+- **Single test:** `pnpm --filter @9thlevelsoftware/legion-cli-<pkg> run build && node --test packages/<pkg>/test/<file>.test.js`.
+- **Add a verb:** edit `packages/cli/src/cli.ts`; add a row in `packages/cli/src/help-all.ts`; `packages/cli/test/help-registration.test.js` fails if the row is missing or unregistered. Do not add a top-level verb.
+- **Add a schema:** edit `packages/schema/src/schemas.ts` (and `versions.ts` if needed); run `pnpm --filter @9thlevelsoftware/legion-cli-schema run build && pnpm --filter @9thlevelsoftware/legion-cli-schema run emit`; commit `packages/schema/json/*.json`.
+- **Publish:** `git tag v<semver>` from main; `publish.yml` runs `pnpm publish -r --access public --provenance`. Do not publish from untagged main or push to npm directly.
+
+## Shipped extras (not in the lifecycle core)
+
+`chat`, `undo`, `recipe list|run`, `repl` (host mode, no sandbox), `serve`/`dashboard`, `map`, `wireframe`, `skills list|show|install`, `design-system …`, `control-mode`, `brownfield …`, `context compact`, `garden`, `packet new|respond`. JSON schemas: `packages/schema/json/{chat-session,chat-action,fingerprint-file,serve-file}.json`.
