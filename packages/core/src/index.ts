@@ -5,6 +5,7 @@ export {
   isAllowedPath,
   isEngineOwned,
   isImplicitForbidden,
+  isRestoreManifestPath,
   matchesGlob,
   skillContract,
 } from "./contracts.js";
@@ -47,7 +48,10 @@ export {
 } from "./intent.js";
 export {
   HEAD_MOVED_WARNING,
+  openEngineCommand,
   restoreChangedTaskFiles,
+  restoreEngineState,
+  RestoreRefusedError,
   revertExtras,
   snapshotTaskFiles,
 } from "./revert.js";

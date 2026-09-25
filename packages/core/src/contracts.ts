@@ -1,4 +1,7 @@
+import { isRestoreManifestPath } from "@9thlevelsoftware/legion-cli-persist";
 import type { FileContract, SkillContract, SkillId } from "@9thlevelsoftware/legion-cli-schema";
+
+export { isRestoreManifestPath };
 
 /** Engine-constant SkillContract roots. Globs are allowed here only. */
 export const SKILL_CONTRACTS: Record<SkillId, readonly string[]> = {
@@ -22,6 +25,8 @@ const IMPLICIT_FORBIDDEN = [
   ".git/**",
   ".env*",
   ".legion-cli/config.yaml",
+  ".legion-cli/STATE.md",
+  ".legion-cli/tasks/**",
   ".legion-cli/index/**",
 ];
 
@@ -87,6 +92,8 @@ export function isEnvBasename(name: string): boolean {
 export function isImplicitForbidden(posixPath: string): boolean {
   if (posixPath === ".git" || posixPath.startsWith(".git/")) return true;
   if (posixPath === ".legion-cli/config.yaml") return true;
+  if (posixPath === ".legion-cli/STATE.md") return true;
+  if (posixPath === ".legion-cli/tasks" || posixPath.startsWith(".legion-cli/tasks/")) return true;
   if (posixPath.startsWith(".legion-cli/index/") || posixPath === ".legion-cli/index") return true;
   if (posixPath.split("/").some((part) => isEnvBasename(part))) return true;
   return IMPLICIT_FORBIDDEN.some((pattern) => matchesGlob(pattern, posixPath));

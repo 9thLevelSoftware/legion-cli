@@ -33,6 +33,9 @@ export type LegionPaths = {
   indexDir: string;
   db: string;
   lock: string;
+  preImageDir: string;
+  journalDir: string;
+  incidentDir: string;
   cacheDir: string;
   runsDir: string;
   worktreesDir: string;
@@ -69,6 +72,9 @@ export function legionPaths(projectRoot: string): LegionPaths {
     indexDir,
     db: join(indexDir, INDEX_DB_BASENAME),
     lock: join(indexDir, LOCK_BASENAME),
+    preImageDir: join(indexDir, "pre-images"),
+    journalDir: join(indexDir, "journal"),
+    incidentDir: join(indexDir, "incidents"),
     cacheDir: join(root, "cache"),
     runsDir: join(root, "runs"),
     worktreesDir: join(root, "worktrees"),

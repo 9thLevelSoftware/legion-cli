@@ -1,5 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { writeTextFile } from "@9thlevelsoftware/legion-cli-persist";
 import type { Spec } from "@9thlevelsoftware/legion-cli-schema";
 
 export type QaChecklistReceipt = {
@@ -34,8 +35,10 @@ export async function readChecklist(projectRoot: string): Promise<QaChecklistRec
 }
 
 export async function writeChecklist(projectRoot: string, receipt: QaChecklistReceipt): Promise<string> {
-  const dir = join(projectRoot, ".legion-cli", "qa");
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "checklist.json"), `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+  await writeTextFile(
+    join(projectRoot, ".legion-cli", "qa", "checklist.json"),
+    `${JSON.stringify(receipt, null, 2)}\n`,
+    { root: projectRoot },
+  );
   return CHECKLIST_STORE_PATH;
 }

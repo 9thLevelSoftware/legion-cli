@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, symlink, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
@@ -12,6 +13,7 @@ import {
   generateMap,
   lspSpawnEnv,
   parseSource,
+  writeMapFile,
 } from "../dist/index.js";
 import {
   THREE_TS,
@@ -550,5 +552,20 @@ test("generateMap replaces ARCHITECTURE.md directory collision", async () => {
     assert.equal(st.isDirectory(), false);
     assert.match(await readFile(archPath, "utf8"), GENERATED_START_RE);
     assert.equal(result.backend, "fallback");
+  });
+});
+
+test("writeMapFile is atomic via writeTextFile (F-016)", async () => {
+  const src = await readFile(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "generate.ts"), "utf8");
+  const fn = src.slice(src.indexOf("export async function writeMapFile"));
+  const body = fn.slice(0, fn.indexOf("\nexport ") > 0 ? fn.indexOf("\nfunction ") : fn.length);
+  assert.match(body, /writeTextFile/);
+  assert.doesNotMatch(body, /await writeFile\(absPath/);
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const first = await generateMap(dir);
+    const previous = await readFile(first.fingerprintsPath, "utf8");
+    await writeMapFile(first.fingerprintsPath, previous, { root: dir });
+    assert.equal(await readFile(first.fingerprintsPath, "utf8"), previous);
   });
 });

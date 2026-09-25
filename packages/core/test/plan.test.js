@@ -403,7 +403,6 @@ test("nextTasks returns unblocked P0 then oldest", async () => {
 
 test("plan spawn cannot stamp status done", async () => {
   await withFakeAdapter(async () => {
-    const p0 = makeTask({ status: "done" });
     await withEngine(
       async ({ engine, store }) => {
         await initProject(engine);
@@ -417,7 +416,18 @@ test("plan spawn cannot stamp status done", async () => {
       },
       {
         skillsDir,
-        fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0001.md", content: taskMarkdown(p0) }],
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "in/out button",
+              priority: "P0",
+              filesAllowed: ["src/main.ts"],
+              expectedArtifacts: ["src/main.ts"],
+              verificationCommands: ["pnpm test"],
+            }),
+          },
+        ],
       },
     );
   });
@@ -593,7 +603,6 @@ test("filesAllowed intersecting implicit forbidden is plan FAIL", async () => {
 
 test("plan spawn can emit a P0 task via fake fixture", async () => {
   await withFakeAdapter(async () => {
-    const p0 = makeTask();
     await withEngine(
       async ({ engine, store }) => {
         await initProject(engine);
@@ -606,7 +615,18 @@ test("plan spawn can emit a P0 task via fake fixture", async () => {
       },
       {
         skillsDir,
-        fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0001.md", content: taskMarkdown(p0) }],
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "in/out button",
+              priority: "P0",
+              filesAllowed: ["src/main.ts"],
+              expectedArtifacts: ["src/main.ts"],
+              verificationCommands: ["pnpm test"],
+            }),
+          },
+        ],
       },
     );
   });
@@ -614,7 +634,6 @@ test("plan spawn can emit a P0 task via fake fixture", async () => {
 
 test("plan prompt.md starts with SessionBrief and has no FileContract heading", async () => {
   await withFakeAdapter(async () => {
-    const p0 = makeTask();
     await withEngine(
       async ({ engine, store, dir }) => {
         await initProject(engine);
@@ -630,7 +649,18 @@ test("plan prompt.md starts with SessionBrief and has no FileContract heading", 
       },
       {
         skillsDir,
-        fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0001.md", content: taskMarkdown(p0) }],
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "in/out button",
+              priority: "P0",
+              filesAllowed: ["src/main.ts"],
+              expectedArtifacts: ["src/main.ts"],
+              verificationCommands: ["pnpm test"],
+            }),
+          },
+        ],
       },
     );
   });

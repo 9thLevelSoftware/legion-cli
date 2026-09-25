@@ -1,5 +1,6 @@
-import { mkdir, readdir, readFile, rmdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { journaledRemove, writeTextFile } from "@9thlevelsoftware/legion-cli-persist";
 import {
   designPaths,
   extractCssVars,
@@ -82,15 +83,16 @@ export async function writeWireframeFiles(
   dir: string,
   spec: Pick<Spec, "id" | "title">,
   pages: ScreenPage[],
+  projectRoot: string,
 ): Promise<void> {
   await mkdir(dir, { recursive: true });
-  await writeFile(
+  await writeTextFile(
     join(dir, INDEX_NAME),
     renderWireframeIndex({ specTitle: spec.title, specId: spec.id, pages }),
-    "utf8",
+    { root: projectRoot },
   );
   for (const page of pages) {
-    await writeFile(
+    await writeTextFile(
       join(dir, `${page.slug}.html`),
       renderWireframeScreen({
         specTitle: spec.title,
@@ -98,7 +100,7 @@ export async function writeWireframeFiles(
         slug: page.slug,
         pages,
       }),
-      "utf8",
+      { root: projectRoot },
     );
   }
 }
@@ -128,10 +130,10 @@ function absFromRel(dir: string, rel: string): string {
   return join(dir, ...rel.split("/"));
 }
 
-async function removeRel(dir: string, rel: string): Promise<void> {
+async function removeRel(dir: string, rel: string, projectRoot: string): Promise<void> {
   const abs = absFromRel(dir, rel);
   try {
-    await unlink(abs);
+    await journaledRemove(projectRoot, abs);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
@@ -146,12 +148,12 @@ async function removeRel(dir: string, rel: string): Promise<void> {
   }
 }
 
-async function deleteStaleWireframePages(dir: string, pages: ScreenPage[]): Promise<void> {
+async function deleteStaleWireframePages(dir: string, pages: ScreenPage[], projectRoot: string): Promise<void> {
   const keep = new Set([INDEX_NAME, ...pages.map((page) => `${page.slug}.html`)]);
   for (const rel of await listRelFiles(dir)) {
     if (!rel.toLowerCase().endsWith(".html")) continue;
     if (keep.has(rel)) continue;
-    await removeRel(dir, rel);
+    await removeRel(dir, rel, projectRoot);
   }
 }
 
@@ -182,15 +184,15 @@ async function snapshotTree(dir: string): Promise<Map<string, Buffer>> {
   return out;
 }
 
-async function restoreTree(dir: string, snap: ReadonlyMap<string, Buffer>): Promise<void> {
+async function restoreTree(dir: string, snap: ReadonlyMap<string, Buffer>, projectRoot: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   for (const rel of await listRelFiles(dir)) {
-    if (!snap.has(rel)) await removeRel(dir, rel);
+    if (!snap.has(rel)) await removeRel(dir, rel, projectRoot);
   }
   for (const [rel, body] of snap) {
     const abs = absFromRel(dir, rel);
     await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, body);
+    await writeTextFile(abs, body, { root: projectRoot });
   }
 }
 
@@ -203,17 +205,17 @@ async function readOptional(path: string): Promise<string | null> {
   }
 }
 
-async function restoreOptional(path: string, snap: string | null): Promise<void> {
+async function restoreOptional(path: string, snap: string | null, projectRoot: string): Promise<void> {
   if (snap == null) {
     try {
-      await unlink(path);
+      await journaledRemove(projectRoot, path);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
     return;
   }
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, snap, "utf8");
+  await writeTextFile(path, snap, { root: projectRoot });
 }
 
 function spawnWireframePrompt(specId: string, restyled: boolean, frozen: boolean): string {
@@ -233,12 +235,12 @@ function spawnWireframePrompt(specId: string, restyled: boolean, frozen: boolean
   ].join("\n");
 }
 
-async function restyleExisting(dir: string, css: string): Promise<void> {
+async function restyleExisting(dir: string, css: string, projectRoot: string): Promise<void> {
   for (const rel of await listRelFiles(dir)) {
     if (!rel.toLowerCase().endsWith(".html")) continue;
     const abs = absFromRel(dir, rel);
     const html = await readFile(abs, "utf8");
-    await writeFile(abs, replaceStyleBlock(html, css), "utf8");
+    await writeTextFile(abs, replaceStyleBlock(html, css), { root: projectRoot });
   }
 }
 
@@ -277,27 +279,27 @@ async function requireExpectedPages(
   }
 }
 
-async function dropNonHtmlExtras(dir: string, snap: ReadonlyMap<string, Buffer>): Promise<void> {
+async function dropNonHtmlExtras(dir: string, snap: ReadonlyMap<string, Buffer>, projectRoot: string): Promise<void> {
   for (const rel of await listRelFiles(dir)) {
     if (rel.toLowerCase().endsWith(".html")) continue;
     const before = snap.get(rel);
     if (!before) {
-      await removeRel(dir, rel);
+      await removeRel(dir, rel, projectRoot);
       continue;
     }
-    await writeFile(absFromRel(dir, rel), before);
+    await writeTextFile(absFromRel(dir, rel), before, { root: projectRoot });
   }
 }
 
-async function applyFrozenCssOnly(dir: string, snap: ReadonlyMap<string, Buffer>): Promise<void> {
+async function applyFrozenCssOnly(dir: string, snap: ReadonlyMap<string, Buffer>, projectRoot: string): Promise<void> {
   for (const rel of await listRelFiles(dir)) {
-    if (!snap.has(rel)) await removeRel(dir, rel);
+    if (!snap.has(rel)) await removeRel(dir, rel, projectRoot);
   }
   for (const [rel, before] of snap) {
     const abs = absFromRel(dir, rel);
     if (!rel.toLowerCase().endsWith(".html")) {
       await mkdir(dirname(abs), { recursive: true });
-      await writeFile(abs, before);
+      await writeTextFile(abs, before, { root: projectRoot });
       continue;
     }
     const beforeHtml = before.toString("utf8");
@@ -306,10 +308,10 @@ async function applyFrozenCssOnly(dir: string, snap: ReadonlyMap<string, Buffer>
       after = await readFile(abs, "utf8");
     } catch {
       await mkdir(dirname(abs), { recursive: true });
-      await writeFile(abs, before);
+      await writeTextFile(abs, before, { root: projectRoot });
       continue;
     }
-    await writeFile(abs, keepStyleOnly(beforeHtml, after), "utf8");
+    await writeTextFile(abs, keepStyleOnly(beforeHtml, after), { root: projectRoot });
   }
 }
 
@@ -337,6 +339,7 @@ type WireframeSession = {
   specSnap: string | null;
   prdSnap: string | null;
   spawnPrompt: string;
+  projectRoot: string;
 };
 
 type WireframeSpawnFinish = {
@@ -360,8 +363,8 @@ export async function prepareWireframe(input: WireframePrepareInput): Promise<Wi
   let restyled = false;
 
   if (!frozen) {
-    await writeWireframeFiles(dir, spec, pages);
-    await deleteStaleWireframePages(dir, pages);
+    await writeWireframeFiles(dir, spec, pages, input.projectRoot);
+    await deleteStaleWireframePages(dir, pages, input.projectRoot);
     const nextIndex = spec.wireframesIndex ?? WIREFRAMES_INDEX;
     const cleared = clearSkipWireframesNote(input.specBody);
     if (nextIndex !== spec.wireframesIndex || cleared !== input.specBody) {
@@ -385,7 +388,7 @@ export async function prepareWireframe(input: WireframePrepareInput): Promise<Wi
   }
   if (restyleCss) {
     await mkdir(dir, { recursive: true });
-    await restyleExisting(dir, restyleCss);
+    await restyleExisting(dir, restyleCss, input.projectRoot);
     restyled = true;
   }
 
@@ -405,6 +408,7 @@ export async function prepareWireframe(input: WireframePrepareInput): Promise<Wi
     specSnap: await readOptional(specMdPath),
     prdSnap: await readOptional(prdPath),
     spawnPrompt: spawnWireframePrompt(spec.id, restyled, frozen),
+    projectRoot: input.projectRoot,
   };
 }
 
@@ -433,17 +437,17 @@ export async function finishWireframe(
 ): Promise<WireframeResult> {
   const { dir, frozen, pages, snapshot, skipPalette } = session;
   if (spawned?.spawned) {
-    await restoreOptional(session.specMdPath, session.specSnap);
-    await restoreOptional(session.prdPath, session.prdSnap);
-    if (frozen) await applyFrozenCssOnly(dir, snapshot);
-    else await dropNonHtmlExtras(dir, snapshot);
+    await restoreOptional(session.specMdPath, session.specSnap, session.projectRoot);
+    await restoreOptional(session.prdPath, session.prdSnap, session.projectRoot);
+    if (frozen) await applyFrozenCssOnly(dir, snapshot, session.projectRoot);
+    else await dropNonHtmlExtras(dir, snapshot, session.projectRoot);
     let htmlFailed: unknown;
     try {
       await validateDir(dir, skipPalette);
       await requireExpectedPages(dir, pages, frozen, snapshot);
     } catch (err) {
       htmlFailed = err;
-      await restoreTree(dir, snapshot);
+      await restoreTree(dir, snapshot, session.projectRoot);
     }
     if (spawned.revert?.incident) {
       refuse("inspect .git — spawn touched .git/", HINT.wireframe);
@@ -456,7 +460,7 @@ export async function finishWireframe(
     }
     if (htmlFailed) throw htmlFailed;
     if (spawned.error) throw spawned.error;
-    if (!frozen) await deleteStaleWireframePages(dir, pages);
+    if (!frozen) await deleteStaleWireframePages(dir, pages, session.projectRoot);
   } else {
     await validateDir(dir, skipPalette);
   }

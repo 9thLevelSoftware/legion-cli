@@ -1,9 +1,10 @@
-import { lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import {
   legionPaths,
   parseYamlDocument,
   toPosixPath,
+  writeTextFile,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   FingerprintFileSchema,
@@ -127,9 +128,9 @@ export async function readExistingMapFile(absPath: string): Promise<string | und
   return readFile(absPath, "utf8");
 }
 
-export async function writeMapFile(absPath: string, contents: string): Promise<void> {
+export async function writeMapFile(absPath: string, contents: string, opts: { root: string }): Promise<void> {
   await readExistingMapFile(absPath);
-  await writeFile(absPath, contents, "utf8");
+  await writeTextFile(absPath, contents, { root: opts.root });
 }
 
 function changedPaths(prev: FingerprintFile | undefined, next: readonly ModuleFingerprint[]): string[] {
@@ -220,7 +221,9 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   if (unchanged && existing) {
     if (options.refresh || existingArch === undefined) {
       await ensureRealMapDir(root, paths.mapDir);
-      await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(existing)));
+      await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(existing)), {
+        root,
+      });
     }
     return {
       backend: existing.backend,
@@ -240,8 +243,8 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   });
 
   await ensureRealMapDir(root, paths.mapDir);
-  await writeMapFile(fingerprintsPath, `${JSON.stringify(fingerprints, null, 2)}\n`);
-  await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(fingerprints)));
+  await writeMapFile(fingerprintsPath, `${JSON.stringify(fingerprints, null, 2)}\n`, { root });
+  await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(fingerprints)), { root });
 
   return { backend, fingerprints, architecturePath, fingerprintsPath, changed };
 }

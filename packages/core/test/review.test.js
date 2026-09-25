@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { isSliceTerminal, LegionEngine, LegionRefuseError } from "../dist/index.js";
 import {
+  initGitRepo,
   initProject,
   makeQaScore,
   makeTask,
@@ -53,15 +54,6 @@ function taskMarkdown(task) {
   );
   return lines.join("\n");
 }
-
-const fixTask = makeTask({
-  id: "TSK-0002",
-  title: "fix walkthrough finding",
-  type: "fix",
-  parentId: "TSK-0001",
-  status: "todo",
-  contract: { filesAllowed: ["src/fix.ts"], expectedArtifacts: ["src/fix.ts"] },
-});
 
 test("review refuses unspawnable routes.review without spawning", async () => {
   await withFakeAdapter(async () => {
@@ -171,7 +163,19 @@ test("review spawn that files a task is lastReview FAIL", async () => {
       },
       {
         skillsDir,
-        fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0002.md", content: taskMarkdown(fixTask) }],
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "fix walkthrough finding",
+              parentId: "TSK-0001",
+              type: "fix",
+              filesAllowed: ["src/fix.ts"],
+              expectedArtifacts: ["src/fix.ts"],
+              verificationCommands: ["pnpm test"],
+            }),
+          },
+        ],
       },
     );
   });
@@ -180,18 +184,6 @@ test("review spawn that files a task is lastReview FAIL", async () => {
 test("review spawn cannot stamp status done; child must execute before re-review PASS", async () => {
   await withFakeAdapter(async () => {
     const verify = [passingVerificationCommand()];
-    const stamped = makeTask({
-      id: "TSK-0002",
-      title: "fix walkthrough finding",
-      type: "fix",
-      parentId: "TSK-0001",
-      status: "done",
-      contract: {
-        filesAllowed: ["src/fix.ts"],
-        expectedArtifacts: ["src/fix.ts"],
-        verificationCommands: verify,
-      },
-    });
     await withEngine(
       async ({ engine, store, dir }) => {
         await initProject(engine);
@@ -199,6 +191,7 @@ test("review spawn cannot stamp status done; child must execute before re-review
           phase: "executing",
           task: { status: "done", contract: { verificationCommands: verify } },
         });
+        initGitRepo(dir);
         const review = await engine.review();
         assert.equal(review.verdict, "FAIL");
         assert.ok(review.createdTaskIds.includes("TSK-0002"));
@@ -229,7 +222,19 @@ test("review spawn cannot stamp status done; child must execute before re-review
       },
       {
         skillsDir,
-        fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0002.md", content: taskMarkdown(stamped) }],
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "fix walkthrough finding",
+              parentId: "TSK-0001",
+              type: "fix",
+              filesAllowed: ["src/fix.ts"],
+              expectedArtifacts: ["src/fix.ts"],
+              verificationCommands: verify,
+            }),
+          },
+        ],
       },
     );
   });
@@ -410,7 +415,6 @@ test("verify spawn may file fix tasks and sets lastReview FAIL", async () => {
         await seedPlanReady(store, { phase: "executing", lastReview: "PASS", task: { status: "done" } });
         const result = await engine.verify("TSK-0001");
         assert.equal(result.spawned, true);
-        assert.equal(result.notesPath, ".legion-cli/qa/verify.md");
         assert.ok(result.createdTaskIds.includes("TSK-0002"));
         assert.equal((await store.readTask("TSK-0002")).data.type, "fix");
         assert.equal((await store.readTask("TSK-0002")).data.parentId, "TSK-0001");
@@ -420,12 +424,12 @@ test("verify spawn may file fix tasks and sets lastReview FAIL", async () => {
       {
         skillsDir,
         fakeArtifacts: [
-          { path: ".legion-cli/qa/verify.md", content: "Walked the in/out button.\n" },
           {
             path: ".legion-cli/cache/runs/<id>/extra.json",
             content: JSON.stringify({
               title: "fix contrast",
               parentId: "TSK-0001",
+              type: "fix",
               filesAllowed: ["src/fix.ts"],
               verificationCommands: ["pnpm test"],
             }),
@@ -438,14 +442,6 @@ test("verify spawn may file fix tasks and sets lastReview FAIL", async () => {
 
 test("verify spawn cannot stamp status done or blocked", async () => {
   await withFakeAdapter(async () => {
-    const stamped = makeTask({
-      id: "TSK-0002",
-      title: "fix contrast",
-      type: "fix",
-      parentId: "TSK-0001",
-      status: "blocked",
-      contract: { filesAllowed: ["src/fix.ts"], expectedArtifacts: ["src/fix.ts"] },
-    });
     await withEngine(
       async ({ engine, store }) => {
         await initProject(engine);
@@ -461,7 +457,19 @@ test("verify spawn cannot stamp status done or blocked", async () => {
       },
       {
         skillsDir,
-        fakeArtifacts: [{ path: ".legion-cli/tasks/TSK-0002.md", content: taskMarkdown(stamped) }],
+        fakeArtifacts: [
+          {
+            path: ".legion-cli/cache/runs/<id>/extra.json",
+            content: JSON.stringify({
+              title: "fix contrast",
+              parentId: "TSK-0001",
+              type: "fix",
+              filesAllowed: ["src/fix.ts"],
+              expectedArtifacts: ["src/fix.ts"],
+              verificationCommands: ["pnpm test"],
+            }),
+          },
+        ],
       },
     );
   });

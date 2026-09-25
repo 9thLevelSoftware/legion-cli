@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { AuditEventSchema, SCHEMA_VERSION, type AuditEvent, type Phase } from "@9thlevelsoftware/legion-cli-schema";
 import { abandonReceiptPath, auditDayPath, auditEventsPath, legionPaths, shipReceiptPath } from "./layout.js";
 import { toFsPath } from "./paths.js";
+import { appendAuditChainLine } from "./pre-image.js";
 
 export { abandonReceiptPath, auditDayPath, auditEventsPath, shipReceiptPath };
 
@@ -22,7 +23,9 @@ export async function appendAuditEvent(
   const paths = legionPaths(projectRoot);
   await mkdir(paths.auditDir, { recursive: true });
   const jsonl = toFsPath(projectRoot, auditEventsPath());
-  await appendFile(jsonl, `${JSON.stringify(parsed)}\n`, "utf8");
+  const line = JSON.stringify(parsed);
+  await appendFile(jsonl, `${line}\n`, "utf8");
+  await appendAuditChainLine(projectRoot, line);
   await appendAuditDay(projectRoot, parsed);
   return parsed;
 }

@@ -1,9 +1,11 @@
 export {
+  AuditTamperError,
   EngineLockedError,
   MinisignError,
   PathEscapeError,
   PersistError,
   PersistValidationError,
+  RestoreRefusedError,
   SymlinkRefusedError,
 } from "./errors.js";
 export {
@@ -115,6 +117,42 @@ export {
   writeYamlFile,
 } from "./markdown.js";
 export type { MarkdownDoc, WriteTextOpts } from "./markdown.js";
+export {
+  appendAuditChainLine,
+  assertStoreRootsNotLinked,
+  auditLineDigest,
+  closeEngineCommand,
+  isPinnedEngineSot,
+  isRestoreManifestPath,
+  journaledRemove,
+  journaledWriteFile,
+  journalPostWrite,
+  journalPreWrite,
+  listIncidents,
+  listJournalEntries,
+  listOpenCommandIds,
+  listRestoreManifestPaths,
+  openEngineCommand,
+  posixFromAbs,
+  readAuditChain,
+  readBlob,
+  readCommandRecord,
+  reconcileUnfinishedCommands,
+  restoreEngineState,
+  sha256Content,
+  shouldJournalPath,
+  verifyAuditChain,
+  writeIncident,
+} from "./pre-image.js";
+export type {
+  AuditChainState,
+  EngineCommandRecord,
+  EngineRestoreResult,
+  IncidentRecord,
+  JournalEntry,
+  JournalKind,
+  JournalOp,
+} from "./pre-image.js";
 export {
   assertInsideProject,
   assertResolvedInside,
