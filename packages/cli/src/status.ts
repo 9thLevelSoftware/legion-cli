@@ -1,6 +1,6 @@
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import { EXPOSE_BIND, LOOPBACK_BIND, readLiveServe } from "@9thlevelsoftware/legion-cli-dashboard";
-import { listTaskSummaries } from "@9thlevelsoftware/legion-cli-persist";
+import { listTaskSummaries, PersistValidationError } from "@9thlevelsoftware/legion-cli-persist";
 import type { AdapterId, LegionConfig, ProjectFile, StateFile } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
@@ -15,7 +15,8 @@ async function readOptionalConfig(engine: ReturnType<typeof createLegionEngine>)
   if (!(await engine.store.pathExists(".legion-cli/config.yaml"))) return null;
   try {
     return await engine.store.readConfig();
-  } catch {
+  } catch (err) {
+    if (err instanceof PersistValidationError) throw err;
     return null;
   }
 }

@@ -13,14 +13,20 @@ export { COMPACT_AUDIT_POINTER, compactTaskBody, outcomeFromTask } from "./compa
 export {
   applyChatAction,
   buildChatPrompt,
+  chatActionPhaseRefusal,
+  chatResumeRetryableMessage,
   createChatSession,
   forkChatSession,
   gateChatAction,
   idleTurnsFromSession,
   isChatProposalAction,
+  loadChatSession,
+  persistForkedChatSession,
   resumeOrCreateChatSession,
+  saveChatSession,
   routeChatTurn,
   sanitizeChatAction,
+  scanChatSessions,
 } from "./chat.js";
 export type { ChatApplyResult, ChatRouteOpts, ChatTurnKind, ChatTurnResult } from "./chat.js";
 export { setUndoGitResetHard, undoLastTask } from "./undo.js";

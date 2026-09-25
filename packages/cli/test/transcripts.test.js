@@ -188,7 +188,7 @@ test("doctor after init with fake adapter (golden)", async () => {
   });
 });
 
-test("doctor on the untouched init config follows detectSandbox (ok when hardened, FAIL otherwise)", async () => {
+test("doctor on the untouched init config follows detectSandbox (ok when hardened, advisory otherwise)", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(init.status, 0, init.stderr);
@@ -201,21 +201,18 @@ test("doctor on the untouched init config follows detectSandbox (ok when hardene
     });
     const out = normalize(result.stdout);
     const detected = detectSandbox();
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(out, /Doctor passed/);
     if (detected.hardened) {
-      // Linux CI (bwrap installed) and macOS (seatbelt).
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
       assert.match(out, new RegExp(`^ok    sandbox \\(${detected.backend}, hardened=true\\)$`, "m"));
-      assert.match(out, /Doctor passed/);
     } else {
-      // Windows, or Linux without a runnable bwrap: the default refuses the copy jail.
-      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
-      assert.match(out, /^FAIL  sandbox \(hardened sandbox required/m);
-      assert.match(out, /Doctor failed/);
+      assert.match(out, /^warn  sandbox \(/m);
+      assert.match(out, /sandbox config cannot satisfy requireHardened|sandbox is not hardened/);
     }
   });
 });
 
-test("doctor fails sandbox on every OS when copy is forced without the opt-in", async () => {
+test("doctor reports sandbox:false as advisory on every OS when copy is forced without the opt-in", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(init.status, 0, init.stderr);
@@ -228,11 +225,19 @@ test("doctor fails sandbox on every OS when copy is forced without the opt-in", 
     const result = runCli(["doctor", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
-    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const out = normalize(result.stdout);
-    assert.match(out, /^FAIL  sandbox \(hardened sandbox required/m);
+    assert.match(out, /^warn  sandbox \(hardened sandbox required/m);
     assert.match(out, /sandbox config cannot satisfy requireHardened \(copy\)/);
-    assert.match(out, /Doctor failed/);
+    assert.match(out, /Doctor passed/);
+    const json = runCli(["doctor", "--project", dir, "--json"], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(json.status, 0, json.stderr);
+    const report = JSON.parse(json.stdout);
+    const sandbox = report.checks.find((check) => check.label === "sandbox");
+    assert.equal(sandbox.ok, true);
+    assert.equal(sandbox.advisory, true);
 
     await allowCopyJail(engine.store);
     const optedIn = runCli(["doctor", "--project", dir], {

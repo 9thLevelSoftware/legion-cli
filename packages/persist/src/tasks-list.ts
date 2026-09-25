@@ -12,6 +12,8 @@ import {
   readTextFile,
 } from "./markdown.js";
 
+export type TaskFileErrorKind = "validation" | "parse" | "transient";
+
 export type TaskFileEntry =
   | { ok: true; file: string; id: string; task: Task }
   | {
@@ -20,6 +22,8 @@ export type TaskFileEntry =
       id: string;
       /** First validation issue, e.g. `status: Invalid enum value …`. */
       error: string;
+      /** validation = schema; parse = YAML/JSON; transient = retryable I/O (EBUSY). */
+      kind?: TaskFileErrorKind;
       /** Raw frontmatter when the YAML parsed, for callers that peek at specId/filesAllowed. */
       frontmatter?: unknown;
     };
@@ -35,8 +39,21 @@ function describeError(err: unknown): string {
       return `${at}${issue.message}`;
     }
   }
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (typeof code === "string" && code && cause instanceof Error) return `${code}: ${cause.message}`;
   if (cause instanceof Error) return cause.message;
   return String(cause);
+}
+
+export function classifyTaskFileError(err: unknown): { error: string; kind: TaskFileErrorKind } {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "EBUSY" || code === "EPERM" || code === "EACCES") {
+    return { error: describeError(err), kind: "transient" };
+  }
+  if (err instanceof PersistValidationError) {
+    return { error: describeError(err), kind: "validation" };
+  }
+  return { error: describeError(err), kind: "parse" };
 }
 
 export type TaskSummary = {
@@ -208,7 +225,8 @@ export async function listTaskFiles(projectRoot: string): Promise<TaskFileEntry[
     try {
       raw = await retryFsOp(() => readTextFile(abs));
     } catch (err) {
-      entries.push({ ok: false, file, id, error: describeError(err) });
+      const classified = classifyTaskFileError(err);
+      entries.push({ ok: false, file, id, error: classified.error, kind: classified.kind });
       continue;
     }
     try {
@@ -226,6 +244,7 @@ export async function listTaskFiles(projectRoot: string): Promise<TaskFileEntry[
             raw.length === 0
               ? "the file is empty (an interrupted write?); restore it from git or delete it"
               : describeError(err),
+          kind: "validation",
           frontmatter,
         });
       }
@@ -238,6 +257,7 @@ export async function listTaskFiles(projectRoot: string): Promise<TaskFileEntry[
           raw.length === 0
             ? "the file is empty (an interrupted write?); restore it from git or delete it"
             : describeError(err),
+        kind: "parse",
       });
     }
   }

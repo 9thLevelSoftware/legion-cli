@@ -41,6 +41,8 @@ import { isSpawnableBinary, listOnPath, pathLegionIsLegionCli, runBounded, runTo
 
 export type DoctorCheck = {
   ok: boolean;
+  /** Unhardened sandbox is a warning, not a doctor FAIL. */
+  advisory?: boolean;
   label: string;
   detail: string;
 };
@@ -243,7 +245,7 @@ async function loadConfig(engine: ReturnType<typeof createLegionEngine>): Promis
 }
 
 function formatCheck(check: DoctorCheck): string {
-  const mark = check.ok ? "ok  " : "FAIL";
+  const mark = check.advisory ? "warn" : check.ok ? "ok  " : "FAIL";
   return `${mark}  ${check.label} (${check.detail})`;
 }
 
@@ -476,23 +478,25 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
 
   const detectedSandbox = detectSandbox();
   let sandboxOk = true;
+  let sandboxAdvisory = false;
   let sandboxDetail = `${detectedSandbox.backend}, hardened=${detectedSandbox.hardened}`;
   if (config) {
     try {
       assertExecuteSandbox(config, {});
     } catch (err) {
-      sandboxOk = false;
+      sandboxAdvisory = true;
       sandboxDetail = err instanceof Error ? err.message : String(err);
       warnings.push(
         `sandbox config cannot satisfy requireHardened (${config.sandbox.backend}); guarded execute needs --allow-no-sandbox or sandbox.allowCopyJail`,
       );
     }
-  } else if (detectedSandbox.backend === "copy") {
-    sandboxOk = false;
+  } else if (detectedSandbox.backend === "copy" || !detectedSandbox.hardened) {
+    sandboxAdvisory = true;
     warnings.push("sandbox is not hardened; guarded execute needs --allow-no-sandbox or sandbox.allowCopyJail");
   }
   checks.push({
     ok: sandboxOk,
+    ...(sandboxAdvisory ? { advisory: true } : {}),
     label: "sandbox",
     detail: sandboxDetail,
   });

@@ -931,6 +931,8 @@ export const ChatSessionFileSchema = z
     id: z.string().min(1),
     startedAt: z.string().min(1),
     activeBranchId: z.string().optional(),
+    parentSessionId: z.string().min(1).optional(),
+    forkedFromTurnId: z.string().min(1).optional(),
     turns: z.array(ChatTurnSchema),
   })
   .strict();

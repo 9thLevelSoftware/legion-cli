@@ -66,7 +66,15 @@ export const TaskStatusSchema = z.enum([
 ]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
-export const ControlModeSchema = z.enum(["guarded", "surgical", "advisory"]);
+/** Old configs that still name `surgical` fail closed with this hint; never coerced. */
+export const SURGICAL_MIGRATION_HINT = "control_mode surgical is removed; migrate to guarded";
+
+export const ControlModeSchema = z.enum(["guarded", "advisory"], {
+  error: (iss) =>
+    iss.input === "surgical"
+      ? SURGICAL_MIGRATION_HINT
+      : `control_mode ${String(iss.input ?? "")} is rejected`,
+});
 export type ControlMode = z.infer<typeof ControlModeSchema>;
 
 export const SkillIdSchema = z.enum([

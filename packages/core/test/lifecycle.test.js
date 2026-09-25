@@ -42,10 +42,17 @@ test("setControlMode persists config.yaml and PROJECT.md", async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
     assert.equal(await engine.getControlMode(), "guarded");
-    await engine.setControlMode("surgical");
-    assert.equal(await engine.getControlMode(), "surgical");
-    assert.equal((await store.readConfig()).control_mode, "surgical");
-    assert.equal((await store.readProject()).data.controlMode, "surgical");
+    await assert.rejects(
+      () => engine.setControlMode("surgical"),
+      (err) => {
+        assert.equal(err.name, "LegionRefuseError");
+        assert.match(err.message, /control_mode surgical is removed; migrate to guarded/);
+        return true;
+      },
+    );
+    assert.equal(await engine.getControlMode(), "guarded");
+    assert.equal((await store.readConfig()).control_mode, "guarded");
+    assert.equal((await store.readProject()).data.controlMode, "guarded");
     await engine.setControlMode("advisory");
     assert.equal((await store.readConfig()).control_mode, "advisory");
     assert.equal((await store.readProject()).data.controlMode, "advisory");

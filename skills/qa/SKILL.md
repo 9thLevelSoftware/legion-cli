@@ -1,9 +1,10 @@
 ---
 name: qa
 description: >
-  Optional extra QA findings under .legion-cli/qa/**. The scorer is in-process;
-  this skill is optional findings only. Activated only by `legion-cli qa` when a
-  spawnable adapter exists. Do not load other skill bodies.
+  Optional extra QA findings under .legion-cli/qa/**. The scorer is in-process
+  (packages/qa/src/score.ts); this skill adds optional findings only. Activated
+  by `legion-cli qa` (in-process; not gated on a spawnable adapter). Do not load
+  other skill bodies.
 license: UNLICENSED
 compatibility: "Legion CLI staging; not vendor auto-discovery"
 metadata:

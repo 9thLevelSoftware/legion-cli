@@ -12,6 +12,7 @@ import {
   EMPTY_LOCK_STALE_MS,
   EngineLockedError,
   SymlinkRefusedError,
+  classifyTaskFileError,
   listTaskFiles,
   nextFileId,
   identitySpawnEnv,
@@ -741,9 +742,20 @@ test("listTaskFiles lists invalid task files instead of dropping them", async ()
       ],
     );
     assert.match(entries[1].error, /^status: /);
+    assert.equal(entries[1].kind, "validation");
     assert.equal(entries[1].frontmatter.status, "Ready");
     assert.ok(entries[2].error.length > 0);
+    assert.equal(entries[2].kind, "parse");
   });
+});
+
+test("classifyTaskFileError separates transient I/O from validation", () => {
+  const busy = Object.assign(new Error("resource busy"), { code: "EBUSY" });
+  const classified = classifyTaskFileError(busy);
+  assert.equal(classified.kind, "transient");
+  assert.match(classified.error, /EBUSY/);
+  const invalid = classifyTaskFileError(new PersistValidationError("tasks/TSK-0001.md", new Error("bad")));
+  assert.equal(invalid.kind, "validation");
 });
 
 test("nextFileId allocates from file names, valid or not, and leaves no placeholder", async () => {

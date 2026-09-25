@@ -16,11 +16,11 @@ export function startingTaskLine(
 }
 
 export async function confirmAllowNoSandbox(verb: "execute" | "fix"): Promise<void> {
-  writeOut("Copy jail is not OS isolation. Continue without a hardened sandbox? [Y/n]");
-  const answer = await readLine("> ");
-  if (!process.stdin.isTTY && answer.length === 0) {
+  if (!process.stdin.isTTY) {
     refuse(`${verb} --allow-no-sandbox requires a TTY`, HINT.allowNoSandbox);
   }
+  writeOut("Copy jail is not OS isolation. Continue without a hardened sandbox? [Y/n]");
+  const answer = await readLine("> ");
   if (isNo(answer)) {
     refuse(`${verb} --allow-no-sandbox declined`, HINT.allowNoSandbox);
   }

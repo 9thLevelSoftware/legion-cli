@@ -23,7 +23,7 @@ The product is the **10-verb lifecycle core** plus extras in `legion-cli help --
 
 `init` → `intent` → `discuss` → `spec` → `plan` → `execute` → `verify` → `review` → `qa` → `ship`
 
-Init requires `--adapter` (`claude` | `generic` | `fake` | `grok` | `openai` | `codex` | `mimo` | `minimax`). There is no product default. `fake` is test-only (`LEGION_CLI_ADAPTER=fake`). Extra adapters spawn with verified vendor argv (`grok -p`, `codex exec`, `mimo run`, `mcode exec`). Dashboard is a **view-only** board: writes are CLI or token POST; it is not the source of truth.
+Init requires `--adapter` (`claude` | `generic` | `fake` | `grok` | `openai` | `codex` | `mimo` | `minimax` | `http`). There is no product default. `fake` is test-only. Extra adapters spawn with verified vendor argv (`grok -p`, `codex exec`, `mimo run`, `mcode exec`). Dashboard is a **view-only** board: writes are CLI or token POST; it is not the source of truth.
 
 verificationCommands and the QA unit command are trusted code run on your machine, outside the sandbox, with API keys and tokens removed from the environment. They are argv-only: split `a && b` into separate commands.
 
@@ -37,7 +37,38 @@ LEGION_CLI_ADAPTER=fake pnpm exec legion-cli doctor
 pnpm exec legion-cli intent
 ```
 
+Windows PowerShell: set env vars with `$env:` (the bash prefix above is not a cmdlet):
+
+```powershell
+pnpm install
+pnpm exec legion-cli init --name Checkin --adapter fake
+pnpm exec legion-cli status
+$env:LEGION_CLI_ADAPTER = "fake"; pnpm exec legion-cli doctor
+pnpm exec legion-cli intent
+```
+
 `fake` is the test adapter; `doctor` treats it as spawnable only when `LEGION_CLI_ADAPTER=fake`. For `claude` or `generic`, doctor fails closed until that binary is on PATH.
+
+## Shipped verbs not in the 10-verb lifecycle core
+
+See `legion-cli help --all` for the full rows. One sentence each:
+
+- `chat` — REPL that routes into engine verbs (`--once`, `--adapter`, `--fork`).
+- `undo` — revert the last completed task or Legion commit.
+- `recipe list` / `recipe run` — workflow recipes from `.legion-cli/recipes/*.yaml`.
+- `repl` — host-mode interactive REPL (NO SANDBOX).
+- `serve` / `dashboard` — local board; writes are CLI or token-gated POST (`ticket|wikiTrust|qaChecklist`).
+- `map` — architecture markdown, fingerprints, optional LSP diagnostics.
+- `wireframe` — regenerate HTML wireframes after spec edits.
+- `skills list|show|install` — packaged catalog and pinned overlays.
+- `design-system show|install|import-od|generate` — local or `github:owner/repo@tag`.
+- `control-mode` — show or set `guarded|advisory` (refuses `autonomous`; `surgical` is removed — migrate to `guarded`).
+- `brownfield …` — effort 1–5 audit bookkeeping (separate from `init --mode brownfield`).
+- `context compact` — manual compaction of done tasks.
+- `garden` — stale wiki, orphans, duplicates.
+- `packet new|respond` — PM/designer packets that spawn tickets, not execute.
+
+JSON schemas for chat sessions/actions, fingerprint files, and serve files live in `packages/schema/json/`.
 
 ## Two brownfield surfaces (not one verb)
 

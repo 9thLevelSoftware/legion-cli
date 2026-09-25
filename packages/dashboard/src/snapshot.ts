@@ -79,7 +79,7 @@ export type DashboardSnapshot = {
   /** Set when STATE.md exists but could not be read even after retries; phase is then a placeholder. */
   stateError: string | null;
   /** Task files that are not valid tasks: listed, never dropped (fail closed). */
-  invalidTasks: Array<{ file: string; error: string }>;
+  invalidTasks: Array<{ file: string; error: string; kind?: string }>;
   graph: { nodes: string[]; edges: Array<{ from: string; to: string }> };
   audit: AuditEvent[];
   spec: { id: string; title: string; status: Spec["status"]; body: string } | null;
@@ -283,7 +283,7 @@ export async function loadSnapshot(
     tasks,
     blockers: collectBlockers(state, tasks, invalid),
     stateError,
-    invalidTasks: invalid.map((entry) => ({ file: entry.file, error: entry.error })),
+    invalidTasks: invalid.map((entry) => ({ file: entry.file, error: entry.error, kind: entry.kind })),
     graph: { nodes: tasks.map((task) => task.id), edges },
     audit: await loadAuditEvents(store, state.phase),
     ...specView,

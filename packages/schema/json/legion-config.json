@@ -411,7 +411,6 @@
       "type": "string",
       "enum": [
         "guarded",
-        "surgical",
         "advisory"
       ]
     },

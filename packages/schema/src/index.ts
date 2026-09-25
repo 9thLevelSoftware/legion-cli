@@ -4,6 +4,7 @@ export {
   ASSUMED_EXTRA_BINARIES,
   AdapterIdSchema,
   ControlModeSchema,
+  SURGICAL_MIGRATION_HINT,
   EXTRA_ADAPTER_IDS,
   PhaseSchema,
   PrioritySchema,

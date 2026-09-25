@@ -419,6 +419,47 @@ test("POST /engine/ticket persists type/priority and refuses invalid enums witho
   });
 });
 
+test("POST /engine/* asserts each refused engine transition", async () => {
+  await withStore(async ({ dir }) => {
+    await withServer(dir, async ({ handle }) => {
+      const token = handle.token;
+
+      const unknownParent = await enginePost(
+        handle,
+        "/engine/ticket",
+        { title: "park extra", parentId: "TSK-9999" },
+        { token },
+      );
+      assert.equal(unknownParent.status, 400);
+      const parentBody = await unknownParent.json();
+      assert.match(parentBody.error, /unknown parent TSK-9999/);
+      assert.match(parentBody.next, /legion-cli ticket create/);
+
+      const unknownPage = await enginePost(
+        handle,
+        "/engine/wikiTrust",
+        { pageId: "ingested/missing-page" },
+        { token },
+      );
+      assert.equal(unknownPage.status, 400);
+      const pageBody = await unknownPage.json();
+      assert.match(pageBody.error, /unknown page/);
+      assert.match(pageBody.next, /legion-cli show/);
+
+      const unknownTick = await enginePost(
+        handle,
+        "/engine/qaChecklist",
+        { ticks: ["AC-NOPE"] },
+        { token },
+      );
+      assert.equal(unknownTick.status, 400);
+      const tickBody = await unknownTick.json();
+      assert.match(tickBody.error, /unknown acceptance criterion AC-NOPE/);
+      assert.match(tickBody.next, /legion-cli qa checklist/);
+    });
+  });
+});
+
 test("POST /engine/* returns 409 while a live spawn is in_progress", async () => {
   await withStore(async ({ dir, store }) => {
     const live = (await store.readTask("TSK-0002")).data;
