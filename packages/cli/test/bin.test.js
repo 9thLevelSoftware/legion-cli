@@ -571,6 +571,8 @@ test("init --adapter http persists adapter.http and pid is not spawned", async (
     assert.equal(config.adapter.http?.model, "gpt-4");
     assert.equal(config.adapter.http?.apiKeyEnv, "OPENAI_API_KEY");
     assert.equal(config.adapter.http?.allowLoopback, false);
+    assert.equal(config.sandbox.allowCopyJail, true);
+    assert.equal(config.sandbox.requireHardened, true);
     assert.equal(config.adapter.http?.apiKey, undefined);
     const yaml = await readFile(join(dir, ".legion-cli", "config.yaml"), "utf8");
     assert.equal(Object.hasOwn(config.adapter.http ?? {}, "apiKey"), false);

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { dispatchToolCall, MAX_RUN_COMMAND_BYTES, RUN_COMMAND_DENIED_BINS, toolsForJob } from "@9thlevelsoftware/legion-cli-http";
+import { materializeJail } from "@9thlevelsoftware/legion-cli-sandbox";
 import { createHttpToolHost, engineSotRefuseReason, httpAllowedWrites } from "../dist/http-host.js";
 
 async function withTemp(fn) {
@@ -140,12 +141,48 @@ test("run_command is on the tool list only when the host is hardened", () => {
   );
 });
 
-test("win32/copy-jail host offers no run_command", () => {
-  const copy = hostFor("/tmp/jail", { hardened: false });
-  assert.equal(copy.runCommand, undefined);
-  if (process.platform === "win32") {
-    assert.equal(copy.runCommand, undefined);
-  }
+test("copy-jail host from materializeJail offers no run_command", async () => {
+  await withTemp(async (dir) => {
+    const sandbox = await materializeJail({
+      projectRoot: dir,
+      runId: "http-copy",
+      allowedWrites: ["src/ok.ts"],
+      readSet: [],
+      backend: "copy",
+      allowDegradedCopy: true,
+    });
+    try {
+      assert.equal(sandbox.backend, "copy");
+      assert.equal(sandbox.hardened, false);
+      const spawnOpts = sandbox.spawnOpts();
+      assert.equal(spawnOpts.wrapper, undefined);
+      const host = createHttpToolHost({
+        jailRoot: sandbox.jailRoot,
+        allowedWrites: ["src/ok.ts"],
+        hardened: sandbox.hardened,
+        spawnOpts,
+      });
+      assert.equal(host.runCommand, undefined);
+      assert.equal(
+        toolsForJob("execute", host).some((tool) => tool.function.name === "run_command"),
+        false,
+      );
+    } finally {
+      await sandbox.destroy();
+    }
+  });
+});
+
+test("http host run_command refuses clustered node -pe", async () => {
+  await withTemp(async (dir) => {
+    const host = hostFor(dir, {
+      hardened: true,
+      spawnOpts: { cwd: dir, env: process.env, wrapper: { bin: process.execPath, argvPrefix: [] } },
+    });
+    const result = await host.runCommand([process.execPath, "-pe", "1"]);
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /not allowlisted/);
+  });
 });
 
 test("http host run_command refuses node -e", async () => {

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import { allowCopyJailIn, bin, normalize, runCli, withTempDir } from "./helpers.js";
+import { bin, normalize, runCli, withTempDir } from "./helpers.js";
 
 function runCliAsync(args, opts = {}) {
   return new Promise((resolve) => {
@@ -193,14 +193,16 @@ test("init --adapter http writes config and plan completes a governed HTTP tool 
       assert.equal(config.adapter.http?.apiKeyEnv, KEY_ENV);
       assert.equal(config.adapter.http?.model, "local-e2e");
       assert.equal(config.adapter.http?.allowLoopback, true);
+      assert.equal(config.sandbox.allowCopyJail, true);
+      assert.equal(config.sandbox.requireHardened, true);
       assert.equal(Object.hasOwn(config.adapter.http ?? {}, "apiKey"), false);
       const yaml = await readFile(join(dir, ".legion-cli", "config.yaml"), "utf8");
       assert.match(yaml, new RegExp(`apiKeyEnv:\\s*${KEY_ENV}`));
+      assert.match(yaml, /allowCopyJail:\s*true/);
       assert.equal(yaml.includes(KEY_VALUE), false, `config.yaml must not contain the value of ${KEY_ENV}`);
       assert.doesNotMatch(yaml, /^\s*apiKey:/m);
 
       await seedFrozen(dir);
-      await allowCopyJailIn(dir);
       // spawnSync would freeze this process's mock HTTP server; plan must be async.
       const plan = await runCliAsync(["plan", "--project", dir], { env: { [KEY_ENV]: KEY_VALUE } });
       const combined = `${normalize(plan.stdout)}\n${normalize(plan.stderr)}`;

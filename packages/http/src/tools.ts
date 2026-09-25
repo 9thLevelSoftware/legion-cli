@@ -24,14 +24,26 @@ const RUN_COMMAND_DENYLIST = new Set<string>(RUN_COMMAND_DENIED_BINS);
 /** node -e / --eval (and -p) is arbitrary code; argv[0] allowlist is not enough. */
 const NODE_EVAL_FLAGS = new Set(["-e", "--eval", "-p", "--print", "--eval-module"]);
 const PYTHON_EVAL_FLAGS = new Set(["-c"]);
+const NODE_EVAL_LETTERS = new Set(["e", "p"]);
+const PYTHON_EVAL_LETTERS = new Set(["c"]);
 
 function flagName(arg: string): string {
   const eq = arg.indexOf("=");
   return eq === -1 ? arg : arg.slice(0, eq);
 }
 
-function argsHaveDeniedFlag(args: readonly string[], denied: Set<string>): boolean {
-  return args.some((arg) => denied.has(flagName(arg)));
+/** `-pe` / `-ep` / `-ic` are clustered short options, not a single unknown flag. */
+function shortClusterHasLetter(arg: string, letters: Set<string>): boolean {
+  if (!/^-[A-Za-z]+$/.test(arg)) return false;
+  return [...arg.slice(1)].some((ch) => letters.has(ch));
+}
+
+function argsHaveDeniedFlag(args: readonly string[], denied: Set<string>, letters?: Set<string>): boolean {
+  return args.some((arg) => {
+    const name = flagName(arg);
+    if (denied.has(name)) return true;
+    return Boolean(letters && shortClusterHasLetter(name, letters));
+  });
 }
 
 export type OpenAiTool = {
@@ -58,8 +70,13 @@ export function isRunCommandAllowed(argv: readonly string[]): boolean {
   if (!base || RUN_COMMAND_DENYLIST.has(base)) return false;
   if (!RUN_COMMAND_ALLOWLIST.has(base)) return false;
   const rest = argv.slice(1);
-  if ((base === "node" || base === "nodejs") && argsHaveDeniedFlag(rest, NODE_EVAL_FLAGS)) return false;
-  if ((base === "python" || base === "python3" || base === "pytest") && argsHaveDeniedFlag(rest, PYTHON_EVAL_FLAGS)) {
+  if ((base === "node" || base === "nodejs") && argsHaveDeniedFlag(rest, NODE_EVAL_FLAGS, NODE_EVAL_LETTERS)) {
+    return false;
+  }
+  if (
+    (base === "python" || base === "python3" || base === "pytest") &&
+    argsHaveDeniedFlag(rest, PYTHON_EVAL_FLAGS, PYTHON_EVAL_LETTERS)
+  ) {
     return false;
   }
   return true;
