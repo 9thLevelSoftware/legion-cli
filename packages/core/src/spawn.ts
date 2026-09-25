@@ -52,7 +52,7 @@ import {
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
-import { createHttpToolHost } from "./http-host.js";
+import { createHttpToolHost, httpAllowedWrites } from "./http-host.js";
 import {
   recordPreSpawnRef,
   revertExtras,
@@ -64,6 +64,14 @@ import {
 } from "./revert.js";
 
 export { findSkillsDir };
+
+/** Copy-jail hatch is win32+http only. Linux http keeps the closed spawn-CLI default. */
+export function defaultAllowCopyJail(
+  adapter: AdapterId,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return adapter === "http" && platform === "win32";
+}
 
 export async function resolveSkillDir(opts: {
   projectRoot: string;
@@ -572,7 +580,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         ? {
             httpHost: createHttpToolHost({
               jailRoot: sandbox.jailRoot,
-              allowedWrites,
+              allowedWrites: httpAllowedWrites(allowedWrites),
               filesForbidden,
               hardened: sandbox.hardened,
               spawnOpts: spawnOpts ?? { cwd: sandbox.jailRoot, env },

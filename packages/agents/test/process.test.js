@@ -205,7 +205,10 @@ test("root test script, quarantine register, and publish guard", async () => {
   assert.ok(Array.isArray(root.legionPublishAllowlist));
   assert.ok(root.legionPublishAllowlist.length > 0);
   assert.equal(root.legionPublishAllowlist.includes("product-engineer-helper"), false);
-  assert.equal(root.legionPublishAllowlist.includes("@9thlevelsoftware/legion-cli-http"), false);
+  assert.equal(root.legionPublishAllowlist.includes("@9thlevelsoftware/legion-cli-http"), true);
+  const httpPkg = JSON.parse(await readFile(join(repoRoot, "packages", "http", "package.json"), "utf8"));
+  assert.notEqual(httpPkg.private, true);
+  assert.equal(httpPkg.publishConfig?.access, "public");
   assert.match(agentsMd, /legionPublishAllowlist/);
   assert.match(agentsMd, /"private": true/);
 });

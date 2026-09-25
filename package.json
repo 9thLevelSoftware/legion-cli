@@ -13,6 +13,7 @@
     "@9thlevelsoftware/legion-cli-dashboard",
     "@9thlevelsoftware/legion-cli-design-system",
     "@9thlevelsoftware/legion-cli-graph",
+    "@9thlevelsoftware/legion-cli-http",
     "@9thlevelsoftware/legion-cli-map",
     "@9thlevelsoftware/legion-cli-mcp",
     "@9thlevelsoftware/legion-cli-persist",

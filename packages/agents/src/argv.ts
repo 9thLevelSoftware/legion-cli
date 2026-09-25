@@ -72,7 +72,7 @@ export const FROZEN_ARGV_TABLE = {
   http: {
     binary: "(http)",
     argv: null,
-    spawnable: false,
+    spawnable: true,
   },
 } as const satisfies Record<
   AgentAdapterId,

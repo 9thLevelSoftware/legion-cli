@@ -90,6 +90,7 @@ export {
 export type { VerificationRun, VerificationTrustPosture } from "./verify.js";
 export {
   argvSummarySafe,
+  defaultAllowCopyJail,
   findSkillsDir,
   listCacheResumesCalls,
   optionalSkillSpawn,

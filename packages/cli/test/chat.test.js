@@ -68,13 +68,13 @@ test("discuss via chat with --yes still refuses", async () => {
   });
 });
 
-test("chat --adapter http is refused", async () => {
+test("chat --adapter http is selectable", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     const result = runCli(["chat", "--once", "where am I", "--adapter", "http", "--project", dir]);
-    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
     const err = normalize(result.stderr);
-    assert.match(err, /adapter http is not selectable yet/);
+    const out = normalize(result.stdout);
+    assert.doesNotMatch(`${out}\n${err}`, /adapter http is not selectable yet/);
     assert.doesNotMatch(err, /\|http/);
   });
 });
