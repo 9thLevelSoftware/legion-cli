@@ -49,6 +49,7 @@ schemaVersions
   legion-cli-chat/v1
   legion-cli-serve/v1
   legion-cli-recipe/v1
+  legion-cli-recipes-lock/v1
 
 Adapter
   default      fake
