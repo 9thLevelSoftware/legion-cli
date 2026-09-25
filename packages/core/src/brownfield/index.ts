@@ -55,4 +55,9 @@ export {
   stateRun,
   tierFor,
 } from "./run.js";
+export {
+  assertBrownfieldCanTransition,
+  canTransitionBrownfield,
+  LEGAL_BROWNFIELD_PHASE_TRANSITIONS,
+} from "./state.js";
 export { worktreeRun } from "./worktree.js";

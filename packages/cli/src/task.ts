@@ -13,6 +13,8 @@ export type TaskAmendFlags = {
   adapter?: string;
   route?: string;
   clearAdapter?: boolean;
+  unblock?: boolean;
+  recover?: boolean;
 };
 
 function splitList(values: string[] | undefined): string[] | undefined {
@@ -24,7 +26,30 @@ export async function runTaskAmend(opts: CliOpts, id: string, flags: TaskAmendFl
   if (!id.trim()) {
     refuse("task amend requires a task id", HINT.amend);
   }
+  if (flags.unblock && flags.recover) {
+    refuse("unblock and recover are mutually exclusive", HINT.amend);
+  }
   const engine = createLegionEngine(opts.project);
+  if (flags.unblock) {
+    const task = await engine.unblockTask(id);
+    if (opts.json) {
+      writeJson({ ok: true, id, status: task.status, next: "legion-cli next" });
+      return 0;
+    }
+    writeOut(`Unblocked ${id} to ${task.status}.`);
+    writeOut("Next: legion-cli next");
+    return 0;
+  }
+  if (flags.recover) {
+    const task = await engine.recoverTask(id);
+    if (opts.json) {
+      writeJson({ ok: true, id, status: task.status, next: "legion-cli task amend --unblock" });
+      return 0;
+    }
+    writeOut(`Recovered ${id} to ${task.status}.`);
+    writeOut("Next: legion-cli task amend --unblock");
+    return 0;
+  }
   const doc = await engine.store.readTask(id);
   const persisted = resolvePersistAdapter(await engine.store.readConfig(), flags);
   const filesAllowed = splitList(flags.filesAllowed) ?? doc.data.contract.filesAllowed;
