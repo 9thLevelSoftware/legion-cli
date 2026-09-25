@@ -12,7 +12,7 @@ export const PROCESS_START_TOLERANCE_MS = 5_000;
 
 export const PROC_READ_MAX_BYTES = 64 * 1024;
 export const PROC_READ_TIMEOUT_MS = 5_000;
-export const IDENTITY_TIMEOUT_MS = 20_000;
+export const IDENTITY_TIMEOUT_MS = 45_000;
 
 const LINUX_CLK_TCK = 100;
 
@@ -146,12 +146,17 @@ function run(file: string, args: string[], env: NodeJS.ProcessEnv): Promise<stri
 /**
  * Start time (epoch ms) of a live process, or null when it can't be determined.
  * Linux reads `/proc/<pid>/stat` with a byte cap and timeout; macOS asks `/bin/ps`;
- * Windows asks PowerShell for the CIM `Win32_Process` CreationDate with a scrubbed env.
+ * Windows asks PowerShell for `Get-Process` StartTime. The scrubbed env keeps PATH and
+ * PSModulePath so powershell.exe can start; without them the hosted runner hangs until timeout.
  */
 export async function processIdentity(pid: number): Promise<number | null> {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   if (process.platform === "linux") return linuxStartedAt(pid);
+  if (process.platform === "win32" && pid === process.pid) return ownProcessStartedAt();
   if (process.platform === "win32") {
+    const env = identitySpawnEnv();
+    if (process.env.PATH) env.PATH = process.env.PATH;
+    if (process.env.PSModulePath) env.PSModulePath = process.env.PSModulePath;
     const out = await run(
       powershellExePath(),
       [
@@ -162,7 +167,7 @@ export async function processIdentity(pid: number): Promise<number | null> {
         "-Command",
         `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
       ],
-      identitySpawnEnv(),
+      env,
     );
     const line = out?.split(/\r?\n/).map((row) => row.trim()).find((row) => Number.isFinite(Date.parse(row)));
     const ms = line ? Date.parse(line) : Number.NaN;
