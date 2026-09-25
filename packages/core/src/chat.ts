@@ -62,6 +62,16 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** Strictly increasing, always later than `parentStartedAt`, unique across concurrent forks. */
+let lastForkMs = 0;
+function forkStartedAt(parentStartedAt: string): string {
+  const parentMs = Date.parse(parentStartedAt);
+  const floor = Number.isFinite(parentMs) ? parentMs + 1 : 0;
+  const ms = Math.max(Date.now(), floor, lastForkMs + 1);
+  lastForkMs = ms;
+  return new Date(ms).toISOString();
+}
+
 function newSessionId(): string {
   return `chat-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
 }
@@ -700,6 +710,7 @@ export function forkChatSession(
   return {
     ...withIds,
     id: newSessionId(),
+    startedAt: forkStartedAt(session.startedAt),
     parentSessionId: session.id,
     forkedFromTurnId: fromTurnId,
     activeBranchId: branchId,
@@ -720,12 +731,28 @@ async function appendChatBranch(engine: LegionEngine, record: ChatBranchRecord):
   let records: ChatBranchRecord[] = [];
   try {
     const raw = await readFile(abs, "utf8");
-    const parsed = JSON.parse(raw) as { branches?: ChatBranchRecord[] };
-    if (Array.isArray(parsed.branches)) records = parsed.branches;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      refuse("chat branches.json is not valid JSON; not overwriting", HINT.chat);
+    }
+    const branches =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as { branches?: unknown }).branches
+        : undefined;
+    if (!Array.isArray(branches)) {
+      refuse("chat branches.json is not a branch index; not overwriting", HINT.chat);
+    }
+    records = branches as ChatBranchRecord[];
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+    if (err instanceof LegionRefuseError) throw err;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      records = [];
+    } else {
       const retry = chatResumeRetryableMessage(err);
       if (retry) refuse(retry, HINT.chatRetry);
+      refuse("chat branches.json is unreadable; not overwriting", HINT.chat);
     }
   }
   records.push(record);

@@ -17,6 +17,7 @@ test("forkChatSession truncates turns at specified turnId and generates a new br
 
   const forked = forkChatSession(session, "turn-2");
   assert.notEqual(forked.id, session.id);
+  assert.ok(forked.startedAt > session.startedAt);
   assert.match(forked.id, /^chat-[0-9a-z]+-[0-9a-f]{8}$/);
   assert.ok(forked.activeBranchId && forked.activeBranchId.startsWith("branch-"));
   assert.equal(forked.parentSessionId, session.id);
@@ -47,4 +48,18 @@ test("forkChatSession supports pre-id legacy sessions by positional index", () =
   const byBackfill = forkChatSession(session, "legacy-0");
   assert.equal(byBackfill.turns.length, 1);
   assert.equal(byBackfill.turns[0].text, "Turn 1");
+});
+
+test("two forks from the same parent do not share startedAt", () => {
+  const session = {
+    schemaVersion: "legion-cli-chat/v1",
+    id: "chat-0001",
+    startedAt: new Date().toISOString(),
+    turns: [{ id: "turn-1", role: "user", text: "Turn 1" }],
+  };
+  const a = forkChatSession(session, "turn-1");
+  const b = forkChatSession(session, "turn-1");
+  assert.notEqual(a.startedAt, b.startedAt);
+  assert.ok(a.startedAt > session.startedAt);
+  assert.ok(b.startedAt > session.startedAt);
 });
