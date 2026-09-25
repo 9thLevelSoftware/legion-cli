@@ -932,11 +932,20 @@ export const RecipeSchema = z
     schemaVersion: z.literal(SCHEMA_VERSION.recipe),
     name: z.string().regex(/^[a-z0-9-]+$/),
     description: z.string().min(1),
+    origin: z.enum(["local", "community"]).default("local"),
     parameters: z.record(z.string(), RecipeParamSchema).default({}),
     steps: z.array(RecipeStepSchema).min(1),
   })
   .strict();
 export type Recipe = z.infer<typeof RecipeSchema>;
+
+export const RecipesLockSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.recipesLock),
+    recipes: z.record(z.string().regex(/^[a-z0-9-]+$/), z.object({ sha256: Sha256HexSchema }).strict()),
+  })
+  .strict();
+export type RecipesLock = z.infer<typeof RecipesLockSchema>;
 
 export const ServeFileSchema = z
   .object({
