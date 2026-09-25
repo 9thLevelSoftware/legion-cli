@@ -98,9 +98,9 @@ test("plan with adapter.default http completes a governed HTTP tool round-trip",
             apiKeyEnv: KEY_ENV,
             allowLoopback: true,
           },
-          allowCopyJail: true,
         });
         const config = await store.readConfig();
+        assert.equal(config.sandbox.allowCopyJail, true);
         assert.equal(config.adapter.http?.apiKeyEnv, KEY_ENV);
         assert.equal(Object.hasOwn(config.adapter.http ?? {}, "apiKey"), false);
         const yaml = await readFile(join(dir, ".legion-cli", "config.yaml"), "utf8");

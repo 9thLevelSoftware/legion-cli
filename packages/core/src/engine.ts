@@ -455,7 +455,7 @@ export class LegionEngine {
         flags: { mcpApps: false, webmcp: false, parallelExecute: false },
         sandbox: {
           requireHardened: true,
-          allowCopyJail: opts.allowCopyJail ?? false,
+          allowCopyJail: opts.allowCopyJail ?? opts.adapter === "http",
           backend: "auto",
           skills: ["execute"],
         },

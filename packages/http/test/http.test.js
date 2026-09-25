@@ -142,6 +142,12 @@ test("run_command argument policy allows node/pnpm and refuses node -e", () => {
   assert.equal(isRunCommandAllowed(["node", "-p", "1"]), false);
 });
 
+test("run_command argument policy refuses clustered eval flags", () => {
+  assert.equal(isRunCommandAllowed(["node", "-pe", "1"]), false);
+  assert.equal(isRunCommandAllowed(["node", "-ep", "1"]), false);
+  assert.equal(isRunCommandAllowed(["python", "-ic", "print(1)"]), false);
+});
+
 for (const bin of RUN_COMMAND_DENIED_BINS) {
   test(`run_command refuses denied command ${bin}`, () => {
     assert.equal(isRunCommandAllowed([bin]), false);
@@ -477,6 +483,38 @@ test("dispatchToolCall refuses each denied run_command argv", async () => {
     );
     assert.match(out, /not allowlisted/, bin);
   }
+  assert.equal(ran, 0);
+});
+
+test("dispatchToolCall refuses clustered node -pe / python -ic", async () => {
+  let ran = 0;
+  const host = {
+    ...copyHost(),
+    runCommand: async () => {
+      ran += 1;
+      return { exitCode: 0, stdout: "pwned", stderr: "" };
+    },
+  };
+  const pe = await dispatchToolCall(
+    {
+      id: "c1",
+      type: "function",
+      function: { name: "run_command", arguments: JSON.stringify({ argv: ["node", "-pe", "1"] }) },
+    },
+    host,
+    "execute",
+  );
+  assert.match(pe, /not allowlisted/);
+  const ic = await dispatchToolCall(
+    {
+      id: "c2",
+      type: "function",
+      function: { name: "run_command", arguments: JSON.stringify({ argv: ["python", "-ic", "print(1)"] }) },
+    },
+    host,
+    "execute",
+  );
+  assert.match(ic, /not allowlisted/);
   assert.equal(ran, 0);
 });
 
