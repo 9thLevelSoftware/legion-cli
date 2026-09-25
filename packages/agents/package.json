@@ -46,6 +46,7 @@
   "dependencies": {
     "@9thlevelsoftware/legion-cli-http": "workspace:*",
     "@9thlevelsoftware/legion-cli-persist": "workspace:*",
+    "@9thlevelsoftware/legion-cli-sandbox": "workspace:*",
     "@9thlevelsoftware/legion-cli-schema": "workspace:*",
     "yaml": "^2.9.0"
   }

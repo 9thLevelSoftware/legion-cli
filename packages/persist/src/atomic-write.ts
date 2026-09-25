@@ -7,7 +7,7 @@ import { SymlinkRefusedError } from "./errors.js";
 /** Codes Windows returns while another handle (reader, editor, antivirus) has the file open. */
 const WIN32_BUSY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
 
-export const RETRY_FS_OP_TOTAL_MS = 2_000;
+export const RETRY_FS_OP_TOTAL_MS = 8_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((done) => {
@@ -21,7 +21,7 @@ export function isWin32BusyError(err: unknown): boolean {
 
 /**
  * Run `op`, retrying Windows sharing violations (EPERM/EACCES/EBUSY) with backoff for up to
- * `totalMs` (default 2 s). Other errors, and every error on POSIX, are thrown at once.
+ * `totalMs` (default 8 s). Other errors, and every error on POSIX, are thrown at once.
  */
 export async function retryFsOp<T>(op: () => Promise<T>, opts?: { totalMs?: number }): Promise<T> {
   const totalMs = opts?.totalMs ?? RETRY_FS_OP_TOTAL_MS;
@@ -85,7 +85,7 @@ export async function assertNotSymlink(abs: string, message = "path is a symlink
 
 /**
  * Write `abs` atomically: temp file in the same directory, fsync, rename. On win32 the rename
- * retries sharing violations for up to 2 s; the temp file is removed on final failure.
+ * retries sharing violations for up to 8 s; the temp file is removed on final failure.
  * Refuses a link at the final component or at any ancestor below `root`.
  */
 export async function atomicWriteFile(

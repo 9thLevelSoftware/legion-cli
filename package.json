@@ -6,10 +6,62 @@
   "engines": {
     "node": ">=22"
   },
+  "legionPublishAllowlist": [
+    "@9thlevelsoftware/legion-cli",
+    "@9thlevelsoftware/legion-cli-agents",
+    "@9thlevelsoftware/legion-cli-core",
+    "@9thlevelsoftware/legion-cli-dashboard",
+    "@9thlevelsoftware/legion-cli-design-system",
+    "@9thlevelsoftware/legion-cli-graph",
+    "@9thlevelsoftware/legion-cli-map",
+    "@9thlevelsoftware/legion-cli-mcp",
+    "@9thlevelsoftware/legion-cli-persist",
+    "@9thlevelsoftware/legion-cli-qa",
+    "@9thlevelsoftware/legion-cli-sandbox",
+    "@9thlevelsoftware/legion-cli-schema",
+    "@9thlevelsoftware/legion-cli-wiki"
+  ],
+  "legionQuarantine": [
+    {
+      "id": "Q-WIN-DOCKER",
+      "finding": "F-039",
+      "name": "Windows-Docker CI leg",
+      "owningPr": 8,
+      "failBy": "2026-12-31"
+    },
+    {
+      "id": "Q-INT-BROWNFIELD",
+      "finding": "F-039",
+      "name": "brownfield integration suite",
+      "owningPr": 2,
+      "failBy": "2026-12-31"
+    },
+    {
+      "id": "Q-INT-INGEST",
+      "finding": "F-039",
+      "name": "ingest integration suite",
+      "owningPr": 9,
+      "failBy": "2026-12-31"
+    },
+    {
+      "id": "Q-INT-RUN",
+      "finding": "F-039",
+      "name": "run integration suite",
+      "owningPr": 6,
+      "failBy": "2026-12-31"
+    },
+    {
+      "id": "Q-INT-IMPORT",
+      "finding": "F-039",
+      "name": "import integration suite",
+      "owningPr": 9,
+      "failBy": "2026-12-31"
+    }
+  ],
   "scripts": {
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r run test",
+    "test": "pnpm -r --no-bail run test",
     "prepare": "pnpm run build"
   },
   "devDependencies": {

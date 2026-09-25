@@ -47,3 +47,64 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  linux-docker:
+    name: Linux Docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Require runnable docker backend
+        run: |
+          docker info
+          node --input-type=module -e 'import { detectSandbox } from "./packages/sandbox/dist/index.js"; const d = detectSandbox(); if (d.backend !== "docker" || !d.hardened) { console.error(JSON.stringify(d)); process.exit(1); }'
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Pull docker image
+        run: docker pull node:22-alpine
+
+      - name: Test (docker backend; bwrap not installed)
+        run: pnpm test
+
+  macos:
+    name: macOS (best-effort, droppable)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+  # Windows-Docker CI leg: named deferral Q-WIN-DOCKER (root package.json legionQuarantine). Not required.

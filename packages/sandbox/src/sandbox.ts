@@ -12,7 +12,7 @@ import {
   toProjectRelativePosix,
 } from "@9thlevelsoftware/legion-cli-persist";
 import { isConcretePosixRepoRelativePath, type LegionConfig } from "@9thlevelsoftware/legion-cli-schema";
-import { dockerArgvPrefix, findRunnableDocker } from "./docker.js";
+import { dockerArgvPrefix, findRunnableDocker, translateHostPathToDocker } from "./docker.js";
 import { SandboxError } from "./errors.js";
 
 export type SandboxBackend = "bwrap" | "seatbelt" | "copy" | "docker";
@@ -34,7 +34,12 @@ export interface SandboxHandle {
   backend: SandboxBackend;
   hardened: boolean;
   jailRoot: string;
-  spawnOpts(): { cwd: string; env: NodeJS.ProcessEnv; wrapper?: { bin: string; argvPrefix: string[] } };
+  spawnOpts(): {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    wrapper?: { bin: string; argvPrefix: string[] };
+    translateInvoke: (invoke: string) => string;
+  };
   copyOut(): Promise<{ copied: string[]; dropped: string[] }>;
   destroy(): Promise<void>;
 }
@@ -943,9 +948,16 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
       hardened,
       jailRoot,
       spawnOpts() {
-        const next: { cwd: string; env: NodeJS.ProcessEnv; wrapper?: { bin: string; argvPrefix: string[] } } = {
+        const next: {
+          cwd: string;
+          env: NodeJS.ProcessEnv;
+          wrapper?: { bin: string; argvPrefix: string[] };
+          translateInvoke: (invoke: string) => string;
+        } = {
           cwd: jailRoot,
           env: { ...env },
+          translateInvoke: (invoke: string) =>
+            backend === "docker" ? translateHostPathToDocker(invoke, jailRoot) : invoke,
         };
         if (wrapper) next.wrapper = { bin: wrapper.bin, argvPrefix: [...wrapper.argvPrefix] };
         return next;

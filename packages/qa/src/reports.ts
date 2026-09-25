@@ -197,12 +197,9 @@ export function reportFailClosed(input: unknown): boolean {
   const rec = asRecord(input);
   if (!rec) return true;
   if (rec.error === "no reporter json") return true;
-  const hasSuites = Array.isArray(rec.suites) || Array.isArray(rec.specs);
-  const hasSimple = "tests" in rec;
-  const testResults = asArray(rec.testResults);
-  if (hasSuites || hasSimple || testResults.length > 0) return false;
-  if (rec.success === false) return true;
-  if (typeof rec.numFailedTests === "number" && rec.numFailedTests > 0) return true;
+  if (typeof rec.numTotalTests === "number" && rec.numTotalTests === 0) return true;
+  const parsed = parseTestReport(rec);
+  if (parsed.length === 0) return true;
   return false;
 }
 

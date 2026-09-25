@@ -7,6 +7,7 @@ import {
   scoreQa,
   specHasUi,
   tagFromPriority,
+  ZERO_TESTS_REASON,
 } from "../dist/index.js";
 
 const spec = {
@@ -152,6 +153,25 @@ test("no UI ACs and no wireframes awards visual 15 without Playwright", () => {
   });
   assert.equal(score.buckets.visual.points, 15);
   assert.equal(score.buckets.visual.regressions, 0);
+});
+
+test("zero-tests report is refused with a named reason", () => {
+  assert.throws(
+    () =>
+      scoreQa({
+        specId: noUiSpec.id,
+        mode: "full",
+        specHasUi: false,
+        playwrightRan: false,
+        unitReport: { success: true, numTotalTests: 0, testResults: [] },
+        id: "qa-zero",
+        createdAt: "2026-09-01T12:00:00Z",
+      }),
+    (err) => {
+      assert.equal(err.message, ZERO_TESTS_REASON);
+      return true;
+    },
+  );
 });
 
 test("P0 failure zeros the P0 bucket", () => {

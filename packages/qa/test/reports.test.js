@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { parseTestReport, runCommand, runProjectQa, scoreQa, splitCommand } from "../dist/index.js";
+import { parseTestReport, runCommand, runProjectQa, scoreQa, splitCommand, ZERO_TESTS_REASON } from "../dist/index.js";
 
 test("parses Playwright JSON including screenshot-diff failures", () => {
   const report = {
@@ -183,16 +183,20 @@ test("missing unit JSON fail-closes P0 instead of vacuous 100", async () => {
 });
 
 test("Jest success false with empty testResults is not a 100", () => {
-  const score = scoreQa({
-    specId: "spec-api",
-    mode: "full",
-    specHasUi: false,
-    playwrightRan: false,
-    unitReport: { success: false, numFailedTests: 1, testResults: [] },
-    id: "qa-jest-empty",
-    createdAt: "2026-09-01T12:00:00Z",
-  });
-  assert.equal(score.pass, false);
-  assert.notEqual(score.total, 100);
-  assert.ok(score.buckets.p0.failed >= 1);
+  assert.throws(
+    () =>
+      scoreQa({
+        specId: "spec-api",
+        mode: "full",
+        specHasUi: false,
+        playwrightRan: false,
+        unitReport: { success: false, numFailedTests: 1, testResults: [] },
+        id: "qa-jest-empty",
+        createdAt: "2026-09-01T12:00:00Z",
+      }),
+    (err) => {
+      assert.equal(err.message, ZERO_TESTS_REASON);
+      return true;
+    },
+  );
 });
