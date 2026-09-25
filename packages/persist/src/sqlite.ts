@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { createRequire } from "node:module";
@@ -127,6 +128,26 @@ export function queryIndex<T>(projectRoot: string, sql: string, params: unknown[
     return db.prepare(sql).all(...params) as T[];
   } finally {
     db.close();
+  }
+}
+
+/** False for missing, empty, or schema-less DBs so the first rebuild is not skipped. */
+export function indexDbUsable(projectRoot: string): boolean {
+  const dbPath = legionPaths(projectRoot).db;
+  try {
+    const st = statSync(dbPath);
+    if (!st.isFile() || st.size === 0) return false;
+  } catch {
+    return false;
+  }
+  try {
+    const rows = queryIndex<{ n: number }>(
+      projectRoot,
+      "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='pages'",
+    );
+    return (rows[0]?.n ?? 0) > 0;
+  } catch {
+    return false;
   }
 }
 

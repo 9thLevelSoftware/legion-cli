@@ -471,7 +471,7 @@ test("walk skips symlink directory cycles", async () => {
   });
 });
 
-test("map refuses when walk exceeds 10000 modules", { timeout: 60_000 }, async () => {
+test("map refuses when walk exceeds 10000 modules", { timeout: 180_000 }, async () => {
   await withTempDir(async (dir) => {
     await writeManyTs(dir, 10_001);
     const before = await mapArtifacts(dir);

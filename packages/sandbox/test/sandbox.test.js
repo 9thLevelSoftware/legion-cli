@@ -10,7 +10,15 @@ import { PathEscapeError } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionConfigSchema } from "@9thlevelsoftware/legion-cli-schema";
 
 import { assertExecuteSandbox, detectSandbox, materializeJail, SandboxError } from "../dist/index.js";
-import { DOCKER_HOST_EXEC_REFUSAL, DOCKER_WORKDIR, dockerArgvPrefix, dockerRunUser, translateHostPathToDocker } from "../dist/docker.js";
+import {
+  DOCKER_HOST_EXEC_REFUSAL,
+  DOCKER_PIDS_LIMIT,
+  DOCKER_PINNED_IMAGE,
+  DOCKER_WORKDIR,
+  dockerArgvPrefix,
+  dockerRunUser,
+  translateHostPathToDocker,
+} from "../dist/docker.js";
 
 const HARDENED_REQUIRED =
   "hardened sandbox required (bwrap or seatbelt); copy jail refused without allowNoSandbox or sandbox.allowCopyJail";
@@ -993,6 +1001,38 @@ test("assertExecuteSandbox fails when config pins copy with requireHardened", ()
   );
 });
 
+test("dockerArgvPrefix pins the image, hardens, and scrubs host secret env keys", () => {
+  const jail = process.platform === "win32" ? "C:\\jails\\run-1" : "/tmp/jails/run-1";
+  const prefix = dockerArgvPrefix({
+    jailRoot: jail,
+    env: { OPENAI_API_KEY: "not-asserted", NODE_ENV: "test" },
+  });
+  assert.equal(prefix.includes("--network"), true);
+  assert.equal(prefix.includes("none"), true);
+  assert.equal(prefix.includes("--cap-drop"), true);
+  assert.equal(prefix.includes("ALL"), true);
+  assert.equal(prefix.includes("--security-opt"), true);
+  assert.equal(prefix.includes("no-new-privileges"), true);
+  assert.equal(prefix.includes("--read-only"), true);
+  assert.equal(prefix.includes("--pids-limit"), true);
+  assert.equal(prefix.includes(String(DOCKER_PIDS_LIMIT)), true);
+  const binds = prefix.filter((_, i) => prefix[i - 1] === "-v");
+  assert.equal(binds.length, 1);
+  assert.match(binds[0], /\/workspace:rw$/);
+  assert.equal(prefix[prefix.length - 1], DOCKER_PINNED_IMAGE);
+  assert.match(DOCKER_PINNED_IMAGE, /@sha256:[a-f0-9]{64}$/);
+  assert.equal(
+    prefix.some((arg) => arg.startsWith("OPENAI_API_KEY=")),
+    false,
+    "env-key",
+  );
+  assert.equal(prefix.includes("NODE_ENV=test"), true);
+  assert.throws(
+    () => dockerArgvPrefix({ jailRoot: jail, image: "node:22-alpine" }),
+    /pinned by sha256 digest/,
+  );
+});
+
 test("docker translation maps jail-rel paths and never prefixes /workspace/ onto a host exec", () => {
   const jail = process.platform === "win32" ? "C:\\jails\\run-1" : "/tmp/jails/run-1";
   const hostNode = process.platform === "win32" ? "C:\\Program Files\\nodejs\\node.exe" : "/usr/bin/node";
@@ -1022,5 +1062,5 @@ test("docker jail runs as the host user so cap-drop ALL can write owned files", 
     return;
   }
   assert.deepEqual(prefix.slice(prefix.indexOf("--user"), prefix.indexOf("--user") + 2), user);
-  assert.equal(prefix.at(-1), "node:22-alpine");
+  assert.equal(prefix.at(-1), DOCKER_PINNED_IMAGE);
 });

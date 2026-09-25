@@ -288,6 +288,7 @@ export type ShipPreview = {
   diff: string;
   unrelatedUnchanged: boolean;
   unrelated: string[];
+  productFingerprint: string;
 };
 
 export type ShipOptions = {

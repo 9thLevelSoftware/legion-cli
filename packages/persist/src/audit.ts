@@ -1,12 +1,28 @@
 import { appendFile, mkdir, open, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { AuditEventSchema, SCHEMA_VERSION, type AuditEvent, type Phase } from "@9thlevelsoftware/legion-cli-schema";
+import { assertNoLinkInPath } from "./atomic-write.js";
 import { EngineLockedError } from "./errors.js";
 import { abandonReceiptPath, auditDayPath, auditEventsPath, legionPaths, shipReceiptPath } from "./layout.js";
 import { persistWork } from "./markdown.js";
 import { toFsPath } from "./paths.js";
 import { appendAuditChainLine } from "./pre-image.js";
 import { createLegionStore } from "./store.js";
+
+const dayWriteTails = new Map<string, Promise<void>>();
+
+function enqueueDayWrite(abs: string, work: () => Promise<void>): Promise<void> {
+  const prev = dayWriteTails.get(abs) ?? Promise.resolve();
+  const next = prev.then(work, work);
+  dayWriteTails.set(
+    abs,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
 
 export { abandonReceiptPath, auditDayPath, auditEventsPath, shipReceiptPath };
 
@@ -55,13 +71,17 @@ async function appendAuditDay(projectRoot: string, event: AuditEvent): Promise<v
   const abs = toFsPath(projectRoot, store);
   const line = formatAuditDayLine(event);
   await mkdir(dirname(abs), { recursive: true });
-  try {
-    // The header is written only by whoever creates the day file.
-    await writeFile(abs, `# ${day}\n\n${line}`, { encoding: "utf8", flag: "wx" });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    await appendFile(abs, line, "utf8");
-  }
+  await enqueueDayWrite(abs, async () => {
+    await assertNoLinkInPath(abs, { root: projectRoot });
+    try {
+      // The header is written only by whoever creates the day file.
+      await writeFile(abs, `# ${day}\n\n${line}`, { encoding: "utf8", flag: "wx" });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      await assertNoLinkInPath(abs, { root: projectRoot });
+      await appendFile(abs, line, "utf8");
+    }
+  });
   await retainAuditDayFiles(projectRoot, Date.now(), day);
 }
 

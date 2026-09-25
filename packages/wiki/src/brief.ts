@@ -2,7 +2,7 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   extractWikiLinks,
-  queryIndex,
+  indexDbUsable,
   type LegionReader,
   type LegionStore,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -243,12 +243,7 @@ export function assembleSessionBrief(input: {
 }
 
 export function wikiIndexReady(projectRoot: string): boolean {
-  try {
-    queryIndex(projectRoot, "SELECT 1 FROM pages LIMIT 1");
-    return true;
-  } catch {
-    return false;
-  }
+  return indexDbUsable(projectRoot);
 }
 
 export async function ensureWikiIndex(

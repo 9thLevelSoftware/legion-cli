@@ -14,9 +14,12 @@ import {
   SymlinkRefusedError,
   listTaskFiles,
   nextFileId,
+  identitySpawnEnv,
+  indexDbUsable,
   ownProcessStartedAt,
   parseMarkdownDocument,
   processIdentity,
+  PROC_READ_MAX_BYTES,
   sameProcessStart,
   startedAfterRecorded,
   atomicWriteFile,
@@ -605,6 +608,18 @@ test("processIdentity reports this process's start time within tolerance", async
   assert.equal(typeof actual, "number");
   assert.ok(sameProcessStart(actual, ownProcessStartedAt()), `${actual} vs ${ownProcessStartedAt()}`);
   assert.equal(await processIdentity(-1), null);
+});
+
+test("identitySpawnEnv omits non-allowlisted keys by name", () => {
+  const env = identitySpawnEnv({
+    OPENAI_API_KEY: "not-asserted",
+    SystemRoot: "C:\\Windows",
+    PATH: "/bin",
+  });
+  assert.equal(Object.hasOwn(env, "OPENAI_API_KEY"), false, "env-key");
+  assert.equal(Object.hasOwn(env, "PATH"), false);
+  assert.equal(env.SystemRoot, "C:\\Windows");
+  assert.ok(PROC_READ_MAX_BYTES <= 64 * 1024);
 });
 
 test("one store serializes concurrent withLock callers; nested calls re-enter", async () => {
@@ -1341,6 +1356,78 @@ test("gitBranchCreate and tryGitBranch handle detached HEAD", async () => {
     git(dir, ["checkout", "--detach", head]);
     assert.equal(tryGitBranch(dir), null);
     assert.equal(gitRevParse(dir, "no-such-branch"), null);
+  });
+});
+
+test("appendAuditDay refuses a symlink at the day file", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, ".legion-cli", "audit"), { recursive: true });
+    const outside = join(dir, "outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "planted.md"), "planted\n", "utf8");
+    await symlink(
+      outside,
+      join(dir, ".legion-cli", "audit", "2026-09-01.md"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    await assert.rejects(
+      () =>
+        appendAuditEvent(dir, {
+          ts: "2026-09-01T12:00:00.000Z",
+          type: "ship",
+          phase: "shipped",
+          actor: "user",
+          data: { specId: "spec-checkin" },
+        }),
+      (err) => {
+        assert.equal(err instanceof SymlinkRefusedError, true);
+        assert.match(err.message, /symlink/);
+        return true;
+      },
+    );
+    assert.equal(await readFile(join(outside, "planted.md"), "utf8"), "planted\n");
+  });
+});
+
+test("two concurrent appendAuditEvent calls both land in the day file", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, ".legion-cli", "audit"), { recursive: true });
+    await Promise.all([
+      appendAuditEvent(dir, {
+        ts: "2026-09-03T12:00:00.000Z",
+        type: "plan",
+        phase: "plan_ready",
+        actor: "user",
+        data: { seq: 1 },
+      }),
+      appendAuditEvent(dir, {
+        ts: "2026-09-03T12:00:01.000Z",
+        type: "qa",
+        phase: "executing",
+        actor: "user",
+        data: { seq: 2 },
+      }),
+    ]);
+    const day = await readFile(join(dir, ".legion-cli", "audit", "2026-09-03.md"), "utf8");
+    assert.match(day, /plan phase=plan_ready/);
+    assert.match(day, /qa phase=executing/);
+    const events = await readAuditEvents(dir);
+    assert.equal(events.length, 2);
+  });
+});
+
+test("empty index DB is not usable until rebuild", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    const paths = legionPaths(dir);
+    await mkdir(paths.indexDir, { recursive: true });
+    await writeFile(paths.db, "", "utf8");
+    assert.equal(indexDbUsable(dir), false, "empty-db");
+    const store = new LegionStore(dir);
+    await store.rebuild();
+    assert.equal(indexDbUsable(dir), true);
+    const pages = queryIndex(dir, "SELECT id FROM pages");
+    assert.ok(pages.length >= 1);
   });
 });
 
