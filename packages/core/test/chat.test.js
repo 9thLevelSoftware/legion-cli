@@ -460,6 +460,50 @@ test("two concurrent forks persist distinct branch IDs and both are resumable", 
     assert.equal(loadedB.activeBranchId, b.activeBranchId);
     assert.equal(loadedA.parentSessionId, parent.id);
     assert.equal(loadedB.parentSessionId, parent.id);
+    assert.notEqual(a.startedAt, parent.startedAt);
+    assert.notEqual(b.startedAt, parent.startedAt);
+    assert.notEqual(a.startedAt, b.startedAt);
+    assert.ok(a.startedAt > parent.startedAt);
+    assert.ok(b.startedAt > parent.startedAt);
+  });
+});
+
+test("default resume after fork opens the fork, not the parent", async () => {
+  await withEngine(async ({ engine }) => {
+    await initProject(engine);
+    const parent = await resumeOrCreateChatSession(engine);
+    parent.turns = [
+      { id: "turn-1", role: "user", text: "one" },
+      { id: "turn-2", role: "assistant", text: "two" },
+    ];
+    await saveChatSession(engine, parent);
+    const forked = await persistForkedChatSession(engine, parent, "turn-1");
+    assert.ok(forked.startedAt > parent.startedAt, "fork startedAt must be later than parent");
+    const resumed = await resumeOrCreateChatSession(engine);
+    assert.equal(resumed.id, forked.id);
+    assert.equal(resumed.activeBranchId, forked.activeBranchId);
+  });
+});
+
+test("appendChatBranch refuses to overwrite a corrupt branches.json", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    const parent = await resumeOrCreateChatSession(engine);
+    parent.turns = [{ id: "turn-1", role: "user", text: "one" }];
+    await saveChatSession(engine, parent);
+    const branchesPath = join(dir, ".legion-cli", "chat", "branches.json");
+    const corrupt = "{not json";
+    await mkdir(join(dir, ".legion-cli", "chat"), { recursive: true });
+    await writeFile(branchesPath, corrupt, "utf8");
+    await assert.rejects(
+      () => persistForkedChatSession(engine, parent, "turn-1"),
+      (err) => {
+        assert.equal(err.name, "LegionRefuseError");
+        assert.match(err.message, /branches\.json is not valid JSON; not overwriting/);
+        return true;
+      },
+    );
+    assert.equal(await readFile(branchesPath, "utf8"), corrupt);
   });
 });
 

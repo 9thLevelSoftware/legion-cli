@@ -1160,14 +1160,14 @@ Global flags: `--project <dir>`, `--json`, `--yes` (ignored by intent confirm an
 | `legion-cli spec new` | Start the next increment after ship | — |
 | `legion-cli plan` | Break into tasks I can see on the board | `--adapter <id>` (one-shot spawn; routing RFC) |
 | `legion-cli next` | What is unblocked? | — |
-| `legion-cli execute [id]` | Do the next ready task | `--fix`, `--until-blocked`, `--adapter <id>` (one-shot; routing RFC), `--allow-no-sandbox` |
+| `legion-cli execute [id]` | Do the next ready task | `--fix`, `--until-blocked`, `--adapter <id>` (one-shot; routing RFC), `--allow-no-sandbox` (TTY confirmation) |
 | `legion-cli ticket create` | Park extra work | `--parent`, `--title`, `--from-agent`, `--adapter <id>`, `--route <name>` (routing RFC) |
 | `legion-cli task amend` | Human changes a file contract | `--allow-deps`, `--adapter <id>`, `--route <name>`, `--clear-adapter` (routing RFC) |
 | `legion-cli verify [id]` | Optional walkthrough notes (not a ship gate) | `--adapter <id>` (one-shot; routing RFC) |
 | `legion-cli review` | Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review | `--adapter <id>` (one-shot; routing RFC) |
 | `legion-cli qa` | Score the product (when the slice is done) | `--mode full\|no-browser` |
 | `legion-cli qa checklist` | Tick AC items when no browser | — |
-| `legion-cli fix <bug>` | Test first (must stay RED), then fix | `--adapter <id>` (forwards into execute; routing RFC) |
+| `legion-cli fix <bug>` | Test first (must stay RED), then fix | `--adapter <id>` (forwards into execute; routing RFC), `--allow-no-sandbox` (TTY confirmation) |
 | `legion-cli ship` | Final human review; stage diff | `--allow-degraded-qa`, `--pr`, `--commit` |
 | `legion-cli dashboard` | Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket\|wikiTrust\|qaChecklist); not the source of truth) | `--no-open`, `--port`, `--expose` |
 | `legion-cli search <q>` | Search the wiki | `--mentions`, `--include-untrusted` |

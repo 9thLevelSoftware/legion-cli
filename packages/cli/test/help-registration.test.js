@@ -126,6 +126,7 @@ test("docs and help match registered commands and do not advertise surgical", ()
   const agents = readFileSync(join(repoRoot, "AGENTS.md"), "utf8");
   const help = normalize(runCli(["help", "--all"]).stdout);
   const executeHelp = normalize(runCli(["help", "execute"]).stdout);
+  const fixHelp = normalize(runCli(["help", "fix"]).stdout);
   const replHelp = normalize(runCli(["help", "repl"]).stdout);
   const rows = helpAllRows();
   const commands = registeredCommands();
@@ -134,8 +135,12 @@ test("docs and help match registered commands and do not advertise surgical", ()
   assert.doesNotMatch(readme, /guarded\|surgical\|advisory/);
   assert.doesNotMatch(agents, /guarded\|surgical\|advisory/);
   assert.match(help, /guarded\|advisory/);
-  assert.match(help, /allow-no-sandbox \(TTY confirmation\)/);
+  const executeRow = rows.find((row) => row.path === "execute");
+  const fixRow = rows.find((row) => row.path === "fix");
+  assert.match(executeRow?.description ?? "", /allow-no-sandbox \(TTY confirmation\)/);
+  assert.match(fixRow?.description ?? "", /allow-no-sandbox \(TTY confirmation\)/);
   assert.match(executeHelp, /allow-no-sandbox/);
+  assert.match(fixHelp, /allow-no-sandbox/);
   assert.match(replHelp, /NO SANDBOX/i);
   assert.doesNotMatch(replHelp, /Sandboxed interactive REPL/);
   assert.match(readme, /\$env:LEGION_CLI_ADAPTER/);

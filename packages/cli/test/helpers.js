@@ -77,8 +77,9 @@ export async function allowCopyJail(store) {
 
 /**
  * Seed `sandbox.allowCopyJail: true` in an initialized project so doctor's sandbox
- * check passes on hosts without bwrap/seatbelt (Windows). Use it in doctor tests whose
- * subject is not the sandbox; the sandbox FAIL path has its own deterministic test.
+ * check is ok (not advisory/warn) on hosts without bwrap/seatbelt (Windows). Use it
+ * in doctor tests whose subject is not the sandbox; the unhardened advisory path
+ * has its own deterministic test.
  */
 export async function allowCopyJailIn(dir) {
   await allowCopyJail(createLegionEngine(dir).store);

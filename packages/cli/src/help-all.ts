@@ -61,7 +61,7 @@ const BOARD_EXTRAS = [
   ["recipe list", "List available workflow recipes", ""],
   ["recipe run <name>", "Execute a workflow recipe", "--param"],
   ["repl", "Host-mode interactive REPL (NO SANDBOX)", "--lang node|python"],
-  ["fix <bug>", "Test first (must stay RED), then fix", "--adapter, --allow-no-sandbox"],
+  ["fix <bug>", "Test first (must stay RED), then fix", "--adapter, --allow-no-sandbox (TTY confirmation)"],
   ["abandon", "Stop this spec without shipping", "--message"],
   ["assume list", "Open questions that block work", ""],
   ["assume answer <id>", "Confirm or reject an assumption", "--status confirmed|rejected"],

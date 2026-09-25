@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
@@ -62,6 +64,33 @@ test("control-mode surgical is refused with a named migration hint to guarded", 
     const engine = createLegionEngine(dir);
     assert.equal((await engine.store.readConfig()).control_mode, "guarded");
     assert.equal((await engine.store.readProject()).data.controlMode, "guarded");
+  });
+});
+
+test("old config.yaml with surgical prints migrate-to-guarded on status and doctor", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const configPath = join(dir, ".legion-cli", "config.yaml");
+    const current = await readFile(configPath, "utf8");
+    const next = /control_mode\s*:/.test(current)
+      ? current.replace(/control_mode\s*:[^\n]*/, "control_mode: surgical")
+      : `${current.trimEnd()}\ncontrol_mode: surgical\n`;
+    await writeFile(configPath, next, "utf8");
+    assert.match(await readFile(configPath, "utf8"), /control_mode:\s*surgical/);
+
+    const status = runCli(["status", "--project", dir]);
+    assert.equal(status.status, 1, status.stderr);
+    assert.match(normalize(status.stderr), /migrate to guarded/);
+
+    const shown = runCli(["control-mode", "--project", dir]);
+    assert.equal(shown.status, 1, shown.stderr);
+    assert.match(normalize(shown.stderr), /migrate to guarded/);
+
+    const doctor = runCli(["doctor", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.equal(doctor.status, 1, `${doctor.stdout}\n${doctor.stderr}`);
+    const doctorOut = normalize(`${doctor.stdout}\n${doctor.stderr}`);
+    assert.match(doctorOut, /migrate to guarded/);
   });
 });
 
