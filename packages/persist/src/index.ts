@@ -18,9 +18,13 @@ export {
 } from "./atomic-write.js";
 export { nextFileId } from "./ids.js";
 export {
+  identitySpawnEnv,
+  IDENTITY_TIMEOUT_MS,
   ownProcessStartedAt,
   PROCESS_START_TOLERANCE_MS,
   processIdentity,
+  PROC_READ_MAX_BYTES,
+  PROC_READ_TIMEOUT_MS,
   sameProcessStart,
   startedAfterRecorded,
 } from "./process-identity.js";
@@ -209,7 +213,7 @@ export {
   verifyMinisign,
 } from "./minisign.js";
 export { hasSecretPattern, redactSecrets } from "./redact.js";
-export { openIndexDb, queryIndex, rebuildIndex, REBUILD_SQL } from "./sqlite.js";
+export { indexDbUsable, openIndexDb, queryIndex, rebuildIndex, REBUILD_SQL } from "./sqlite.js";
 export { createLegionStore, LegionStore } from "./store.js";
 export type { LegionReader, LegionStoreOptions, LockClock } from "./store.js";
 export {

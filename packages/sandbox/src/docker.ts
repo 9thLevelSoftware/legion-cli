@@ -6,6 +6,15 @@ import { findOnPath } from "./sandbox.js";
 
 export const DOCKER_WORKDIR = "/workspace";
 export const DOCKER_HOST_EXEC_REFUSAL = "docker jail refuses a host exec path that is not the image node";
+export const DOCKER_PIDS_LIMIT = 256;
+/** Index digest of library/node:22-alpine (hub.docker.com, 2026-09-23). */
+export const DOCKER_PINNED_IMAGE =
+  "node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402";
+
+const IMAGE_DIGEST = /@sha256:[a-f0-9]{64}$/;
+const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SECRET_ENV_KEY =
+  /(^|_)(TOKEN|ACCESSTOKEN|KEY|APIKEY|SECRET|PASSWORD|PASSWD|PASS|PWD|PAT|AUTH|AUTHTOKEN|CREDENTIALS?|CONNECTION_STRING|WEBHOOK|WEBHOOK_URL)$/i;
 
 export function findRunnableDocker(): string | undefined {
   const bin = findOnPath("docker", true);
@@ -64,13 +73,37 @@ export function translateWrapperInvoke(
   return translateHostPathToDocker(invoke, cwd);
 }
 
+function pinImage(image: string | undefined): string {
+  if (!image) return DOCKER_PINNED_IMAGE;
+  if (!IMAGE_DIGEST.test(image)) {
+    throw new SandboxError("docker image must be pinned by sha256 digest");
+  }
+  return image;
+}
+
+function dockerEnvArgs(env?: Record<string, string>): string[] {
+  if (!env) return [];
+  const args: string[] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (!ENV_KEY.test(key)) {
+      throw new SandboxError("docker env key is not a valid identifier");
+    }
+    if (SECRET_ENV_KEY.test(key) || /ACCESSTOKEN/i.test(key)) continue;
+    if (/[\r\n\0]/.test(value)) {
+      throw new SandboxError("docker env value contains a newline");
+    }
+    args.push("-e", `${key}=${value}`);
+  }
+  return args;
+}
+
 export function dockerArgvPrefix(opts: {
   jailRoot: string;
   image?: string;
   env?: Record<string, string>;
 }): string[] {
-  const image = opts.image || "node:22-alpine";
-  const prefix = [
+  const image = pinImage(opts.image);
+  return [
     "run",
     "--rm",
     "-i",
@@ -80,17 +113,17 @@ export function dockerArgvPrefix(opts: {
     "ALL",
     "--security-opt",
     "no-new-privileges",
+    "--read-only",
+    "--pids-limit",
+    String(DOCKER_PIDS_LIMIT),
+    "--tmpfs",
+    "/tmp:rw,noexec,nosuid,size=64m",
     "-v",
     `${opts.jailRoot}:${DOCKER_WORKDIR}:rw`,
     "-w",
     DOCKER_WORKDIR,
     ...dockerRunUser(),
+    ...dockerEnvArgs(opts.env),
+    image,
   ];
-  if (opts.env) {
-    for (const [k, v] of Object.entries(opts.env)) {
-      if (v !== undefined) prefix.push("-e", `${k}=${v}`);
-    }
-  }
-  prefix.push(image);
-  return prefix;
 }

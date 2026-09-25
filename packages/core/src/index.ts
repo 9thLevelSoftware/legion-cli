@@ -124,8 +124,10 @@ export {
   displayStagedRoots,
   isShipAllowedPath,
   SHIP_COMMIT_PREFIX,
+  SHIP_STAGED_CHANGED,
   shipAddPaths,
   shipCommitMessage,
+  shipProductIndexFingerprint,
   unrelatedDirty,
   unionDoneFilesAllowed,
 } from "./ship.js";
