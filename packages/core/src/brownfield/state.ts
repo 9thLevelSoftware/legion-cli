@@ -115,7 +115,8 @@ const SETTABLE_STATE_KEYS = new Set([
 ]);
 
 /**
- * Documented skill loops (design ↔ review) and forward skips are legal; complete is terminal.
+ * Documented skill loops (design ↔ review) and forward skips are legal.
+ * complete can enter execute so pr-plan can start implementation after a finished audit.
  * execute/verify still need a design review (assertPhaseAllowed).
  */
 export const LEGAL_BROWNFIELD_PHASE_TRANSITIONS: Readonly<
@@ -130,7 +131,7 @@ export const LEGAL_BROWNFIELD_PHASE_TRANSITIONS: Readonly<
   present: ["intent", "plan", "analysis", "assumptions", "design", "review", "execute", "verify", "complete"],
   execute: ["intent", "plan", "analysis", "assumptions", "design", "review", "present", "verify", "complete"],
   verify: ["intent", "plan", "analysis", "assumptions", "design", "review", "present", "execute", "complete"],
-  complete: [],
+  complete: ["execute"],
 };
 
 export function canTransitionBrownfield(from: BrownfieldRunPhase, to: BrownfieldRunPhase): boolean {

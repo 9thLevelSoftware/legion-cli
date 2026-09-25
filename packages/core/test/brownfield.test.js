@@ -847,14 +847,16 @@ test("run phases: execute/verify need a design review, verify needs a completed 
   });
 });
 
-test("brownfield complete is terminal for pr-plan and merge", async () => {
+test("brownfield complete can re-enter execute for pr-plan and still refuses merge", async () => {
   await withEngine(async (ctx) => {
     await setupProject(ctx);
     const { dir, engine } = ctx;
     await engine.brownfield({ runId: "c0c0c0c0", execute: true });
     await seedReady(dir, "c0c0c0c0");
     assert.equal((await engine.brownfieldState("c0c0c0c0", ["phase=complete"])).state.phase, "complete");
-    await assertRefuses(engine.brownfieldPrPlan("c0c0c0c0"), /cannot transition brownfield from complete to execute/);
+    await engine.brownfieldPrPlan("c0c0c0c0");
+    assert.equal((await engine.brownfieldState("c0c0c0c0")).state.phase, "execute");
+    assert.equal((await engine.brownfieldState("c0c0c0c0", ["phase=complete"])).state.phase, "complete");
     await seedFile(
       dir,
       "c0c0c0c0",
