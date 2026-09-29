@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  gitCommitIndex,
   gitDiffCached,
   gitDiscoverChanges,
   gitIndexEntries,
@@ -57,19 +58,24 @@ test("ship index listing survives more than 12k tracked files (over the 1 MiB de
   }
 });
 
-test("discovery returns 25k untracked paths", () => {
+test("discovery returns thousands of long untracked paths whose listings exceed 1 MiB", () => {
   const dir = tempRepo();
   try {
     writeFileSync(join(dir, "seed.txt"), "seed\n");
     commitAll(dir);
-    const count = 25_000;
-    for (let d = 0; d < 50; d++) {
+    const count = 8_800;
+    const pad = "p".repeat(110);
+    for (let d = 0; d < 44; d++) {
       const sub = join(dir, "bulk", `d${d}`);
       mkdirSync(sub, { recursive: true });
-      for (let i = 0; i < count / 50; i++) writeFileSync(join(sub, `a-long-enough-file-name-${i}.txt`), "");
+      for (let i = 0; i < count / 44; i++) writeFileSync(join(sub, `${pad}-${i}.txt`), "");
     }
-    const paths = gitDiscoverChanges(dir, null);
-    assert.equal(paths.length, count);
+    // Both git outputs the discovery relies on must be over the old default buffer.
+    const status = runGit(dir, ["status", "--porcelain=v1", "-z", "-uall"]);
+    const others = runGit(dir, ["ls-files", "-z", "--others", "--exclude-standard"]);
+    assert.ok(status.stdout.length > 1024 * 1024, `status output ${status.stdout.length}`);
+    assert.ok(others.stdout.length > 1024 * 1024, `ls-files output ${others.stdout.length}`);
+    assert.equal(gitDiscoverChanges(dir, null).length, count);
     assert.equal(gitPorcelainPaths(dir).length, count);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -91,7 +97,7 @@ test("a staged diff over 1 MiB is returned whole", () => {
   }
 });
 
-test("a git failure is named and never embeds stdout", () => {
+test("a spawn failure and an output overflow are named failures", () => {
   const dir = tempRepo();
   try {
     const bad = runGit(dir, ["definitely-not-a-git-command"]);
@@ -100,6 +106,32 @@ test("a git failure is named and never embeds stdout", () => {
     const missing = runGit(join(dir, "does-not-exist"), ["status"]);
     assert.notEqual(missing.status, 0);
     assert.match(missing.error ?? "", /^git status could not complete \(/);
+    writeFileSync(join(dir, "some-file-name.txt"), "x\n");
+    const overflow = runGit(dir, ["status", "--porcelain=v1", "-uall"], { maxBuffer: 4 });
+    assert.equal(overflow.status, 1);
+    assert.match(overflow.error ?? "", /ENOBUFS/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failing commit keeps its reason (stdout, bounded) and a failing listing embeds no stdout", () => {
+  const dir = tempRepo();
+  try {
+    writeFileSync(join(dir, "seed.txt"), "seed\n");
+    commitAll(dir);
+    assert.throws(() => gitCommitIndex(dir, "empty"), (err) => {
+      assert.match(err.message, /^git commit failed: \S/);
+      assert.ok(err.message.length < 700);
+      return true;
+    });
+    // ENOBUFS on a listing: the message names the cause and carries none of the listing.
+    const marker = "unique-listing-marker-name.txt";
+    writeFileSync(join(dir, marker), "x\n");
+    git(dir, ["add", "-A"]);
+    const result = runGit(dir, ["ls-files", "-z"], { maxBuffer: 4 });
+    assert.match(result.error ?? "", /ENOBUFS/);
+    assert.ok(!result.stderr.includes(marker));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -155,3 +187,48 @@ for (const [label, kind] of [["rename", "R"], ["copy", "C"]]) {
     }
   });
 }
+
+test("mixed rename, copy, modify and untracked records keep their order and shapes", () => {
+  const dir = tempRepo();
+  try {
+    const body = Array.from({ length: 100 }, (_, n) => `line ${n}`).join("\n") + "\n";
+    for (const name of ["a-copy-src.txt", "b-mod.txt", "c-ren-src.txt"]) writeFileSync(join(dir, name), body);
+    const base = commitAll(dir);
+    writeFileSync(join(dir, "a-copy-src.txt"), `${body}changed\n`);
+    copyFileSync(join(dir, "a-copy-src.txt"), join(dir, "a-copy-dst.txt"));
+    renameSync(join(dir, "c-ren-src.txt"), join(dir, "c-ren-dst.txt"));
+    git(dir, ["add", "a-copy-src.txt", "a-copy-dst.txt", "c-ren-src.txt", "c-ren-dst.txt"]);
+    writeFileSync(join(dir, "b-mod.txt"), `${body}unstaged\n`);
+    writeFileSync(join(dir, "d-new.txt"), "new\n");
+    const expected = ["a-copy-dst.txt", "a-copy-src.txt", "b-mod.txt", "c-ren-dst.txt", "c-ren-src.txt", "d-new.txt"];
+
+    // Pin the record shapes: porcelain -z is destination first.
+    const raw = runGit(dir, ["status", "--porcelain=v1", "-z", "-uall"]).stdout;
+    assert.ok(raw.includes("C  a-copy-dst.txt\0a-copy-src.txt\0"), JSON.stringify(raw));
+    assert.ok(raw.includes("R  c-ren-dst.txt\0c-ren-src.txt\0"), JSON.stringify(raw));
+    assert.deepEqual(gitDiscoverChanges(dir, null).sort(), expected);
+
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-q", "-m", "mixed"]);
+    // name-status -z is source first.
+    const ns = runGit(dir, ["diff", "--name-status", "-z", base, "HEAD"]).stdout;
+    assert.match(ns, /C\d+\0a-copy-src\.txt\0a-copy-dst\.txt\0/);
+    assert.match(ns, /R\d+\0c-ren-src\.txt\0c-ren-dst\.txt\0/);
+    assert.deepEqual(gitDiscoverChanges(dir, base).sort(), expected);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a POSIX file name containing a backslash is reported as is", { skip: process.platform === "win32" }, () => {
+  const dir = tempRepo();
+  try {
+    writeFileSync(join(dir, "seed.txt"), "seed\n");
+    commitAll(dir);
+    const name = ["docs", "x.md"].join(String.fromCharCode(92));
+    writeFileSync(join(dir, name), "x\n");
+    assert.deepEqual(gitDiscoverChanges(dir, null), [name]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

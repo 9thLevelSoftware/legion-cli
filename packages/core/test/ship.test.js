@@ -374,7 +374,7 @@ test("ship refuses a staged file modified between preview and commit", async () 
   });
 });
 
-test("ship refuses nothing for .legion-cli/STATE.md staged and modified between preview and commit", async () => {
+test("ship does not refuse when only .legion-cli/STATE.md changes between preview and commit", async () => {
   await withEngine(async ({ engine, store, dir }) => {
     await initProject(engine);
     await seedReadyToShip(store);
@@ -395,19 +395,21 @@ test("ship refuses nothing for .legion-cli/STATE.md staged and modified between 
   });
 });
 
-test("ship preview and confirm complete with more than 12k tracked files", async () => {
+test("ship preview and confirm complete when the index listing exceeds 1 MiB", async () => {
   await withEngine(async ({ engine, store, dir }) => {
     await initProject(engine);
     await seedReadyToShip(store);
     await mkdir(join(dir, "src"), { recursive: true });
     await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
-    for (let d = 0; d < 60; d++) {
+    // Long names keep the file count (and runtime) low while the index listing passes 1 MiB.
+    const pad = "p".repeat(75);
+    for (let d = 0; d < 40; d++) {
       const sub = join(dir, "bulk", `dir-${d}`);
       await mkdir(sub, { recursive: true });
-      for (let i = 0; i < 200; i++) await writeFile(join(sub, `module-with-a-reasonably-long-name-${i}.txt`), "");
+      for (let i = 0; i < 200; i++) await writeFile(join(sub, `${pad}-${i}.txt`), "");
     }
     initGitRepo(dir);
-    const listing = spawnSync("git", ["ls-files", "-s", "--cached", "--full-name"], {
+    const listing = spawnSync("git", ["ls-files", "-s", "-z", "--cached", "--full-name"], {
       cwd: dir,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,

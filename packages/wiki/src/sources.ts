@@ -67,8 +67,11 @@ export async function materializeIngestSources(opts: {
   }
 
   if (opts.diff) {
-    const result = runGit(opts.projectRoot, ["diff", opts.diff]);
-    const body = result.status === 0 ? result.stdout : "";
+    const result = runGit(opts.projectRoot, ["diff", "--end-of-options", opts.diff]);
+    if (result.status !== 0) {
+      throw new Error(`git diff ${opts.diff} failed: ${result.error ?? (result.stderr.trim() || "no output")}`);
+    }
+    const body = result.stdout;
     documents.push({
       source: `diff:${opts.diff}`,
       title: `git diff ${opts.diff}`,

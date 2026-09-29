@@ -5,18 +5,21 @@ import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { PersistError } from "./errors.js";
 import { toPosixPath } from "./paths.js";
 
-/** Git output for ls-files, status and diff scales with repo size; the Node default (1 MiB) is far too small. */
+/**
+ * Git output for ls-files, status and diff scales with repo size; the Node default (1 MiB) is far
+ * too small. 256 MiB per stream is a ceiling that still fails closed (ENOBUFS, named) rather than a size to expect.
+ */
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 
 export type GitRunResult = { status: number; stdout: string; stderr: string; error?: string };
 
-export function runGit(cwd: string, args: string[]): GitRunResult {
+export function runGit(cwd: string, args: string[], opts: { maxBuffer?: number } = {}): GitRunResult {
   const result = spawnSync("git", args, {
     cwd,
     encoding: "utf8",
     windowsHide: true,
     shell: false,
-    maxBuffer: GIT_MAX_BUFFER,
+    maxBuffer: opts.maxBuffer ?? GIT_MAX_BUFFER,
   });
   const error = result.error
     ? `git ${args[0] ?? ""} could not complete (${(result.error as NodeJS.ErrnoException).code ?? result.error.name}): ${result.error.message}`
@@ -29,9 +32,20 @@ export function runGit(cwd: string, args: string[]): GitRunResult {
   };
 }
 
-/** stderr only: stdout can be megabytes of listing or diff and never belongs in an error. */
+/**
+ * stderr, else the first 512 bytes of stdout (`git commit` reports "nothing to commit" there).
+ * stdout can be megabytes of listing or diff, so it is never embedded whole.
+ */
 function failText(result: GitRunResult): string {
-  return result.stderr.trim();
+  const err = result.stderr.trim();
+  if (err) return err;
+  const out = result.stdout.trim();
+  return out.length > 512 ? `${out.slice(0, 512)}...` : out;
+}
+
+/** Git already reports `/`; only a Windows `\` needs converting. On POSIX a backslash is part of the name. */
+function gitPath(name: string): string {
+  return process.platform === "win32" ? toPosixPath(name) : name;
 }
 
 function nulFields(stdout: string): string[] {
@@ -43,7 +57,7 @@ function gitLines(cwd: string, args: string[]): string[] {
   if (result.status !== 0) {
     throw new PersistError(`git ${args.join(" ")} failed: ${failText(result)}`);
   }
-  return nulFields(result.stdout).map((path) => toPosixPath(path));
+  return nulFields(result.stdout).map(gitPath);
 }
 
 /**
@@ -56,7 +70,7 @@ function parseNameStatusZ(stdout: string): string[] {
   for (let i = 0; i < fields.length; ) {
     const code = fields[i++];
     const count = code.startsWith("R") || code.startsWith("C") ? 2 : 1;
-    for (let n = 0; n < count && i < fields.length; n++) paths.push(toPosixPath(fields[i++]));
+    for (let n = 0; n < count && i < fields.length; n++) paths.push(gitPath(fields[i++]));
   }
   return paths;
 }
@@ -168,9 +182,9 @@ function parsePorcelainZ(stdout: string): string[] {
   for (let i = 0; i < fields.length; i++) {
     const record = fields[i];
     if (record.length < 4) continue;
-    paths.push(toPosixPath(record.slice(3)));
+    paths.push(gitPath(record.slice(3)));
     if (/[RC]/.test(record.slice(0, 2)) && i + 1 < fields.length && fields[i + 1].length > 0) {
-      paths.push(toPosixPath(fields[++i]));
+      paths.push(gitPath(fields[++i]));
     }
   }
   return paths;
