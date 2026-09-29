@@ -148,6 +148,7 @@ import {
   spawnableAdapterRefuseMessage,
   startSkillSpawn,
   waitStartedSpawn,
+  agentExitProblem,
   defaultAllowCopyJail,
   type OptionalSpawnResult,
   type StartedSkillSpawn,
@@ -345,6 +346,8 @@ export class LegionEngine {
   readonly #fakeArtifacts: FakeArtifact[];
   readonly #fakeThrowAfterWrite: boolean;
   readonly #fakeTimedOut: boolean;
+  readonly #fakeExitCode?: number;
+  readonly #fakeOmitSummary: boolean;
   readonly #fakeHoldWait?: LegionEngineOptions["fakeHoldWait"];
   readonly #fakeOnWait?: () => Promise<void>;
   readonly #fakeVerificationError?: string;
@@ -362,6 +365,8 @@ export class LegionEngine {
     this.#fakeArtifacts = options?.fakeArtifacts ?? [];
     this.#fakeThrowAfterWrite = Boolean(options?.fakeThrowAfterWrite);
     this.#fakeTimedOut = Boolean(options?.fakeTimedOut);
+    this.#fakeExitCode = options?.fakeExitCode;
+    this.#fakeOmitSummary = Boolean(options?.fakeOmitSummary);
     this.#fakeHoldWait = options?.fakeHoldWait;
     this.#fakeOnWait = options?.fakeOnWait;
     this.#fakeVerificationError = options?.fakeVerificationError;
@@ -971,6 +976,7 @@ export class LegionEngine {
 
   async plan(specId?: string, opts?: { adapter?: AdapterId }): Promise<Readiness> {
     const spawnFails: string[] = [];
+    let planExitWarning: string | undefined;
     let started: StartedSkillSpawn | undefined;
     let current: StateFile | undefined;
     let id: string | undefined;
@@ -1026,6 +1032,10 @@ export class LegionEngine {
       const waited = await waitStartedSpawn(started);
       if (waited.error) {
         spawnFails.push(waited.error instanceof Error ? waited.error.message : String(waited.error));
+      }
+      const problem = agentExitProblem(waited);
+      if (problem) {
+        planExitWarning = `plan ${problem} (log: .legion-cli/cache/runs/${started.runId}/stderr.log); readiness decides the result`;
       }
     }
 
@@ -1084,7 +1094,10 @@ export class LegionEngine {
           fails.push(`${bad.id} filesAllowed must be concrete paths`);
         }
       }
-      const concerns = fails.length > 0 ? [] : report.concerns;
+      const concerns = [
+        ...(fails.length > 0 ? [] : report.concerns),
+        ...(planExitWarning ? [planExitWarning] : []),
+      ];
       const readiness: Readiness = fails.length > 0 ? "FAIL" : report.readiness;
       const phase: Phase = readiness === "FAIL" ? "plan_failed" : "plan_ready";
       assertCanTransition("planning", phase);
@@ -1224,6 +1237,7 @@ export class LegionEngine {
       if (outcome.result.headMoved && !warnings.includes(HEAD_MOVED_WARNING)) {
         warnings.push(HEAD_MOVED_WARNING);
       }
+      if (outcome.result.agentExitWarning) warnings.push(outcome.result.agentExitWarning);
       if (outcome.result.status === "blocked" || outcome.result.incident) break;
       if (!opts?.untilBlocked) break;
       const ready = await this.#withLockOrRefuse(async () => {
@@ -1317,8 +1331,20 @@ export class LegionEngine {
         notesPath: await this.#findVerifyNotes(task?.id),
         createdTaskIds,
         extrasReverted: result.revert?.extrasReverted ?? [],
+        warnings: this.#verifyWarnings(result),
       };
     });
+  }
+
+  #verifyWarnings(result: OptionalSpawnResult): string[] {
+    if (!result.spawned) {
+      const via = result.resolution ? ` (${result.resolution.id}, via ${result.resolution.source})` : "";
+      return [`verify skipped: no agent ran${via}; run \`legion-cli doctor\``];
+    }
+    const problem = agentExitProblem(result);
+    return problem
+      ? [`verify ${problem} (log: .legion-cli/cache/runs/${result.runId}/stderr.log); notes are optional`]
+      : [];
   }
 
   async review(opts?: { adapter?: AdapterId }): Promise<ReviewResult> {
@@ -1341,6 +1367,8 @@ export class LegionEngine {
       await this.#assertSkillSpawnable(config, "review", { cliAdapter: opts?.adapter });
       before = await this.snapshotTaskIds();
       beforeFiles = await snapshotTaskFiles(this.store.paths.tasksDir);
+      // A notes file left by an earlier round must not satisfy this round's evidence check.
+      await rm(join(this.projectRoot, REVIEW_NOTES_PATH), { force: true });
       started = await startSkillSpawn({
         ...this.#skillSpawnFields(),
         config,
@@ -1350,7 +1378,7 @@ export class LegionEngine {
           "Spec-level review of a terminal slice.",
           `Active spec: ${specId}`,
           `Read .legion-cli/specs/${specId}/SPEC.md and .legion-cli/tasks/*.md.`,
-          "Write notes to .legion-cli/qa/review.md.",
+          "Write notes to .legion-cli/cache/runs/<id>/review.md (the engine keeps them at .legion-cli/qa/review.md).",
           "If the slice does not meet the spec, file tasks under .legion-cli/tasks/ (type: fix) or extra.json.",
           "Creating any new task id or rewriting existing TSK-*.md FAILs this review.",
           "PASS only if ids are unchanged and existing task files are byte-identical.",
@@ -1389,15 +1417,41 @@ export class LegionEngine {
         await this.#clampSpawnedTaskStatuses(createdTaskIds);
         await this.#promoteReadyTasks(specId, "executing", config.control_mode);
       }
+      // PASS needs positive evidence: exit 0 and non-empty notes written this run. The notes live in
+      // the run cache because the engine restores everything the agent writes under .legion-cli/qa/.
+      // A review that filed or rewrote tasks is a FAIL either way, so it needs no extra evidence.
+      const notes = started?.spawned ? await readReviewNotes(this.projectRoot, started.runId) : "";
+      let reviewError = waited.error;
+      const wouldPass = createdTaskIds.length === 0 && rewrittenExistingTaskIds.length === 0;
+      if (!reviewError && started?.spawned && wouldPass) {
+        const log = `.legion-cli/cache/runs/${started.runId}/stderr.log`;
+        const problem = agentExitProblem(waited);
+        if (problem) {
+          reviewError = new LegionRefuseError(
+            `review failed: ${problem} (log: ${log}); no verdict recorded, re-run legion-cli review`,
+            HINT.review,
+          );
+        } else if (notes.length === 0) {
+          reviewError = new LegionRefuseError(
+            `review failed: agent wrote no notes to ${reviewRunNotesPath(started.runId)} (log: ${log}); no verdict recorded, re-run legion-cli review`,
+            HINT.review,
+          );
+        }
+      }
       await this.#refuseSpawnContract(
         "review",
         revert,
-        waited.error,
+        reviewError,
         createdTaskIds,
         before,
         after,
         rewrittenExistingTaskIds,
       );
+      if (notes.length > 0) {
+        await mkdir(join(this.projectRoot, ".legion-cli", "qa"), { recursive: true });
+        await writeTextFile(join(this.projectRoot, REVIEW_NOTES_PATH), `${notes}
+`, { root: this.projectRoot });
+      }
       const verdict = await this.#applyReviewSnapshotsLocked(
         await this.#readState(),
         before,
@@ -1688,6 +1742,7 @@ export class LegionEngine {
       if (!allowed) {
         refuse("intent confirmation requires rounds 1–4 or --done after round 2", HINT.intentConfirm);
       }
+      await this.#assertAgentAvailable("interview");
       void actor;
       const project = await this.store.readProject();
       const specId = await this.#allocateSpecId(project.data.name);
@@ -1708,6 +1763,7 @@ export class LegionEngine {
       if (state.phase !== "intent_ready" && state.phase !== "discussing") {
         refuse("discuss requires intent_ready", HINT.intent);
       }
+      await this.#assertAgentAvailable("discuss");
       let current = state;
       if (current.phase === "intent_ready") {
         assertCanTransition(current.phase, "discussing");
@@ -1793,6 +1849,7 @@ export class LegionEngine {
       if (state.phase !== "discussing" && state.phase !== "spec_draft") {
         refuse("spec requires decisions captured", HINT.discuss);
       }
+      await this.#assertAgentAvailable("spec");
       const skipWireframes = Boolean(opts?.skipWireframes);
       const project = await this.store.readProject();
       const specId = state.activeSpecId ?? (await this.#allocateSpecId(project.data.name));
@@ -2331,7 +2388,12 @@ export class LegionEngine {
         binary: started && started.spawned ? started.binary : undefined,
         argvSummary: started && started.spawned ? started.argvSummary : undefined,
         resolutionSource,
+        ...(started?.spawned ? { agentExitCode: waited.exitCode ?? null } : {}),
       };
+      const agentProblem = agentExitProblem(waited);
+      const agentExitWarning = agentProblem
+        ? `execute ${lockedTask.id}: ${agentProblem} (log: .legion-cli/cache/runs/${runId}/stderr.log); verification decides the result`
+        : undefined;
 
       const finish = async (outcome: ExecuteTaskResult): Promise<ExecuteTaskResult> => {
         const current = await this.#readState();
@@ -2358,7 +2420,7 @@ export class LegionEngine {
             outcome.taskId,
           );
         }
-        return { ...outcome, adapterId, resolutionSource };
+        return { ...outcome, adapterId, resolutionSource, ...(agentExitWarning ? { agentExitWarning } : {}) };
       };
 
       let extraJsonInvalid = false;
@@ -2435,6 +2497,7 @@ export class LegionEngine {
         spawnAudit,
         adapterId,
         resolutionSource,
+        agentExitWarning,
       };
     });
 
@@ -2534,6 +2597,7 @@ export class LegionEngine {
         verificationPass,
         adapterId: post.adapterId,
         resolutionSource: post.resolutionSource,
+        ...(post.agentExitWarning ? { agentExitWarning: post.agentExitWarning } : {}),
         ...(reason ? { reason } : {}),
         ...(trustTierNote ? { trustTierNote } : {}),
       };
@@ -3160,6 +3224,23 @@ export class LegionEngine {
     });
   }
 
+  /** intent, discuss and spec need a real agent; canned template output must not pass as agent work. */
+  async #assertAgentAvailable(skillId: "interview" | "discuss" | "spec"): Promise<void> {
+    let config: LegionConfig;
+    try {
+      config = await this.#readConfig();
+    } catch {
+      return;
+    }
+    const resolution = resolveAdapterId({ config, skillId });
+    if (!(await isResolvedAdapterSpawnable(config, resolution.id))) {
+      refuse(
+        `no agent available for ${skillId} (${resolution.id}, via ${resolution.source}); run \`legion-cli doctor\``,
+        HINT.doctor,
+      );
+    }
+  }
+
   async #optionalSpawn(
     skillId: "interview" | "discuss" | "spec",
     specId: string,
@@ -3533,6 +3614,8 @@ export class LegionEngine {
       fakeArtifacts: this.#fakeArtifacts,
       throwAfterWrite: this.#fakeThrowAfterWrite,
       timedOut: this.#fakeTimedOut,
+      exitCode: this.#fakeExitCode,
+      omitSummary: this.#fakeOmitSummary,
       holdWait: this.#fakeHoldWait,
       onWait: this.#fakeOnWait,
       handlePid: this.#fakeHandlePid,
@@ -3832,6 +3915,20 @@ export class LegionEngine {
       lastReview: verdict,
     });
     return verdict;
+  }
+}
+
+const REVIEW_NOTES_PATH = ".legion-cli/qa/review.md";
+
+function reviewRunNotesPath(runId: string): string {
+  return `.legion-cli/cache/runs/${runId}/review.md`;
+}
+
+async function readReviewNotes(projectRoot: string, runId: string): Promise<string> {
+  try {
+    return (await readFile(join(projectRoot, reviewRunNotesPath(runId)), "utf8")).trim();
+  } catch {
+    return "";
   }
 }
 

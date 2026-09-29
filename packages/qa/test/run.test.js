@@ -128,3 +128,80 @@ test("QA's unit command gets the scrubbed environment, DATABASE_URL kept", async
     }
   });
 });
+
+async function scriptedUnit(dir, body) {
+  const script = join(dir, "runner.js");
+  await writeFile(script, body, "utf8");
+  return `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`;
+}
+
+const allPassReport = `process.stdout.write(JSON.stringify({ tests: [
+  { title: 'health @p0', status: 'passed' },
+  { title: 'list @p1', status: 'passed' },
+] }));`;
+
+test("a runner that exits 1 with an all-pass report is scored failed", async () => {
+  await withTempDir(async (dir) => {
+    const unitCommand = await scriptedUnit(dir, `${allPassReport}\nprocess.exit(1);`);
+    const result = await runProjectQa({ projectRoot: dir, spec, mode: "full", unitCommand, id: "qa-exit1" });
+    assert.equal(result.score.pass, false);
+    assert.ok(result.score.buckets.p0.failed >= 1);
+    assert.equal(result.score.buckets.p0.points, 0);
+    assert.ok(result.warnings.some((line) => /unit command exited with code 1 without a report of failed tests/.test(line)));
+  });
+});
+
+test("a runner that exits 0 with the same report still passes", async () => {
+  await withTempDir(async (dir) => {
+    const unitCommand = await scriptedUnit(dir, allPassReport);
+    const result = await runProjectQa({ projectRoot: dir, spec, mode: "full", unitCommand, id: "qa-exit0" });
+    assert.equal(result.score.pass, true);
+    assert.deepEqual(result.warnings, []);
+  });
+});
+
+test("a plain non-zero exit whose report lists failed tests adds no extra warning", async () => {
+  await withTempDir(async (dir) => {
+    const unitCommand = await scriptedUnit(
+      dir,
+      `process.stdout.write(JSON.stringify({ tests: [{ title: 'health @p0', status: 'failed' }] }));\nprocess.exit(1);`,
+    );
+    const result = await runProjectQa({ projectRoot: dir, spec, mode: "full", unitCommand, id: "qa-counted" });
+    assert.equal(result.score.pass, false);
+    assert.deepEqual(result.warnings, []);
+  });
+});
+
+test("a timeout with a partial all-pass report is scored failed", async () => {
+  await withTempDir(async (dir) => {
+    const unitCommand = await scriptedUnit(dir, `${allPassReport}\nsetInterval(() => {}, 1000);`);
+    const result = await runProjectQa({
+      projectRoot: dir,
+      spec,
+      mode: "full",
+      unitCommand,
+      commandTimeoutMs: 1500,
+      id: "qa-partial-timeout",
+    });
+    assert.ok(result.warnings.some((line) => /timed out after 1500 ms/.test(line)));
+    assert.equal(result.score.pass, false);
+    assert.ok(result.score.buckets.p0.failed >= 1);
+  });
+});
+
+test("an untagged suite with P0 criteria warns by name and still scores as before", async () => {
+  await withTempDir(async (dir) => {
+    const unitCommand = await scriptedUnit(
+      dir,
+      `process.stdout.write(JSON.stringify({ tests: [
+        { title: 'health', status: 'passed' },
+        { title: 'list', status: 'passed' },
+      ] }));`,
+    );
+    const result = await runProjectQa({ projectRoot: dir, spec, mode: "full", unitCommand, id: "qa-untagged" });
+    assert.deepEqual(result.warnings, [
+      "spec has P0 acceptance criteria but no test is tagged @p0; untagged tests are scored P1 and do not fail the P0 gate",
+    ]);
+    assert.equal(result.score.pass, true);
+  });
+});

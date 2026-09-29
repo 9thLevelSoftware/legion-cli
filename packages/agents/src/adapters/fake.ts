@@ -17,6 +17,8 @@ import {
 
 export const FAKE_WAIT_READY_ENV = "LEGION_CLI_FAKE_WAIT_READY";
 export const FAKE_WAIT_RELEASE_ENV = "LEGION_CLI_FAKE_WAIT_RELEASE";
+/** Test-only: set to 1 and a fake review job leaves non-empty notes in its run cache, like a reviewer that read the slice. */
+export const FAKE_REVIEW_NOTES_ENV = "LEGION_CLI_FAKE_REVIEW_NOTES";
 
 export function holdWaitFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -101,12 +103,14 @@ export class FakeAdapter implements AgentAdapter {
   readonly #holdWait?: FakeHoldWait;
   readonly #onWait?: () => Promise<void>;
   readonly #handlePid: number;
+  readonly #exitCode: number;
+  readonly #omitSummary: boolean;
 
   constructor(
     artifacts: FakeArtifact[] = [],
     throwAfterWrite = false,
     timedOut = false,
-    hold?: { holdWait?: FakeHoldWait; onWait?: () => Promise<void>; handlePid?: number },
+    hold?: { holdWait?: FakeHoldWait; onWait?: () => Promise<void>; handlePid?: number; exitCode?: number; omitSummary?: boolean },
   ) {
     this.#artifacts = artifacts;
     this.#throwAfterWrite = throwAfterWrite;
@@ -114,6 +118,8 @@ export class FakeAdapter implements AgentAdapter {
     this.#holdWait = hold?.holdWait ?? holdWaitFromEnv();
     this.#onWait = hold?.onWait;
     this.#handlePid = hold?.handlePid ?? process.pid;
+    this.#exitCode = hold?.exitCode ?? 0;
+    this.#omitSummary = hold?.omitSummary ?? false;
   }
 
   async detect(): Promise<DetectResult> {
@@ -139,7 +145,11 @@ export class FakeAdapter implements AgentAdapter {
       });
     }
 
-    const artifacts = [...this.#artifacts, ...(job.expectedArtifacts ?? [])].map(normalizeArtifact);
+    const reviewNotes: FakeArtifact[] =
+      job.skillId === "review" && process.env[FAKE_REVIEW_NOTES_ENV] === "1"
+        ? [{ path: ".legion-cli/cache/runs/<id>/review.md", content: "Fake review: the slice meets the spec.\n" }]
+        : [];
+    const artifacts = [...reviewNotes, ...this.#artifacts, ...(job.expectedArtifacts ?? [])].map(normalizeArtifact);
     const commitPaths: string[] = [];
     for (const artifact of artifacts) {
       const rel = assertRepoRelative(artifact.path.replaceAll("<id>", job.runId));
@@ -176,21 +186,23 @@ export class FakeAdapter implements AgentAdapter {
     if (this.#onWait) await this.#onWait();
     if (this.#holdWait) await waitForHoldRelease(this.#holdWait);
 
-    await writeFile(
-      paths.summaryPath,
-      `Fake adapter completed skill=${job.skillId} runId=${job.runId}\n`,
-      "utf8",
-    );
+    if (!this.#omitSummary) {
+      await writeFile(
+        paths.summaryPath,
+        `Fake adapter completed skill=${job.skillId} runId=${job.runId}\n`,
+        "utf8",
+      );
+    }
     await writeFile(paths.stdoutPath, "", "utf8");
     await writeFile(paths.stderrPath, "", "utf8");
 
     return {
-      exitCode: this.#timedOut ? null : 0,
+      exitCode: this.#timedOut ? null : this.#exitCode,
       timedOut: this.#timedOut,
       aborted: false,
       stdoutPath: paths.stdoutPath,
       stderrPath: paths.stderrPath,
-      summaryPath: paths.summaryPath,
+      summaryPath: this.#omitSummary ? undefined : paths.summaryPath,
     };
   }
 }

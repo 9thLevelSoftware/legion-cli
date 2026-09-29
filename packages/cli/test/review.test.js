@@ -83,16 +83,17 @@ test("review refuses when the slice is not terminal", async () => {
   });
 });
 
-test("review PASS when spawn creates zero new tasks", async () => {
+test("review with a reviewer that wrote no notes is refused, not PASS", async () => {
   await withTempDir(async (dir) => {
     await seedExecutingDone(dir);
     const result = runCli(["review", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    const out = normalize(result.stdout);
-    assert.match(out, /Review PASS/);
-    assert.match(out, /Next: legion-cli qa/);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout + result.stderr);
+    assert.match(out, /review failed: agent wrote no notes/);
+    assert.match(out, /Next: legion-cli review/);
+    assert.doesNotMatch(out, /Review PASS/);
     const engine = createLegionEngine(dir);
-    assert.equal((await engine.getState()).lastReview, "PASS");
+    assert.equal((await engine.getState()).lastReview ?? null, null);
     assert.equal((await engine.getState()).phase, "executing");
   });
 });

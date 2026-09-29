@@ -623,3 +623,44 @@ test("adapter tool round-trip writes an allowed path through dispatchToolCall", 
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+for (const [label, body] of [
+  ["a 200 with an error body and no choices", { error: { message: "quota exceeded" } }],
+  ["a 200 with an empty choices array", { choices: [] }],
+  ["a 200 whose message has neither content nor tool calls", assistant("")],
+]) {
+  test(`${label} is a failed run (exit 1), not an empty success`, async () => {
+    const { server, baseUrl } = await startMock(async (req, res) => {
+      await jsonBody(req);
+      sendJson(res, 200, body);
+    });
+    try {
+      await withTemp(async (dir) => {
+        const promptPath = join(dir, "prompt.md");
+        await writeFile(promptPath, "hello\n", "utf8");
+        const adapter = new HttpAdapter({
+          baseUrl,
+          model: "local",
+          apiKeyEnv: "LEGION_HTTP_TEST_KEY",
+          allowLoopback: true,
+        });
+        const result = await (
+          await adapter.spawn({
+            runId: "run-empty",
+            skillId: "plan",
+            promptPath,
+            pointerPrompt: "pointer",
+            cwd: dir,
+            timeoutMs: 10_000,
+            env: { LEGION_HTTP_TEST_KEY: "sk-test" },
+          })
+        ).wait();
+        assert.equal(result.exitCode, 1);
+        assert.equal(result.summaryPath, undefined);
+      });
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+}

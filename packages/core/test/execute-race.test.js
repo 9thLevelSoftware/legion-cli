@@ -17,6 +17,7 @@ import {
   seedPlanReady,
   withEngine,
   withFakeAdapter,
+  withReviewNotes,
 } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
@@ -179,10 +180,10 @@ test("task amend is refused while review wait is live", async () => {
     await withEngine(async ({ store, dir }) => {
       const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "review-ready");
       const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "review-release");
-      const engine = new LegionEngine(dir, undefined, {
+      const engine = new LegionEngine(dir, undefined, withReviewNotes({
         skillsDir,
         fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
-      });
+      }));
       await initProject(engine);
       await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
       initGitRepo(dir);

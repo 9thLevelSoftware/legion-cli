@@ -36,7 +36,7 @@ Implicit forbidden still applies: `.git/**`, `.env*`, `.legion-cli/config.yaml`,
 
 Read the frozen spec at `.legion-cli/specs/<activeSpecId>/SPEC.md` and the slice tasks.
 
-Write review notes to `.legion-cli/qa/review.md`.
+Write review notes to `.legion-cli/cache/runs/<id>/review.md`. The engine restores anything else an agent writes under `.legion-cli/qa/**`, so it copies non-empty notes to `.legion-cli/qa/review.md` itself. PASS needs exit code 0 and these notes; a run that writes none is an error, not a PASS.
 
 If the slice does not meet the spec, file fix-plan tasks under `.legion-cli/tasks/` (`type: fix`, `parentId`) or `.legion-cli/cache/runs/<id>/extra.json`. Do not expand a live task's `filesAllowed`. Extra work is a linked ticket.
 
