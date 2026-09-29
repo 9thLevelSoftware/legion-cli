@@ -18,6 +18,7 @@ import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsof
 import { httpAdapterNotReadyReason, isHttpAdapterReady } from "@9thlevelsoftware/legion-cli-http";
 import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
+  liveRuns,
   readAuditEvents,
   summarizeAuditMetrics,
   type LocalMetrics,
@@ -380,6 +381,9 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     playwright.status === 0 ? playwright.stdout.trim().split(/\r?\n/)[0] || "ok" : "not installed";
 
   const lockPresent = await engine.store.pathExists(".legion-cli/index/engine.lock");
+  // A run marker whose engine and agent are both gone is cleared here; the next legion command
+  // restores that run's engine state. A live one is only reported (never touched).
+  const runMarkers = await liveRuns(engine.projectRoot, { clearDead: true });
   const { config, error: configError } = await loadConfig(engine);
 
   const adapterDefault = config?.adapter.default ?? null;
@@ -624,6 +628,10 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     path: Object.fromEntries(pathListing.map((group) => [group.name, group.paths])),
     playwright: playwrightDetail,
     lock: lockPresent ? "present" : "absent",
+    liveRuns: {
+      live: runMarkers.live.map((m) => ({ runId: m.runId, skillId: m.skillId, taskId: m.taskId })),
+      clearedDead: runMarkers.dead.map((m) => m.runId),
+    },
     schemaVersions,
     adapter: {
       default: adapterDefault,
@@ -676,6 +684,14 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
           "            delete .legion-cli/index/engine.lock.",
         ]
       : []),
+    ...runMarkers.live.map(
+      (m) =>
+        `Live run    ${m.skillId} ${m.runId}${m.taskId ? ` (${m.taskId})` : ""}: other legion commands are refused until it ends (hands off the tree). Marker: .legion-cli/cache/live-spawn/${m.runId}.json`,
+    ),
+    ...runMarkers.dead.map(
+      (m) =>
+        `Cleared     dead run marker ${m.runId}. Its engine state is restored by the next legion command; check with legion-cli status`,
+    ),
     "schemaVersions",
     ...schemaVersions.map((version) => `  ${version}`),
     "",

@@ -4,6 +4,7 @@ import { join, relative, resolve } from "node:path";
 import { assertNoLinkInPath, atomicWriteFile } from "./atomic-write.js";
 import { AuditTamperError, RestoreRefusedError, SymlinkRefusedError } from "./errors.js";
 import { legionPaths } from "./layout.js";
+import { clearLiveRun, listLiveRunMarkers, liveRunState } from "./live-run.js";
 import { toFsPath, toPosixPath } from "./paths.js";
 
 const GENESIS_DIGEST = "0".repeat(64);
@@ -668,13 +669,25 @@ export async function restoreEngineState(
   };
 }
 
+/**
+ * Restore every open command whose run is gone. A command whose live-run marker still has a live
+ * engine or agent belongs to a running command: restoring under it would revert its writes
+ * (F-016), so it is left open and skipped. A restored run's dead marker is cleared.
+ */
 export async function reconcileUnfinishedCommands(projectRoot: string): Promise<string[]> {
   const open = await listOpenCommandIds(projectRoot);
+  const markers = new Map((await listLiveRunMarkers(projectRoot)).map((marker) => [marker.runId, marker]));
   const done: string[] = [];
   for (const id of open) {
     const rec = await readCommandRecord(projectRoot, id);
     if (!rec) continue;
+    const marker = markers.get(id);
+    if (marker) {
+      const state = await liveRunState(marker);
+      if (state.live) continue;
+    }
     await restoreEngineState(projectRoot, id, { agentAlive: false, jailWritable: false });
+    if (marker) await clearLiveRun(projectRoot, id);
     done.push(id);
   }
   return done;
