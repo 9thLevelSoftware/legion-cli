@@ -14,6 +14,8 @@ import {
   restoreChangedTaskFiles,
   restoreEngineState,
   revertExtras,
+  snapshotGitPolicy,
+  snapshotPaths,
   snapshotTaskFiles,
 } from "../dist/revert.js";
 import { finishStartedSpawn } from "../dist/spawn.js";
@@ -335,4 +337,45 @@ test("funnel conformance: no manifest-relevant engine write bypasses writeTextFi
   assert.match(mapSrc, /writeTextFile/);
   const undo = await readFile(join(coreSrc, "undo.ts"), "utf8");
   assert.doesNotMatch(undo, /\bwriteFile\b/);
+});
+
+test("revertExtras restores a planted .git hook and drops a new one (still an incident)", async () => {
+  await withEngine(async ({ dir }) => {
+    await writeFile(join(dir, "README.md"), "seed\n", "utf8");
+    initGitRepo(dir);
+    const hooks = join(dir, ".git", "hooks");
+    await mkdir(hooks, { recursive: true });
+    await writeFile(join(hooks, "pre-commit"), "#!/bin/sh\necho ok\n", "utf8");
+    const gitPolicy = await snapshotGitPolicy(dir);
+    await writeFile(join(hooks, "pre-commit"), "#!/bin/sh\necho pwned\n", "utf8");
+    await writeFile(join(hooks, "post-commit"), "#!/bin/sh\necho pwned\n", "utf8");
+    const result = await revertExtras({
+      projectRoot: dir,
+      preSpawnRef: null,
+      allowedRoots: ["src/main.ts"],
+      gitPolicy,
+    });
+    assert.equal(result.incident, true);
+    assert.equal(await readFile(join(hooks, "pre-commit"), "utf8"), "#!/bin/sh\necho ok\n");
+    assert.equal(existsSync(join(hooks, "post-commit")), false);
+  });
+});
+
+test("a Windows junction inside the repo pointing at .git is not followed by revert", async (t) => {
+  if (process.platform !== "win32") {
+    t.skip("junctions are a Windows filesystem feature");
+    return;
+  }
+  await withEngine(async ({ dir }) => {
+    await writeFile(join(dir, "README.md"), "seed\n", "utf8");
+    initGitRepo(dir);
+    const snapshot = await snapshotPaths(dir);
+    const link = join(dir, "sneaky");
+    await symlink(join(dir, ".git"), link, "junction");
+    await revertExtras({ projectRoot: dir, preSpawnRef: null, allowedRoots: ["src/main.ts"], snapshot }).catch(() => undefined);
+    // Whatever happened to the link, the repository behind it is intact.
+    assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
+    assert.equal(existsSync(join(dir, ".git", "config")), true);
+    assert.equal((await lstat(join(dir, ".git"))).isDirectory(), true);
+  });
 });

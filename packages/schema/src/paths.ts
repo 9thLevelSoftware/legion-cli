@@ -10,6 +10,34 @@ export const CONCRETE_POSIX_PATH_REGEX =
   /^(?![A-Za-z]:)(?!\/)(?:(?!\.git(?:\/|$))(?!\.(?:\/|$))(?!\.\.(?:\/|$))[^\\*?[\]/]+)(?:\/(?!\.git(?:\/|$))(?!\.(?:\/|$))(?!\.\.(?:\/|$))[^\\*?[\]/]+)*$/;
 
 /**
+ * Windows 8.3 short-name segment (`GIT~1`, `PROGRA~1`). Deliberately narrow: no extension, at most
+ * six leading characters, so `notes~2.md` stays a legal name.
+ */
+const SHORT_NAME_SEGMENT = /^[^~.]{1,6}~\d+$/;
+
+export function isShortNameSegment(segment: string): boolean {
+  return SHORT_NAME_SEGMENT.test(segment);
+}
+
+/**
+ * One segment in the form every trust-boundary comparison uses: lowercase, an NTFS alternate data
+ * stream (`:...`) cut off, and trailing dots and spaces stripped (Windows ignores them).
+ */
+export function normalizePathSegment(segment: string): string {
+  const colon = segment.indexOf(":");
+  const base = colon === -1 ? segment : segment.slice(0, colon);
+  return base.toLowerCase().replace(/[. ]+$/, "");
+}
+
+/** A POSIX path with every segment normalised; compare these, never the raw strings. */
+export function normalizePathKey(path: string): string {
+  return path
+    .split("/")
+    .map((segment) => (segment === "." || segment === ".." ? segment : normalizePathSegment(segment)))
+    .join("/");
+}
+
+/**
  * v0 FileContract.filesAllowed: concrete POSIX repo-relative paths only.
  * Rejects `*`, `**`, `?`, backslashes, absolute paths, and any `.git` segment.
  */
@@ -18,8 +46,12 @@ export function isConcretePosixRepoRelativePath(path: string): boolean {
   if (path.startsWith("/")) return false;
   if (/^[A-Za-z]:/.test(path)) return false;
   if (GLOB_OR_BACKSLASH.test(path)) return false;
+  if (path.includes(":")) return false;
   const segments = path.split("/");
   if (segments.some((segment) => segment === "" || segment === "." || segment === ".." || segment === ".git")) {
+    return false;
+  }
+  if (segments.some((segment) => normalizePathSegment(segment) === ".git" || isShortNameSegment(segment))) {
     return false;
   }
   return true;

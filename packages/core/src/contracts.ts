@@ -1,5 +1,5 @@
 import { isRestoreManifestPath } from "@9thlevelsoftware/legion-cli-persist";
-import type { FileContract, SkillContract, SkillId } from "@9thlevelsoftware/legion-cli-schema";
+import { normalizePathKey, type FileContract, type SkillContract, type SkillId } from "@9thlevelsoftware/legion-cli-schema";
 
 export { isRestoreManifestPath };
 
@@ -83,20 +83,38 @@ export function matchesGlob(pattern: string, posixPath: string): boolean {
   return globToRegExp(pattern).test(posixPath);
 }
 
-/** `.env` / `.env.*` in any path segment, any case (NTFS would otherwise alias `.ENV` onto `.env`). */
-export function isEnvBasename(name: string): boolean {
-  const lower = name.toLowerCase();
-  return lower === ".env" || lower.startsWith(".env.");
+/** Root matching for allow decisions: both sides in normalised form, like the deny checks. */
+function matchesRoot(root: string, posixPath: string): boolean {
+  return matchesGlob(normalizePathKey(root), normalizePathKey(posixPath));
 }
 
+/**
+ * `.env` / `.env.*` in any path segment, any case; trailing dots/spaces and `ENV~1` short names
+ * (NTFS would otherwise alias them onto `.env`).
+ */
+export function isEnvBasename(name: string): boolean {
+  const key = normalizePathKey(name);
+  return key === ".env" || key.startsWith(".env.") || /^env~\d+(\.|$)/.test(key);
+}
+
+/**
+ * Compared in normalised form (case, trailing dots/spaces, `:stream`, `GIT~1`/`LEGION~1` short
+ * names), so `.GIT/x`, `.git./x` and `.LEGION-CLI/STATE.md` are refused like their plain forms.
+ */
 export function isImplicitForbidden(posixPath: string): boolean {
-  if (posixPath === ".git" || posixPath.startsWith(".git/")) return true;
-  if (posixPath === ".legion-cli/config.yaml") return true;
-  if (posixPath === ".legion-cli/STATE.md") return true;
-  if (posixPath === ".legion-cli/tasks" || posixPath.startsWith(".legion-cli/tasks/")) return true;
-  if (posixPath.startsWith(".legion-cli/index/") || posixPath === ".legion-cli/index") return true;
-  if (posixPath.split("/").some((part) => isEnvBasename(part))) return true;
-  return IMPLICIT_FORBIDDEN.some((pattern) => matchesGlob(pattern, posixPath));
+  const key = normalizePathKey(posixPath).replace(
+    /^(?:legion~\d+)(?=\/|$)/,
+    ".legion-cli",
+  );
+  const segments = key.split("/").map((part) => (/^git~\d+$/.test(part) ? ".git" : part));
+  const canon = segments.join("/");
+  if (segments.includes(".git")) return true;
+  if (canon === ".legion-cli/config.yaml") return true;
+  if (canon === ".legion-cli/state.md") return true;
+  if (canon === ".legion-cli/tasks" || canon.startsWith(".legion-cli/tasks/")) return true;
+  if (canon.startsWith(".legion-cli/index/") || canon === ".legion-cli/index") return true;
+  if (segments.some((part) => isEnvBasename(part))) return true;
+  return IMPLICIT_FORBIDDEN.some((pattern) => matchesGlob(pattern, canon));
 }
 
 export function isEngineOwned(posixPath: string): boolean {
@@ -106,5 +124,5 @@ export function isEngineOwned(posixPath: string): boolean {
 export function isAllowedPath(posixPath: string, allowedRoots: readonly string[]): boolean {
   if (isImplicitForbidden(posixPath)) return false;
   if (isEngineOwned(posixPath)) return true;
-  return allowedRoots.some((root) => matchesGlob(root, posixPath));
+  return allowedRoots.some((root) => matchesRoot(root, posixPath));
 }

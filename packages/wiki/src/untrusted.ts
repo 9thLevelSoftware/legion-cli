@@ -6,7 +6,12 @@ export const UNTRUSTED_POINTER_REMINDER =
 
 /** Literal wrapper for untrusted bodies that a spawn must read. */
 export function wrapUntrustedContent(source: string, rawBody: string): string {
-  const body = rawBody.replace(/\r\n/g, "\n").replace(/\n+$/, "");
+  // A body that carries the begin/end marker could close the block early and pass the rest off
+  // as instructions; break every occurrence (any case or spacing) before wrapping.
+  const body = rawBody
+    .replace(/\r\n/g, "\n")
+    .replace(/\n+$/, "")
+    .replace(/-{3,}\s*(BEGIN|END)\s+LEGION\s+CLI\s+UNTRUSTED\s+CONTENT\s*-{3,}/gi, "[neutralised $1 marker]");
   return [
     UNTRUSTED_BEGIN,
     `source: ${source}`,

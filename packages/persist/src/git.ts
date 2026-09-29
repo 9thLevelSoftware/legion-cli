@@ -11,11 +11,43 @@ import { toPosixPath } from "./paths.js";
  */
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 
+let resolvedGit: string | undefined;
+
+/**
+ * Windows: resolve `git` to an absolute path once, from a neutral cwd and never a hit in the
+ * project. A bare `git` makes CreateProcess look in the child's cwd (the audited repo) first.
+ * Elsewhere the PATH search is already safe.
+ */
+function gitExecutable(): string {
+  if (process.platform !== "win32") return "git";
+  if (resolvedGit !== undefined) return resolvedGit;
+  resolvedGit = "git";
+  const found = spawnSync("where.exe", ["git"], {
+    cwd: join(process.env.SystemRoot || process.env.windir || "C:/Windows", "System32"),
+    env: { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" },
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+  });
+  if (found.status === 0) {
+    const cwd = resolve(process.cwd()).toLowerCase();
+    const hit = String(found.stdout)
+      .split("\n")
+      .map((line) => line.trim())
+      .find(
+        (abs) => abs.toLowerCase().endsWith(".exe") && isAbsolute(abs) && dirname(resolve(abs)).toLowerCase() !== cwd,
+      );
+    if (hit) resolvedGit = hit;
+  }
+  return resolvedGit;
+}
+
 export type GitRunResult = { status: number; stdout: string; stderr: string; error?: string };
 
 export function runGit(cwd: string, args: string[], opts: { maxBuffer?: number } = {}): GitRunResult {
-  const result = spawnSync("git", args, {
+  const result = spawnSync(gitExecutable(), args, {
     cwd,
+    env: process.platform === "win32" ? { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" } : process.env,
     encoding: "utf8",
     windowsHide: true,
     shell: false,

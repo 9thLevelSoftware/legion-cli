@@ -237,3 +237,23 @@ test("validateTaskGraph checks self loops, ghost blockers, and cycles", () => {
   const ok2 = task({ id: "TSK-0002", blockedBy: ["TSK-0001"] });
   assert.deepEqual(validateTaskGraph([ok1, ok2]), { valid: true });
 });
+
+test("implicit forbidden and plan checks compare normalised forms", () => {
+  for (const bad of [".GIT/x", ".Git./x", "GIT~1/x", ".LEGION-CLI/STATE.md", "LEGION~1/x", "a/.ENV.local", "ENV~1.LOC"]) {
+    assert.equal(filesAllowedFailsPlan([bad]), true, bad);
+  }
+  assert.equal(filesAllowedFailsPlan(["notes~2.md", "src/a.ts"]), false);
+  // expectedArtifacts must be in filesAllowed by normalised key
+  assert.equal(expectedArtifactsFailsPlan(["src/A.ts"], ["src/a.ts"]), false);
+  assert.equal(expectedArtifactsFailsPlan(["src/a.ts"], ["src/b.ts"]), true);
+});
+
+test("overlappingFilesAllowed flags case, trailing-dot and directory-prefix overlaps", () => {
+  const t = (id, filesAllowed) => task({ id, contract: { filesAllowed, expectedArtifacts: [] } });
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/A.ts"]), t("TSK-0002", ["src/a.ts"])]).length, 1);
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/a.ts"]), t("TSK-0002", ["src/a.ts."])]).length, 1);
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src"]), t("TSK-0002", ["src/a.ts"])]).length, 1);
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/a.ts"]), t("TSK-0002", ["src"])]).length, 1);
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/a.ts"]), t("TSK-0002", ["src/b.ts"])]).length, 0);
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/a.ts", "src/b.ts"])]).length, 0);
+});

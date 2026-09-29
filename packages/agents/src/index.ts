@@ -81,6 +81,7 @@ export {
   runTool,
   unwrapCmdShim,
   whichAll,
+  withNoCwdExeSearch,
 } from "./which.js";
 export { isSecretEnvName, scrubSecretsEnv, SECRET_ENV_NAME } from "./env-scrub.js";
 export { ARGV_ONLY_MESSAGE, parseCommandLine, runCommand, splitCommand } from "./run-command.js";

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { SkillIdSchema } from "@9thlevelsoftware/legion-cli-schema";
-import { SKILL_CONTRACTS, isEngineOwned, isImplicitForbidden, skillContract } from "../dist/index.js";
+import { SKILL_CONTRACTS, isAllowedPath, isEngineOwned, isImplicitForbidden, skillContract } from "../dist/index.js";
 
 test("SKILL_CONTRACTS covers every SkillId including map, wireframe, chat", () => {
   assert.deepEqual(Object.keys(SKILL_CONTRACTS).sort(), [...SkillIdSchema.options].sort());
@@ -37,4 +37,17 @@ test("SKILL_CONTRACTS covers every SkillId including map, wireframe, chat", () =
   assert.equal(isImplicitForbidden("src/.ENV"), true);
   assert.equal(isImplicitForbidden(".ENV.local"), true);
   assert.equal(isImplicitForbidden("src/main.ts"), false);
+});
+
+test("implicit forbidden compares normalised forms", () => {
+  for (const bad of [".GIT/x", ".Git./x", "GIT~1/x", ".LEGION-CLI/STATE.md", ".legion-cli./state.md", "LEGION~1/TASKS/x.md", "ENV~1.LOC"]) {
+    assert.equal(isImplicitForbidden(bad), true, bad);
+  }
+  assert.equal(isImplicitForbidden("notes~2.md"), false);
+  assert.equal(isImplicitForbidden("src/a.ts"), false);
+});
+
+test("allowedRoots match in normalised form", () => {
+  assert.equal(isAllowedPath("SRC/Main.ts.", ["src/main.ts"]), true);
+  assert.equal(isAllowedPath(".GIT/config", [".git/**", "**"]), false);
 });

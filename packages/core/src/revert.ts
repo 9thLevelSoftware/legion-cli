@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, rm, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, rm, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   gitDiscoverChanges,
@@ -172,7 +172,8 @@ export async function snapshotGitPolicy(projectRoot: string): Promise<GitPolicyS
       if (!entry.isFile()) continue;
       const posix = `.git/hooks/${entry.name}`;
       try {
-        hooks[posix] = await readFile(join(hooksDir, entry.name), "utf8");
+        // latin1 round-trips arbitrary bytes, so a restored hook is byte-identical.
+        hooks[posix] = await readFile(join(hooksDir, entry.name), "latin1");
       } catch {
         hooks[posix] = "";
       }
@@ -182,7 +183,7 @@ export async function snapshotGitPolicy(projectRoot: string): Promise<GitPolicyS
   }
   let config: string | null = null;
   try {
-    config = await readFile(join(projectRoot, ".git", "config"), "utf8");
+    config = await readFile(join(projectRoot, ".git", "config"), "latin1");
   } catch {
     config = null;
   }
@@ -202,6 +203,47 @@ async function gitPolicyIncidents(
     if (now.hooks[name] !== snapshot.hooks[name]) incidents.push(name);
   }
   return incidents;
+}
+
+/** Restore the snapshotted `.git/config` and hook files named in `names`; drop hooks that are new. */
+async function restoreGitPolicy(
+  projectRoot: string,
+  snapshot: GitPolicySnapshot,
+  names: readonly string[],
+): Promise<void> {
+  for (const name of names) {
+    const abs = join(projectRoot, ...name.split("/"));
+    const before = name === ".git/config" ? snapshot.config : snapshot.hooks[name];
+    try {
+      if (before === null || before === undefined) {
+        await rm(abs, { force: true });
+      } else {
+        await rm(abs, { force: true });
+        await writeTextFile(abs, Buffer.from(before, "latin1"), { root: projectRoot, skipJournal: true });
+        if (name !== ".git/config") await chmod(abs, 0o755).catch(() => undefined);
+      }
+    } catch {
+      // The incident is already recorded; a restore failure must not mask it.
+    }
+  }
+}
+
+/**
+ * The first symlink or junction on the way to `posix`, or null. Git on Windows lists the contents
+ * behind a junction as if they were inside the repo; acting on those paths would delete the
+ * link's target (a junction to `.git`, say), so callers act on the link itself instead.
+ */
+async function linkAncestor(projectRoot: string, posix: string): Promise<string | null> {
+  const parts = posix.split("/");
+  for (let i = 1; i < parts.length; i += 1) {
+    const prefix = parts.slice(0, i).join("/");
+    try {
+      if ((await lstat(toFsPath(projectRoot, prefix))).isSymbolicLink()) return prefix;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 function forbiddenByContract(posixPath: string, filesForbidden: readonly string[] | undefined): boolean {
@@ -276,10 +318,23 @@ export async function revertExtras(opts: {
   }
 
   const incidents = await gitPolicyIncidents(opts.projectRoot, opts.gitPolicy);
+  // Flag the incident, then put the pre-spawn hooks/config back: a planted hook would otherwise
+  // run on the operator's next commit.
+  if (opts.gitPolicy) await restoreGitPolicy(opts.projectRoot, opts.gitPolicy, incidents);
   for (const posix of incidents) candidates.add(posix);
   let incident = incidents.length > 0 || tamperIncident;
 
   const extraRoots = opts.extraRoots ?? opts.allowedRoots.filter((root) => root.startsWith(".legion-cli/"));
+
+  const linkedCandidates = new Set<string>();
+  for (const posix of candidates) {
+    const link = await linkAncestor(opts.projectRoot, posix);
+    if (link !== null) {
+      linkedCandidates.add(posix);
+      candidates.add(link);
+    }
+  }
+  for (const posix of linkedCandidates) candidates.delete(posix);
 
   for (const posix of candidates) {
     if (posix.startsWith(".git/") || posix === ".git") {
