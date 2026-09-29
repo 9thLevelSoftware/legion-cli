@@ -1,10 +1,10 @@
-import { spawnSync } from "node:child_process";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import {
   assertInsideProject,
   MAX_INGEST_FILE_BYTES,
   resolveProjectPath,
+  runGit,
   toStorePath,
   type IngestDocument,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -67,12 +67,7 @@ export async function materializeIngestSources(opts: {
   }
 
   if (opts.diff) {
-    const result = spawnSync("git", ["diff", opts.diff], {
-      cwd: opts.projectRoot,
-      encoding: "utf8",
-      windowsHide: true,
-      shell: false,
-    });
+    const result = runGit(opts.projectRoot, ["diff", opts.diff]);
     const body = result.status === 0 ? result.stdout : "";
     documents.push({
       source: `diff:${opts.diff}`,
