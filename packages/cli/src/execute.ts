@@ -19,13 +19,13 @@ export async function confirmAllowNoSandbox(verb: "execute" | "fix"): Promise<vo
   if (!process.stdin.isTTY) {
     refuse(`${verb} --allow-no-sandbox requires a TTY`, HINT.allowNoSandbox);
   }
-  writeOut("Copy jail is not OS isolation. Continue without a hardened sandbox? [Y/n]");
+  writeOut("Copy jail is not OS isolation. Continue without a hardened sandbox? [y/n]");
   const answer = await readLine("> ");
   if (isNo(answer)) {
     refuse(`${verb} --allow-no-sandbox declined`, HINT.allowNoSandbox);
   }
-  if (!(answer === "" || isYes(answer))) {
-    refuse(`${verb} --allow-no-sandbox needs Y or n`, HINT.allowNoSandbox);
+  if (!isYes(answer)) {
+    refuse(`${verb} --allow-no-sandbox needs an explicit y or n (empty is not approval)`, HINT.allowNoSandbox);
   }
 }
 

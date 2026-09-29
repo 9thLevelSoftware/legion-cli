@@ -414,7 +414,7 @@ export function createProgram(): Command {
   addGlobalOptions(program.command("ship").description("Final human review; stage diff"))
     .option("--allow-degraded-qa", "ship after no-browser QA")
     .option("--pr", "create a GitHub PR with gh (requires --commit)")
-    .option("--commit", "create the git commit after Y/n")
+    .option("--commit", "create the git commit after an explicit y")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
       const flags = opts as { allowDegradedQa?: boolean; pr?: boolean; commit?: boolean };

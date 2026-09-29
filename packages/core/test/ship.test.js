@@ -411,3 +411,37 @@ test("ship --pr failure rolls back receipt, audit, phase and staged set consiste
     assert.equal(git(dir, ["diff", "--cached", "--name-only"]).trim(), "");
   });
 });
+
+test("ship --pr failure with no url (no error text) rolls back the same way", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    const before = initGitRepo(dir);
+    await assert.rejects(() => engine.ship({ pr: true, commit: true, prCreate: () => ({}) }), /no pull request url/);
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+    assert.equal(gitHead(dir), before);
+    assert.equal(existsSync(join(dir, ".legion-cli", "audit", "ship-spec-checkin.md")), false);
+    assert.equal(git(dir, ["diff", "--cached", "--name-only"]).trim(), "");
+  });
+});
+
+test("ship --pr failure in a repo with no prior commit keeps the root commit and records it", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    git(dir, ["init"]);
+    git(dir, ["config", "user.name", "9thLevelSoftware"]);
+    git(dir, ["config", "user.email", "engineering@9thlevelsoftware.com"]);
+    await assert.rejects(() => engine.ship({ pr: true, commit: true, prCreate: () => ({ error: "gh failed" }) }));
+    const head = gitHead(dir);
+    assert.ok(head);
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+    const events = (await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const rolled = events.find((e) => e.type === "ship_rolled_back");
+    assert.equal(rolled.data.commitKept, head);
+    assert.equal(existsSync(join(dir, ".legion-cli", "audit", "ship-spec-checkin.md")), true);
+  });
+});
