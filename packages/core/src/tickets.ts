@@ -72,9 +72,8 @@ export function parseExtraJson(raw: unknown): NewTicket[] {
         expectedArtifacts: Array.isArray(rec.expectedArtifacts)
           ? rec.expectedArtifacts.filter((path): path is string => typeof path === "string")
           : undefined,
-        verificationCommands: Array.isArray(rec.verificationCommands)
-          ? rec.verificationCommands.filter((cmd): cmd is string => typeof cmd === "string")
-          : undefined,
+        // verificationCommands are never taken from agent output: an agent-filed ticket runs with
+        // its parent's commands (engine.ts #fileTicketLocked), so the agent cannot certify itself.
       },
     });
   }

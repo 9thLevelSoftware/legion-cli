@@ -37,6 +37,9 @@ export async function runVerify(opts: CliOpts, flags: { id?: string; adapter?: s
   for (const id of result.createdTaskIds) {
     writeOut(`Filed ${id} (type: fix).`);
   }
+  for (const filed of result.createdTickets) {
+    writeOut(`${filed.id} verification (inherited from parent): ${filed.verificationCommands.join(" ; ")}`);
+  }
   writeOut(`Next: ${next.run}`);
   writeOut(`Dashboard: ${viewer}`);
   return 0;

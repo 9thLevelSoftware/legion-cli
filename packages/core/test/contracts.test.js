@@ -72,3 +72,22 @@ test("allowedRoots matching is as loose as the platform filesystem, never looser
   // The deny side normalises everywhere.
   assert.equal(isAllowedPath(".GIT/config", [".git/**", "**"]), false);
 });
+
+test("verify and review cannot write QA scores or checklists (F-081)", () => {
+  const verify = skillContract("verify", { runId: "r1" }).allowedRoots;
+  const review = skillContract("review", { runId: "r1" }).allowedRoots;
+  for (const path of [
+    ".legion-cli/qa/scores/QA-0001.json",
+    ".legion-cli/qa/checklist.json",
+    ".legion-cli/qa/notes.md",
+  ]) {
+    assert.equal(isAllowedPath(path, verify), false, `verify must not write ${path}`);
+    assert.equal(isAllowedPath(path, review), false, `review must not write ${path}`);
+  }
+  assert.equal(isAllowedPath(".legion-cli/qa/verify.md", verify), true);
+  assert.equal(isAllowedPath(".legion-cli/qa/verify/TSK-0001.md", verify), true);
+  assert.equal(isAllowedPath(".legion-cli/qa/review.md", review), true);
+  assert.equal(isAllowedPath(".legion-cli/qa/review.md", verify), false);
+  // qa keeps its own roots.
+  assert.equal(isAllowedPath(".legion-cli/qa/scores/QA-0001.json", skillContract("qa", { runId: "r1" }).allowedRoots), true);
+});

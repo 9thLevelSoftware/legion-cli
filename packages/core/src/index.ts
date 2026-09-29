@@ -183,6 +183,7 @@ export type {
   ExecuteOptions,
   ExecuteResult,
   ExecuteTaskResult,
+  FiledTicketSummary,
   FileContract,
   GardenReport,
   IngestOpts,

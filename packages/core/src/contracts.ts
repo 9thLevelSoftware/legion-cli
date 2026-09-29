@@ -11,9 +11,9 @@ export const SKILL_CONTRACTS: Record<SkillId, readonly string[]> = {
   ingest: [".legion-cli/wiki/**", ".legion-cli/audit/**", ".legion-cli/cache/runs/<id>/**"],
   plan: [".legion-cli/plans/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
   execute: [".legion-cli/cache/runs/<id>/**"],
-  verify: [".legion-cli/qa/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
+  verify: [".legion-cli/qa/verify.md", ".legion-cli/qa/verify/*.md", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
   // tasks/** is for filing new fix tasks; mutating existing TSK-*.md still FAILs review.
-  review: [".legion-cli/qa/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
+  review: [".legion-cli/qa/review.md", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
   qa: [".legion-cli/qa/**", ".legion-cli/cache/runs/<id>/**"],
   map: [".legion-cli/map/ARCHITECTURE.md", ".legion-cli/cache/runs/<id>/**"],
   wireframe: [".legion-cli/specs/<activeSpecId>/wireframes/**", ".legion-cli/cache/runs/<id>/**"],

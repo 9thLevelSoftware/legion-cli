@@ -20,7 +20,7 @@ Optional walkthrough notes. Verify is not a ship gate. In-process `verificationC
 
 Allowed roots:
 
-- `.legion-cli/qa/**`
+- `.legion-cli/qa/verify.md` and `.legion-cli/qa/verify/<taskId>.md` only (scores and checklists are engine-owned)
 - `.legion-cli/tasks/**`
 - `.legion-cli/cache/runs/<id>/**`
 

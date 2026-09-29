@@ -87,6 +87,9 @@ export async function runExecute(
           : `Filed ${outcome.ticketId}.`,
       );
     }
+    for (const filed of outcome.filedTickets ?? []) {
+      writeOut(`${filed.id} verification (inherited from parent): ${filed.verificationCommands.join(" ; ")}`);
+    }
     if (outcome.status === "done") {
       writeOut(`Verification PASS. ${outcome.taskId} done.`);
     } else {

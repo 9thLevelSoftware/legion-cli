@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { WIKI_INDEX_STORE_PATH } from "@9thlevelsoftware/legion-cli-wiki";
 
-import { DISTILL_SOURCE_MAX_CHARS } from "../dist/index.js";
+import { DISTILL_SOURCE_MAX_CHARS, LegionRefuseError } from "../dist/index.js";
 import {
   git,
   initGitRepo,
@@ -283,4 +283,34 @@ test("distill prompt wraps untrusted source", async () => {
       { skillsDir },
     );
   });
+});
+
+test("distill refuses with a real adapter and no hardened sandbox, before writing anything", async () => {
+  await withEngine(
+    async ({ dir, engine }) => {
+      await engine.init({
+        name: "Checkin",
+        adapter: "generic",
+        generic: { binary: process.execPath, args: ["-e", "process.exit(0)", "{{pointer}}"] },
+      });
+      await writeFile(join(dir, "notes.md"), "# Notes\n\nDurable fact.\n", "utf8");
+      await assert.rejects(
+        () => engine.ingest(["notes.md"], { noCommit: true, distill: true }),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /needs a hardened sandbox/);
+          assert.match(err.message, /bwrap on Linux, seatbelt on macOS, or Docker/);
+          assert.match(err.message, /Windows without Docker/);
+          return true;
+        },
+      );
+      assert.deepEqual(await ingestRunNames(dir), [], "no agent was spawned");
+      assert.equal(existsSync(join(dir, ".legion-cli", "wiki", "ingested")), false, "nothing was ingested");
+      // Excerpt-only ingest is unchanged on the same configuration.
+      const receipt = await engine.ingest(["notes.md"], { noCommit: true });
+      assert.ok(receipt.pagesCreated.length >= 1);
+      assert.equal(receipt.distillRan, undefined);
+    },
+    { skillsDir, fakeDistillSandboxHardened: false },
+  );
 });

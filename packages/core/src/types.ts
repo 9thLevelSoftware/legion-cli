@@ -46,6 +46,8 @@ export type LegionEngineOptions = {
   /** Test-only: runs during qa (lock-free after F-026). Injected-clock advance lives here. */
   fakeOnQa?: () => Promise<void>;
   verificationTimeoutMs?: number;
+  /** Test-only: overrides hardened-backend detection for the `ingest --distill` refusal. */
+  fakeDistillSandboxHardened?: boolean;
 };
 
 export type IntentState = {
@@ -308,6 +310,9 @@ export type ExecuteOptions = {
   allowNoSandbox?: boolean;
 };
 
+/** A ticket filed from agent output, with the verification commands it will run (F-039). */
+export type FiledTicketSummary = { id: string; verificationCommands: string[] };
+
 export type ExecuteTaskResult = {
   taskId: string;
   status: "done" | "blocked";
@@ -316,6 +321,8 @@ export type ExecuteTaskResult = {
   incident: boolean;
   headMoved: boolean;
   ticketId?: string;
+  /** Every ticket filed from this task's agent output, with the commands each will run. */
+  filedTickets?: FiledTicketSummary[];
   verificationPass?: boolean;
   /** Why the task was blocked by verification, e.g. "verification command did not start: …". */
   reason?: string;
@@ -338,12 +345,15 @@ export type VerifyResult = {
   spawned: boolean;
   notesPath?: string;
   createdTaskIds: string[];
+  /** The commands each created ticket will run (inherited, never agent-authored). */
+  createdTickets: FiledTicketSummary[];
   extrasReverted: string[];
 };
 
 export type ReviewResult = {
   verdict: ReviewVerdict;
   createdTaskIds: string[];
+  createdTickets: FiledTicketSummary[];
   extrasReverted: string[];
   rewrittenExistingTaskIds: string[];
 };
@@ -386,6 +396,8 @@ export type NewTicket = {
   notes?: string;
   contract?: Partial<FileContract>;
   adapter?: AdapterId;
+  /** Agent-filed tickets with no resolvable parent inherit these (the running task's commands). */
+  inheritVerificationCommands?: string[];
 };
 
 export type NewPacket = {

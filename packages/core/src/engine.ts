@@ -116,7 +116,7 @@ import {
   type TaskStatus,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { copyShippedCraft, isBrandViolationBlockingFreeze } from "@9thlevelsoftware/legion-cli-design-system";
-import { assertExecuteSandbox, SandboxError } from "@9thlevelsoftware/legion-cli-sandbox";
+import { assertExecuteSandbox, hardenedSandboxAvailable, SandboxError } from "@9thlevelsoftware/legion-cli-sandbox";
 import { HINT, LegionRefuseError, refuse, refuseKind } from "./errors.js";
 import { assertIngestSourceAllowed } from "./ingest-guard.js";
 import { decisionFileName, templateDecisions } from "./discuss.js";
@@ -201,6 +201,7 @@ import type {
   IngestOpts,
   IngestResult,
   ExecuteTaskResult,
+  FiledTicketSummary,
   InitOptions,
   IntentState,
   LegionEngineOptions,
@@ -343,6 +344,7 @@ export class LegionEngine {
   readonly store: LegionStore;
   readonly #skillsDir?: string;
   readonly #fakeArtifacts: FakeArtifact[];
+  readonly #fakeDistillSandboxHardened: boolean | undefined;
   readonly #fakeThrowAfterWrite: boolean;
   readonly #fakeTimedOut: boolean;
   readonly #fakeHoldWait?: LegionEngineOptions["fakeHoldWait"];
@@ -360,6 +362,7 @@ export class LegionEngine {
     this.store = store ?? createLegionStore(projectRoot);
     this.#skillsDir = options?.skillsDir;
     this.#fakeArtifacts = options?.fakeArtifacts ?? [];
+    this.#fakeDistillSandboxHardened = options?.fakeDistillSandboxHardened;
     this.#fakeThrowAfterWrite = Boolean(options?.fakeThrowAfterWrite);
     this.#fakeTimedOut = Boolean(options?.fakeTimedOut);
     this.#fakeHoldWait = options?.fakeHoldWait;
@@ -616,6 +619,7 @@ export class LegionEngine {
       if (opts?.transcript) {
         assertIngestSourceAllowed(this.projectRoot, opts.transcript);
       }
+      if (opts?.distill) await this.#assertDistillSandbox();
       const phaseBefore = state.phase;
       const autoCommit = opts?.noCommit !== true;
       if (autoCommit && !isGitRepo(this.projectRoot)) {
@@ -1316,6 +1320,7 @@ export class LegionEngine {
         spawned: result.spawned,
         notesPath: await this.#findVerifyNotes(task?.id),
         createdTaskIds,
+        createdTickets: await this.#summarizeTickets(createdTaskIds),
         extrasReverted: result.revert?.extrasReverted ?? [],
       };
     });
@@ -1407,6 +1412,7 @@ export class LegionEngine {
       return {
         verdict,
         createdTaskIds,
+        createdTickets: await this.#summarizeTickets(createdTaskIds),
         extrasReverted: revert?.extrasReverted ?? [],
         rewrittenExistingTaskIds,
       };
@@ -2363,10 +2369,14 @@ export class LegionEngine {
 
       let extraJsonInvalid = false;
       let extraJsonTicketIds: string[] = [];
+      const filedTickets: FiledTicketSummary[] = [];
       if (runId) {
-        const filed = await this.#fileExtrasFromRun(runId, lockedTask.specId);
+        const filed = await this.#fileExtrasFromRun(runId, lockedTask.specId, {
+          inheritVerificationCommands: lockedTask.contract.verificationCommands,
+        });
         extraJsonInvalid = filed.invalid;
         extraJsonTicketIds = filed.ticketIds;
+        filedTickets.push(...filed.tickets);
       }
 
       if (incident || extras.length > 0 || extraJsonInvalid) {
@@ -2386,6 +2396,7 @@ export class LegionEngine {
             lockedTask.specId,
           );
           ticketId = ticket.id;
+          filedTickets.push({ id: ticket.id, verificationCommands: ticket.contract.verificationCommands });
         }
         ticketId ??= extraJsonTicketIds[0];
         await this.#transitionTaskTo(lockedTask.id, "blocked");
@@ -2404,6 +2415,7 @@ export class LegionEngine {
             incident,
             headMoved,
             ticketId,
+            filedTickets,
           }),
         };
       }
@@ -2435,6 +2447,7 @@ export class LegionEngine {
         spawnAudit,
         adapterId,
         resolutionSource,
+        filedTickets,
       };
     });
 
@@ -2534,6 +2547,7 @@ export class LegionEngine {
         verificationPass,
         adapterId: post.adapterId,
         resolutionSource: post.resolutionSource,
+        ...(post.filedTickets.length > 0 ? { filedTickets: post.filedTickets } : {}),
         ...(reason ? { reason } : {}),
         ...(trustTierNote ? { trustTierNote } : {}),
       };
@@ -2714,17 +2728,18 @@ export class LegionEngine {
   async #fileExtrasFromRun(
     runId: string,
     specId: string,
-    defaults?: { type?: NewTicket["type"]; parentId?: string },
-  ): Promise<{ invalid: boolean; ticketIds: string[] }> {
+    defaults?: { type?: NewTicket["type"]; parentId?: string; inheritVerificationCommands?: string[] },
+  ): Promise<{ invalid: boolean; ticketIds: string[]; tickets: FiledTicketSummary[] }> {
     const abs = join(this.projectRoot, ".legion-cli", "cache", "runs", runId, "extra.json");
     let raw: unknown;
     try {
       raw = JSON.parse(await readFile(abs, "utf8"));
     } catch {
-      return { invalid: false, ticketIds: [] };
+      return { invalid: false, ticketIds: [], tickets: [] };
     }
     let invalid = false;
     const ticketIds: string[] = [];
+    const tickets: FiledTicketSummary[] = [];
     for (const input of parseExtraJson(raw)) {
       const { task, coerced } = await this.#fileTicketLocked(
         {
@@ -2732,13 +2747,15 @@ export class LegionEngine {
           fromAgent: true,
           type: input.type ?? defaults?.type,
           parentId: input.parentId ?? defaults?.parentId,
+          inheritVerificationCommands: defaults?.inheritVerificationCommands,
         },
         specId,
       );
       if (coerced) invalid = true;
       ticketIds.push(task.id);
+      tickets.push({ id: task.id, verificationCommands: task.contract.verificationCommands });
     }
-    return { invalid, ticketIds };
+    return { invalid, ticketIds, tickets };
   }
 
   async #fileTicketLocked(
@@ -2757,6 +2774,7 @@ export class LegionEngine {
     const tasks = await this.#listTasks();
     let parentId = input.parentId;
     let parentAdapter: AdapterId | undefined;
+    let parentVerification: string[] | undefined;
     if (parentId) {
       const parent = tasks.find((task) => task.id === parentId);
       if (!parent) {
@@ -2767,8 +2785,14 @@ export class LegionEngine {
         }
       } else {
         parentAdapter = parent.adapter;
+        parentVerification = parent.contract.verificationCommands;
       }
     }
+    // Agent-filed tickets never bring their own verificationCommands (F-039): they run the
+    // parent's (or the running task's) commands. Human tickets keep what the human typed.
+    const agentVerification = input.fromAgent
+      ? (parentVerification ?? input.inheritVerificationCommands)
+      : undefined;
     // From file names (valid or not), under engine.lock, so a corrupt file's id is never
     // reused (F-004).
     const id = await nextFileId(this.store.paths.tasksDir, "TSK", 4);
@@ -2777,6 +2801,9 @@ export class LegionEngine {
       title,
       parentId,
       adapter: input.adapter ?? parentAdapter,
+      ...(input.fromAgent
+        ? { contract: { ...input.contract, verificationCommands: agentVerification } }
+        : {}),
     });
     const contractInvalid =
       filesAllowedFailsPlan(ticket.contract.filesAllowed) ||
@@ -2793,7 +2820,7 @@ export class LegionEngine {
       }
       ticket = {
         ...ticket,
-        contract: defaultTicketContract(id),
+        contract: defaultTicketContract(id, { verificationCommands: agentVerification }),
       };
       coerced = true;
     }
@@ -2879,6 +2906,14 @@ export class LegionEngine {
       }
     }
     return out.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  async #summarizeTickets(ids: readonly string[]): Promise<FiledTicketSummary[]> {
+    const out: FiledTicketSummary[] = [];
+    for (const id of ids) {
+      out.push({ id, verificationCommands: (await this.store.readTask(id)).data.contract.verificationCommands });
+    }
+    return out;
   }
 
   /** Spawn may write tasks/**; only execute + verificationCommands may mark done/blocked. */
@@ -3661,6 +3696,29 @@ export class LegionEngine {
   /** Persist must not import wiki; catalog is engine-authored while holding the lock. */
   async #refreshWikiCatalogLocked(): Promise<void> {
     await writeWikiCatalog(this.store);
+  }
+
+  /**
+   * `ingest --distill` runs an agent on untrusted content (F-042/A-002). Refuse up front, before
+   * anything is written, when the agent would have to run without a hardened sandbox. An adapter
+   * that cannot spawn stays a soft skip (nothing would run), and the fake test adapter runs no agent.
+   */
+  async #assertDistillSandbox(): Promise<void> {
+    let config: LegionConfig;
+    try {
+      config = await this.#readConfig();
+    } catch {
+      return;
+    }
+    const resolution = resolveAdapterId({ config, skillId: "ingest" });
+    if (resolution.id === "fake") return;
+    if (!(await isResolvedAdapterSpawnable(config, resolution.id))) return;
+    const hardened = this.#fakeDistillSandboxHardened ?? hardenedSandboxAvailable(config.sandbox);
+    if (hardened) return;
+    refuse(
+      "ingest --distill runs an agent on untrusted content and needs a hardened sandbox: bwrap on Linux, seatbelt on macOS, or Docker (on Windows without Docker, distill is unavailable)",
+      HINT.distillNoSandbox,
+    );
   }
 
   async #maybeDistillLocked(

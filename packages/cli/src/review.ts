@@ -56,6 +56,9 @@ export async function runReview(opts: CliOpts, flags: { adapter?: string } = {})
   } else {
     writeOut("Review FAIL.");
   }
+  for (const filed of result.createdTickets) {
+    writeOut(`${filed.id} verification (inherited from parent): ${filed.verificationCommands.join(" ; ")}`);
+  }
   writeOut(`Next: ${next.run}`);
   writeOut(`Dashboard: ${viewer}`);
   return passed ? 0 : 1;

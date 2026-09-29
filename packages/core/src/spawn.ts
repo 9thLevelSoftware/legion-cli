@@ -249,10 +249,15 @@ const CONFIG_READ_SET = [
 function sandboxReadSet(opts: {
   projectRoot: string;
   runId: string;
+  skillId?: SkillId;
   specId?: string;
   taskId?: string;
 }): string[] {
   const out = [`.legion-cli/cache/skills/${opts.runId}`, `.legion-cli/cache/runs/${opts.runId}`];
+  // Distill links existing catalog titles, so the jailed ingest agent reads the wiki.
+  if (opts.skillId === "ingest" && existsSync(join(opts.projectRoot, ".legion-cli", "wiki"))) {
+    out.push(".legion-cli/wiki");
+  }
   if (opts.specId) out.push(`.legion-cli/specs/${opts.specId}`);
   if (opts.taskId) out.push(`.legion-cli/tasks/${opts.taskId}.md`);
   for (const name of CONFIG_READ_SET) {
@@ -524,7 +529,10 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   const jailed =
     opts.skillId === "execute" ||
     opts.config.sandbox.skills.includes(opts.skillId) ||
-    resolution.id === "http";
+    resolution.id === "http" ||
+    // ingest --distill feeds untrusted content to the agent (F-042); engine.ts refuses it
+    // without a hardened backend, and here it always runs jailed. The fake test adapter runs nothing.
+    (opts.skillId === "ingest" && resolution.id !== "fake");
   if (jailed) {
     try {
       assertExecuteSandbox(opts.config, { allowNoSandbox: opts.allowNoSandbox });
@@ -547,6 +555,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       readSet: sandboxReadSet({
         projectRoot: opts.projectRoot,
         runId,
+        skillId: opts.skillId,
         specId: opts.specId,
         taskId: opts.taskId,
       }),
