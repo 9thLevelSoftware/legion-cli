@@ -17,8 +17,6 @@ import {
 
 export const FAKE_WAIT_READY_ENV = "LEGION_CLI_FAKE_WAIT_READY";
 export const FAKE_WAIT_RELEASE_ENV = "LEGION_CLI_FAKE_WAIT_RELEASE";
-/** Test-only: set to 1 and a fake review job leaves non-empty notes in its run cache, like a reviewer that read the slice. */
-export const FAKE_REVIEW_NOTES_ENV = "LEGION_CLI_FAKE_REVIEW_NOTES";
 
 export function holdWaitFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -145,11 +143,7 @@ export class FakeAdapter implements AgentAdapter {
       });
     }
 
-    const reviewNotes: FakeArtifact[] =
-      job.skillId === "review" && process.env[FAKE_REVIEW_NOTES_ENV] === "1"
-        ? [{ path: ".legion-cli/cache/runs/<id>/review.md", content: "Fake review: the slice meets the spec.\n" }]
-        : [];
-    const artifacts = [...reviewNotes, ...this.#artifacts, ...(job.expectedArtifacts ?? [])].map(normalizeArtifact);
+    const artifacts = [...this.#artifacts, ...(job.expectedArtifacts ?? [])].map(normalizeArtifact);
     const commitPaths: string[] = [];
     for (const artifact of artifacts) {
       const rel = assertRepoRelative(artifact.path.replaceAll("<id>", job.runId));

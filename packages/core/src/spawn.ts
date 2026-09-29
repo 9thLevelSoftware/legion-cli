@@ -495,7 +495,8 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     skillId: opts.skillId,
     skillDir,
     skillsDir,
-    promptBody: opts.promptBody,
+    // the run id is only known here; prompts name run-cache paths with a literal <id>
+    promptBody: opts.promptBody.replaceAll("<id>", runId),
     allowedRoots,
     fileContract: opts.fileContract,
     store: opts.store,

@@ -354,6 +354,8 @@ export type ReviewResult = {
   createdTaskIds: string[];
   extrasReverted: string[];
   rewrittenExistingTaskIds: string[];
+  /** Non-zero agent exit on a review that still ended FAIL (filed tasks). */
+  warnings: string[];
 };
 
 export type ShipReceipt = {

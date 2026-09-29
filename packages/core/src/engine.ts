@@ -977,6 +977,7 @@ export class LegionEngine {
   async plan(specId?: string, opts?: { adapter?: AdapterId }): Promise<Readiness> {
     const spawnFails: string[] = [];
     let planExitWarning: string | undefined;
+    let planAgentExit: { runId: string; code: number | null } | undefined;
     let started: StartedSkillSpawn | undefined;
     let current: StateFile | undefined;
     let id: string | undefined;
@@ -1035,6 +1036,7 @@ export class LegionEngine {
       }
       const problem = agentExitProblem(waited);
       if (problem) {
+        planAgentExit = { runId: started.runId, code: waited.exitCode ?? null };
         planExitWarning = `plan ${problem} (log: .legion-cli/cache/runs/${started.runId}/stderr.log); readiness decides the result`;
       }
     }
@@ -1047,6 +1049,13 @@ export class LegionEngine {
         refuse("plan requires an active spec", HINT.spec);
       }
       let runId = started?.runId;
+      if (planAgentExit) {
+        await this.#audit("plan", currentLocked.phase, "agent", {
+          skillId: "plan",
+          runId: planAgentExit.runId,
+          agentExitCode: planAgentExit.code,
+        });
+      }
       if (started?.spawned) {
         const revert = await finishStartedSpawn(started);
         if (revert.incident) {
@@ -1307,6 +1316,8 @@ export class LegionEngine {
         fakeArtifacts: this.#fakeArtifacts,
         throwAfterWrite: this.#fakeThrowAfterWrite,
         timedOut: this.#fakeTimedOut,
+        exitCode: this.#fakeExitCode,
+        omitSummary: this.#fakeOmitSummary,
         cliAdapter: opts?.adapter,
         taskAdapter: task?.adapter,
       });
@@ -1318,6 +1329,13 @@ export class LegionEngine {
       if (createdTaskIds.length > 0) {
         await this.#clampSpawnedTaskStatuses(createdTaskIds);
         await this.#promoteReadyTasks(specId, "executing", config.control_mode);
+      }
+      if (result.spawned && agentExitProblem(result)) {
+        await this.#audit("verify", state.phase, "agent", {
+          skillId: "verify",
+          runId: result.runId,
+          agentExitCode: result.exitCode ?? null,
+        }, task?.id);
       }
       if (result.spawned) {
         await this.#refuseSpawnContract("verify", result.revert, result.error, createdTaskIds, before, after);
@@ -1420,7 +1438,9 @@ export class LegionEngine {
       // PASS needs positive evidence: exit 0 and non-empty notes written this run. The notes live in
       // the run cache because the engine restores everything the agent writes under .legion-cli/qa/.
       // A review that filed or rewrote tasks is a FAIL either way, so it needs no extra evidence.
-      const notes = started?.spawned ? await readReviewNotes(this.projectRoot, started.runId) : "";
+      const notesRead = started?.spawned ? await readReviewNotes(this.projectRoot, started.runId) : { text: "" };
+      const notes = notesRead.text;
+      const reviewWarnings: string[] = [];
       let reviewError = waited.error;
       const wouldPass = createdTaskIds.length === 0 && rewrittenExistingTaskIds.length === 0;
       if (!reviewError && started?.spawned && wouldPass) {
@@ -1432,9 +1452,21 @@ export class LegionEngine {
             HINT.review,
           );
         } else if (notes.length === 0) {
+          const why =
+            notesRead.problem ??
+            `agent wrote no notes to ${reviewRunNotesPath(started.runId)} (notes go in the run cache, not .legion-cli/qa/)`;
           reviewError = new LegionRefuseError(
-            `review failed: agent wrote no notes to ${reviewRunNotesPath(started.runId)} (log: ${log}); no verdict recorded, re-run legion-cli review`,
+            `review failed: ${why} (log: ${log}); no verdict recorded, re-run legion-cli review`,
             HINT.review,
+          );
+        }
+      }
+      if (started?.spawned && !wouldPass) {
+        // A non-zero exit on a review that filed tasks stays a FAIL (recorded, blocks ship); say so.
+        const problem = agentExitProblem(waited);
+        if (problem) {
+          reviewWarnings.push(
+            `review ${problem} (log: .legion-cli/cache/runs/${started.runId}/stderr.log); the tasks it filed still make this a FAIL`,
           );
         }
       }
@@ -1447,7 +1479,7 @@ export class LegionEngine {
         after,
         rewrittenExistingTaskIds,
       );
-      if (notes.length > 0) {
+      if (notes.length > 0 && !notesRead.problem) {
         await mkdir(join(this.projectRoot, ".legion-cli", "qa"), { recursive: true });
         await writeTextFile(join(this.projectRoot, REVIEW_NOTES_PATH), `${notes}
 `, { root: this.projectRoot });
@@ -1463,6 +1495,7 @@ export class LegionEngine {
         createdTaskIds,
         extrasReverted: revert?.extrasReverted ?? [],
         rewrittenExistingTaskIds,
+        warnings: reviewWarnings,
       };
     });
   }
@@ -3924,11 +3957,28 @@ function reviewRunNotesPath(runId: string): string {
   return `.legion-cli/cache/runs/${runId}/review.md`;
 }
 
-async function readReviewNotes(projectRoot: string, runId: string): Promise<string> {
+const REVIEW_NOTES_MAX_BYTES = 1024 * 1024;
+
+/** The notes file is agent-controlled: never follow a symlink, never read a non-regular or oversized file. */
+async function readReviewNotes(projectRoot: string, runId: string): Promise<{ text: string; problem?: string }> {
+  const rel = reviewRunNotesPath(runId);
+  const abs = join(projectRoot, rel);
+  let st;
   try {
-    return (await readFile(join(projectRoot, reviewRunNotesPath(runId)), "utf8")).trim();
+    st = await lstat(abs);
   } catch {
-    return "";
+    return { text: "" };
+  }
+  if (!st.isFile()) {
+    return { text: "", problem: `${rel} is not a regular file (symlinks and directories are refused)` };
+  }
+  if (st.size > REVIEW_NOTES_MAX_BYTES) {
+    return { text: "", problem: `${rel} is larger than ${REVIEW_NOTES_MAX_BYTES} bytes` };
+  }
+  try {
+    return { text: (await readFile(abs, "utf8")).trim() };
+  } catch {
+    return { text: "" };
   }
 }
 

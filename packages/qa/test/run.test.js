@@ -205,3 +205,40 @@ test("an untagged suite with P0 criteria warns by name and still scores as befor
     assert.equal(result.score.pass, true);
   });
 });
+
+test("a runner killed by a signal with an all-pass report is scored failed", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const unitCommand = await scriptedUnit(dir, `${allPassReport}\nprocess.kill(process.pid, 'SIGKILL');`);
+    const result = await runProjectQa({ projectRoot: dir, spec, mode: "full", unitCommand, id: "qa-signal" });
+    assert.equal(result.score.pass, false);
+    assert.ok(result.score.buckets.p0.failed >= 1);
+    assert.ok(result.warnings.some((line) => /killed by a signal/.test(line)), result.warnings.join("\n"));
+  });
+});
+
+test("a playwright command that exits 1 with an all-pass report is scored failed", async () => {
+  await withTempDir(async (dir) => {
+    const unitCommand = await scriptedUnit(dir, allPassReport);
+    const pwScript = join(dir, "pw.js");
+    await writeFile(
+      pwScript,
+      `process.stdout.write(JSON.stringify({ suites: [{ title: 'ui', specs: [{ title: 'board @p0', ok: true, tests: [{ status: 'expected', expectedStatus: 'passed', results: [{ status: 'passed' }] }] }] }] }));\nprocess.exit(1);`,
+      "utf8",
+    );
+    const uiSpec = { ...spec, wireframesIndex: "INDEX.html" };
+    const result = await runProjectQa({
+      projectRoot: dir,
+      spec: uiSpec,
+      mode: "full",
+      unitCommand,
+      playwrightCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(pwScript)}`,
+      id: "qa-pw-exit",
+    });
+    assert.ok(
+      result.warnings.some((line) => /playwright command exited with code 1 without a report of failed tests/.test(line)),
+      result.warnings.join("\n"),
+    );
+    assert.equal(result.score.pass, false);
+    assert.ok(result.score.buckets.p0.failed >= 1);
+  });
+});
