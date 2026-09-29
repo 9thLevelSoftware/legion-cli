@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { normalize, runCli, withTempDir } from "./helpers.js";
 
 function quoteArg(value) {
@@ -180,4 +183,30 @@ test("help lists qa and fix", () => {
   assert.match(normalize(qa.stdout), /mode/);
   const fix = runCli(["help", "fix"]);
   assert.match(normalize(fix.stdout), /bug/);
+});
+
+test("qa checklist refuses empty and closed stdin without ticking", async () => {
+  for (const input of ["", "\n"]) {
+    await withTempDir(async (dir) => {
+      await seedQaReady(dir);
+      const stateBefore = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
+      const result = runCli(["qa", "checklist", "--project", dir], { input });
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(normalize(`${result.stdout}\n${result.stderr}`), /explicit y or n/);
+      assert.doesNotMatch(normalize(result.stdout), /Checklist saved/);
+      assert.equal(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8"), stateBefore);
+      const scored = runCli(["qa", "--mode", "no-browser", "--project", dir]);
+      assert.equal(scored.status, 1);
+      assert.match(normalize(scored.stderr), /qa checklist/);
+    });
+  }
+});
+
+test("qa checklist still accepts explicit piped y/n", async () => {
+  await withTempDir(async (dir) => {
+    await seedQaReady(dir);
+    const result = runCli(["qa", "checklist", "--project", dir], { input: "y\n" });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(result.stdout), /Checklist saved \(1\//);
+  });
 });

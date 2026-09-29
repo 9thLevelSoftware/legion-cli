@@ -3452,6 +3452,7 @@ export class LegionEngine {
       qaPass,
       allowDegradedQa,
       receiptPath,
+      confirmSource: opts.confirmSource ?? null,
     });
 
     const priorHead = isGitRepo(this.projectRoot) ? tryGitHead(this.projectRoot) : null;
@@ -3480,8 +3481,20 @@ export class LegionEngine {
       if (created.error || !created.url) {
         if (priorHead && receipt.commitSha) {
           gitResetMixed(this.projectRoot, priorHead);
+        } else if (isGitRepo(this.projectRoot)) {
+          try {
+            gitRestoreStaged(this.projectRoot, [".legion-cli"]);
+          } catch {
+            // best-effort: nothing staged under .legion-cli
+          }
         }
+        await rm(toFsPath(this.projectRoot, receiptPath), { force: true });
         await this.#writeState(state);
+        await this.#audit("ship_rolled_back", state.phase, actor, {
+          specId,
+          receiptPath,
+          reason: created.error ?? "no pull request url",
+        });
         refuse(`gh pr create failed: ${created.error ?? "no pull request url"}`, HINT.shipPrRetry);
       }
       receipt.prUrl = created.url;
