@@ -83,9 +83,19 @@ export function matchesGlob(pattern: string, posixPath: string): boolean {
   return globToRegExp(pattern).test(posixPath);
 }
 
-/** Root matching for allow decisions: both sides in normalised form, like the deny checks. */
+/**
+ * Allow-side key. Only as loose as the filesystem: Windows ignores case, trailing dots/spaces and
+ * `:stream`; macOS is case-insensitive; Linux compares bytes. (The deny side below always
+ * normalises fully, which is the safe direction on every platform.)
+ */
+function allowKey(path: string): string {
+  if (process.platform === "win32") return normalizePathKey(path);
+  if (process.platform === "darwin") return path.toLowerCase();
+  return path;
+}
+
 function matchesRoot(root: string, posixPath: string): boolean {
-  return matchesGlob(normalizePathKey(root), normalizePathKey(posixPath));
+  return matchesGlob(allowKey(root), allowKey(posixPath));
 }
 
 /**
@@ -109,6 +119,9 @@ export function isImplicitForbidden(posixPath: string): boolean {
   const segments = key.split("/").map((part) => (/^git~\d+$/.test(part) ? ".git" : part));
   const canon = segments.join("/");
   if (segments.includes(".git")) return true;
+  // 8.3 aliases of engine files directly under .legion-cli (`CONFIG~1.YAM`, `STATE~1.MD`).
+  const under = canon.startsWith(".legion-cli/") ? canon.slice(".legion-cli/".length).split("/")[0] : undefined;
+  if (under !== undefined && /^[^~.]{1,6}~\d+(\.[^.]{1,3})?$/.test(under)) return true;
   if (canon === ".legion-cli/config.yaml") return true;
   if (canon === ".legion-cli/state.md") return true;
   if (canon === ".legion-cli/tasks" || canon.startsWith(".legion-cli/tasks/")) return true;

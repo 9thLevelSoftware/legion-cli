@@ -38,7 +38,8 @@ function hextetsToIpv4(hiHex: string, loHex: string): number[] {
 }
 
 function normalizeHost(hostname: string): string {
-  return hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  // Drop an IPv6 zone id (`fe80::1%eth0`): it names an interface, not a different address.
+  return hostname.replace(/^\[|\]$/g, "").replace(/%.*$/, "").toLowerCase();
 }
 
 /** IPv4-mapped (::ffff:…) and IPv4-compatible (::x:x / ::d.d.d.d) embed an IPv4 address. */
@@ -85,6 +86,10 @@ function isPrivateIPv6(host: string): boolean {
   const words = ipv6Words(host);
   if (!words) return false;
   const [w0, w1] = words as [number, number];
+  // ::ffff:0:0/96 SIIT (IPv4-translated): the IPv4 address is in the last two words
+  if (words.slice(0, 4).every((w) => w === 0) && words[4] === 0xffff && words[5] === 0) {
+    return isPrivateIPv4([words[6]! >> 8, words[6]! & 255, words[7]! >> 8, words[7]! & 255]);
+  }
   // ::1 loopback and :: unspecified
   if (words.slice(0, 7).every((w) => w === 0) && (words[7] === 0 || words[7] === 1)) return true;
   // fe80::/10 link-local
@@ -108,6 +113,7 @@ export function isPrivateOrLocalHost(hostname: string): boolean {
   if (mapped) return isPrivateIPv4(mapped);
   const ipv4 = ipv4Octets(host);
   if (ipv4) return isPrivateIPv4(ipv4);
-  if (host.includes(":")) return isPrivateIPv6(host);
+  // An IPv6 literal we cannot parse is refused rather than waved through.
+  if (host.includes(":")) return ipv6Words(host) === null || isPrivateIPv6(host);
   return false;
 }

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, readdir, readFile, rm, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, rm, stat, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   gitDiscoverChanges,
@@ -26,6 +26,8 @@ export const HEAD_MOVED_WARNING =
 export type GitPolicySnapshot = {
   config: string | null;
   hooks: Record<string, string>;
+  /** File mode bits per snapshotted path, so a restore does not enable a disabled hook. */
+  modes?: Record<string, number>;
 };
 
 export type RevertResult = {
@@ -165,6 +167,7 @@ async function walk(root: string, rel: string, out: Set<string>): Promise<void> 
 
 export async function snapshotGitPolicy(projectRoot: string): Promise<GitPolicySnapshot> {
   const hooks: Record<string, string> = {};
+  const modes: Record<string, number> = {};
   const hooksDir = join(projectRoot, ".git", "hooks");
   try {
     const entries = await readdir(hooksDir, { withFileTypes: true });
@@ -174,6 +177,7 @@ export async function snapshotGitPolicy(projectRoot: string): Promise<GitPolicyS
       try {
         // latin1 round-trips arbitrary bytes, so a restored hook is byte-identical.
         hooks[posix] = await readFile(join(hooksDir, entry.name), "latin1");
+        modes[posix] = (await stat(join(hooksDir, entry.name))).mode & 0o777;
       } catch {
         hooks[posix] = "";
       }
@@ -184,10 +188,11 @@ export async function snapshotGitPolicy(projectRoot: string): Promise<GitPolicyS
   let config: string | null = null;
   try {
     config = await readFile(join(projectRoot, ".git", "config"), "latin1");
+    modes[".git/config"] = (await stat(join(projectRoot, ".git", "config"))).mode & 0o777;
   } catch {
     config = null;
   }
-  return { config, hooks };
+  return { config, hooks, modes };
 }
 
 async function gitPolicyIncidents(
@@ -220,7 +225,8 @@ async function restoreGitPolicy(
       } else {
         await rm(abs, { force: true });
         await writeTextFile(abs, Buffer.from(before, "latin1"), { root: projectRoot, skipJournal: true });
-        if (name !== ".git/config") await chmod(abs, 0o755).catch(() => undefined);
+        const mode = snapshot.modes?.[name];
+        if (mode !== undefined) await chmod(abs, mode).catch(() => undefined);
       }
     } catch {
       // The incident is already recorded; a restore failure must not mask it.
@@ -326,17 +332,20 @@ export async function revertExtras(opts: {
 
   const extraRoots = opts.extraRoots ?? opts.allowedRoots.filter((root) => root.startsWith(".legion-cli/"));
 
-  const linkedCandidates = new Set<string>();
+  // A candidate behind a link is replaced by the link itself, but only after the pre-spawn
+  // filters: a junction that was already there (its contents are in dirtyAtStart) is not an extra.
+  const finalCandidates = new Set<string>();
   for (const posix of candidates) {
     const link = await linkAncestor(opts.projectRoot, posix);
-    if (link !== null) {
-      linkedCandidates.add(posix);
-      candidates.add(link);
+    if (link === null) {
+      finalCandidates.add(posix);
+      continue;
     }
+    if (opts.dirtyAtStart?.has(posix) || opts.dirtyAtStart?.has(link)) continue;
+    finalCandidates.add(link);
   }
-  for (const posix of linkedCandidates) candidates.delete(posix);
 
-  for (const posix of candidates) {
+  for (const posix of finalCandidates) {
     if (posix.startsWith(".git/") || posix === ".git") {
       incident = true;
       continue;

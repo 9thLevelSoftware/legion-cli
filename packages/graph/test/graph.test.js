@@ -239,7 +239,18 @@ test("validateTaskGraph checks self loops, ghost blockers, and cycles", () => {
 });
 
 test("implicit forbidden and plan checks compare normalised forms", () => {
-  for (const bad of [".GIT/x", ".Git./x", "GIT~1/x", ".LEGION-CLI/STATE.md", "LEGION~1/x", "a/.ENV.local", "ENV~1.LOC"]) {
+  for (const bad of [
+    ".GIT/x",
+    ".Git./x",
+    ".git /x",
+    ".git:$DATA/x",
+    "GIT~1/x",
+    ".LEGION-CLI/STATE.md",
+    ".legion-cli /state.md",
+    "LEGION~1/x",
+    "a/.ENV.local",
+    "ENV~1.LOC",
+  ]) {
     assert.equal(filesAllowedFailsPlan([bad]), true, bad);
   }
   assert.equal(filesAllowedFailsPlan(["notes~2.md", "src/a.ts"]), false);
@@ -256,4 +267,17 @@ test("overlappingFilesAllowed flags case, trailing-dot and directory-prefix over
   assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/a.ts"]), t("TSK-0002", ["src"])]).length, 1);
   assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/a.ts"]), t("TSK-0002", ["src/b.ts"])]).length, 0);
   assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/a.ts", "src/b.ts"])]).length, 0);
+  // segment-aware: `src` does not own `src2/a.ts`
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src"]), t("TSK-0002", ["src2/a.ts"])]).length, 0);
+  // order inside a task must not hide an overlap (review repro)
+  const repro = overlappingFilesAllowed([
+    t("TSK-0001", ["src/a.ts"]),
+    t("TSK-0002", ["src/b.ts"]),
+    t("TSK-0003", ["src/c.ts", "src"]),
+  ]);
+  assert.equal(repro.length, 2, repro.join("; "));
+  assert.deepEqual(
+    overlappingFilesAllowed([t("TSK-0003", ["src", "src/c.ts"]), t("TSK-0001", ["src/a.ts"]), t("TSK-0002", ["src/b.ts"])]).length,
+    2,
+  );
 });

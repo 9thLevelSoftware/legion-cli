@@ -39,15 +39,36 @@ test("SKILL_CONTRACTS covers every SkillId including map, wireframe, chat", () =
   assert.equal(isImplicitForbidden("src/main.ts"), false);
 });
 
+// Contract checks are string-only: they cannot see a junction on disk. The junction defence is at
+// revert time (revert.test.js), which acts on the link and never through it.
 test("implicit forbidden compares normalised forms", () => {
-  for (const bad of [".GIT/x", ".Git./x", "GIT~1/x", ".LEGION-CLI/STATE.md", ".legion-cli./state.md", "LEGION~1/TASKS/x.md", "ENV~1.LOC"]) {
+  for (const bad of [
+    ".GIT/x",
+    ".Git./x",
+    ".git /x",
+    ".git:$DATA/x",
+    "GIT~1/x",
+    ".LEGION-CLI/STATE.md",
+    ".legion-cli./state.md",
+    ".legion-cli /state.md",
+    "LEGION~1/TASKS/x.md",
+    "ENV~1.LOC",
+    ".legion-cli/CONFIG~1.YAM",
+    ".legion-cli/STATE~1.MD",
+  ]) {
     assert.equal(isImplicitForbidden(bad), true, bad);
   }
   assert.equal(isImplicitForbidden("notes~2.md"), false);
   assert.equal(isImplicitForbidden("src/a.ts"), false);
 });
 
-test("allowedRoots match in normalised form", () => {
-  assert.equal(isAllowedPath("SRC/Main.ts.", ["src/main.ts"]), true);
+test("allowedRoots matching is as loose as the platform filesystem, never looser", () => {
+  assert.equal(isAllowedPath("src/main.ts", ["src/main.ts"]), true);
+  const caseInsensitive = process.platform === "win32" || process.platform === "darwin";
+  assert.equal(isAllowedPath("readme.md", ["README.md"]), caseInsensitive);
+  // Trailing dots and :stream are aliases only on Windows.
+  assert.equal(isAllowedPath("SRC/Main.ts.", ["src/main.ts"]), process.platform === "win32");
+  assert.equal(isAllowedPath("src/main.ts:x", ["src/main.ts"]), process.platform === "win32");
+  // The deny side normalises everywhere.
   assert.equal(isAllowedPath(".GIT/config", [".git/**", "**"]), false);
 });

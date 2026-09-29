@@ -8,7 +8,7 @@ import {
 } from "../dist/index.js";
 
 test("concrete path refuses .git aliases: case, trailing dot/space, stream, 8.3 short name", () => {
-  for (const bad of [".GIT/x", ".Git./x", ".git /x", "GIT~1/x", ".git:$INDEX_ALLOCATION/x", "a/.GIT/x", "src/x:stream"]) {
+  for (const bad of [".GIT/x", ".Git./x", ".git /x", "GIT~1/x", ".git:$INDEX_ALLOCATION/x", "a/.GIT/x", "src/x:stream", "GIT~1./x", "GIT~1 /x", "a/.. /b", "a/.../b"]) {
     assert.equal(isConcretePosixRepoRelativePath(bad), false, bad);
   }
 });
@@ -38,6 +38,11 @@ test("shared SSRF classifier is exported from schema and covers the reserved ran
     "239.255.255.250",
     "255.255.255.255",
     "::ffff:10.0.0.1",
+    "fe80::1%12",
+    "fe80::1%eth0",
+    "[fe80::1%25eth0]",
+    "::ffff:0:a00:1",
+    "not:an:ipv6:literal",
     "::ffff:a9fe:a9fe",
     "ff02::1",
     "64:ff9b::7f00:1",

@@ -51,7 +51,14 @@ export function isConcretePosixRepoRelativePath(path: string): boolean {
   if (segments.some((segment) => segment === "" || segment === "." || segment === ".." || segment === ".git")) {
     return false;
   }
-  if (segments.some((segment) => normalizePathSegment(segment) === ".git" || isShortNameSegment(segment))) {
+  // Judge each segment in its normalised form: NTFS ignores trailing dots/spaces, so `GIT~1.` is
+  // `GIT~1`, and `.. ` or `...` collapse to an empty or dot-only name.
+  if (
+    segments.some((segment) => {
+      const norm = normalizePathSegment(segment);
+      return norm === "" || norm === "." || norm === ".." || norm === ".git" || isShortNameSegment(norm);
+    })
+  ) {
     return false;
   }
   return true;

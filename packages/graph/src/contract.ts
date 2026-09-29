@@ -69,23 +69,28 @@ export function fileContractFailsPlan(
 export function overlappingFilesAllowed(tasks: readonly Task[]): string[] {
   // Keys are normalised, and a path also overlaps any directory prefix or descendant another
   // task owns (`src` vs `src/a.ts`).
-  const owners = new Map<string, string>();
-  const descendants = new Map<string, string>();
+  // owners: exact key -> every task that lists it. below: directory key -> every task that owns
+  // something under it. Both hold all owners, so the result does not depend on path order.
+  const owners = new Map<string, Set<string>>();
+  const below = new Map<string, Set<string>>();
+  const add = (map: Map<string, Set<string>>, key: string, id: string) => {
+    const set = map.get(key) ?? new Set<string>();
+    set.add(id);
+    map.set(key, set);
+  };
   const overlaps: string[] = [];
   for (const task of tasks) {
     for (const path of task.contract.filesAllowed) {
       const key = normalizePathKey(path);
       const parts = key.split("/");
       const ancestors = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/"));
-      const previous =
-        [key, ...ancestors].map((k) => owners.get(k)).find((o) => o !== undefined && o !== task.id) ??
-        (descendants.get(key) !== task.id ? descendants.get(key) : undefined);
-      if (previous) {
-        overlaps.push(`${path} (${previous}, ${task.id})`);
-        continue;
-      }
-      owners.set(key, task.id);
-      for (const ancestor of ancestors) descendants.set(ancestor, task.id);
+      const others = new Set<string>();
+      for (const k of [key, ...ancestors]) for (const o of owners.get(k) ?? []) others.add(o);
+      for (const o of below.get(key) ?? []) others.add(o);
+      others.delete(task.id);
+      for (const other of [...others].sort()) overlaps.push(`${path} (${other}, ${task.id})`);
+      add(owners, key, task.id);
+      for (const ancestor of ancestors) add(below, ancestor, task.id);
     }
   }
   return overlaps;

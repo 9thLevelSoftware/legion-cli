@@ -1,25 +1,27 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { lstat, readFile } from "node:fs/promises";
+import { chmod, lstat, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { mkdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 
-import { appendAuditEvent, RestoreRefusedError, sha256Content } from "@9thlevelsoftware/legion-cli-persist";
+import { appendAuditEvent, gitDiscoverChanges, RestoreRefusedError, sha256Content } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionRefuseError } from "../dist/errors.js";
 import {
   openEngineCommand,
   restoreChangedTaskFiles,
   restoreEngineState,
   revertExtras,
+  snapshotDirtyPaths,
   snapshotGitPolicy,
   snapshotPaths,
   snapshotTaskFiles,
 } from "../dist/revert.js";
 import { finishStartedSpawn } from "../dist/spawn.js";
 import {
+  gitHead,
   initGitRepo,
   initProject,
   makeTask,
@@ -360,8 +362,27 @@ test("revertExtras restores a planted .git hook and drops a new one (still an in
     assert.equal(existsSync(join(hooks, "post-commit")), false);
   });
 });
+test("a restored hook keeps its pre-spawn mode (a disabled hook stays disabled)", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX mode bits are not meaningful on Windows");
+    return;
+  }
+  await withEngine(async ({ dir }) => {
+    await writeFile(join(dir, "README.md"), "seed\n", "utf8");
+    initGitRepo(dir);
+    const hook = join(dir, ".git", "hooks", "pre-commit");
+    await mkdir(join(dir, ".git", "hooks"), { recursive: true });
+    await writeFile(hook, "#!/bin/sh\necho ok\n", { mode: 0o644 });
+    await chmod(hook, 0o644);
+    const gitPolicy = await snapshotGitPolicy(dir);
+    await writeFile(hook, "#!/bin/sh\necho pwned\n", "utf8");
+    await revertExtras({ projectRoot: dir, preSpawnRef: null, allowedRoots: ["src/main.ts"], gitPolicy });
+    assert.equal(await readFile(hook, "utf8"), "#!/bin/sh\necho ok\n");
+    assert.equal((await stat(hook)).mode & 0o111, 0, "still not executable");
+  });
+});
 
-test("a Windows junction inside the repo pointing at .git is not followed by revert", async (t) => {
+test("a Windows junction to .git: git lists through it, revert removes only the link", async (t) => {
   if (process.platform !== "win32") {
     t.skip("junctions are a Windows filesystem feature");
     return;
@@ -372,10 +393,44 @@ test("a Windows junction inside the repo pointing at .git is not followed by rev
     const snapshot = await snapshotPaths(dir);
     const link = join(dir, "sneaky");
     await symlink(join(dir, ".git"), link, "junction");
-    await revertExtras({ projectRoot: dir, preSpawnRef: null, allowedRoots: ["src/main.ts"], snapshot }).catch(() => undefined);
-    // Whatever happened to the link, the repository behind it is intact.
+    // Pins the hazard: git reports the junction's contents as repo paths.
+    assert.ok(
+      gitDiscoverChanges(dir, null).some((p) => p.startsWith("sneaky/")),
+      "git lists the contents behind the junction",
+    );
+    const result = await revertExtras({ projectRoot: dir, preSpawnRef: null, allowedRoots: ["src/main.ts"], snapshot });
+    assert.deepEqual(result.extrasReverted, ["sneaky"]);
+    assert.equal(existsSync(link), false, "the link is gone");
     assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
     assert.equal(existsSync(join(dir, ".git", "config")), true);
-    assert.equal((await lstat(join(dir, ".git"))).isDirectory(), true);
+    assert.equal(existsSync(join(dir, ".git", "objects")), true);
+  });
+});
+
+test("a pre-existing untracked junction the spawn did not touch is left alone", async (t) => {
+  if (process.platform !== "win32") {
+    t.skip("junctions are a Windows filesystem feature");
+    return;
+  }
+  await withEngine(async ({ dir }) => {
+    await writeFile(join(dir, "README.md"), "seed\n", "utf8");
+    await mkdir(join(dir, "elsewhere"), { recursive: true });
+    await writeFile(join(dir, "elsewhere", "data.txt"), "keep\n", "utf8");
+    initGitRepo(dir);
+    const pre = gitHead(dir);
+    const link = join(dir, "shared");
+    await symlink(join(dir, "elsewhere"), link, "junction");
+    const dirtyAtStart = snapshotDirtyPaths(dir, pre);
+    assert.ok([...dirtyAtStart].some((p) => p.startsWith("shared")), "git lists the junction before the spawn");
+    const snapshot = await snapshotPaths(dir);
+    const result = await revertExtras({
+      projectRoot: dir,
+      preSpawnRef: pre,
+      allowedRoots: ["src/main.ts"],
+      snapshot,
+      dirtyAtStart,
+    });
+    assert.deepEqual(result.extrasReverted, []);
+    assert.equal(existsSync(join(link, "data.txt")), true);
   });
 });
