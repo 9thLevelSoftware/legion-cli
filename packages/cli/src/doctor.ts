@@ -384,6 +384,10 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   // A run marker whose engine and agent are both gone is cleared here; the next legion command
   // restores that run's engine state. A live one is only reported (never touched).
   const runMarkers = await liveRuns(engine.projectRoot, { clearDead: true });
+  // A live run with no marker (older binary): named by its resume.json, which doctor never clears.
+  const resumeOnly = await engine.peekLiveSpawn();
+  const resumeOnlyRun =
+    resumeOnly && !runMarkers.live.some((m) => m.runId === resumeOnly.runId) ? resumeOnly : null;
   const { config, error: configError } = await loadConfig(engine);
 
   const adapterDefault = config?.adapter.default ?? null;
@@ -688,6 +692,11 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
       (m) =>
         `Live run    ${m.skillId} ${m.runId}${m.taskId ? ` (${m.taskId})` : ""}: other legion commands are refused until it ends (hands off the tree). Marker: .legion-cli/cache/live-spawn/${m.runId}.json`,
     ),
+    ...(resumeOnlyRun
+      ? [
+          `Live run    ${resumeOnlyRun.runId} (${resumeOnlyRun.taskId}): no marker; evidence .legion-cli/cache/runs/${resumeOnlyRun.runId}/resume.json. Other legion commands are refused until its pids exit`,
+        ]
+      : []),
     ...runMarkers.dead.map(
       (m) =>
         `Cleared     dead run marker ${m.runId}. Its engine state is restored by the next legion command; check with legion-cli status`,

@@ -46,6 +46,7 @@ import {
   isPidAlive,
   listTaskFiles,
   liveRuns,
+  readLiveRun,
   nextFileId,
   PersistError,
   ensureGitignore,
@@ -757,7 +758,7 @@ export class LegionEngine {
     let started: StartedSkillSpawn | undefined;
     let generated!: Awaited<ReturnType<typeof generateMap>>;
 
-    await this.#withLockOrRefuse(async () => {
+    await this.#startLock(() => started, async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized") {
         refuse("Map needs a Legion CLI project first", HINT.init);
@@ -988,7 +989,7 @@ export class LegionEngine {
     let id: string | undefined;
     let config: LegionConfig | undefined;
 
-    await this.#withLockOrRefuse(async () => {
+    await this.#startLock(() => started, async () => {
       const state = await this.#readState();
       if (state.phase !== "spec_frozen" && state.phase !== "planning" && state.phase !== "plan_failed") {
         refuse("Plan needs a frozen spec first", HINT.spec);
@@ -1374,7 +1375,7 @@ export class LegionEngine {
     let beforeFiles: TaskFileSnapshot | undefined;
     let started: StartedSkillSpawn | undefined;
 
-    await this.#withLockOrRefuse(async () => {
+    await this.#startLock(() => started, async () => {
       const state = await this.#readState();
       const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
       this.#assertCanReview(state, slice);
@@ -1938,7 +1939,7 @@ export class LegionEngine {
   async wireframe(opts: WireframeOptions = {}): Promise<WireframeResult> {
     let started: StartedSkillSpawn | undefined;
     let session: Awaited<ReturnType<typeof prepareWireframe>> | undefined;
-    const prepared = await this.#mutate(async () => {
+    const prepared = await this.#startLock(() => started, async () => {
       const state = await this.#readState();
       if (state.phase === "uninitialized" || !state.activeSpecId) {
         refuse("no active spec", HINT.spec);
@@ -2092,6 +2093,8 @@ export class LegionEngine {
       if (resume && resumeRunIsLive(resume)) {
         refuse(`cannot recover ${taskId} while verification is live`, HINT.status);
       }
+      // The specific check above is about this task's run; any OTHER live run still refuses.
+      refuseIfLiveRun((await liveRuns(this.projectRoot, { clearDead: true })).live);
       await this.#writeTask({ ...doc.data, status: "blocked" }, doc.body);
       const state = await this.#readState();
       if (state.currentTaskId === taskId) {
@@ -2131,7 +2134,7 @@ export class LegionEngine {
     cliAdapter?: AdapterId,
   ): Promise<{ spawned: boolean; runId: string }> {
     let started: StartedSkillSpawn | undefined;
-    await this.#withLockOrRefuse(async () => {
+    await this.#startLock(() => started, async () => {
       let config: LegionConfig;
       try {
         config = await this.#readConfig();
@@ -2173,14 +2176,14 @@ export class LegionEngine {
     await this.#read(async () => undefined);
   }
 
-  async peekLiveSpawn(): Promise<{ taskId: string } | null> {
+  async peekLiveSpawn(): Promise<{ taskId: string; runId: string } | null> {
     const state = await this.#readState();
     if (!state.currentTaskId) return null;
     try {
       const task = (await this.store.readTask(state.currentTaskId)).data;
       if (task.status !== "in_progress") return null;
       const resume = await findLatestTaskResume(this.projectRoot, task.id);
-      if (resume && resumeRunIsLive(resume)) return { taskId: task.id };
+      if (resume && resumeRunIsLive(resume)) return { taskId: task.id, runId: resume.runId };
       return null;
     } catch {
       return null;
@@ -2285,7 +2288,7 @@ export class LegionEngine {
     let started: StartedSkillSpawn | undefined;
     let dirtyWarning: string | undefined;
 
-    await this.#withLockOrRefuse(async () => {
+    await this.#startLock(() => started, async () => {
       const state = await this.#readState();
       if (state.phase === "plan_failed") {
         refuse("Plan failed. Fix the FAIL list before executing", HINT.planRetry);
@@ -2397,7 +2400,7 @@ export class LegionEngine {
     try {
       const waited = started?.spawned ? await waitStartedSpawn(started) : { error: undefined, timedOut: false, durationMs: 0 };
 
-      const post = await this.#relock(started?.runId, async () => {
+      const post = await this.#relockKeep(started?.runId, async () => {
         const revert = started?.spawned ? await finishStartedSpawn(started, { keepMarker: true }) : null;
         const extras = revert?.extrasReverted ?? [];
         const incident = Boolean(revert?.incident);
@@ -3786,6 +3789,15 @@ export class LegionEngine {
     return resumeAsLiveRun(resume);
   }
 
+  /** Same as #dropRunMarker, from a run id alone (reads the recorded agent pid). */
+  async #dropRunMarkerById(runId: string | undefined): Promise<void> {
+    if (!runId) return;
+    const marker = await readLiveRun(this.projectRoot, runId);
+    const pid = marker?.agentPid;
+    if (pid && pid !== process.pid && isPidAlive(pid)) return;
+    await clearLiveRun(this.projectRoot, runId);
+  }
+
   /** Drop the run's marker unless its agent process is still alive (that keeps the guard). */
   async #dropRunMarker(started: StartedSkillSpawn | undefined): Promise<void> {
     if (!started?.spawned) return;
@@ -3796,7 +3808,33 @@ export class LegionEngine {
 
   /** Lock entry that finishes run `runId`: the live-run guard exempts that run's own marker. */
   async #relock<T>(runId: string | undefined, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await this.#withLockOrRefuse(fn, { ownRunId: runId });
+    } finally {
+      // Whatever happened (refused, lock timeout, a throw before finishStartedSpawn), the run is over:
+      // its marker must not outlive it in a long-lived process. A still-alive agent keeps it.
+      await this.#dropRunMarkerById(runId);
+    }
+  }
+
+  /** Like #relock, but keeps the marker: execute's verification still runs after this entry. */
+  async #relockKeep<T>(runId: string | undefined, fn: () => Promise<T>): Promise<T> {
     return this.#withLockOrRefuse(fn, { ownRunId: runId });
+  }
+
+  /** The lock entry that starts a spawn: if it throws after the agent started, stop the agent and drop its marker. */
+  async #startLock<T>(getStarted: () => StartedSkillSpawn | undefined, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await this.#withLockOrRefuse(fn);
+    } catch (err) {
+      const started = getStarted();
+      if (started?.spawned) {
+        await started.handle.abort().catch(() => undefined);
+        await started.sandbox?.destroy().catch(() => undefined);
+        await this.#dropRunMarker(started);
+      }
+      throw err;
+    }
   }
 
   /** Read-only entry: allowed while a run is live (status, next, doctor, brief, search). */

@@ -194,6 +194,7 @@ test("context compact refuses while currentTaskId is in_progress with a live pid
       (err) => {
         assert.equal(err instanceof LegionRefuseError, true);
         assert.match(err.message, /execute run execute-live is live/);
+        assert.ok(err.message.includes(".legion-cli/cache/runs/execute-live/resume.json"), err.message);
         assert.match(err.nextHint, /legion-cli status/);
         return true;
       },

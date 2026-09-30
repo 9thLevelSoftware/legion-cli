@@ -521,6 +521,9 @@ test("the owning run's own relock is not refused and its marker is cleared", asy
     const marker = JSON.parse(readFileSync(join(markerDir, names[0]), "utf8"));
     assert.equal(marker.enginePid, process.pid);
     assert.equal(marker.taskId, "TSK-0001");
+    assert.equal(typeof marker.agentPid, "number", "the real engine records the agent pid in the marker");
+    assert.equal(marker.agentPid, process.pid);
+    assert.equal(typeof marker.agentStartedAt, "number");
     assert.match(names[0], /^execute-/);
     const result = await release();
     assert.equal(result.status, "done");
@@ -560,7 +563,8 @@ test("execute warns, naming the files, when the tree is dirty inside filesAllowe
       // Documented: the dirty file is inside the contract, so a failed task's revert keeps it
       // (or the agent's overwrite of it); it is never restored to the committed content.
       assert.equal(result.status, "blocked");
-      assert.notEqual(readFileSync(join(dir, "src", "main.ts"), "utf8"), "// committed\n");
+      const kept = readFileSync(join(dir, "src", "main.ts"), "utf8").split(String.fromCharCode(13) + String.fromCharCode(10)).join(String.fromCharCode(10));
+      assert.equal(kept, "// human edit before execute" + String.fromCharCode(10));
     });
   });
 });

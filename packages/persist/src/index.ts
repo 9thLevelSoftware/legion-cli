@@ -23,7 +23,10 @@ export {
   LIVE_RUN_SCHEMA,
   listLiveRunMarkers,
   liveRunDir,
+  liveRunFromResume,
+  liveRunMarkerPath,
   liveRuns,
+  readLiveRun,
   liveRunState,
   recordLiveRunAgent,
 } from "./live-run.js";

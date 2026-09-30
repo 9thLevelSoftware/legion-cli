@@ -36,27 +36,92 @@ function startParent(dir, mode) {
   return { parent, exited };
 }
 
+async function readPidIfPresent(path) {
+  try {
+    return Number((await readFile(path, "utf8")).trim());
+  } catch {
+    return null;
+  }
+}
+
 async function assertTreeGone(dir) {
   const agent = await readPid(join(dir, "agent-pid.txt"));
   const grandchild = await readPid(join(dir, "child-pid.txt"));
   await waitUntil(() => !pidAlive(agent) && !pidAlive(grandchild), 10_000, `agent ${agent} or its child ${grandchild} survived`);
 }
 
+/** Never leave the parent, the agent or its child running when a test fails. */
+async function cleanup(dir, parent) {
+  parent.kill("SIGKILL");
+  for (const name of ["agent-pid.txt", "child-pid.txt"]) {
+    const pid = await readPidIfPresent(join(dir, name));
+    if (pid && pidAlive(pid)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+  }
+}
+
+// On Windows a non-detached child dies with its parent through libuv's kill-on-close job object,
+// so this case only guards that behaviour there. The fix (killTreeOnInterrupt) matters for the
+// detached POSIX agent, which only the Linux CI legs exercise: this test is not skipped there.
 test("an exiting engine takes the agent process tree with it", async () => {
   await withTempDir(async (dir) => {
-    const { exited } = startParent(dir, "exit");
-    await exited;
-    assert.equal(existsSync(join(dir, "agent-pid.txt")), true, "parent never reported the agent");
-    await assertTreeGone(dir);
+    const { parent, exited } = startParent(dir, "exit");
+    try {
+      await exited;
+      assert.equal(existsSync(join(dir, "agent-pid.txt")), true, "parent never reported the agent");
+      await assertTreeGone(dir);
+    } finally {
+      await cleanup(dir, parent);
+    }
   });
 });
 
 test("SIGTERM to the engine kills the agent tree (POSIX)", { skip: process.platform === "win32" }, async () => {
   await withTempDir(async (dir) => {
     const { parent, exited } = startParent(dir, "wait");
-    await waitUntil(() => existsSync(join(dir, "agent-pid.txt")), 20_000, "parent never reported the agent");
-    parent.kill("SIGTERM");
-    await exited;
-    await assertTreeGone(dir);
+    try {
+      await waitUntil(() => existsSync(join(dir, "agent-pid.txt")), 20_000, "parent never reported the agent");
+      parent.kill("SIGTERM");
+      await exited;
+      await assertTreeGone(dir);
+    } finally {
+      await cleanup(dir, parent);
+    }
+  });
+});
+
+test("SIGHUP to the engine kills the agent tree (POSIX)", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const { parent, exited } = startParent(dir, "wait");
+    try {
+      await waitUntil(() => existsSync(join(dir, "agent-pid.txt")), 20_000, "parent never reported the agent");
+      parent.kill("SIGHUP");
+      await exited;
+      await assertTreeGone(dir);
+    } finally {
+      await cleanup(dir, parent);
+    }
+  });
+});
+
+// SIGKILL runs no handlers: the detached agent survives. That is exactly why the live-run marker
+// records the agent's own pid and identity (see core live-run tests).
+test("SIGKILL of the engine leaves the detached agent running (POSIX)", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const { parent, exited } = startParent(dir, "wait");
+    try {
+      await waitUntil(() => existsSync(join(dir, "agent-pid.txt")), 20_000, "parent never reported the agent");
+      const agent = await readPid(join(dir, "agent-pid.txt"));
+      parent.kill("SIGKILL");
+      await exited;
+      assert.equal(pidAlive(agent), true, "a SIGKILLed engine cannot stop its agent; the marker must cover this");
+    } finally {
+      await cleanup(dir, parent);
+    }
   });
 });

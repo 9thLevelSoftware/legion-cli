@@ -31,7 +31,7 @@ import {
   clearLiveRun,
   createLiveRun,
   isPidAlive,
-  LIVE_RUN_SCHEMA,
+  liveRunFromResume,
   liveRunState,
   openEngineCommand,
   recordLiveRunAgent,
@@ -92,32 +92,27 @@ export async function resolveSkillDir(opts: {
  * `ownRunId` is the run this call is finishing: the owning engine's own relock is exempt.
  * `live` comes from `liveRuns()`, which also clears provably dead markers and migrates the legacy file.
  */
+function liveRunMarkerRel(runId: string): string {
+  return `.legion-cli/cache/live-spawn/${runId}.json`;
+}
+
 export function refuseIfLiveRun(live: readonly LiveRunMarker[], opts?: { ownRunId?: string }): void {
   const other = live.find((marker) => !(marker.runId === opts?.ownRunId && marker.enginePid === process.pid));
   if (!other) return;
   const task = other.taskId ? ` (task ${other.taskId})` : "";
+  const where = other.evidence
+    ? `This run has no marker; the evidence is ${other.evidence} (check that its pids are a legion agent)`
+    : `if a process there is not a legion agent, delete ${liveRunMarkerRel(other.runId)}`;
   refuse(
     `refused while another legion command is running: ${other.skillId} run ${other.runId} is live${task}. ` +
-      "Hands off the tree until it finishes. Check with legion-cli status; if it died, legion-cli doctor clears its marker " +
-      `(if a process there is not a legion agent, delete .legion-cli/cache/live-spawn/${other.runId}.json)`,
+      `Hands off the tree until it finishes. Check with legion-cli status; if it died, legion-cli doctor clears its marker (${where})`,
     HINT.status,
   );
 }
 
 /** Treat a resume.json as a run marker: same identity check, keyed on the run's recorded start. */
 export async function resumeAsLiveRun(resume: ResumeFile): Promise<LiveRunMarker | null> {
-  const parsed = Date.parse(resume.startedAt);
-  const recorded = Number.isFinite(parsed) ? parsed : undefined;
-  const marker: LiveRunMarker = {
-    schemaVersion: LIVE_RUN_SCHEMA,
-    runId: resume.runId,
-    skillId: resume.skillId,
-    taskId: resume.taskId ?? null,
-    enginePid: resume.enginePid ?? 0,
-    ...(recorded !== undefined ? { engineStartedAt: recorded, agentStartedAt: recorded } : {}),
-    agentPid: resume.pid ?? null,
-    startedAt: resume.startedAt,
-  };
+  const marker = liveRunFromResume(resume);
   return (await liveRunState(marker)).live ? marker : null;
 }
 
@@ -621,8 +616,16 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     await clearLiveRun(opts.projectRoot, runId).catch(() => undefined);
     throw err;
   }
-  await writeResume(handle.pid);
-  if (handle.pid && handle.pid > 0) await recordLiveRunAgent(opts.projectRoot, liveMarker, handle.pid);
+  try {
+    await writeResume(handle.pid);
+    if (handle.pid && handle.pid > 0) await recordLiveRunAgent(opts.projectRoot, liveMarker, handle.pid);
+  } catch (err) {
+    // Never leave a running agent no one owns: stop it, drop the jail and the marker, rethrow.
+    await handle.abort().catch(() => undefined);
+    await sandbox?.destroy().catch(() => undefined);
+    await clearLiveRun(opts.projectRoot, runId).catch(() => undefined);
+    throw err;
+  }
   return {
     spawned: true,
     runId,
