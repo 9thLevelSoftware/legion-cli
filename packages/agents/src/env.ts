@@ -26,8 +26,12 @@ export const ADAPTER_CREDENTIAL_KEYS = {
   http: [] as const,
 } as const satisfies Record<AgentAdapterId, readonly string[]>;
 
-/** Windows CreateProcess / node.exe fail without these even when PATH is set. */
-const WINDOWS_INHERIT = ["SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATHEXT"] as const;
+/**
+ * Windows CreateProcess / node.exe fail without these even when PATH is set. powershell.exe
+ * (a `.ps1` agent, or an agent that shells out to it) stalls for tens of seconds without
+ * PSModulePath. Upper-case: compared against the upper-cased key.
+ */
+const WINDOWS_INHERIT = ["SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATHEXT", "PSMODULEPATH"] as const;
 
 function inferAdapterIdFromBinary(binary?: string): AgentAdapterId | undefined {
   if (!binary) return undefined;
