@@ -624,6 +624,51 @@ test("adapter tool round-trip writes an allowed path through dispatchToolCall", 
   }
 });
 
+test("an empty final reply after a tool round is a finished run, not a failure", async () => {
+  const { server, baseUrl } = await startMock(async (req, res) => {
+    const body = await jsonBody(req);
+    const round = (body.messages ?? []).filter((msg) => msg.role === "tool").length;
+    if (round === 0) {
+      sendJson(res, 200, assistant(null, [toolCall("c1", "write_file", { path: "src/ok.ts", contents: "ok\n" })]));
+      return;
+    }
+    sendJson(res, 200, assistant(""));
+  });
+  try {
+    await withTemp(async (dir) => {
+      const writes = [];
+      const promptPath = join(dir, "prompt.md");
+      await writeFile(promptPath, "write ok\n", "utf8");
+      const host = {
+        jailRoot: dir,
+        readFile: async () => "",
+        async writeFile(posix, contents) {
+          writes.push({ posix, contents });
+        },
+        listDir: async () => [],
+      };
+      const adapter = new HttpAdapter({ baseUrl, model: "local", apiKeyEnv: "LEGION_HTTP_TEST_KEY", allowLoopback: true });
+      const result = await (
+        await adapter.spawn({
+          runId: "run-empty-final",
+          skillId: "review",
+          promptPath,
+          pointerPrompt: "pointer",
+          cwd: dir,
+          timeoutMs: 10_000,
+          env: { LEGION_HTTP_TEST_KEY: "sk-test" },
+          httpHost: host,
+        })
+      ).wait();
+      assert.equal(result.exitCode, 0);
+      assert.deepEqual(writes, [{ posix: "src/ok.ts", contents: "ok\n" }]);
+    });
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 for (const [label, body] of [
   ["a 200 with an error body and no choices", { error: { message: "quota exceeded" } }],
   ["a 200 with an empty choices array", { choices: [] }],

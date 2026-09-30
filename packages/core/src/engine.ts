@@ -2202,7 +2202,8 @@ Approved: ${note}
       const task = (await this.store.readTask(state.currentTaskId)).data;
       if (task.status !== "in_progress") return null;
       const resume = await findLatestTaskResume(this.projectRoot, task.id);
-      if (resume && resumeRunIsLive(resume)) return { taskId: task.id, runId: resume.runId };
+      // Same identity check as the hands-off guard, so doctor never reports a reused pid as live.
+      if (resume && (await resumeAsLiveRun(resume))) return { taskId: task.id, runId: resume.runId };
       return null;
     } catch {
       return null;
