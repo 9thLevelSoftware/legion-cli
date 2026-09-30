@@ -5,7 +5,7 @@
 | **Title** | Adapter routing: per-task and per-skill selection of which coding-agent CLI to spawn |
 | **Author** | Systems Architecture |
 | **Date** | 2026-09-03 |
-| **Status** | Draft (rev 7 — AdapterId `http` in-product; nested extra `.strict()`) |
+| **Status** | Implemented (rev 8 — routing, doctor fail-closed, verified vendor argv and AdapterId `http` have landed; the design of record is `docs/design/product-engineering-cli.md`, which wins where the two differ) |
 | **Product** | Legion CLI (`legion-cli`, npm `@9thlevelsoftware/legion-cli`) |
 | **Audience** | Senior engineers implementing the feature; product leads reviewing scope |
 | **Design of record** | `docs/design/product-engineering-cli.md` (rev 14 — twelve previously deferred surfaces shipped; AdapterId `http` in-product) |
@@ -116,7 +116,7 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 - No argv getter on `AgentAdapter` / `AgentHandle`. Template argv is derived from `FROZEN_ARGV_TABLE` + per-id config.
 - No `--adapter ""`. Clear is `--clear-adapter` only.
 - No intent / discuss / spec `--adapter` flags in v1.
-- Not in this feature: ingest distill spawn (engine.ingest today does not call `optionalSkillSpawn`; routing applies if that spawn is added later). QA scoring stays in-process (`packages/core/src/engine.ts` `qa()`).
+- Not in this feature: routing for the ingest distill spawn. `engine.ingest --distill` does call `optionalSkillSpawn({ skillId: "ingest" })` (skill `skills/ingest`), routed by `routes.ingest` or the default; it additionally refuses without a hardened sandbox (design doc, Trust boundaries). QA scoring stays in-process (`packages/core/src/engine.ts` `qa()`).
 - Not in v1: new audit event types `plan` / `review` / `verify` / `spawn-skip`. Resume covers every spawn; execute/timeout audit is the existing trail.
 
 ---
@@ -313,12 +313,12 @@ adapter:
   claude:
     extraArgs: ["--model", "opus"]    # argv only; doctor trust-warns
   grok:
-    args: ["--model", "grok-4", "{{pointer}}"]
+    args: ["-p", "{{pointer}}", "--model", "grok-4"]   # must start -p {{pointer}}
   codex:
-    args: ["{{pointer}}"]
+    args: ["exec", "{{pointer}}"]                     # must start exec
   minimax:
-    binary: mcode          # override assumed PATH name; already supported
-    args: ["{{pointer}}"]
+    binary: mcode          # the assumed binary anyway, so the prefix rule applies
+    args: ["exec", "{{pointer}}"]
 ingest:
   autoCommit: true
 control_mode: guarded
@@ -400,7 +400,7 @@ Doctor already trust-warns `claude.extraArgs`. Extend that warning to **any** co
 ```text
 Warnings
   claude extraArgs are set (trust warning): --model opus
-  grok args are set (trust warning): --model grok-4 {{pointer}}
+  grok args are set (trust warning): -p {{pointer}} --model grok-4
 ```
 
 Legion does not validate that `--model grok-4` is a real Grok model. The spawned CLI does.
@@ -720,7 +720,7 @@ Add a plan test: fixture task with `adapter: not-a-cli` → unreadable → plan 
 | `fix <bug>` | `--adapter <id>` | Forwards into `engine.execute(task.id, { fix: true, adapter })` |
 | `task amend <id>` | `--adapter <id>`, `--route <name>`, `--clear-adapter` | Persists `Task.adapter`. Does not require a FileContract change. |
 | `ticket create` | `--adapter <id>`, `--route <name>` | Persists on the new ticket |
-| `doctor` | (none) | Required-skill routes fail-closed via `isSpawnable`; trust warnings for extra args |
+| `doctor` | (none) | Required-skill routes fail-closed via `isResolvedAdapterSpawnable` (PATH + argv, `isConfiguredSpawnable`; no `--version` run on repo-configured binaries); trust warnings for extra args |
 | `next` | (none) | Ready-task table; raw `Task.adapter` suffix when set |
 | `status` | (none) | Current-task line suffix + JSON `currentTaskAdapter`; **not** the ready board |
 | `brief` | (none) | `renderSessionBrief`: `Current task: TSK-0100 settings screen (grok)` when raw adapter set |
@@ -951,7 +951,7 @@ If product later wants a request-time picker, that is a dashboard write-surface 
 - Task persist fixture (leave adapter-less): `packages/persist/test/fixtures/project/legion-cli/tasks/TSK-0002.md`.
 - Wiki brief (no agents dep): `packages/wiki/src/brief.ts`.
 - Dashboard writes: `packages/dashboard/src/write.ts` (`ENGINE_WRITE_METHODS`, `parseTicket`).
-- Agents.md: do not register bin `legion`; supported invocation `pnpm exec legion-cli`.
+- Agents.md: `legion` is registered as an alias of `legion-cli` (same `dist/bin.js`; installer first-args refuse); the supported invocation stays `pnpm exec legion-cli`. (The earlier draft said not to register `legion`; that was superseded.)
 
 ---
 

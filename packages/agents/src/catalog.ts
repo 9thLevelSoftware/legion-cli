@@ -267,6 +267,13 @@ export function renderSkillCatalog(
   return `${lines.join("\n")}\n`;
 }
 
+/**
+ * Where the packaged skills live. Order: `LEGION_CLI_SKILLS_DIR`, then a `skills/` folder walking up
+ * from `from` (the cwd), then walking up from this module. The module walk is what makes an installed
+ * package work with no checkout: `prepack` copies the repo's `skills/` to `<agents package>/skills`
+ * (`scripts/copy-skills.mjs`), which sits one level above this file's `dist/`. In a checkout it finds
+ * the repo-root `skills/` the same way.
+ */
 export function findSkillsDir(from = process.cwd()): string | undefined {
   const env = process.env.LEGION_CLI_SKILLS_DIR?.trim();
   if (env) return env;

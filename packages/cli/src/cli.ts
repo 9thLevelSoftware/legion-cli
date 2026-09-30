@@ -456,7 +456,7 @@ export function createProgram(): Command {
   )
     .option("--no-open", "do not open a browser")
     .option("--port <port>", "port (default 7420)")
-    .option("--expose", "bind 0.0.0.0 (warning)")
+    .option("--expose", "bind 0.0.0.0 (warning); refused unless --no-mcp-http (MCP HTTP is loopback-only)")
     .option("--mcp-http", "read-only MCP HTTP at /mcp (default on)")
     .option("--no-mcp-http", "disable MCP HTTP at /mcp")
     .option("--webmcp", "process-level flags.webmcp for this process")
