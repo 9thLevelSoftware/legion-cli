@@ -82,21 +82,10 @@ function hangingVerificationCommand() {
   return `${quoteArg(process.execPath)} -e ${quoteArg("setTimeout(() => {}, 60_000)")}`;
 }
 
-function exitedChildPid() {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    const pid = child.pid;
-    if (!pid) {
-      reject(new Error("spawned child has no pid"));
-      return;
-    }
-    child.once("exit", () => resolve(pid));
-    child.once("error", reject);
-  });
-}
+// A pid no process can hold (above Linux pid_max and far past any Windows pid in practice). An
+// exited child's pid is not safe here: Windows reuses pids within seconds, and the engine rightly
+// refuses to restore while a live process holds the handle's pid.
+const NEVER_LIVE_PID = 2_000_000_000;
 
 test("during a fake long spawn, status is in_progress and engine.lock is absent", async () => {
   await withFakeAdapter(async () => {
@@ -262,7 +251,7 @@ test("live resume pid is not demoted by recovery", async () => {
 });
 
 test("execute reaches done when the spawn handle pid is already dead", async () => {
-  const deadPid = await exitedChildPid();
+  const deadPid = NEVER_LIVE_PID;
   assert.equal(isPidAlive(deadPid), false);
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
