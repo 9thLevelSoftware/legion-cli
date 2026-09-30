@@ -199,7 +199,9 @@ export class HttpAdapter {
         const { content, toolCalls, hasMessage } = assistantMessage(res.json);
         // A 200 with an error body, no choices or an empty message is a failed run, not an empty success.
         if (!hasMessage) return fail("adapter.http response had no choices[0].message");
-        if (toolCalls.length === 0 && content.trim().length === 0) {
+        // After tool rounds, some OpenAI-compatible servers end with empty content and a "stop":
+        // the work was done through the tools, so only a first reply with nothing at all fails.
+        if (round === 1 && toolCalls.length === 0 && content.trim().length === 0) {
           return fail("adapter.http response had neither content nor tool calls");
         }
         lastContent = content;

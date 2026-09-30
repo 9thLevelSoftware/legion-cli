@@ -504,20 +504,64 @@ test("walk skips symlink directory cycles", async () => {
   });
 });
 
-test("map refuses when walk exceeds 10000 modules", { timeout: 180_000 }, async () => {
+test("F-028 map degrades above 10000 modules, keeps the largest and says so in ARCHITECTURE.md", { timeout: 180_000 }, async () => {
   await withTempDir(async (dir) => {
-    await writeManyTs(dir, 10_001);
-    const before = await mapArtifacts(dir);
-    await assert.rejects(
-      () => generateMap(dir),
-      (err) => {
-        assert.equal(err instanceof MapError, true);
-        assert.equal(err.nextHint, "legion-cli map --no-lsp");
-        assert.match(err.message, /10000/);
-        return true;
-      },
-    );
-    assert.deepEqual(await mapArtifacts(dir), before);
+    await writeManyTs(dir, 10_100);
+    // Ten files are bigger than the rest: they must survive the degrade.
+    const big = "export function f() {}\n" + "export const pad = 1;\n".repeat(50);
+    const bigNames = [];
+    for (let i = 0; i < 10; i += 1) {
+      bigNames.push(`src/big${i}.ts`);
+      await writeFile(join(dir, "src", `big${i}.ts`), big);
+    }
+    const result = await generateMap(dir);
+    assert.equal(result.fingerprints.modules.length, 10_000);
+    const paths = new Set(result.fingerprints.modules.map((row) => row.path));
+    for (const name of bigNames) assert.ok(paths.has(name), `${name} dropped`);
+    const arch = await readFile(join(dir, ".legion-cli", "map", "ARCHITECTURE.md"), "utf8");
+    assert.match(arch, /Degraded map: 10000 modules are listed/);
+    assert.match(arch, /110 smaller modules were left out/);
+  });
+});
+
+test("F-028 degrade keeps the largest modules, ties by path, reads only kept files, deterministically", async () => {
+  const { walkSourcesReport } = await import("../dist/index.js");
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, "src"), { recursive: true });
+    // Distinct sizes: g (largest) .. e; then a tie group a,b,c,d of equal size.
+    const body = (n) => "export const x = 1;\n".repeat(n);
+    const sizes = { g: 9, f: 8, e: 7, a: 1, b: 1, c: 1, d: 1 };
+    for (const [name, n] of Object.entries(sizes)) await writeFile(join(dir, "src", name + ".ts"), body(n));
+    const all = await walkSourcesReport({ projectRoot: dir, roots: null, ignore: [], maxModules: 7 });
+    assert.equal(all.files.length, 7);
+    assert.equal(all.omitted, 0);
+    assert.equal(all.filesRead, 7);
+    const run = () => walkSourcesReport({ projectRoot: dir, roots: null, ignore: [], maxModules: 5 });
+    const first = await run();
+    const second = await run();
+    assert.deepEqual(first.files.map((f) => f.path), ["src/a.ts", "src/b.ts", "src/e.ts", "src/f.ts", "src/g.ts"]);
+    assert.deepEqual(second.files.map((f) => f.path), first.files.map((f) => f.path));
+    assert.equal(first.omitted, 2);
+    assert.equal(first.total, 7);
+    assert.ok(first.filesRead <= 5, "files read " + first.filesRead);
+  });
+});
+
+test("F-028 the degraded note is refreshed when only the omitted count changes", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, "src"), { recursive: true });
+    const big = "export const x = 1;\n".repeat(9);
+    for (const name of ["a", "b", "c"]) await writeFile(join(dir, "src", name + ".ts"), big);
+    await writeFile(join(dir, "src", "s1.ts"), "export const s = 1;\n");
+    const archPath = join(dir, ".legion-cli", "map", "ARCHITECTURE.md");
+    const first = await generateMap(dir, { maxModules: 3 });
+    assert.equal(first.omitted, 1);
+    assert.match(await readFile(archPath, "utf8"), /1 smaller modules were left out/);
+    await writeFile(join(dir, "src", "s2.ts"), "export const s = 2;\n");
+    const second = await generateMap(dir, { maxModules: 3 });
+    assert.equal(second.omitted, 2);
+    assert.deepEqual(second.changed, []);
+    assert.match(await readFile(archPath, "utf8"), /2 smaller modules were left out/);
   });
 });
 

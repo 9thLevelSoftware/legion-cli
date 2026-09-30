@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,7 @@ import test from "node:test";
 import { listOpenCommandIds, ownProcessStartedAt } from "@9thlevelsoftware/legion-cli-persist";
 import {
   applyChatAction,
+  assertCanUndoTransition,
   canTransition,
   canTransitionBrownfield,
   canTransitionTaskStatus,
@@ -18,6 +20,7 @@ import {
   refuse,
   sanitizeChatAction,
   setUndoGitResetHard,
+  setUndoGitRevert,
   SHIP_COMMIT_PREFIX,
   undoLastTask,
 } from "../dist/index.js";
@@ -27,6 +30,7 @@ import {
   initGitRepo,
   initProject,
   makeTask,
+  passingVerificationCommand,
   patchState,
   seedFrozenSpec,
   seedPlanReady,
@@ -176,11 +180,42 @@ test("in_progress -> todo is illegal; undo cascades in_progress dependents to bl
 
 test("phase move outside LEGAL_PHASE_TRANSITIONS is refused by the engine", async () => {
   assert.equal(canTransition("initialized", "executing"), false);
+  assert.equal(canTransition("shipped", "executing"), false, "engine writes may never take the undo-only edge");
+  assert.doesNotThrow(() => assertCanUndoTransition("shipped", "executing"));
+  assert.throws(() => assertCanUndoTransition("ready_to_ship", "executing"), LegionRefuseError);
   await withEngine(async ({ engine }) => {
     await initProject(engine);
-    await assert.rejects(() => engine.transition("executing"), (err) =>
-      isRefuse(err, /cannot transition from initialized to executing/, /legion-cli/),
-    );
+    await assert.rejects(() => engine.execute("auto"), (err) => err instanceof LegionRefuseError);
+    assert.equal((await engine.getState()).phase, "initialized");
+  });
+});
+
+for (const raced of ["abandoned", "shipped"]) test(`the state write refuses a phase move the on-disk phase does not allow (${raced})`, async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ dir, store }) => {
+      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "ready");
+      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "release");
+      const engine = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
+      });
+      await initProject(engine);
+      await seedPlanReady(store, {
+        task: { contract: { verificationCommands: [passingVerificationCommand()] } },
+      });
+      initGitRepo(dir);
+      const pending = engine.execute("auto");
+      for (let i = 0; i < 500 && !existsSync(readyPath); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(existsSync(readyPath), true, "fake wait never became ready");
+      // A writer that bypasses the engine abandons the project while the agent runs unlocked.
+      await patchState(store, { phase: raced });
+      await writeFile(releasePath, "go\n");
+      const result = await pending;
+      assert.match(JSON.stringify(result), new RegExp(`cannot transition from ${raced} to executing`));
+      assert.equal((await store.readState()).data.phase, raced, "the run must not resurrect the phase");
+    });
   });
 });
 
@@ -227,6 +262,7 @@ test("unknown-type legion commits are refused; ship commits are reverted", async
   await withEngine(async ({ dir, engine, store }) => {
     await initProject(engine);
     await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    await patchState(store, { phase: "shipped", lastReview: "PASS", lastQaId: "qa-1" });
     initGitRepo(dir);
     await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
     git(dir, ["add", "shipped.txt"]);
@@ -237,6 +273,138 @@ test("unknown-type legion commits are refused; ship commits are reverted", async
     assert.ok(result.commitSha);
     assert.notEqual(gitHead(dir), before);
     assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
+    const state = await engine.getState();
+    assert.equal(state.phase, "executing");
+    assert.equal(state.lastReview, null);
+    assert.equal(state.lastQaId, null);
+  });
+});
+
+async function seedShipCommit(dir, engine, store) {
+  await initProject(engine);
+  await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+  await patchState(store, { phase: "shipped" });
+  initGitRepo(dir);
+}
+
+test("undo of a ship commit refuses on a dirty tracked file under .legion-cli and keeps it", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await seedShipCommit(dir, engine, store);
+    const notePath = join(dir, ".legion-cli", "note.md");
+    await writeFile(notePath, "before\n", "utf8");
+    git(dir, ["add", "-A", "-f"]);
+    git(dir, ["commit", "-m", "note"]);
+    await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
+    git(dir, ["add", "shipped.txt"]);
+    git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-checkin`]);
+    const shipHead = gitHead(dir);
+    // Not touched by the ship commit, so git itself would not stop the revert.
+    await writeFile(notePath, "my uncommitted edit\n", "utf8");
+
+    await assert.rejects(() => engine.undoLastTask(), (err) => isRefuse(err, /clean tracked tree/, /git status/));
+    assert.equal(gitHead(dir), shipHead);
+    assert.equal(await readFile(notePath, "utf8"), "my uncommitted edit\n");
+    assert.equal((await engine.getState()).phase, "shipped");
+    assert.equal((await store.readTask("TSK-0001")).data.status, "done");
+  });
+});
+
+test("a post-revert failure rolls back without touching untracked files", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await seedShipCommit(dir, engine, store);
+    await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
+    git(dir, ["add", "shipped.txt"]);
+    git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-checkin`]);
+    const shipHead = gitHead(dir);
+    await writeFile(join(dir, "scratch.txt"), "untracked\n", "utf8");
+    store.writeTask = async () => {
+      throw new Error("injected store failure after git");
+    };
+    await assert.rejects(() => engine.undoLastTask(), /injected store failure after git/);
+    assert.equal(gitHead(dir), shipHead);
+    assert.equal(await readFile(join(dir, "scratch.txt"), "utf8"), "untracked\n");
+  });
+});
+
+test("a real conflicting revert is aborted: no REVERT_HEAD, no markers, phase and HEAD unchanged", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await seedShipCommit(dir, engine, store);
+    await writeFile(join(dir, "a.txt"), "1\n", "utf8");
+    git(dir, ["add", "a.txt"]);
+    git(dir, ["commit", "-m", "a1"]);
+    await writeFile(join(dir, "a.txt"), "2\n", "utf8");
+    git(dir, ["commit", "-am", "a2"]);
+    const a2 = gitHead(dir);
+    await writeFile(join(dir, "a.txt"), "3\n", "utf8");
+    git(dir, ["commit", "-am", "a3"]);
+    await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
+    git(dir, ["add", "shipped.txt"]);
+    git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-checkin`]);
+    const shipHead = gitHead(dir);
+    // Reverting HEAD cannot conflict on a clean tree, so stand in a revert that really does:
+    // a2 changed the line a3 changed again. Real git starts it, stops on the conflict, leaves REVERT_HEAD.
+    setUndoGitRevert((root) => {
+      try {
+        git(root, ["revert", "--no-edit", a2]);
+        return { ok: true, out: "" };
+      } catch (err) {
+        assert.equal(existsSync(join(root, ".git", "REVERT_HEAD")), true, "git really stopped mid-revert");
+        return { ok: false, out: String(err.message) };
+      }
+    });
+    try {
+      await assert.rejects(() => engine.undoLastTask(), (err) => isRefuse(err, /git revert failed and was aborted/, /git status/));
+    } finally {
+      setUndoGitRevert(null);
+    }
+    assert.equal(existsSync(join(dir, ".git", "REVERT_HEAD")), false);
+    assert.equal(gitHead(dir), shipHead);
+    assert.equal(git(dir, ["status", "--porcelain", "--untracked-files=no"]), "");
+    assert.equal((await readFile(join(dir, "a.txt"), "utf8")).trim(), "3");
+    assert.equal((await engine.getState()).phase, "shipped");
+    assert.equal((await store.readTask("TSK-0001")).data.status, "done");
+  });
+});
+
+test("undo leaves a revert the user already has in progress alone", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await seedShipCommit(dir, engine, store);
+    await writeFile(join(dir, "a.txt"), "1\n", "utf8");
+    git(dir, ["add", "a.txt"]);
+    git(dir, ["commit", "-m", "a1"]);
+    await writeFile(join(dir, "a.txt"), "2\n", "utf8");
+    git(dir, ["commit", "-am", "a2"]);
+    const a2 = gitHead(dir);
+    await writeFile(join(dir, "a.txt"), "3\n", "utf8");
+    git(dir, ["commit", "-am", "a3"]);
+    await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
+    git(dir, ["add", "shipped.txt"]);
+    git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-checkin`]);
+    assert.throws(() => git(dir, ["revert", "--no-edit", a2]));
+    assert.equal(existsSync(join(dir, ".git", "REVERT_HEAD")), true);
+    const marked = await readFile(join(dir, "a.txt"), "utf8");
+
+    await assert.rejects(() => engine.undoLastTask(), (err) => isRefuse(err, /revert is in progress/, /git status/));
+    assert.equal(existsSync(join(dir, ".git", "REVERT_HEAD")), true, "the user's revert is untouched");
+    assert.equal(await readFile(join(dir, "a.txt"), "utf8"), marked);
+    git(dir, ["revert", "--abort"]);
+  });
+});
+
+test("undo of a ship commit refuses when tracked edits outside .legion-cli would be at risk", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    await writeFile(join(dir, "app.txt"), "one\n", "utf8");
+    initGitRepo(dir);
+    await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
+    git(dir, ["add", "shipped.txt"]);
+    git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-checkin`]);
+    const shipHead = gitHead(dir);
+    await writeFile(join(dir, "app.txt"), "two\n", "utf8");
+    await assert.rejects(() => engine.undoLastTask(), (err) => isRefuse(err, /clean tracked tree/, /git status/));
+    assert.equal(gitHead(dir), shipHead);
+    assert.equal(await readFile(join(dir, "app.txt"), "utf8"), "two\n");
   });
 });
 
@@ -540,8 +708,8 @@ test("refusal matrix: illegal transitions are named refusals across callers", as
     await initProject(engine);
     await seedPlanReady(store, { phase: "executing", task: { status: "in_progress" } });
 
-    await assert.rejects(() => engine.transition("spec_draft"), (err) =>
-      isRefuse(err, /cannot transition from executing to spec_draft/),
+    await assert.rejects(() => engine.newSpec(), (err) =>
+      isRefuse(err, /Start a new spec after this one ships or is abandoned/),
     );
 
     const chatDropped = sanitizeChatAction({ type: "execute" }, { phase: "executing", utterance: "execute" });
@@ -625,5 +793,107 @@ test("standalone undoLastTask still takes the store lock", async () => {
     const result = await undoLastTask({ projectRoot: dir, store });
     assert.equal(result.taskId, "TSK-0001");
     assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
+  });
+});
+
+test("undo never rewinds the audit log: a ship commit that touched it, on success and on rollback", async () => {
+  const { appendChainedAuditLine, assertAuditChainUsable } = await import("@9thlevelsoftware/legion-cli-persist");
+  for (const failStore of [false, true]) {
+    await withEngine(async ({ dir, engine, store }) => {
+      await seedShipCommit(dir, engine, store);
+      // Baseline commit has the audit files as of init; the ship commit adds lines to both.
+      await appendChainedAuditLine(dir, JSON.stringify({ type: "shipish", n: 1 }));
+      await appendChainedAuditLine(dir, JSON.stringify({ type: "shipish", n: 2 }));
+      await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
+      git(dir, ["add", "-A", "-f"]);
+      git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-checkin`]);
+      const shipHead = gitHead(dir);
+      const events = join(dir, ".legion-cli", "audit", "events.jsonl");
+      const chain = join(dir, ".legion-cli", "audit", "chain.json");
+      const eventsBefore = await readFile(events);
+      const chainBefore = await readFile(chain);
+      if (failStore) {
+        store.writeTask = async () => {
+          throw new Error("injected store failure after git");
+        };
+        // Damage the audit files as the rollback's reset runs, so a missing restore shows on any OS.
+        setUndoGitResetHard((root, ref) => {
+          git(root, ["reset", "--hard", ref]);
+          writeFileSync(events, "damaged");
+          writeFileSync(chain, "damaged");
+        });
+        try {
+          await assert.rejects(() => engine.undoLastTask(), /injected store failure after git/);
+        } finally {
+          setUndoGitResetHard(null);
+        }
+        assert.equal(gitHead(dir), shipHead);
+        assert.deepEqual(await readFile(events), eventsBefore);
+        assert.deepEqual(await readFile(chain), chainBefore);
+      } else {
+        await engine.undoLastTask();
+        const after = await readFile(events);
+        assert.deepEqual(after.subarray(0, eventsBefore.length), eventsBefore, "audit lines survive the revert");
+        assert.match(after.toString("utf8"), /"type":"undo"/);
+      }
+      await assertAuditChainUsable(dir);
+    });
+  }
+});
+
+test("undo of a second ship leaves the first ship's phase and receipt alone", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", specId: "spec-a", status: "done" }));
+    await patchState(store, { phase: "shipped", activeSpecId: "spec-a", lastReview: "PASS", lastQaId: "qa-1" });
+    const receiptA = join(dir, ".legion-cli", "audit", "ship-spec-a.md");
+    await writeFile(receiptA, "# Ship spec-a\n", "utf8");
+    initGitRepo(dir);
+    git(dir, ["commit", "--allow-empty", "-m", `${SHIP_COMMIT_PREFIX} spec-a`]);
+
+    await writeTask(store, makeTask({ id: "TSK-0002", specId: "spec-b", status: "done" }));
+    await patchState(store, { phase: "shipped", activeSpecId: "spec-b" });
+    await writeFile(join(dir, ".legion-cli", "audit", "ship-spec-b.md"), "# Ship spec-b\n", "utf8");
+    await writeFile(join(dir, "b.txt"), "b\n", "utf8");
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-b`]);
+
+    const result = await engine.undoLastTask();
+    assert.equal(result.taskId, "TSK-0002");
+    assert.match(result.message, /TSK-0002 was removed by the revert/);
+    const state = await engine.getState();
+    assert.equal(state.phase, "shipped", "spec-a's ship still stands in git");
+    assert.equal(state.activeSpecId, "spec-a");
+    assert.equal(state.lastReview, "PASS");
+    assert.doesNotMatch(await readFile(receiptA, "utf8"), /reverted/);
+    assert.match(await readFile(join(dir, ".legion-cli", "audit", "ship-spec-b.md"), "utf8"), /- reverted: true/);
+    assert.equal(existsSync(join(dir, "b.txt")), false);
+  });
+});
+
+test("a refused command after a ship does not block undo; the revert commit keeps the whole audit log", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    await patchState(store, { phase: "shipped", lastReview: "PASS", lastQaId: "qa-1" });
+    await assert.rejects(() => engine.beginIntent()); // seeds a tracked audit log
+    initGitRepo(dir);
+    await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-checkin`]);
+
+    await assert.rejects(() => engine.beginIntent());
+    const events = join(dir, ".legion-cli", "audit", "events.jsonl");
+    const logBefore = await readFile(events, "utf8");
+    assert.match(git(dir, ["status", "--porcelain", "--untracked-files=no"]), /events\.jsonl/, "the refusal appended to the tracked log");
+
+    const result = await engine.undoLastTask();
+    assert.equal(result.taskId, "TSK-0001");
+    const logAfter = await readFile(events, "utf8");
+    assert.ok(logAfter.startsWith(logBefore), "undo never rewinds the audit log");
+    const committed = git(dir, ["show", "HEAD:.legion-cli/audit/events.jsonl"]);
+    assert.ok(logAfter.startsWith(committed.trimEnd()), "the revert commit carries the log, not an older copy");
+    assert.ok(committed.trimEnd().length >= logBefore.trimEnd().length);
+    assert.equal((await engine.getState()).phase, "executing");
   });
 });

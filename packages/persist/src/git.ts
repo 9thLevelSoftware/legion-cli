@@ -11,11 +11,48 @@ import { toPosixPath } from "./paths.js";
  */
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 
+let resolvedGit: string | undefined;
+
+/**
+ * Windows: resolve `git` to an absolute path once, from a neutral cwd and never a hit in the
+ * project. A bare `git` makes CreateProcess look in the child's cwd (the audited repo) first.
+ * Elsewhere the PATH search is already safe.
+ */
+export function gitExecutable(projectDir?: string): string | null {
+  if (process.platform !== "win32") return "git";
+  if (resolvedGit !== undefined) return resolvedGit;
+  const found = spawnSync("where.exe", ["git"], {
+    cwd: join(process.env.SystemRoot || process.env.windir || "C:/Windows", "System32"),
+    env: { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" },
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+  });
+  if (found.status === 0) {
+    const rejected = [process.cwd(), projectDir ?? process.cwd()].map((d) => resolve(d).toLowerCase());
+    const hit = String(found.stdout)
+      .split("\n")
+      .map((line) => line.trim())
+      .find(
+        (abs) => abs.toLowerCase().endsWith(".exe") && isAbsolute(abs) && !rejected.includes(dirname(resolve(abs)).toLowerCase()),
+      );
+    if (hit) resolvedGit = hit;
+  }
+  // No absolute git.exe: fail rather than let a bare `git` be looked up next to the project. Not cached.
+  return resolvedGit ?? null;
+}
+
 export type GitRunResult = { status: number; stdout: string; stderr: string; error?: string };
 
 export function runGit(cwd: string, args: string[], opts: { maxBuffer?: number } = {}): GitRunResult {
-  const result = spawnSync("git", args, {
+  const exe = gitExecutable(cwd);
+  if (exe === null) {
+    const error = "git could not be found on PATH (Windows needs git.exe; git.cmd shims are not supported)";
+    return { status: 1, stdout: "", stderr: error, error };
+  }
+  const result = spawnSync(exe, args, {
     cwd,
+    env: process.platform === "win32" ? { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" } : process.env,
     encoding: "utf8",
     windowsHide: true,
     shell: false,

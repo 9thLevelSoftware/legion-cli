@@ -44,6 +44,7 @@ export const HINT = {
   concretePaths: "concrete paths",
   inRepo: "in-repo path",
   noCommit: "legion-cli ingest --no-commit",
+  distillNoSandbox: "legion-cli ingest <file> (without --distill)",
   show: "legion-cli show <page>",
   controlMode: "legion-cli control-mode",
   designGenerate: "legion-cli design-system generate",

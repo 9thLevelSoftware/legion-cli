@@ -29,7 +29,7 @@ export {
   scanChatSessions,
 } from "./chat.js";
 export type { ChatApplyResult, ChatRouteOpts, ChatTurnKind, ChatTurnResult } from "./chat.js";
-export { setUndoGitResetHard, undoLastTask } from "./undo.js";
+export { setUndoGitResetHard, setUndoGitRevert, undoLastTask } from "./undo.js";
 export type { UndoResult } from "./undo.js";
 export {
   COMMUNITY_RECIPE_LOCK_MESSAGE,
@@ -100,6 +100,7 @@ export {
   findSkillsDir,
   listCacheResumesCalls,
   optionalSkillSpawn,
+  refuseIfLiveRun,
   resetListCacheResumesCalls,
   resolveSkillDir,
   resumeRunIsLive,
@@ -113,6 +114,8 @@ export {
 export { SKIP_WIREFRAMES_NOTE, buildSpecFromIntent, specMarkdownBody, quoteDecision } from "./spec-build.js";
 export {
   assertCanTransition,
+  assertCanUndoTransition,
+  UNDO_ONLY_PHASE_TRANSITIONS,
   assertLegalPhase,
   canTransition,
   hintForIllegalTransition,
@@ -183,6 +186,8 @@ export type {
   ExecuteOptions,
   ExecuteResult,
   ExecuteTaskResult,
+  FiledTicketSummary,
+  TicketSource,
   FileContract,
   GardenReport,
   IngestOpts,

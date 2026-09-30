@@ -84,11 +84,12 @@ test("discuss + spec templates freeze without a model", async () => {
     assert.equal(skipAfter.status, 1);
     assert.match(normalize(skipAfter.stderr), /pre-approve/);
 
-    const approve = runCli(["spec", "approve", "--project", dir]);
+    const approve = runCli(["spec", "approve", "--project", dir, "--message", "ship it"]);
     assert.equal(approve.status, 0, approve.stderr);
     assert.match(normalize(approve.stdout), /Spec frozen/);
     const frozen = await readFile(join(dir, ".legion-cli", "specs", "spec-checkin", "SPEC.md"), "utf8");
     assert.match(frozen, /status: frozen/);
+    assert.match(frozen, /Approved: ship it/);
     SpecSchema.parse(parseMarkdownDocument(frozen).frontmatter);
   });
 });

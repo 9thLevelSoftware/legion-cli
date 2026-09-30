@@ -5,6 +5,7 @@ import {
   detectDependencyCycle,
   expectedArtifactsFailsPlan,
   filesAllowedFailsPlan,
+  isEngineSoTPath,
   isTaskReady,
   overlappingFilesAllowed,
   pickNextTask,
@@ -236,4 +237,63 @@ test("validateTaskGraph checks self loops, ghost blockers, and cycles", () => {
   const ok1 = task({ id: "TSK-0001", blockedBy: [] });
   const ok2 = task({ id: "TSK-0002", blockedBy: ["TSK-0001"] });
   assert.deepEqual(validateTaskGraph([ok1, ok2]), { valid: true });
+});
+
+test("implicit forbidden and plan checks compare normalised forms", () => {
+  for (const bad of [
+    ".GIT/x",
+    ".Git./x",
+    ".git /x",
+    ".git:$DATA/x",
+    "GIT~1/x",
+    ".LEGION-CLI/STATE.md",
+    ".legion-cli /state.md",
+    "LEGION~1/x",
+    "a/.ENV.local",
+    "ENV~1.LOC",
+  ]) {
+    assert.equal(filesAllowedFailsPlan([bad]), true, bad);
+  }
+  assert.equal(filesAllowedFailsPlan(["notes~2.md", "src/a.ts"]), false);
+  // expectedArtifacts must be in filesAllowed by the allow-side key (folded only where the FS folds)
+  const caseFolds = process.platform === "win32" || process.platform === "darwin";
+  assert.equal(expectedArtifactsFailsPlan(["src/A.ts"], ["src/a.ts"]), !caseFolds);
+  assert.equal(expectedArtifactsFailsPlan(["src/a.ts"], ["src/b.ts"]), true);
+});
+
+test("expectedArtifactsFailsPlan folds case and trailing dots only where the filesystem does", () => {
+  const caseFolds = process.platform === "win32" || process.platform === "darwin";
+  assert.equal(expectedArtifactsFailsPlan(["src/app.ts"], ["SRC/APP.TS"]), !caseFolds);
+  assert.equal(expectedArtifactsFailsPlan(["src/app.ts"], ["src/app.ts."]), process.platform !== "win32");
+  assert.equal(expectedArtifactsFailsPlan(["src/app.ts"], ["src/app.ts"]), false);
+});
+
+test("overlappingFilesAllowed flags case, trailing-dot and directory-prefix overlaps", () => {
+  const t = (id, filesAllowed) => task({ id, contract: { filesAllowed, expectedArtifacts: [] } });
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/A.ts"]), t("TSK-0002", ["src/a.ts"])]).length, 1);
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/a.ts"]), t("TSK-0002", ["src/a.ts."])]).length, 1);
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src"]), t("TSK-0002", ["src/a.ts"])]).length, 1);
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/a.ts"]), t("TSK-0002", ["src"])]).length, 1);
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/a.ts"]), t("TSK-0002", ["src/b.ts"])]).length, 0);
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src/a.ts", "src/b.ts"])]).length, 0);
+  // segment-aware: `src` does not own `src2/a.ts`
+  assert.equal(overlappingFilesAllowed([t("TSK-0001", ["src"]), t("TSK-0002", ["src2/a.ts"])]).length, 0);
+  // order inside a task must not hide an overlap (review repro)
+  const repro = overlappingFilesAllowed([
+    t("TSK-0001", ["src/a.ts"]),
+    t("TSK-0002", ["src/b.ts"]),
+    t("TSK-0003", ["src/c.ts", "src"]),
+  ]);
+  assert.equal(repro.length, 2, repro.join("; "));
+  assert.deepEqual(
+    overlappingFilesAllowed([t("TSK-0003", ["src", "src/c.ts"]), t("TSK-0001", ["src/a.ts"]), t("TSK-0002", ["src/b.ts"])]).length,
+    2,
+  );
+});
+
+test("isEngineSoTPath compares the normalised form, whatever the caller passes", () => {
+  assert.equal(isEngineSoTPath(".legion-cli/STATE.md"), true);
+  assert.equal(isEngineSoTPath(".LEGION-CLI/STATE.md"), true);
+  assert.equal(isEngineSoTPath(".legion-cli./tasks/TSK-0001.md"), true);
+  assert.equal(isEngineSoTPath("src/.legion-cli.ts"), false);
 });

@@ -65,21 +65,31 @@ export async function runQaChecklist(opts: CliOpts, flags: QaChecklistFlags): Pr
   }
   const spec = (await engine.store.readSpec(specId)).data;
   let ticks = flags.tick?.filter(Boolean) ?? [];
-  if (ticks.length === 0) {
-    if (!process.stdin.isTTY && !process.stdin.readable) {
-      refuse("qa checklist requires a TTY or --tick", HINT.qaChecklist);
-    }
+  const interactive = ticks.length === 0;
+  if (interactive) {
     const answers: string[] = [];
     for (const ac of spec.acceptance) {
       writeOut(`${ac.id} (${ac.priority}): ${ac.statement}`);
-      const ans = await readLine("Met? [Y/n] ");
+      const ans = await readLine("Met? [y/n] ");
       if (isNo(ans)) continue;
-      if (ans === "" || isYes(ans)) answers.push(ac.id);
+      if (isYes(ans)) {
+        answers.push(ac.id);
+        continue;
+      }
+      if (ans === "") {
+        refuse(
+          "qa checklist needs an explicit y or n per criterion (empty or closed input is not approval); use --tick <id> to tick non-interactively",
+          HINT.qaChecklist,
+        );
+      }
+      refuse("qa checklist needs y or n", HINT.qaChecklist);
     }
     ticks = answers;
   }
 
-  await engine.qaChecklist(ticks);
+  await engine.qaChecklist(ticks, {
+    confirmSource: interactive ? (process.stdin.isTTY && process.stdout.isTTY ? "tty" : "piped") : undefined,
+  });
   if (opts.json) {
     writeJson({ ok: true, specId, ticks, next: "legion-cli qa --mode no-browser" });
     return 0;

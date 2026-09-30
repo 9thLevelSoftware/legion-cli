@@ -39,12 +39,16 @@ import {
   parseMarkdownDocument,
   PathEscapeError,
   AuditTamperError,
+  assertAuditAppendable,
+  assertAuditChainUsable,
+  healAuditChain,
   EngineLockedError,
   RestoreRefusedError,
   clearLiveRun,
   invalidTaskMessage,
   isPidAlive,
   listTaskFiles,
+  listTaskSummaries,
   liveRuns,
   readLiveRun,
   nextFileId,
@@ -102,6 +106,7 @@ import {
   SCHEMA_VERSION,
   type AdapterId,
   type Assumption,
+  normalizePathKey,
   type ControlMode,
   type DiscussDecision,
   type IngestReceipt,
@@ -121,7 +126,7 @@ import {
   type TaskStatus,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { copyShippedCraft, isBrandViolationBlockingFreeze } from "@9thlevelsoftware/legion-cli-design-system";
-import { assertExecuteSandbox, SandboxError } from "@9thlevelsoftware/legion-cli-sandbox";
+import { assertExecuteSandbox, hardenedSandboxAvailable, SandboxError } from "@9thlevelsoftware/legion-cli-sandbox";
 import { HINT, LegionRefuseError, refuse, refuseKind } from "./errors.js";
 import { assertIngestSourceAllowed } from "./ingest-guard.js";
 import { decisionFileName, templateDecisions } from "./discuss.js";
@@ -134,7 +139,7 @@ import {
   specIdFromName,
 } from "./intent.js";
 import { isAllowedPath } from "./contracts.js";
-import { assertCanTransition, assertLegalPhase } from "./phases.js";
+import { assertCanTransition } from "./phases.js";
 import { evaluateReadiness, type ReadinessReport } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
 import {
@@ -170,7 +175,13 @@ import {
   regressionVerifyCommand,
 } from "./fix.js";
 import { packetFromInput, packetMarkdownBody } from "./packets.js";
-import { defaultTicketContract, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
+import {
+  defaultTicketContract,
+  parseExtraJson,
+  taskMarkdownBody,
+  ticketFromInput,
+  touchesVerificationEntryPoint,
+} from "./tickets.js";
 import {
   displayStagedRoots,
   ghAvailable,
@@ -209,6 +220,8 @@ import type {
   IngestOpts,
   IngestResult,
   ExecuteTaskResult,
+  TicketSource,
+  FiledTicketSummary,
   InitOptions,
   IntentState,
   LegionEngineOptions,
@@ -354,6 +367,7 @@ export class LegionEngine {
   readonly store: LegionStore;
   readonly #skillsDir?: string;
   readonly #fakeArtifacts: FakeArtifact[];
+  readonly #fakeDistillSandboxHardened: boolean | undefined;
   readonly #fakeThrowAfterWrite: boolean;
   readonly #fakeTimedOut: boolean;
   readonly #fakeExitCode?: number;
@@ -373,6 +387,7 @@ export class LegionEngine {
     this.store = store ?? createLegionStore(projectRoot);
     this.#skillsDir = options?.skillsDir;
     this.#fakeArtifacts = options?.fakeArtifacts ?? [];
+    this.#fakeDistillSandboxHardened = options?.fakeDistillSandboxHardened;
     this.#fakeThrowAfterWrite = Boolean(options?.fakeThrowAfterWrite);
     this.#fakeTimedOut = Boolean(options?.fakeTimedOut);
     this.#fakeExitCode = options?.fakeExitCode;
@@ -503,31 +518,7 @@ export class LegionEngine {
     });
   }
 
-  async transition(to: Phase): Promise<void> {
-    const target = assertLegalPhase(to);
-    return this.#mutate(async () => {
-      const state = await this.#readState();
-      if (target === "initialized") {
-        refuse("run legion-cli init", HINT.init);
-      }
-      if (target === "spec_frozen") {
-        refuse("spec freeze requires legion-cli spec approve", HINT.specApprove);
-      }
-      if (target === "plan_ready" || target === "plan_failed") {
-        refuse("plan_ready and plan_failed require legion-cli plan", HINT.plan);
-      }
-      assertCanTransition(state.phase, target);
-      if (target === "ready_to_ship") {
-        await this.#assertReadyToShip(state);
-      }
-      if (target === "shipped") {
-        await this.#assertCanShip(state, {});
-      }
-      await this.#writeState({ ...state, phase: target });
-    });
-  }
-
-  async approveSpec(specId: string, actor: Actor): Promise<void> {
+  async approveSpec(specId: string, actor: Actor, opts: { message?: string } = {}): Promise<void> {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase !== "spec_draft") {
@@ -550,6 +541,10 @@ export class LegionEngine {
       if (spec.status !== "draft" && !resuming) {
         refuse(`spec ${specId} is ${spec.status}, not draft`, HINT.specApprove);
       }
+      const note = opts.message?.trim();
+      if (resuming && note && !specBody.includes(`Approved: ${note}`)) {
+        await this.store.writeSpec(spec, `${specBody.trim()}\n\nApproved: ${note}\n`);
+      }
       if (!resuming) {
         const answers = await this.#loadIntentAnswers();
         if (await isBrandViolationBlockingFreeze(this.projectRoot, spec, answers.mapped.screens)) {
@@ -561,7 +556,10 @@ export class LegionEngine {
           frozenAt: nowIso(),
           frozenBy: actor.id,
         };
-        await this.store.writeSpec(frozen, specBody);
+        await this.store.writeSpec(frozen, note ? `${specBody.trim()}
+
+Approved: ${note}
+` : specBody);
       }
       const project = await this.store.readProject();
       if (project.data.activeSpecId !== specId) {
@@ -629,7 +627,7 @@ export class LegionEngine {
       if (opts?.transcript) {
         assertIngestSourceAllowed(this.projectRoot, opts.transcript);
       }
-      const phaseBefore = state.phase;
+      if (opts?.distill) await this.#assertDistillSandbox();
       const autoCommit = opts?.noCommit !== true;
       if (autoCommit && !isGitRepo(this.projectRoot)) {
         refuse("ingest auto-commit requires a git repository", HINT.noCommit);
@@ -683,10 +681,7 @@ export class LegionEngine {
         }
         throw err;
       }
-      const after = await this.#readState();
-      if (after.phase !== phaseBefore) {
-        await this.#writeState({ ...after, phase: phaseBefore });
-      }
+      // Ingest never changes the phase. If another writer moved it meanwhile, leave that move alone.
       return {
         ...receipt,
         ...(distillSkipped ? { distillSkipped } : {}),
@@ -770,6 +765,7 @@ export class LegionEngine {
           resolveBinary: opts.resolveBinary,
           spawnLsp: opts.spawnLsp,
           lspDeadlineMs: opts.lspDeadlineMs,
+          maxModules: opts.maxModules,
         });
       } catch (err) {
         if (err instanceof MapError) refuse(err.message, err.nextHint);
@@ -804,7 +800,7 @@ export class LegionEngine {
         });
         await writeMapFile(
           architecturePath,
-          mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints)),
+          mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints, { omitted: generated.omitted })),
           { root: this.projectRoot },
         );
         if (revert.incident) {
@@ -1324,9 +1320,21 @@ export class LegionEngine {
         cliAdapter: opts?.adapter,
         taskAdapter: task?.adapter,
       });
-      if (result.runId) {
-        await this.#fileExtrasFromRun(result.runId, specId, { type: "fix", parentId: task?.id });
-      }
+      const filedExtras = result.runId
+        ? await this.#fileExtrasFromRun(result.runId, specId, {
+            type: "fix",
+            parentId: task?.id,
+            agentSourceless: !task,
+            inheritFrom: task
+              ? {
+                  id: task.id,
+                  label: "verified task",
+                  filesAllowed: task.contract.filesAllowed,
+                  verificationCommands: task.contract.verificationCommands,
+                }
+              : undefined,
+          })
+        : undefined;
       const after = await this.snapshotTaskIds();
       const createdTaskIds = after.filter((id) => !before.includes(id));
       if (createdTaskIds.length > 0) {
@@ -1351,6 +1359,7 @@ export class LegionEngine {
         spawned: result.spawned,
         notesPath: await this.#findVerifyNotes(task?.id),
         createdTaskIds,
+        createdTickets: filedExtras?.tickets ?? [],
         extrasReverted: result.revert?.extrasReverted ?? [],
         warnings: this.#verifyWarnings(result),
       };
@@ -1428,9 +1437,9 @@ export class LegionEngine {
             ]),
           ].sort((a, b) => a.localeCompare(b))
         : [];
-      if (started?.runId) {
-        await this.#fileExtrasFromRun(started.runId, specId);
-      }
+      const filedExtras = started?.runId
+        ? await this.#fileExtrasFromRun(started.runId, specId, { agentSourceless: true })
+        : undefined;
       const after = await this.snapshotTaskIds();
       const createdTaskIds = after.filter((id) => !before.includes(id));
       if (createdTaskIds.length > 0) {
@@ -1495,6 +1504,7 @@ export class LegionEngine {
       return {
         verdict,
         createdTaskIds,
+        createdTickets: filedExtras?.tickets ?? [],
         extrasReverted: revert?.extrasReverted ?? [],
         rewrittenExistingTaskIds,
         warnings: reviewWarnings,
@@ -1583,7 +1593,7 @@ export class LegionEngine {
     });
   }
 
-  async qaChecklist(ticks: string[]): Promise<void> {
+  async qaChecklist(ticks: string[], opts: { confirmSource?: "tty" | "piped" } = {}): Promise<void> {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const specId = state.activeSpecId;
@@ -1601,6 +1611,11 @@ export class LegionEngine {
         specId,
         ticks: unique,
         updatedAt: nowIso(),
+      });
+      await this.#audit("qa_checklist", state.phase, "user", {
+        specId,
+        ticked: unique.length,
+        confirmSource: opts.confirmSource ?? null,
       });
     });
   }
@@ -1673,6 +1688,8 @@ export class LegionEngine {
     }
 
     const preview = await this.#mutate(async () => {
+      // Routine appends verify only the chain tail; the gate replays the whole log.
+      await healAuditChain(this.projectRoot);
       const state = await this.#readState();
       await this.#assertCanShip(state, opts);
       return this.#stageShipLocked(state);
@@ -2095,6 +2112,8 @@ export class LegionEngine {
       }
       // The specific check above is about this task's run; any OTHER live run still refuses.
       refuseIfLiveRun((await liveRuns(this.projectRoot, { clearDead: true })).live);
+      // Entered with allowLive, so the lock-entry append check was skipped: make it before the write.
+      await assertAuditAppendable(this.projectRoot);
       await this.#writeTask({ ...doc.data, status: "blocked" }, doc.body);
       const state = await this.#readState();
       if (state.currentTaskId === taskId) {
@@ -2183,7 +2202,8 @@ export class LegionEngine {
       const task = (await this.store.readTask(state.currentTaskId)).data;
       if (task.status !== "in_progress") return null;
       const resume = await findLatestTaskResume(this.projectRoot, task.id);
-      if (resume && resumeRunIsLive(resume)) return { taskId: task.id, runId: resume.runId };
+      // Same identity check as the hands-off guard, so doctor never reports a reused pid as live.
+      if (resume && (await resumeAsLiveRun(resume))) return { taskId: task.id, runId: resume.runId };
       return null;
     } catch {
       return null;
@@ -2301,6 +2321,8 @@ export class LegionEngine {
         refuse("Execute is off in advisory mode", HINT.advisory);
       }
 
+      // Refuse on a bad audit chain before any task or phase moves (the later audit append would).
+      await assertAuditAppendable(this.projectRoot);
       task = await this.#resolveExecuteTask(taskId, state, config);
       if (task.contract.filesAllowed.length === 0 || task.contract.verificationCommands.length === 0) {
         refuse("This task needs a file contract and verification commands", HINT.plan);
@@ -2466,17 +2488,32 @@ export class LegionEngine {
 
         let extraJsonInvalid = false;
         let extraJsonTicketIds: string[] = [];
+        const filedTickets: FiledTicketSummary[] = [];
         if (runId) {
-          const filed = await this.#fileExtrasFromRun(runId, lockedTask.specId);
+          const filed = await this.#fileExtrasFromRun(runId, lockedTask.specId, {
+            inheritFrom: {
+              id: lockedTask.id,
+              label: "running task",
+              filesAllowed: lockedTask.contract.filesAllowed,
+              verificationCommands: lockedTask.contract.verificationCommands,
+            },
+          });
           extraJsonInvalid = filed.invalid;
           extraJsonTicketIds = filed.ticketIds;
+          filedTickets.push(...filed.tickets);
         }
 
         if (incident || extras.length > 0 || extraJsonInvalid) {
           let ticketId: string | undefined;
           if (extras.length > 0) {
-            const { task: ticket } = await this.#fileTicketLocked(
+            const { task: ticket, verificationSource } = await this.#fileTicketLocked(
               {
+                inheritFrom: {
+                  id: lockedTask.id,
+                  label: "running task",
+                  filesAllowed: lockedTask.contract.filesAllowed,
+                  verificationCommands: lockedTask.contract.verificationCommands,
+                },
                 title:
                   extras.length === 1
                     ? `FileContract extra: ${extras[0]}`
@@ -2489,6 +2526,12 @@ export class LegionEngine {
               lockedTask.specId,
             );
             ticketId = ticket.id;
+            filedTickets.push({
+              id: ticket.id,
+              verificationCommands: ticket.contract.verificationCommands,
+              filesAllowed: ticket.contract.filesAllowed,
+              verificationSource,
+            });
           }
           ticketId ??= extraJsonTicketIds[0];
           await this.#transitionTaskTo(lockedTask.id, "blocked");
@@ -2507,6 +2550,7 @@ export class LegionEngine {
               incident,
               headMoved,
               ticketId,
+              filedTickets,
             }),
           };
         }
@@ -2539,6 +2583,7 @@ export class LegionEngine {
           adapterId,
           resolutionSource,
           agentExitWarning,
+          filedTickets,
         };
       });
 
@@ -2641,6 +2686,7 @@ export class LegionEngine {
           adapterId: post.adapterId,
           resolutionSource: post.resolutionSource,
           ...(post.agentExitWarning ? { agentExitWarning: post.agentExitWarning } : {}),
+          ...(post.filedTickets.length > 0 ? { filedTickets: post.filedTickets } : {}),
           ...(reason ? { reason } : {}),
           ...(trustTierNote ? { trustTierNote } : {}),
         };
@@ -2778,8 +2824,6 @@ export class LegionEngine {
     const candidates = [
       taskId ? `.legion-cli/qa/verify/${taskId}.md` : undefined,
       ".legion-cli/qa/verify.md",
-      ".legion-cli/qa/notes.md",
-      ".legion-cli/qa/walkthrough.md",
     ];
     for (const path of candidates) {
       if (path && (await this.store.pathExists(path))) return path;
@@ -2823,37 +2867,51 @@ export class LegionEngine {
   async #fileExtrasFromRun(
     runId: string,
     specId: string,
-    defaults?: { type?: NewTicket["type"]; parentId?: string },
-  ): Promise<{ invalid: boolean; ticketIds: string[] }> {
+    defaults?: {
+      type?: NewTicket["type"];
+      parentId?: string;
+      inheritFrom?: TicketSource;
+      agentSourceless?: boolean;
+    },
+  ): Promise<{ invalid: boolean; ticketIds: string[]; tickets: FiledTicketSummary[] }> {
     const abs = join(this.projectRoot, ".legion-cli", "cache", "runs", runId, "extra.json");
     let raw: unknown;
     try {
       raw = JSON.parse(await readFile(abs, "utf8"));
     } catch {
-      return { invalid: false, ticketIds: [] };
+      return { invalid: false, ticketIds: [], tickets: [] };
     }
     let invalid = false;
     const ticketIds: string[] = [];
+    const tickets: FiledTicketSummary[] = [];
     for (const input of parseExtraJson(raw)) {
-      const { task, coerced } = await this.#fileTicketLocked(
+      const { task, coerced, verificationSource } = await this.#fileTicketLocked(
         {
           ...input,
           fromAgent: true,
           type: input.type ?? defaults?.type,
           parentId: input.parentId ?? defaults?.parentId,
+          inheritFrom: defaults?.inheritFrom,
+          agentSourceless: defaults?.agentSourceless,
         },
         specId,
       );
       if (coerced) invalid = true;
       ticketIds.push(task.id);
+      tickets.push({
+        id: task.id,
+        verificationCommands: task.contract.verificationCommands,
+        filesAllowed: task.contract.filesAllowed,
+        verificationSource,
+      });
     }
-    return { invalid, ticketIds };
+    return { invalid, ticketIds, tickets };
   }
 
   async #fileTicketLocked(
     input: NewTicket,
     specIdOverride?: string,
-  ): Promise<{ task: Task; coerced: boolean }> {
+  ): Promise<{ task: Task; coerced: boolean; verificationSource: string }> {
     const title = input.title.trim();
     if (!title) {
       refuse("ticket requires a title", HINT.ticket(input.parentId ?? "TSK-x"));
@@ -2864,8 +2922,10 @@ export class LegionEngine {
       refuse("ticket requires an active spec", HINT.spec);
     }
     const tasks = await this.#listTasks();
-    let parentId = input.parentId;
+    const sourceless = Boolean(input.fromAgent && input.agentSourceless);
+    let parentId = sourceless ? undefined : input.parentId;
     let parentAdapter: AdapterId | undefined;
+    let parentSource: TicketSource | undefined;
     if (parentId) {
       const parent = tasks.find((task) => task.id === parentId);
       if (!parent) {
@@ -2876,8 +2936,22 @@ export class LegionEngine {
         }
       } else {
         parentAdapter = parent.adapter;
+        parentSource = {
+          id: parent.id,
+          label: "parent",
+          filesAllowed: parent.contract.filesAllowed,
+          verificationCommands: parent.contract.verificationCommands,
+        };
       }
     }
+    // Agent-filed tickets never bring their own verificationCommands (F-039): they run the
+    // engine-supplied source task's commands (running/verified task), else the resolved
+    // parent's, else the engine default. An empty source list also falls to the default, and
+    // the returned label says which. Human tickets keep what the human typed.
+    const source = input.fromAgent && !sourceless ? (input.inheritFrom ?? parentSource) : undefined;
+    const agentVerification =
+      source && source.verificationCommands.length > 0 ? [...source.verificationCommands] : undefined;
+    const verificationSource = agentVerification && source ? source.label : "engine default (pnpm test)";
     // From file names (valid or not), under engine.lock, so a corrupt file's id is never
     // reused (F-004).
     const id = await nextFileId(this.store.paths.tasksDir, "TSK", 4);
@@ -2886,6 +2960,9 @@ export class LegionEngine {
       title,
       parentId,
       adapter: input.adapter ?? parentAdapter,
+      ...(input.fromAgent
+        ? { contract: { ...input.contract, verificationCommands: agentVerification } }
+        : {}),
     });
     const contractInvalid =
       filesAllowedFailsPlan(ticket.contract.filesAllowed) ||
@@ -2902,9 +2979,38 @@ export class LegionEngine {
       }
       ticket = {
         ...ticket,
-        contract: defaultTicketContract(id),
+        contract: defaultTicketContract(id, { verificationCommands: agentVerification }),
       };
       coerced = true;
+    }
+    // An agent ticket may only touch files its source task may touch; otherwise it could edit the
+    // scripts/tests its inherited command runs (F-039). Outside that, it gets the default notes/ file.
+    if (!coerced && input.fromAgent && source && (input.contract?.filesAllowed?.length ?? 0) > 0) {
+      const allowed = new Set(source.filesAllowed.map((path) => normalizePathKey(path)));
+      if (!ticket.contract.filesAllowed.every((path) => allowed.has(normalizePathKey(path)))) {
+        ticket = {
+          ...ticket,
+          contract: defaultTicketContract(id, { verificationCommands: agentVerification }),
+          notes: `${ticket.notes} filesAllowed outside ${source.id}'s were replaced by notes/${id}.md.`.trim(),
+        };
+      }
+    }
+    // Any agent ticket: no engine source means the agent's files are not trusted at all, and a source
+    // never legitimises verification entry points (package.json, scripts, tests, CI, hooks, configs,
+    // files named by the inherited commands). Those get the default notes/<id>.md contract.
+    if (input.fromAgent && (input.contract?.filesAllowed?.length ?? 0) > 0) {
+      const reason = sourceless
+        ? "no engine-supplied source task"
+        : touchesVerificationEntryPoint(ticket.contract.filesAllowed, ticket.contract.verificationCommands)
+          ? "a verification entry point"
+          : undefined;
+      if (reason && ticket.contract.filesAllowed.some((path) => !path.startsWith("notes/"))) {
+        ticket = {
+          ...ticket,
+          contract: defaultTicketContract(id, { verificationCommands: agentVerification }),
+          notes: `${ticket.notes} filesAllowed replaced by notes/${id}.md (${reason}).`.trim(),
+        };
+      }
     }
     await this.#writeTask(ticket, taskMarkdownBody(ticket));
     if (parentId) {
@@ -2918,7 +3024,7 @@ export class LegionEngine {
     }
     const promoted = await this.#promoteTicketIfReady(id, specId);
     await this.#failLastReviewLocked();
-    return { task: promoted, coerced };
+    return { task: promoted, coerced, verificationSource };
   }
 
   async #newPacketLocked(input: NewPacket): Promise<PacketResult> {
@@ -3331,7 +3437,19 @@ export class LegionEngine {
     return (await this.store.readState()).data;
   }
 
-  async #writeState(state: StateFile): Promise<void> {
+  /**
+   * Every phase change passes through here and is checked against the phase on disk (same-phase
+   * writes are fine). `allow` names the one write that deliberately undoes a move:
+   * a ship that failed after writing `shipped` (`shipped` back to `ready_to_ship`/`executing`).
+   */
+  async #writeState(state: StateFile, allow?: "ship-rollback"): Promise<void> {
+    const onDisk = await this.#readState();
+    // The one exemption is exactly the edge it names: a ship that failed after writing `shipped`.
+    const shipRollback =
+      allow === "ship-rollback" &&
+      onDisk.phase === "shipped" &&
+      (state.phase === "ready_to_ship" || state.phase === "executing");
+    if (onDisk.phase !== state.phase && !shipRollback) assertCanTransition(onDisk.phase, state.phase);
     await this.store.writeState(state, stateBody(state));
   }
 
@@ -3578,6 +3696,7 @@ export class LegionEngine {
       qaPass,
       allowDegradedQa,
       receiptPath,
+      confirmSource: opts.confirmSource ?? null,
     });
 
     const priorHead = isGitRepo(this.projectRoot) ? tryGitHead(this.projectRoot) : null;
@@ -3604,10 +3723,31 @@ export class LegionEngine {
         ? opts.prCreate({ cwd: this.projectRoot, title, body })
         : tryCreatePullRequest(this.projectRoot, title, body);
       if (created.error || !created.url) {
+        // --pr requires --commit and the receipt is always staged, so a commit exists here.
+        // With a prior HEAD, reset the index back to it (this also unstages the preview's paths).
+        // Without one (root commit) the commit cannot be undone here: keep the receipt (it is in
+        // that commit) and record the surviving commit in the audit event.
+        const keptRootCommit = Boolean(receipt.commitSha) && !priorHead;
         if (priorHead && receipt.commitSha) {
           gitResetMixed(this.projectRoot, priorHead);
         }
-        await this.#writeState(state);
+        // A receipt that cannot be removed (a Windows file lock) must not stop STATE going back.
+        let receiptKept: string | undefined;
+        if (!keptRootCommit) {
+          try {
+            await rm(toFsPath(this.projectRoot, receiptPath), { force: true });
+          } catch (err) {
+            receiptKept = err instanceof Error ? err.message : String(err);
+          }
+        }
+        await this.#writeState(state, "ship-rollback");
+        await this.#audit("ship_rolled_back", state.phase, actor, {
+          specId,
+          receiptPath,
+          reason: created.error ?? "no pull request url",
+          ...(keptRootCommit ? { commitKept: receipt.commitSha } : {}),
+          ...(receiptKept ? { receiptKept } : {}),
+        });
         refuse(`gh pr create failed: ${created.error ?? "no pull request url"}`, HINT.shipPrRetry);
       }
       receipt.prUrl = created.url;
@@ -3633,8 +3773,10 @@ export class LegionEngine {
         actor,
         data,
       });
-    } catch {
-      // local metrics are best-effort
+    } catch (err) {
+      // Best-effort except tamper: I/O and validation failures are swallowed, a tampered or
+      // unreadable chain is never hidden (lock entry also checks it before mutating).
+      if (err instanceof AuditTamperError) throw err;
     }
   }
 
@@ -3670,6 +3812,19 @@ export class LegionEngine {
   async #recoverDeadInProgressLocked(): Promise<void> {
     const state = await this.#readState();
     if (state.phase === "uninitialized") return;
+    // Only a task that is (or may be) in flight needs a run lookup: skip the cache/runs scan when
+    // there is no current task and the summary index shows no in_progress/verifying task. An
+    // unreadable task (ok:false) can never be recovered (readTask throws below), so it is ignored.
+    // Assumption: the summary index is an mtime+size cache under index/ (agents cannot write it); a
+    // status flip that keeps both identical would hide an in-flight task until the next lock entry
+    // sees a changed file. Reading every task file instead would cost O(tasks) parsing per lock entry.
+    if (!state.currentTaskId) {
+      const summaries = await listTaskSummaries(this.projectRoot);
+      const inFlight = summaries.some(
+        (row) => row.ok && (row.status === "in_progress" || row.status === "verifying"),
+      );
+      if (!inFlight) return;
+    }
     const resumes = await listCacheResumes(this.projectRoot);
     const latestByTask = new Map<string, (typeof resumes)[number]>();
     for (const resume of resumes) {
@@ -3726,6 +3881,11 @@ export class LegionEngine {
         async () => {
           let guardError: unknown;
           if (!already) {
+            // Fail closed before any state change if the audit chain is unreadable or rewound.
+            await assertAuditChainUsable(this.projectRoot);
+            // Writers also get the exact append-time check (full replay only for an old-format chain),
+            // so a bad chain refuses before any state moves; read-only entries keep the cheap check.
+            if (!opts?.allowLive) await assertAuditAppendable(this.projectRoot);
             // Provably dead run markers are dropped here; live ones keep their open command
             // (reconcile skips them) and refuse every mutating entry below.
             const { live } = await liveRuns(this.projectRoot, { clearDead: true });
@@ -3845,6 +4005,29 @@ export class LegionEngine {
   /** Persist must not import wiki; catalog is engine-authored while holding the lock. */
   async #refreshWikiCatalogLocked(): Promise<void> {
     await writeWikiCatalog(this.store);
+  }
+
+  /**
+   * `ingest --distill` runs an agent on untrusted content (F-042/A-002). Refuse up front, before
+   * anything is written, when the agent would have to run without a hardened sandbox. An adapter
+   * that cannot spawn stays a soft skip (nothing would run), and the fake test adapter runs no agent.
+   */
+  async #assertDistillSandbox(): Promise<void> {
+    let config: LegionConfig;
+    try {
+      config = await this.#readConfig();
+    } catch {
+      return;
+    }
+    const resolution = resolveAdapterId({ config, skillId: "ingest" });
+    if (resolution.id === "fake") return;
+    if (!(await isResolvedAdapterSpawnable(config, resolution.id))) return;
+    const hardened = this.#fakeDistillSandboxHardened ?? hardenedSandboxAvailable(config.sandbox);
+    if (hardened) return;
+    refuse(
+      "ingest --distill runs an agent on untrusted content and needs a hardened sandbox: bwrap on Linux, seatbelt on macOS, or Docker (on Windows without Docker, distill is unavailable)",
+      HINT.distillNoSandbox,
+    );
   }
 
   async #maybeDistillLocked(

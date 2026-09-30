@@ -50,6 +50,8 @@ export type LegionEngineOptions = {
   /** Test-only: runs during qa (lock-free after F-026). Injected-clock advance lives here. */
   fakeOnQa?: () => Promise<void>;
   verificationTimeoutMs?: number;
+  /** Test-only: overrides hardened-backend detection for the `ingest --distill` refusal. */
+  fakeDistillSandboxHardened?: boolean;
 };
 
 export type IntentState = {
@@ -301,6 +303,8 @@ export type ShipOptions = {
   pr?: boolean;
   actor?: string;
   confirm?: (preview: ShipPreview) => Promise<boolean>;
+  /** Where the confirm answer came from; recorded in the ship audit event. */
+  confirmSource?: "tty" | "piped";
   /** Test seam for `gh pr create`. */
   prCreate?: (input: { cwd: string; title: string; body: string }) => { url?: string; error?: string };
 };
@@ -312,6 +316,22 @@ export type ExecuteOptions = {
   allowNoSandbox?: boolean;
 };
 
+export type TicketSource = {
+  id: string;
+  label: "running task" | "verified task" | "parent";
+  filesAllowed: readonly string[];
+  verificationCommands: readonly string[];
+};
+
+/** A ticket filed from agent output, with what it will run and where the commands came from (F-039). */
+export type FiledTicketSummary = {
+  id: string;
+  verificationCommands: string[];
+  filesAllowed: string[];
+  /** "parent" | "running task" | "verified task" | "engine default (pnpm test)". */
+  verificationSource: string;
+};
+
 export type ExecuteTaskResult = {
   taskId: string;
   status: "done" | "blocked";
@@ -320,6 +340,8 @@ export type ExecuteTaskResult = {
   incident: boolean;
   headMoved: boolean;
   ticketId?: string;
+  /** Every ticket filed from this task's agent output, with the commands each will run. */
+  filedTickets?: FiledTicketSummary[];
   verificationPass?: boolean;
   /** Why the task was blocked by verification, e.g. "verification command did not start: …". */
   reason?: string;
@@ -346,6 +368,8 @@ export type VerifyResult = {
   spawned: boolean;
   notesPath?: string;
   createdTaskIds: string[];
+  /** The commands each created ticket will run (inherited, never agent-authored). */
+  createdTickets: FiledTicketSummary[];
   extrasReverted: string[];
   /** One line per skipped or non-zero agent run; verify is optional, so these warn instead of failing. */
   warnings: string[];
@@ -354,6 +378,7 @@ export type VerifyResult = {
 export type ReviewResult = {
   verdict: ReviewVerdict;
   createdTaskIds: string[];
+  createdTickets: FiledTicketSummary[];
   extrasReverted: string[];
   rewrittenExistingTaskIds: string[];
   /** Non-zero agent exit on a review that still ended FAIL (filed tasks). */
@@ -398,6 +423,16 @@ export type NewTicket = {
   notes?: string;
   contract?: Partial<FileContract>;
   adapter?: AdapterId;
+  /**
+   * Engine-supplied source for an agent-filed ticket (the running or verified task). Takes
+   * precedence over an agent-chosen parentId for the inherited commands and the filesAllowed cap.
+   */
+  inheritFrom?: TicketSource;
+  /**
+   * Set by the engine for agent spawns with no engine-supplied source (review, verify without a
+   * task): the agent's own parentId and filesAllowed are ignored (default commands, notes/<id>.md).
+   */
+  agentSourceless?: boolean;
 };
 
 export type NewPacket = {

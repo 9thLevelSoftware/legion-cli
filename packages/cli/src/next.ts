@@ -120,7 +120,7 @@ export function statusExitCode(
 }
 
 export type Blocker = {
-  kind: "task" | "readiness" | "review";
+  kind: "task" | "readiness" | "review" | "audit";
   id?: string;
   detail: string;
 };

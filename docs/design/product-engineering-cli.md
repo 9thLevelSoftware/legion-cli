@@ -35,13 +35,13 @@ These are the defaults this document commits to. Former open questions are recor
 | KD1 | **Name, binary, npm** | Product **Legion CLI**. Binaries **`legion-cli`** and **`legion`** (same `dist/bin.js`). On-disk **`.legion-cli/`**. npm org **`@9thlevelsoftware`**. CLI package **`@9thlevelsoftware/legion-cli`** (public). Libraries `@9thlevelsoftware/legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard,design-system,sandbox,http,map}`. Workspace **root** `"private": true`. Installer first-args on `legion` refuse (exit 2); plugin installer is `npx @9thlevelsoftware/legion --claude` (bin `legion-plugins`). Workspace is `D:\legion-cli`. | User: lean into the Legion brand. Sibling products, not a wrap: installer stays package-name invocation. This engine is **`pnpm exec legion-cli`**. `legion` is a registered bin alias (same `dist/bin.js`), not an alternative supported invocation until a tagged publish. `legion-cli doctor` lists both binaries on PATH. GA tag `v1.0.0` still waits on the sibling installer-major checklist. Do not claim already on npm. |
 | KD2 | **Language / toolchain** | TypeScript on Node.js 22+, pnpm workspaces, ESM | MCP SDK and a future WebMCP page host are first-class in JS/TS. One language for CLI, engine, and dashboard. |
 | KD3 | **CLI framework** | Commander | Subcommands map 1:1 to lifecycle verbs a non-coder can read. |
-| KD4 | **Persistence** | Git-reviewed markdown under `.legion-cli/` plus a derived, gitignored SQLite index | Humans and git review the wiki, specs, and tasks. SQLite is a cache. Rebuild via `store.rebuild()` / shipped `legion-cli index rebuild`. Single-writer lock on `.legion-cli/index/engine.lock`. **Ingest auto-commits** wiki pages on success (`--no-commit` to skip). **Execute does not auto-commit.** `legion-cli ship` stages and shows the diff. |
-| KD5 | **Agents (v0)** | Spawn installed CLIs. Available: `claude` + `fake` + `generic` plus extras `grok` / `openai` / `codex` / `mimo` / `minimax`. Extras are **spawnable** with **verified vendor argv** (`grok`: `["-p", "{{pointer}}"]`; `openai`/`codex`: `["exec", "{{pointer}}"]`; `mimo`: `["run", "{{pointer}}"]`; `minimax`: `["exec", "{{pointer}}"]` on binary `mcode`). `openai` is an **alias id** for the Codex CLI (assumed binary `codex`); prefer `codex` in named examples and human docs. **`http`** may be stored at `init` (`adapter.http`: `baseUrl`, `model`, `apiKeyEnv`, optional `allowLoopback` / `headers`; no inline `apiKey`; SSRF-bounded) but is **detect-only** (`DETECT_ONLY_ADAPTER_IDS = ["http"]`; CLI `--adapter http` and named routes refuse; doctor reports not spawnable; `spawn()` throws). Nested extra spawn blocks stay `.strict()` (no `baseUrl` / `provider` on `adapter.grok`). Spawn CLIs remain the default. **No product-default adapter** — `adapter.default` is required in `.legion-cli/config.yaml`. Spawn routing: CLI `--adapter` > `Task.adapter` (execute/verify) > `adapter.routes[skillId]` > `adapter.default`. Model pin for spawn CLIs is argv-only (`claude.extraArgs` / `adapter.<id>.args` that keep the vendor prefix + `{{pointer}}`). | User always chooses. Doctor fails if `adapter.default` is missing or that adapter is not spawnable (`http` is never spawnable), and fail-closed on required-skill routes (`plan` / `execute` / `review`) and on extra argv that drop `-p`/`exec`/`run` or omit `{{pointer}}`. Details: [`docs/design/adapter-routing.md`](adapter-routing.md). |
+| KD4 | **Persistence** | Git-reviewed markdown under `.legion-cli/` plus a derived, gitignored SQLite index | Humans and git review the wiki, specs, and tasks. SQLite is a cache (the rest of `index/` is crash-recovery data, see §3.4). Rebuild via `store.rebuild()` / shipped `legion-cli index rebuild`. Single-writer lock on `.legion-cli/index/engine.lock`. **Ingest auto-commits** wiki pages on success (`--no-commit` to skip). **Execute does not auto-commit.** `legion-cli ship` stages and shows the diff. |
+| KD5 | **Agents (v0)** | Spawn installed CLIs. Available: `claude` + `fake` + `generic` plus extras `grok` / `openai` / `codex` / `mimo` / `minimax`. Extras are **spawnable** with **verified vendor argv** (`grok`: `["-p", "{{pointer}}"]`; `openai`/`codex`: `["exec", "{{pointer}}"]`; `mimo`: `["run", "{{pointer}}"]`; `minimax`: `["exec", "{{pointer}}"]` on binary `mcode`). `openai` is an **alias id** for the Codex CLI (assumed binary `codex`); prefer `codex` in named examples and human docs. **`http`** may be stored at `init` (`adapter.http`: `baseUrl`, `model`, `apiKeyEnv`, optional `allowLoopback` / `headers`; no inline `apiKey`; SSRF-bounded) and is **spawnable** in-process (`DETECT_ONLY_ADAPTER_IDS` is empty): lifecycle spawn runs the governed OpenAI-compatible tool loop in `packages/http`; doctor reports it spawnable when `baseUrl` is pinned and the `apiKeyEnv` variable is set. Nested extra spawn blocks stay `.strict()` (no `baseUrl` / `provider` on `adapter.grok`). Spawn CLIs remain the default. **No product-default adapter** — `adapter.default` is required in `.legion-cli/config.yaml`. Spawn routing: CLI `--adapter` > `Task.adapter` (execute/verify) > `adapter.routes[skillId]` > `adapter.default`. Model pin for spawn CLIs is argv-only (`claude.extraArgs` / `adapter.<id>.args` that keep the vendor prefix + `{{pointer}}`). | User always chooses. Doctor fails if `adapter.default` is missing or that adapter is not spawnable (`http` counts as spawnable only when `baseUrl` is pinned and its `apiKeyEnv` variable is set), and fail-closed on required-skill routes (`plan` / `execute` / `review`) and on extra argv that drop `-p`/`exec`/`run` or omit `{{pointer}}`. Details: [`docs/design/adapter-routing.md`](adapter-routing.md). |
 | KD6 | **Dashboard** | Loopback HTTP **viewer** on `127.0.0.1` (GET + SSE). Optional token-gated POSTs: `ticket \| wikiTrust \| qaChecklist` (Goal 13 shipped). Never execute/ship/plan/review/packet/intent. No interview modal. No approve button. `legion-cli serve` is the long-running host (dashboard + MCP HTTP); `dashboard` is the `--no-mcp-http` alias. MCP stdio remains. WebMCP ships as progressive enhancement (`flags.webmcp`, default **false**; `serve --webmcp`). MCP Apps stay flagged (`flags.mcpApps`). | WebMCP is a W3C CG draft (26 Aug 2026), not a Standard — not a polyfill. The viewer exists so non-coders can see path/timeline/task; they still run CLI verbs. Tiny POSTs are not a second engine of record. |
 | KD7 | **Write isolation** | Code writes: spawned agent CLIs (and `http` tool-loop) under a `FileContract` (after-the-fact revert) **plus** OS sandbox during execute (`@9thlevelsoftware/legion-cli-sandbox`; revert stays). State writes: **CLI is engine of record**. MCP (shipped extra): read-only tools. WebMCP (shipped): page UI only. Dashboard: optional token-gated POSTs for `ticket \| wikiTrust \| qaChecklist` only. | Legion CLI policy, plus CodeAlmanac `serve` as the read-only-viewer prior art. beads-mcp is **not** read-only (it has `init`/`create`); do not cite it for write isolation. Concurrent execute workers stay later (§5.4). |
 | KD8 | **Lifecycle** | Product phase ≠ task status. Slice = all tasks with `specId === activeSpecId` (no human subset in v0). CONCERNS is `lastReadiness` on `plan_ready`, not a phase. Stay in `executing` until every slice task is `done` or `blocked`. `lastReview: PASS` only when the review spawn created zero new tasks, left existing `TSK-*.md` byte-identical, **and** the reviewer exited 0 leaving non-empty notes (a non-zero exit or missing notes is an error with no verdict). | QA/ship are spec gates. `legion-cli review` then `legion-cli qa` from slice-terminal `executing`. |
-| KD9 | **Human gates** | Intent confirm, discuss Y/n (`--yes` refuses), spec approve, skip-QA, ship, and **diff-detectable** scope/deps/schema/infra are engine-hard. Architecture/API-shape without a path heuristic are prompt-only in v0 and are **not** called hard. | Agents will not reliably self-escalate. Only checks the core can evaluate are “hard.” Discuss `--yes` is an illegal skip of the last product-decision step before spec. |
-| KD10 | **Interview UX** | Never more than two questions at a time; fixed question bank; answers map onto SPEC fields; LLM polish is optional. | Shipyard `/start`. Works with templates if the adapter is down. `legion-cli doctor` requires **one spawnable** adapter matching `adapter.default` in config. |
+| KD9 | **Human gates** | Intent confirm, discuss Y/n (`--yes` refuses), spec approve, skip-QA, ship, and **diff-detectable** scope/deps/schema/infra are engine-hard. Architecture/API-shape without a path heuristic are prompt-only in v0 and are **not** called hard. | Agents will not reliably self-escalate. Only checks the core can evaluate are “hard.” Discuss `--yes` is an illegal skip of the last product-decision step before spec. `ship` and interactive `qa checklist` treat an empty or closed-stdin answer as a refusal; this stops accidental approval only. A script that pipes `y` (`echo y | legion-cli ship`) or passes `--tick` still gets through, and the audit event records whether the answer came from a TTY or piped input. Interactive `qa checklist` needs an explicit y or n for every criterion (empty, missing or other answers refuse and write nothing); `--tick <id>` is the non-interactive path. `execute --allow-no-sandbox` likewise needs an explicit y. |
+| KD10 | **Interview UX** | Never more than two questions at a time; fixed question bank; answers map onto SPEC fields; LLM polish is optional. | Shipyard `/start`. Intent confirm, discuss and spec draft refuse when no adapter is spawnable rather than write canned output. `legion-cli doctor` requires **one spawnable** adapter matching `adapter.default` in config. |
 | KD11 | **Scope creep** | Extra work becomes a linked ticket, never an in-place expansion. `filesAllowed` is concrete paths only in v0 (reject `*` / `**`). | beads DAG + Legion contracts. |
 | KD12 | **Design systems / wireframes** | Shipped `craft/` + optional hand-dropped `.legion-cli/design/DESIGN.md`. Wireframes stay **4-colour through v0 ship** unless `--restyle` with an active package. **Shipped extra:** design-system packages (local copy, `github:owner/repo@tag` with integrity + minisign, generate-from-brief, OpenDesign importer). `legion-cli wireframe` regenerates drafts; frozen specs `--restyle` only. | User decision. No baked-in product look. |
 | KD13 | **v0 runtime** | Windows or Unix laptop with git, Node 22, pnpm, and one spawnable adapter set in config. No cloud. `init` requires `--adapter`. **Two brownfield surfaces** (do not merge): (1) `init --mode brownfield` sets `project.mode` (10-verb `execute` stays in-place); (2) `legion-cli brownfield` is the effort 1–5 audit extra (`--execute` is the only worktree path). Publish bar is workspace correctness; `0.0.0` until first `v*` (tag-triggered, provenance; not already on npm). | User sets `adapter.default`. The two brownfield surfaces are not one implementation. |
@@ -245,7 +245,7 @@ their-product/
 │   │   ├── craft/                # copy of shipped craft
 │   │   └── DESIGN.md             # optional, hand-dropped in v0
 │   ├── audit/
-│   ├── index/                    # gitignored: legion-cli.db, engine.lock
+│   ├── index/                    # gitignored: legion-cli.db, engine.lock, journal/, pre-images/, incidents/ (crash recovery; NOT a disposable cache)
 │   └── cache/                    # gitignored
 ├── src/
 └── tests/
@@ -310,7 +310,7 @@ stateDiagram-v2
 - `legion-cli qa` is allowed on a terminal slice when `lastReview == PASS` and no P0 task is `blocked` or not `done`. Blocked **non-P0** tasks do not block qa. A PASS review that created tasks cannot reach qa: `lastReview` is FAIL until a later review creates zero tasks **and** leaves existing `TSK-*.md` byte-identical.
 - On `qa.pass === true` and `lastReview == PASS`, transition `executing → ready_to_ship`.
 - `legion-cli ship` additionally refuses if any P0 task is not `done` (blocked P0 blocks ship).
-- `legion-cli verify` writes optional walkthrough notes and may file `type: fix` child tasks. It is **not** a ship gate. In-process `verificationCommands` after execute are the per-task gate that marks `done`.
+- `legion-cli verify` runs an optional agent walkthrough that may file `type: fix` child tasks. It is **not** a ship gate. **Open item:** verify notes are **not kept today** outside the run cache: `qa/**` is engine-pinned state restored after every spawn, so the verify skill writes its notes to `.legion-cli/cache/runs/<id>/summary.md`, and the engine does not copy them anywhere yet (review's notes are copied by the engine; verify has no such rule yet). In-process `verificationCommands` after execute are the per-task gate that marks `done`.
 
 Illegal transitions throw `LegionRefuseError` with a next-command hint. Documented human-gate flags only: `--allow-degraded-qa`, `--skip-wireframes` (pre-approve only).
 
@@ -352,7 +352,7 @@ Ingest may run in any of these and writes wiki pages + an ingest receipt. It nev
 
 #### 2.4 Human gates
 
-The engine **stops and asks on the TTY** (numbered prompt, max two questions). v0 dashboard has **no** interview modal and **no** approve button.
+The engine stops and asks on the terminal (numbered prompt, max two questions). "Human" here means **the engine will not proceed on an empty or closed-stdin answer**; it does not prove a person is at the keyboard (see the note under the table). v0 dashboard has **no** interview modal and **no** approve button.
 
 | Gate | How the core knows | Hard? |
 | --- | --- | --- |
@@ -370,6 +370,8 @@ The engine **stops and asks on the TTY** (numbered prompt, max two questions). v
 | API contract (shape) | Not detected in v0 unless the file is out of contract | **Prompt-only** |
 
 Prompt-only items are written into `CONTEXT.md` and the execute skill. They are **not** advertised as hard gates.
+
+**What the human-gate rows do and do not stop.** `ship` and the interactive `qa checklist` refuse an empty answer or closed stdin; `ship` accepts only `y` or `yes`, and `qa checklist` needs an explicit y or n per criterion. That closes accidental approval, but a piped `y` still passes them. `execute`/`fix --allow-no-sandbox` is stricter: it refuses any non-TTY stdin. The other rows (intent confirm, discuss, `spec approve`, `--allow-degraded-qa`) are unchanged and are no stronger: a script can drive them too. It does not close deliberate approval by a script or agent: a piped `y` (`echo y | legion-cli ship`) and `legion-cli qa checklist --tick <id>` still pass, and `wiki trust` has no prompt (any process running as the user can promote a page). The audit event for `ship` and `qa checklist` records whether the answer came from a TTY or a pipe. Stopping an agent would need a controlling-terminal requirement, which is not built.
 
 #### 2.5 What the CLI refuses
 
@@ -458,7 +460,7 @@ Graph queries: backlinks, neighbors (depth 1), hubs (highest in-degree). Orphan 
 
 #### 3.4 Derived SQLite index (gitignored)
 
-Path: `.legion-cli/index/legion-cli.db`. Rebuildable. v0 search is **keyword FTS5**, then **wikilink expansion** (neighbors of matching pages). There is no embedding table in v0; do not call this semantic search.
+Path: `.legion-cli/index/legion-cli.db`. Rebuildable. The rest of `index/` is not: `index/journal`, `index/pre-images` and the incident directory hold the write-ahead journal and pre-images that restore an interrupted command, so do not delete `.legion-cli/index/` while any command may be open (delete only `legion-cli.db*`, or run `legion-cli index rebuild`). They are not pruned in this series (retention is a recorded follow-up). v0 search is **keyword FTS5**, then **wikilink expansion** (neighbors of matching pages). There is no embedding table in v0; do not call this semantic search.
 
 ```sql
 CREATE TABLE pages (
@@ -642,13 +644,13 @@ export interface AgentResult {
 
 | Skill | When | Required in v0? | SkillContract allowed roots (engine constants; globs OK here) |
 | --- | --- | --- | --- |
-| `interview` | After question-bank answers, polish `prd.md` | No — templates always write the brief | `.legion-cli/wiki/product/**`, `.legion-cli/specs/*/prd.md`, `.legion-cli/cache/runs/<id>/**` |
-| `discuss` | Propose decisions for Y/n | No — human can type decisions; spawn is default when a spawnable adapter detects | `.legion-cli/discuss/**`, `.legion-cli/decisions/**`, `.legion-cli/cache/runs/<id>/**` |
-| `spec` | Fill SPEC + optionally rewrite wireframe HTML | No — templates + question bank produce a valid Spec | `.legion-cli/specs/<activeSpecId>/**`, `.legion-cli/cache/runs/<id>/**` |
-| `ingest` | Distill a source into wiki prose | No — default is excerpt copy | `.legion-cli/wiki/**`, `.legion-cli/audit/**`, `.legion-cli/cache/runs/<id>/**` |
+| `interview` | After question-bank answers, polish `prd.md` | Yes — `intent` confirm refuses when no adapter is spawnable (no canned brief) | `.legion-cli/wiki/product/**`, `.legion-cli/specs/*/prd.md`, `.legion-cli/cache/runs/<id>/**` |
+| `discuss` | Propose decisions for Y/n | Yes — `discuss` refuses when no adapter is spawnable (no canned proposals) | `.legion-cli/discuss/**`, `.legion-cli/decisions/**`, `.legion-cli/cache/runs/<id>/**` |
+| `spec` | Fill SPEC + optionally rewrite wireframe HTML | Yes — `spec` draft refuses when no adapter is spawnable (no canned Spec) | `.legion-cli/specs/<activeSpecId>/**`, `.legion-cli/cache/runs/<id>/**` |
+| `ingest` | Distill a source into wiki prose | No — default is excerpt copy | `.legion-cli/wiki/**`, `.legion-cli/cache/runs/<id>/**` |
 | `plan` | Emit `plans/` + `tasks/` with contracts | **Yes** — `legion-cli plan` refuses if no spawnable adapter | `.legion-cli/plans/**`, `.legion-cli/tasks/**`, `.legion-cli/cache/runs/<id>/**` |
 | `execute` | Write product code | **Yes** | `FileContract.filesAllowed ∪ expectedArtifacts` (concrete) ∪ `.legion-cli/cache/runs/<id>/**` |
-| `verify` | Optional walkthrough notes + fix-plan tasks | No for ship; notes only | `.legion-cli/qa/**`, `.legion-cli/tasks/**`, `.legion-cli/cache/runs/<id>/**` |
+| `verify` | Optional agent walkthrough; may file fix-plan tasks (notes are not retained, see §2.1) | No for ship | `.legion-cli/tasks/**`, `.legion-cli/cache/runs/<id>/**` (its `qa/verify*.md` roots are restored away) |
 | `review` | Spec-level review loop | **Yes** | `.legion-cli/qa/**`, `.legion-cli/tasks/**`, `.legion-cli/cache/runs/<id>/**` |
 | `qa` | Optional extra findings | No — scorer is in-process (Playwright JSON) | `.legion-cli/qa/**`, `.legion-cli/cache/runs/<id>/**` |
 | `map` | Optional architecture/fingerprint spawn after fallback walk | No — fallback parser always writes the map | `.legion-cli/map/ARCHITECTURE.md`, `.legion-cli/cache/runs/<id>/**` |
@@ -788,14 +790,27 @@ sequenceDiagram
    - Do **not** `git clean -fd`. Do **not** `git reset --hard`.
 7. If any extra was reverted: contract failure (execute: task `blocked` + ticket `type: scope`; plan/review: command FAIL). Do not run `verificationCommands` as success.
 8. If no extras remain — i.e. `git diff --name-only <preSpawnRef>` (plus leftover porcelain/untracked) is a **subset of `allowed`** — then:
-   - **execute:** run `verificationCommands` (`cwd` = project, `shell: false`) even if `HEAD != preSpawnRef`. verificationCommands and the QA unit command are trusted code run on your machine, outside the sandbox, with API keys and tokens removed from the environment. They go through one non-blocking runner: `argv[0]` resolves through PATH/PATHEXT (npm `.cmd` shims are unwrapped, so `pnpm test` works on Windows), output streams to `.legion-cli/cache/runs/<runId>/verify-<n>.log`, and a timeout kills the process tree. Commands are argv-only (`a && b` is refused). A command that can't start (missing binary, shell operator), a non-zero exit, a timeout, or any exception blocks the task with the reason ("verification command did not start: …"); nothing leaves a task in `verifying`, and the next verb demotes a `verifying` task whose run is dead to `blocked`. On PASS, mark task `done`. HEAD may still point at the agent commit; that is fine. `legion-cli ship` is the human commit gate.
+   - **execute:** run `verificationCommands` (`cwd` = project, `shell: false`) even if `HEAD != preSpawnRef`. verificationCommands and the QA unit command are trusted code run as you, with API keys and tokens removed from the environment. `verificationCommands` run inside the platform sandbox where one exists (table below); the QA unit command always runs on the host. They go through one non-blocking runner: `argv[0]` resolves through PATH/PATHEXT (npm `.cmd` shims are unwrapped, so `pnpm test` works on Windows), output streams to `.legion-cli/cache/runs/<runId>/verify-<n>.log`, and a timeout kills the process tree. Commands are argv-only (`a && b` is refused). A command that can't start (missing binary, shell operator), a non-zero exit, a timeout, or any exception blocks the task with the reason ("verification command did not start: …"); nothing leaves a task in `verifying`, and the next verb demotes a `verifying` task whose run is dead to `blocked`. On PASS, mark task `done`. HEAD may still point at the agent commit; that is fine. `legion-cli ship` is the human commit gate.
    - **other skills:** command succeeds (review then applies the lastReview rule in §2.1).
 
 PR-11 goldens:
 - Extra: `fake` adapter `git add` + `git commit` of `src/secret.ts` **not** in `filesAllowed` → path absent from the worktree after revert; task `blocked`; no `reset --hard`.
 - In-contract: `fake` adapter commits **only** `filesAllowed` → `verificationCommands` run; task `done`; HEAD may still be the agent commit.
 
-This is **after-the-fact policy**. Execute also runs inside an OS sandbox (`@9thlevelsoftware/legion-cli-sandbox`; jail-as-project-root; copy-out only `allowedWrites`; revert still runs). Backends (detection order): `bwrap` (Linux), `seatbelt` (macOS), `docker` (anywhere with a Docker daemon and `process.execPath` reachable inside the sandbox), `copy` (fallback; not hardened). `--allow-no-sandbox` is a TTY confirmation to accept the copy backend; piped stdin is refused. On a sandbox-less machine the copy backend is the host default and doctor reports it as advisory. Vendor CLIs can still use the network. Concurrent workers stay later (§5.4).
+This is **after-the-fact policy**. Execute also runs inside an OS sandbox (`@9thlevelsoftware/legion-cli-sandbox`; jail-as-project-root; copy-out only `allowedWrites`; revert still runs). Backends (detection order): `bwrap` (Linux), `seatbelt` (macOS), `docker` (anywhere with a Docker daemon and `process.execPath` reachable inside the sandbox), `copy` (fallback; not hardened). `--allow-no-sandbox` is a TTY confirmation to accept the copy backend; piped stdin is refused outright (it needs a real terminal and an explicit `y`; an agent that drives a pseudo-terminal could still answer it). On a sandbox-less machine the copy backend is the host default and doctor reports it as advisory. Concurrent workers stay later (§5.4).
+
+**Sandbox posture per platform** (replaces the older blanket "outside the sandbox"):
+
+| Platform | Execute (agent) | `verificationCommands` (trust tier) | QA unit command |
+| --- | --- | --- | --- |
+| Linux with bwrap | bwrap jail | `hardened-bwrap`; `.git`, `.legion-cli`, `.husky`, `.githooks` bound read-only | host |
+| macOS | seatbelt | `hardened-seatbelt`; same paths write-denied | host |
+| Docker daemon available | docker when bwrap/seatbelt are absent, but only for an agent that needs no network and no login (see below) | `hardened-docker` only when `sandbox.backend: docker` (auto never selects it); same paths `:ro` | host |
+| Windows without Docker; Linux without bwrap or Docker | refused (`--allow-no-sandbox` accepts the unhardened copy backend) | `allowlist` tier: host, your privileges, argv-only, scrubbed env, not a sandbox | host |
+
+Under bwrap or seatbelt a command that reads `$HOME` or files outside the project can fail, and one that writes `.git` (for example `git status` refreshing the index) fails visibly. **bwrap and seatbelt do not restrict network egress** (bwrap only unshares user, pid, uts and ipc), and bwrap mounts the user's agent login files (`~/.claude`, `~/.codex`, ...) read-only, so a subverted jailed agent can read them and send them out; the Docker backend runs with `--network none` and mounts no auth. This is an accepted trade-off for bwrap/seatbelt (the agent CLI needs its login and its model API). Nested repositories' `.git` and the Windows host tier are not covered by the read-only binds.
+
+**What runs under the Docker backend.** The agent is started in a pinned `node:22-alpine` container (`docker run --rm -i --network none --cap-drop ALL --read-only`, the jail as `/workspace`, no host home and no login files). The command must be `node` or a bare name that exists inside that image; a host path that is not the image's `node` is refused (`docker jail refuses a host exec path that is not the image node`). So the vendor CLIs (`claude`, `codex`, `grok`, `mimo`, `mcode`), which live on the host and need their model API and login, do **not** work under Docker execute; only an offline agent that ships as a Node script (for example a `generic` adapter running `node script.js`) does. The in-process `http` adapter is not spawned in a container. Consequence: on Windows without WSL/bwrap, a networked vendor agent can run `execute` only through `--allow-no-sandbox` (the unhardened copy backend) or `sandbox.allowCopyJail`; Docker does not change that. No code workaround is provided.
 
 `resume.json` (also used if timeout):
 
@@ -910,7 +925,7 @@ v0 does **not** spawn eight agents. `@9thlevelsoftware/legion-cli-qa` runs:
 1. `pnpm test -- --reporter=json` (or `config.yaml qa.unitCommand`)
 2. `pnpm exec playwright test --reporter=json` if UI ACs exist and `qa.mode=full`
 
-Tags: test titles or Playwright grep must include `@p0` / `@p1` / `@p2`. The execute skill is required to copy `AC.priority` into the test name. **Untagged tests count as P1.** Visual tests: `@visual` or Playwright screenshot-diff failures.
+Tags: test titles or Playwright grep must include `@p0` / `@p1` / `@p2`. The execute skill is required to copy `AC.priority` into the test name. **Untagged tests count as P1**, so the P0 bucket (40 points) is awarded whenever no `@p0` test fails: with no `@p0` tests it is vacuous. When the spec has P0 acceptance criteria and no test is tagged `@p0`, QA prints a named warning and scores as below (**warn, not fail**: a product decision). QA scores the repo's own test suite; it does not map acceptance criteria to tests. A runner that did not start, timed out, was killed by a signal or exited non-zero is fail-closed (P0 forced failed) unless its report itself lists failed tests. Visual tests: `@visual` or Playwright screenshot-diff failures.
 
 | Bucket | Points | Formula |
 | --- | --- | --- |
@@ -962,7 +977,7 @@ flowchart TB
 
 #### 8.1 Local HTTP (viewer + tiny POSTs)
 
-`legion-cli dashboard` binds `127.0.0.1:7420`. `0.0.0.0` requires `--expose` and a warning.
+`legion-cli dashboard` binds `127.0.0.1:7420`. `0.0.0.0` requires `--expose` and a warning. `legion-cli serve` also serves MCP HTTP (loopback-only, unauthenticated), so `serve --expose` is refused unless MCP HTTP is off: `serve --no-mcp-http --expose`.
 
 | Route | Purpose |
 | --- | --- |
@@ -1136,7 +1151,7 @@ sequenceDiagram
 
 ## CLI command surface
 
-**The tables in this section are authoritative.** Every `legion-cli …` verb mentioned in Proposed Design appears here with a version.
+Every `legion-cli …` verb mentioned in Proposed Design appears in these tables, and `help-registration.test.js` keeps verbs and `help --all` rows in step. Flags are **not** checked by any test, so `legion-cli <verb> --help` and `legion-cli help --all` are authoritative for flags; the flag lists here are a best-effort summary.
 
 **Small set** = the 10-verb lifecycle core (`init`, `intent`, `discuss`, `spec`, `plan`, `execute`, `verify`, `review`, `qa`, `ship`). Default window (Layer 0): status + one next command. Always-on operations (`search`, `brief`, `wiki trust`, `show`, `doctor`, `ingest`, `help`, `control-mode`, `chat`) and shipped extras (`packet`, `context compact`, `brownfield`, `mcp`, `serve`, `garden`, `design-system`, `map`, `wireframe`, `skills`, dashboard POSTs) are off that window. Do not rewrite the happy-path example into a 30-verb tour. There is no “Later, not this series” / “Not in this product” help section.
 
@@ -1151,10 +1166,10 @@ Global flags: `--project <dir>`, `--json`, `--yes` (ignored by intent confirm an
 | Command | What a non-coder thinks it does | Flags |
 | --- | --- | --- |
 | `legion-cli` / `legion-cli status` | Where am I? What next? | `--blockers`, `--plain` |
-| `legion-cli init` | Start a product in this folder | `--name`, `--adapter claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax\|http` (adapter required; `--mode greenfield\|brownfield` sets `project.mode`; `--http-base-url` / `--http-model` / `--http-api-key-env` / `--http-allow-loopback` when default is `http`; `http` is detect-only after init; see two brownfield surfaces) |
-| `legion-cli doctor` | Is my laptop ready? | `--metrics` |
+| `legion-cli init` | Start a product in this folder | `--name`, `--adapter claude\|generic\|fake\|grok\|openai\|codex\|mimo\|minimax\|http` (adapter required; `--mode greenfield\|brownfield` sets `project.mode`; `--http-base-url` / `--http-model` / `--http-api-key-env` / `--http-allow-loopback` when default is `http`; `http` is spawnable when `baseUrl` and the key variable are set; see two brownfield surfaces) |
+| `legion-cli doctor` | Is my laptop ready? | `--metrics`, `--rebaseline-audit` |
 | `legion-cli control-mode [mode]` | Show or set guarded \| advisory | refuses `autonomous`; old `surgical` fails with migrate-to-`guarded` |
-| `legion-cli ingest <src…>` | Teach Legion CLI from these files/links | `--transcript`, `--diff`, `--no-commit` |
+| `legion-cli ingest <src…>` | Teach Legion CLI from these files/links | `--transcript`, `--diff`, `--no-commit`, `--distill` (agent distillation of untrusted sources; refuses without a hardened sandbox) |
 | `legion-cli wiki trust <page>` | I have read this ingested page; treat it as real | — |
 | `legion-cli intent` | Interview me about the product | `--done` |
 | `legion-cli discuss` | Capture decisions before planning | — |
@@ -1167,17 +1182,17 @@ Global flags: `--project <dir>`, `--json`, `--yes` (ignored by intent confirm an
 | `legion-cli execute [id]` | Do the next ready task | `--fix`, `--until-blocked`, `--adapter <id>` (one-shot; routing RFC), `--allow-no-sandbox` (TTY confirmation) |
 | `legion-cli ticket create` | Park extra work | `--parent`, `--title`, `--from-agent`, `--adapter <id>`, `--route <name>` (routing RFC) |
 | `legion-cli task amend` | Human changes a file contract | `--allow-deps`, `--adapter <id>`, `--route <name>`, `--clear-adapter` (routing RFC) |
-| `legion-cli verify [id]` | Optional walkthrough notes (not a ship gate) | `--adapter <id>` (one-shot; routing RFC) |
+| `legion-cli verify [id]` | Optional agent walkthrough (not a ship gate; its notes are not retained yet) | `--adapter <id>` (one-shot; routing RFC) |
 | `legion-cli review` | Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review | `--adapter <id>` (one-shot; routing RFC) |
 | `legion-cli qa` | Score the product (when the slice is done) | `--mode full\|no-browser` |
-| `legion-cli qa checklist` | Tick AC items when no browser | — |
+| `legion-cli qa checklist` | Tick AC items when no browser | `--tick <id>` (non-interactive; still passes the gate) |
 | `legion-cli fix <bug>` | Test first (must stay RED), then fix | `--adapter <id>` (forwards into execute; routing RFC), `--allow-no-sandbox` (TTY confirmation) |
 | `legion-cli ship` | Final human review; stage diff | `--allow-degraded-qa`, `--pr`, `--commit` |
-| `legion-cli dashboard` | Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket\|wikiTrust\|qaChecklist); not the source of truth) | `--no-open`, `--port`, `--expose` |
+| `legion-cli dashboard` | Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket\|wikiTrust\|qaChecklist); not the source of truth) | `--no-open`, `--port`, `--expose`, `--webmcp`, `--token-stdout` |
 | `legion-cli search <q>` | Search the wiki | `--mentions`, `--include-untrusted` |
 | `legion-cli show <page>` | Open one wiki/spec/task/map page | — |
 | `legion-cli brief` | Print what the next agent will see | — |
-| `legion-cli chat` | REPL that routes into engine verbs | `--once`, `--adapter` |
+| `legion-cli chat` | REPL that routes into engine verbs | `--once`, `--adapter`, `--fork` |
 | `legion-cli assume list` | Open questions that block work | shipped |
 | `legion-cli assume answer <id>` | Confirm or reject an assumption | `--status confirmed\|rejected` |
 | `legion-cli index rebuild` | Repair search | shipped (`store.rebuild()`) |
@@ -1198,7 +1213,7 @@ Off the default window. Packets spawn tickets, not execute. Compaction is manual
 | `legion-cli garden` | Stale wiki, orphans, duplicates (read-only report) |
 | `legion-cli context compact` | Manual compaction of `done` tasks (no `in_progress` sibling) |
 | `legion-cli mcp` | Read-only stdio server |
-| `legion-cli serve` | Dashboard plus read-only MCP HTTP (loopback); `--webmcp` process-level. `dashboard` is the `--no-mcp-http` alias. |
+| `legion-cli serve` | Dashboard plus read-only MCP HTTP (loopback); `--webmcp` process-level; `--expose` requires `--no-mcp-http`; `--token-stdout`. `dashboard` is the `--no-mcp-http` alias. |
 | `legion-cli map` | Architecture markdown + fingerprints (`--refresh`, `--lsp`, `--no-lsp`) |
 | `legion-cli wireframe` | Re-generate HTML wireframes after spec edits (`--restyle`, `--spawn`) |
 | `legion-cli skills list \| show \| install` | Packaged catalog + pinned overlays (local or `github:owner/repo@tag`) |
@@ -1207,9 +1222,13 @@ Off the default window. Packets spawn tickets, not execute. Compaction is manual
 | `legion-cli design-system show \| install \| import-od \| generate` | Local dir or `github:owner/repo@tag` (integrity + minisign) |
 | `legion-cli init --mode brownfield` | Sets `project.mode`; `--adapter` still required; 10-verb `execute` stays in-place |
 | `legion-cli chat` | REPL that routes into engine verbs (`--once`, `--adapter`, `--fork`). Session files: `packages/schema/json/chat-session.json`. Actions: `packages/schema/json/chat-action.json`. |
-| `legion-cli undo` | Revert the last completed task or Legion commit |
+| `legion-cli undo` | Revert the last completed task or Legion commit (only the highest-id done task returns to `todo`) |
 | `legion-cli recipe list \| run` | Workflow recipes from `.legion-cli/recipes/*.yaml` |
 | `legion-cli repl` | Host-mode interactive REPL (NO SANDBOX; `--lang node\|python`) |
+
+**Audit chain.** The audit log is append-only tamper evidence: `.legion-cli/audit/events.jsonl` is hash-chained by `audit/chain.json` (length, last digest, byte offset). Every mutating verb checks the chain on lock entry (cheap: unreadable `chain.json`, a log shorter than the chain covers, or a reset chain over a multi-line log refuse with "audit chain rewind refused"), and each append verifies only the unchained tail. Writers also run the append-time check up front (a tail read for a current-format chain; a full replay only for an old-format one with no byte offset), so a bad chain refuses before any state moves. If a hard crash lands between undo's two restore writes (log first, chain last), the chain is left behind the log (healed on the next append) or, if the ship commit had added `chain.json`, missing over a multi-line log, which refuses until `doctor --rebaseline-audit`; a crash after the revert and before the restore leaves a revert in progress over the ship commit's copy of the log (the pre-undo bytes were held in memory only). A log whose line endings git converted on checkout is re-anchored by one full replay, not refused. `doctor` and `status` replay the whole log against the chain (cost grows with the log) and report a middle-line edit as a blocker. `undo` never rewinds it: it reverts a ship commit with `--no-commit`, puts the pre-undo audit files (`events.jsonl`, `chain.json`, the dated summaries) back and commits them with the revert, so neither the tree nor the revert commit carries an older log, then appends an `undo` event. The recorded way out of a chain you have reviewed is `legion-cli doctor --rebaseline-audit`: it refuses while an agent run is live, re-chains the current log, prints the length and digest it replaced, and appends an `audit_rebaselined` event. `ship` also replays the whole log before it commits.
+
+**Map degrade rule.** `map` keeps at most the 10,000 largest source modules (ties by path) instead of refusing on a bigger repo; `ARCHITECTURE.md` then carries a "Degraded map" note naming how many smaller modules were left out. The restore-manifest walk (pre-image and restore) visits only the pinned roots plus each extra root's static prefix; filtering by `isRestoreManifestPath` is unchanged.
 
 Repo map PageRank (`packages/map`) and fingerprint/LSP files (`packages/schema/json/fingerprint-file.json`, `lsp-diagnostics-file.json`) are generated by `legion-cli map`. Serve state: `packages/schema/json/serve-file.json`.
 
@@ -1312,7 +1331,7 @@ PASS. Next: legion-cli ship
 $ pnpm exec legion-cli ship
 Staged: src/, tests/, .legion-cli/
 Unrelated files unchanged: yes
-Acceptance criteria met?  [Y/n]
+Acceptance criteria met?  [y/n] (an explicit y is required)
 > y
 Ship receipt written. Optional: legion-cli ship --pr --commit
 ```
@@ -1741,17 +1760,32 @@ Execute does not `git commit`. `legion-cli ship` stages `filesAllowed` unions of
 | Threat | Severity | Mitigation |
 | --- | --- | --- |
 | Prompt injection via ingested wiki/URL/transcript | **High** | Literal UNTRUSTED wrapper; untrusted **bodies omitted from SessionBrief**; `legion-cli wiki trust`; golden test in PR-08; FileContract revert as defense in depth, not the only control |
-| Dashboard used as a write channel | **High** | Allowlist `ticket \| wikiTrust \| qaChecklist` only. `X-Legion-Cli-Token` from HTML meta, never a cookie, Origin allowlist. No execute/ship/plan/review/packet/intent. |
-| Local HTTP bound to `0.0.0.0` | **High** | Default `127.0.0.1`; `--expose` required |
-| CSRF against POSTs | **Med** | Token bootstrap: HTML meta, header required, never cookie, Origin allowlist |
+| Dashboard used as a write channel | **High** | Allowlist `ticket \| wikiTrust \| qaChecklist` only. Token minted per server start and printed on stderr (and on stdout with `--token-stdout`); sent as `X-Legion-Cli-Token`, never in GET HTML, never a cookie; Origin allowlist. No execute/ship/plan/review/packet/intent. |
+| Local HTTP bound to `0.0.0.0` | **High** | Default `127.0.0.1`; `--expose` required; `serve --expose` is refused while MCP HTTP is on (unauthenticated `/mcp` is loopback-only), so use `serve --no-mcp-http --expose` |
+| CSRF against POSTs | **Med** | Token bootstrap: printed on stderr at server start (never in GET HTML), header required, never cookie, Origin allowlist |
 | Skill / design-system supply chain | **High** | Bundled skills + craft. Shipped extra: local dir copy **or** `github:owner/repo@tag` with required `integrity.sha256` + minisign (persist binary fetch, no `--allow-host`) |
 | Secrets in transcripts | **Med** | Redact patterns (incomplete); `legion-cli doctor` scan |
-| Agent CLI has broad FS + network | **High** | Execute is OS-sandboxed (jail-as-project-root; copy-out `allowedWrites`; revert still runs). Network remains allowed for model APIs. Copy backend / `--allow-no-sandbox` still degrade. |
+| Agent CLI has broad FS + network | **High** | Execute is OS-sandboxed (jail-as-project-root; copy-out `allowedWrites`; revert still runs). Network egress is **not** restricted by bwrap or seatbelt (model APIs need it) and bwrap exposes agent login files read-only; only Docker is `--network none`. Copy backend / `--allow-no-sandbox` still degrade. |
 | SSRF from ingest URLs | **Med** | Deny list + resolve-then-connect |
 | Path traversal in ingest | **Med** | realpath stays in workspace |
 | Writes to `.git/` | **High** | Always forbidden; incident path; no recursive delete of `.git` |
 | Concurrent CLI writers | **Med** | `engine.lock` |
-| Agent-written code run by `verificationCommands` and QA's unit command | **High** | Accepted by design (A-004): these are trusted code run on your machine, outside the sandbox, as you. One runner (`agents` `runCommand`) removes API keys and tokens from their environment (names ending in TOKEN, ACCESSTOKEN, KEY, APIKEY, SECRET, PASSWORD, PASSWD, PASS, PWD, PAT, AUTH, AUTHTOKEN, CREDENTIAL(S), CONNECTION_STRING or WEBHOOK(_URL); any name containing ACCESSTOKEN; `npm_config_*_auth*`; `AWS_ACCESS_KEY_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `SSH_AUTH_SOCK`, `PGPASSWORD`, `MYSQL_PWD`, `DOCKER_AUTH_CONFIG`, `GIT_ASKPASS`, `SSH_ASKPASS`, `VSCODE_GIT_IPC_HANDLE`, `VSCODE_GIT_ASKPASS_*`; every configured `apiKeyEnv`). Other settings such as `DATABASE_URL` (and the working directory `PWD`) are kept. File-based credentials (`~/.npmrc`, `~/.aws`, the git credential manager, the Windows OpenSSH agent pipe) stay readable: the scrub is defence in depth, not a sandbox. A `.cmd`/`.bat` that is not an npm shim runs through `%SystemRoot%\System32\cmd.exe /d /v:off /s /c` with the script path quoted and `& | < > ^ %` refused in it and in every argument. Commands are argv-only: no shell, and `&&`, pipes, redirects, `;`, backticks and `$(` are refused. |
+| Agent-written code run by `verificationCommands` and QA's unit command | **High** | Accepted by design (A-004): these are trusted code run as you. `verificationCommands` run inside bwrap/seatbelt (or Docker when configured) where available and on the host only in the Windows/no-bwrap allowlist tier (§5.2 table); QA's unit command always runs on the host. One runner (`agents` `runCommand`) removes API keys and tokens from their environment (names ending in TOKEN, ACCESSTOKEN, KEY, APIKEY, SECRET, PASSWORD, PASSWD, PASS, PWD, PAT, AUTH, AUTHTOKEN, CREDENTIAL(S), CONNECTION_STRING or WEBHOOK(_URL); any name containing ACCESSTOKEN; `npm_config_*_auth*`; `AWS_ACCESS_KEY_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `SSH_AUTH_SOCK`, `PGPASSWORD`, `MYSQL_PWD`, `DOCKER_AUTH_CONFIG`, `GIT_ASKPASS`, `SSH_ASKPASS`, `VSCODE_GIT_IPC_HANDLE`, `VSCODE_GIT_ASKPASS_*`; every configured `apiKeyEnv`). Other settings such as `DATABASE_URL` (and the working directory `PWD`) are kept. File-based credentials (`~/.npmrc`, `~/.aws`, the git credential manager, the Windows OpenSSH agent pipe) stay readable: the scrub is defence in depth, not a sandbox. A `.cmd`/`.bat` that is not an npm shim runs through `%SystemRoot%\System32\cmd.exe /d /v:off /s /c` with the script path quoted and `& | < > ^ %` refused in it and in every argument. Commands are argv-only: no shell, and `&&`, pipes, redirects, `;`, backticks and `$(` are refused. |
+
+### Trust boundaries as implemented (audit remediation)
+
+These rules are in the code today; the scope is the operator's **own** repositories (a hostile `.legion-cli/config.yaml` or task file arriving through a merged fork PR is not defended against: review changes under `.legion-cli/` before running `execute`, `verify` or `qa` on pulled changes).
+
+- **Paths are compared in normalised form.** Deny checks (`.git`, `.env`, `.legion-cli`, engine-owned files) strip trailing dots and spaces, fold case, reject `:` (NTFS streams) and 8.3 short names (`GIT~1`, `CONFIG~1.YAM`; `notes~2.md` stays allowed) on every platform. Allow matching (`allowedRoots`, `filesAllowed`) is only as loose as the filesystem: full normalisation on Windows, case-fold on macOS, exact on Linux. Contract checks are string-only, so a junction inside the repo is handled at revert, which acts on the link itself and never through it. Residual: macOS Unicode folding and 8.3 aliases beyond the listed names.
+- **Revert restores `.git/hooks/*` and `.git/config`** from the pre-spawn snapshot (mode preserved) and still reports an incident.
+- **One SSRF classifier** (`isPrivateOrLocalHost`, `packages/schema/src/host.ts`) serves ingest and the http adapter: RFC1918, loopback, link-local, CGNAT, `198.18/15`, `192.0.0/24`, multicast, broadcast, IPv4-mapped/SIIT/NAT64/6to4 IPv6, scoped and unparsable IPv6 fail closed.
+- **Windows binary lookup** runs `where.exe` from a neutral cwd, sets `NoDefaultCurrentDirectoryInExePath=1` for children, rejects a hit in the process cwd or the project directory, and resolves `git` to an absolute path once (a missing `git.exe` is an error, never a bare `git`).
+- **Untrusted wrapper**: begin/end markers appearing inside the body are neutralised (any case or spacing), and the `source:` line is collapsed to one line.
+- **Git plumbing** goes through `runGit` (256 MiB `maxBuffer`; ENOBUFS and similar are named failures; error text never embeds stdout). Discovery uses NUL output (`status --porcelain=v1 -z -uall`, `diff --name-status -z`, `ls-files -z`); renames and copies return both source and destination. The ship index fingerprint reads `ls-files -s -z` and excludes `.legion-cli/**`. Non-ASCII and space-containing names survive.
+- **Agent output does not certify itself.** Agent-filed tickets (`extra.json`) never bring their own `verificationCommands`: they inherit from the engine-supplied source (the running task in `execute`, the verified task in `verify`), else from the resolved parent, else the engine default `pnpm test`; an agent-chosen `parentId` cannot override the source, and `review` (and `verify` without a task id) have no source at all. An agent ticket's `filesAllowed` must be a subset of its source task's and must not touch a verification entry point (manifests and lockfiles, scripts, test and CI directories, hooks, tool configs, files named by the inherited commands; matched in normalised form), otherwise it gets `notes/<id>.md`. `execute`, `verify` and `review` print each filed ticket's inherited commands and source. A `TSK-*.md` an agent writes directly during `verify` or `review` is removed by the post-spawn restore. The contract lists `qa/review.md` for review and `qa/verify.md`, `qa/verify/*.md` for verify, but `qa/**` is pinned engine state restored after every spawn: review's notes go to the run cache and the engine copies them (§2.1); **verify has no such rule, so its notes do not survive** (open item, follow-up: mirror review's run-cache-then-copy).
+- **`ingest --distill`** runs an agent on untrusted content, so it refuses before anything is written unless a hardened sandbox (bwrap, seatbelt or Docker; never the copy backend) is available; on Windows without Docker distill is unavailable. Plain ingest (excerpt only) is unaffected, and a non-spawnable adapter stays a soft skip.
+- **Undo** (after ship or after a task): only the highest-id done task returns to `todo`, so other done tasks of the spec stay `done`. Undoing a ship commit refuses before writing anything when any tracked file other than the append-only audit files is dirty, a revert or cherry-pick is in progress, or the ship commit first introduced `.legion-cli/STATE.md`; on success the phase returns to `executing` (`shipped -> executing` is an undo-only edge outside `LEGAL_PHASE_TRANSITIONS`), `lastReview`/`lastQaId` are cleared and the ship receipt is marked reverted. When the revert restores a STATE that names an earlier ship of another spec, that ship still stands in git, so its phase and receipt are left alone and the result says what happened to the task.
+- **Ship rollback**: when `gh pr create` fails the receipt file is removed, state is restored and a compensating `ship_rolled_back` audit event is appended (the original `ship` event stays; the log is append-only).
 
 ### Auth
 
@@ -1801,6 +1835,8 @@ Pin the npm package. `git revert` `.legion-cli/` commits. Index rebuild. Bad exe
 ### Compatibility
 
 `schemaVersion` on every artifact. Older CLI refuses newer schemas.
+
+**Packaging.** The published CLI must work without a cloned repo. `skills/` is copied into `packages/agents/skills` by `prepack` (`scripts/copy-skills.mjs`; removed by `postpack`; gitignored) and listed in that package's `files`; `findSkillsDir` resolves `LEGION_CLI_SKILLS_DIR` first, then the package-relative folder found by walking up from the module, and only then a `skills/` folder near the cwd, so an unrelated `skills/` in a project or ancestor directory cannot shadow the installed skills (`packaging.test.js` pins this on an installed layout). Per-project customisation is the `.legion-cli/skills/<id>` overlay. `publish.yml` runs `scripts/check-publish-allowlist.mjs` before `pnpm publish` so a non-private workspace package missing from `legionPublishAllowlist` fails the release. `legionQuarantine` is documentation only and lists just `Q-WIN-DOCKER`. No `v*` tag has been created.
 
 ---
 

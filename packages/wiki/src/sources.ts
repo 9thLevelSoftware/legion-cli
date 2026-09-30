@@ -67,11 +67,13 @@ export async function materializeIngestSources(opts: {
   }
 
   if (opts.diff) {
-    const result = runGit(opts.projectRoot, ["diff", "--end-of-options", opts.diff]);
-    if (result.status !== 0) {
+    // Capped like every other ingest source: an oversize diff gets an empty body (recorded as skipped).
+    const result = runGit(opts.projectRoot, ["diff", "--end-of-options", opts.diff], { maxBuffer: MAX_INGEST_FILE_BYTES });
+    const oversize = result.error?.includes("(ENOBUFS)") ?? false;
+    if (result.status !== 0 && !oversize) {
       throw new Error(`git diff ${opts.diff} failed: ${result.error ?? (result.stderr.trim() || "no output")}`);
     }
-    const body = result.stdout;
+    const body = oversize ? "" : result.stdout;
     documents.push({
       source: `diff:${opts.diff}`,
       title: `git diff ${opts.diff}`,

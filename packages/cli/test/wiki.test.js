@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { DISTILL_SOURCE_MAX_CHARS } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, DISTILL_SOURCE_MAX_CHARS } from "@9thlevelsoftware/legion-cli-core";
 
 import { normalize, runCli, withTempDir } from "./helpers.js";
 
@@ -140,5 +140,32 @@ test("ingest --distill with fake adapter keeps excerpt and prints distill ran", 
     assert.equal(index.status, 0, index.stderr);
     assert.match(normalize(index.stdout), /trust: reviewed/);
     assert.match(normalize(index.stdout), /Wiki index/);
+  });
+});
+
+test("ingest --distill refuses (non-zero) with a real adapter and no hardened sandbox (backend: copy)", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const engine = createLegionEngine(dir);
+    const config = await engine.store.readConfig();
+    await engine.store.writeConfig({
+      ...config,
+      // backend "copy" is never hardened, so the refusal is deterministic on every host.
+      sandbox: { ...config.sandbox, backend: "copy" },
+      adapter: {
+        ...config.adapter,
+        default: "generic",
+        generic: { binary: process.execPath, args: ["-e", "process.exit(0)", "{{pointer}}"] },
+      },
+    });
+    await writeFile(join(dir, "notes.md"), "# Notes\n\nDurable fact.\n", "utf8");
+    const result = runCli(["ingest", "--project", dir, "--no-commit", "--distill", "notes.md"]);
+    assert.notEqual(result.status, 0, result.stdout);
+    const err = normalize(`${result.stderr}${result.stdout}`);
+    assert.match(err, /needs a hardened sandbox: bwrap on Linux, seatbelt on macOS, or Docker/);
+    // Excerpt-only ingest is unchanged on the same configuration.
+    const plain = runCli(["ingest", "--project", dir, "--no-commit", "notes.md"]);
+    assert.equal(plain.status, 0, plain.stderr);
   });
 });

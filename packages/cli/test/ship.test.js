@@ -158,7 +158,7 @@ test("ship n cancels without shipping", async () => {
   });
 });
 
-test("ship --yes still requires Y/n", async () => {
+test("ship --yes still requires an explicit y", async () => {
   await withTempDir(async (dir) => {
     await seedReadyToShip(dir);
     initGitRepo(dir);
@@ -174,7 +174,7 @@ test("ship --yes still requires Y/n", async () => {
     initGitRepo(dir);
     const refused = runCli(["ship", "--project", dir, "--yes"], { input: "maybe\n" });
     assert.equal(refused.status, 1, `${refused.stdout}\n${refused.stderr}`);
-    assert.match(normalize(`${refused.stdout}\n${refused.stderr}`), /ship needs Y or n/);
+    assert.match(normalize(`${refused.stdout}\n${refused.stderr}`), /ship needs y or n/);
     const state = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
     assert.match(state, /phase: ready_to_ship/);
   });
@@ -246,5 +246,43 @@ test("spec new after ship starts the next increment", async () => {
     assert.match(normalize(next.stdout), /intent_draft/);
     const spec = await readFile(join(dir, ".legion-cli", "specs", "spec-checkin", "SPEC.md"), "utf8");
     assert.match(spec, /status: superseded/);
+  });
+});
+
+test("ship refuses empty and closed stdin and leaves state unchanged", async () => {
+  for (const input of ["", "\n"]) {
+    await withTempDir(async (dir) => {
+      await seedReadyToShip(dir);
+      initGitRepo(dir);
+      const result = runCli(["ship", "--project", dir], { input });
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(normalize(`${result.stdout}\n${result.stderr}`), /ship needs an explicit y/);
+      const state = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
+      assert.match(state, /phase: ready_to_ship/);
+      assert.equal(git(dir, ["diff", "--cached", "--name-only"]).trim(), "");
+      await assert.rejects(readFile(join(dir, ".legion-cli", "audit", "ship-spec-checkin.md"), "utf8"));
+    });
+  }
+});
+
+test("ship records piped answer source and says staged when not committed", async () => {
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    initGitRepo(dir);
+    const result = runCli(["ship", "--project", dir], { input: "y\n" });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(result.stdout), /staged \(not committed\)/);
+    const events = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
+    assert.match(events, /"confirmSource":"piped"/);
+  });
+});
+
+test("ship in a non-git project does not claim changes are staged", async () => {
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    const result = runCli(["ship", "--project", dir], { input: "y\n" });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(result.stdout), /Ship receipt written/);
+    assert.doesNotMatch(normalize(result.stdout), /staged \(not committed\)/);
   });
 });

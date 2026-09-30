@@ -1,7 +1,7 @@
 import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
-import { writeJson, writeOut } from "./io.js";
+import { ticketVerificationLine, writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 
 export async function runVerify(opts: CliOpts, flags: { id?: string; adapter?: string }): Promise<number> {
@@ -40,6 +40,9 @@ export async function runVerify(opts: CliOpts, flags: { id?: string; adapter?: s
   }
   for (const id of result.createdTaskIds) {
     writeOut(`Filed ${id} (type: fix).`);
+  }
+  for (const filed of result.createdTickets) {
+    writeOut(ticketVerificationLine(filed));
   }
   writeOut(`Next: ${next.run}`);
   writeOut(`Dashboard: ${viewer}`);

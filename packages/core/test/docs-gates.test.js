@@ -12,7 +12,7 @@ const enginePath = join(repoRoot, "packages", "core", "src", "engine.ts");
 const HARD_GATE_DETECTORS = {
   "Intent confirmation": /intent confirmation requires/,
   "Product decisions": /spec requires decisions captured/,
-  "Spec approval": /spec freeze requires legion-cli spec approve/,
+  "Spec approval": /spec approve requires phase spec_draft/,
   Scope: /FileContract extra|outside SkillContract/,
   Deletion: /FileContract extra/,
   "Skipping QA / degraded QA": /allow-degraded-qa/,
@@ -55,4 +55,32 @@ test("Hard: Yes gate rows have an engine.ts detector", () => {
       `Hard: Yes row "${row.gate}" detector does not match engine.ts refusal sites`,
     );
   }
+});
+
+test("README and the design doc keep their honesty statements (F-022, F-023, F-037, F-065, F-069)", () => {
+  const readme = readFileSync(join(repoRoot, "README.md"), "utf8");
+  const design = readFileSync(docsPath, "utf8");
+  // Hands off while execute runs, and the lock is dropped for the agent.
+  assert.match(readme, /Hands off while `execute` runs/);
+  assert.match(design, /Lock, unlock for the agent, relock/);
+  // The human gates stop empty answers only; a piped y and --tick still pass; --allow-no-sandbox needs a TTY.
+  for (const text of [readme, design]) {
+    assert.match(text, /piped `y`/);
+    assert.match(text, /--tick/);
+    assert.match(text, /non-TTY stdin|piped stdin is refused/);
+  }
+  // verify is not a gate and its notes are not retained; per-platform sandbox statements; Docker limits.
+  assert.match(readme, /`verify` is an optional agent walkthrough\. It is \*\*not\*\* a ship gate/);
+  assert.match(design, /notes are \*\*not kept today\*\*/);
+  for (const text of [readme, design]) {
+    assert.match(text, /bwrap/);
+    assert.match(text, /seatbelt/);
+    assert.match(text, /--network none|no network/);
+    assert.match(text, /do \*\*not\*\* work under Docker/);
+  }
+  assert.doesNotMatch(readme + design, /outside the sandbox, with API keys/);
+  // serve --expose needs --no-mcp-http.
+  assert.match(design, /serve --no-mcp-http --expose/);
+  // http is spawnable in-process: no doc may call it detect-only or never spawnable.
+  assert.doesNotMatch(design, /`http` is never spawnable|`http` is detect-only|is \*\*detect-only\*\* \(`DETECT_ONLY/);
 });
