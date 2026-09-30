@@ -44,7 +44,7 @@ export async function runShip(opts: CliOpts, flags: ShipFlags): Promise<number> 
       return 0;
     }
     writeOut("Ship receipt written. Next: legion-cli spec new");
-    if (!flags.commit) writeOut("Changes are staged (not committed).");
+    if (!flags.commit && receipt.staged.length > 0) writeOut("Changes are staged (not committed).");
     if (!flags.commit && !flags.pr) {
       writeOut("Optional: legion-cli ship --pr --commit");
     }

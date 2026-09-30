@@ -158,7 +158,7 @@ test("ship n cancels without shipping", async () => {
   });
 });
 
-test("ship --yes still requires Y/n", async () => {
+test("ship --yes still requires an explicit y", async () => {
   await withTempDir(async (dir) => {
     await seedReadyToShip(dir);
     initGitRepo(dir);
@@ -274,5 +274,15 @@ test("ship records piped answer source and says staged when not committed", asyn
     assert.match(normalize(result.stdout), /staged \(not committed\)/);
     const events = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
     assert.match(events, /"confirmSource":"piped"/);
+  });
+});
+
+test("ship in a non-git project does not claim changes are staged", async () => {
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    const result = runCli(["ship", "--project", dir], { input: "y\n" });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(result.stdout), /Ship receipt written/);
+    assert.doesNotMatch(normalize(result.stdout), /staged \(not committed\)/);
   });
 });

@@ -8,7 +8,7 @@ export const SKILL_CONTRACTS: Record<SkillId, readonly string[]> = {
   interview: [".legion-cli/wiki/product/**", ".legion-cli/specs/*/prd.md", ".legion-cli/cache/runs/<id>/**"],
   discuss: [".legion-cli/discuss/**", ".legion-cli/decisions/**", ".legion-cli/cache/runs/<id>/**"],
   spec: [".legion-cli/specs/<activeSpecId>/**", ".legion-cli/cache/runs/<id>/**"],
-  ingest: [".legion-cli/wiki/**", ".legion-cli/audit/**", ".legion-cli/cache/runs/<id>/**"],
+  ingest: [".legion-cli/wiki/**", ".legion-cli/cache/runs/<id>/**"],
   plan: [".legion-cli/plans/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
   execute: [".legion-cli/cache/runs/<id>/**"],
   verify: [".legion-cli/qa/verify.md", ".legion-cli/qa/verify/*.md", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],

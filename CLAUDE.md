@@ -33,7 +33,7 @@ Test-only env knobs for the `fake` adapter: `LEGION_CLI_ADAPTER`, `LEGION_CLI_FA
 
 ## Architecture
 
-Legion CLI is a lifecycle engine: `init → intent → discuss → spec → plan → execute → verify → review → qa → ship`. State lives on disk under `.legion-cli/` (gitignored; markdown documents, git, sqlite index, lock), not in memory.
+Legion CLI is a lifecycle engine: `init → intent → discuss → spec → plan → execute → verify → review → qa → ship`. State lives on disk under `.legion-cli/` (markdown documents, git, sqlite index, lock), not in memory. In a user project `.legion-cli/` is committed (`ship --commit` stages it); `init` adds only the derived parts to `.gitignore` (`GITIGNORE_ENTRIES` in `packages/persist/src/gitignore.ts`): `index/` (incl. `engine.lock`), `cache/`, `worktrees/`, `sandbox/`, `chat/`, `runs/` and `serve.json`.
 
 Package layering (`packages/*`, all `@9thlevelsoftware/legion-cli-*`):
 
@@ -48,7 +48,7 @@ Package layering (`packages/*`, all `@9thlevelsoftware/legion-cli-*`):
 - `core` — `LegionEngine` (`engine.ts`) composes all of the above; lifecycle logic (spawn, verify, ship, tickets, packets, compaction, brownfield bookkeeping, refusals) lives here. Mutations run under the persist lock.
 - `cli` — thin verb layer. `cli.ts` registers commands, one `src/<verb>.ts` per verb, `help-all.ts` for the full listing, `bin.ts` for the refuse-list and entry point. Verbs delegate to the engine rather than holding logic.
 
-Agent-facing skills live in `skills/<name>/` (spawn skills resolved by `agents`). `skills/brownfield` is a Claude Code skill run by the orchestrating agent, not an engine spawn skill, and is intentionally absent from `SkillIdSchema`. Two copies of it exist (repo and `~/.claude/skills/brownfield`); keep parsing rules in sync with the CLI.
+Agent-facing skills live in `skills/<name>/` (spawn skills resolved by `agents`). `skills/brownfield` is a Claude Code skill run by the orchestrating agent, not an engine spawn skill, and is intentionally absent from `SkillIdSchema`. Keep its parsing rules in sync with the CLI.
 
 Design background: `docs/design/product-engineering-cli.md`.
 

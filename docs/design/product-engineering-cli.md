@@ -647,7 +647,7 @@ export interface AgentResult {
 | `interview` | After question-bank answers, polish `prd.md` | No — templates always write the brief | `.legion-cli/wiki/product/**`, `.legion-cli/specs/*/prd.md`, `.legion-cli/cache/runs/<id>/**` |
 | `discuss` | Propose decisions for Y/n | No — human can type decisions; spawn is default when a spawnable adapter detects | `.legion-cli/discuss/**`, `.legion-cli/decisions/**`, `.legion-cli/cache/runs/<id>/**` |
 | `spec` | Fill SPEC + optionally rewrite wireframe HTML | No — templates + question bank produce a valid Spec | `.legion-cli/specs/<activeSpecId>/**`, `.legion-cli/cache/runs/<id>/**` |
-| `ingest` | Distill a source into wiki prose | No — default is excerpt copy | `.legion-cli/wiki/**`, `.legion-cli/audit/**`, `.legion-cli/cache/runs/<id>/**` |
+| `ingest` | Distill a source into wiki prose | No — default is excerpt copy | `.legion-cli/wiki/**`, `.legion-cli/cache/runs/<id>/**` |
 | `plan` | Emit `plans/` + `tasks/` with contracts | **Yes** — `legion-cli plan` refuses if no spawnable adapter | `.legion-cli/plans/**`, `.legion-cli/tasks/**`, `.legion-cli/cache/runs/<id>/**` |
 | `execute` | Write product code | **Yes** | `FileContract.filesAllowed ∪ expectedArtifacts` (concrete) ∪ `.legion-cli/cache/runs/<id>/**` |
 | `verify` | Optional agent walkthrough; may file fix-plan tasks (notes are not retained, see §2.1) | No for ship | `.legion-cli/tasks/**`, `.legion-cli/cache/runs/<id>/**` (its `qa/verify*.md` roots are restored away) |

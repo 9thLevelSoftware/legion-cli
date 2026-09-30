@@ -39,6 +39,17 @@ test("SKILL_CONTRACTS covers every SkillId including map, wireframe, chat", () =
   assert.equal(isImplicitForbidden("src/main.ts"), false);
 });
 
+// The audit chain is tamper evidence: an injected distill agent must not be able to rewrite
+// events.jsonl + chain.json consistently. The engine writes the ingest receipt itself.
+test("ingest contract does not allow audit writes", () => {
+  assert.deepEqual(SKILL_CONTRACTS.ingest, [".legion-cli/wiki/**", ".legion-cli/cache/runs/<id>/**"]);
+  const ingest = skillContract("ingest", { runId: "abc" });
+  assert.equal(
+    ingest.allowedRoots.some((root) => root.toLowerCase().startsWith(".legion-cli/audit")),
+    false,
+  );
+});
+
 // Contract checks are string-only: they cannot see a junction on disk. The junction defence is at
 // revert time (revert.test.js), which acts on the link and never through it.
 test("implicit forbidden compares normalised forms", () => {
