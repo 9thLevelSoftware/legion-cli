@@ -1,7 +1,7 @@
 import { createLegionEngine, findSkillsDir, HINT, isSliceTerminal, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
-import { writeJson, writeOut } from "./io.js";
+import { ticketVerificationLine, writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 import { closePrompt, isNo, isYes, readLine, slurpStdin } from "./prompt.js";
 
@@ -88,7 +88,7 @@ export async function runExecute(
       );
     }
     for (const filed of outcome.filedTickets ?? []) {
-      writeOut(`${filed.id} verification (inherited from parent): ${filed.verificationCommands.join(" ; ")}`);
+      writeOut(ticketVerificationLine(filed));
     }
     if (outcome.status === "done") {
       writeOut(`Verification PASS. ${outcome.taskId} done.`);

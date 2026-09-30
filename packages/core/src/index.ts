@@ -184,6 +184,7 @@ export type {
   ExecuteResult,
   ExecuteTaskResult,
   FiledTicketSummary,
+  TicketSource,
   FileContract,
   GardenReport,
   IngestOpts,

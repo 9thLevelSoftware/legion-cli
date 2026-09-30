@@ -9,6 +9,7 @@ export {
   prepareVerificationWrapper,
   resolveVerificationTrustTier,
   verificationBwrapArgvPrefix,
+  verificationReadOnlyRels,
   verificationSeatbeltProfile,
 } from "./sandbox.js";
 export {

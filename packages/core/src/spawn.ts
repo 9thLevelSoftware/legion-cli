@@ -246,7 +246,21 @@ const CONFIG_READ_SET = [
   "scripts",
 ] as const;
 
-function sandboxReadSet(opts: {
+/**
+ * execute, configured skills and the http adapter run jailed. ingest --distill feeds untrusted
+ * content to the agent (F-042): engine.ts refuses it without a hardened backend, and it always
+ * runs jailed here. The fake test adapter runs no agent, so it is exempt.
+ */
+export function isJailedSpawn(skillId: SkillId, configuredSkills: readonly string[], adapterId: string): boolean {
+  return (
+    skillId === "execute" ||
+    configuredSkills.includes(skillId) ||
+    adapterId === "http" ||
+    (skillId === "ingest" && adapterId !== "fake")
+  );
+}
+
+export function sandboxReadSet(opts: {
   projectRoot: string;
   runId: string;
   skillId?: SkillId;
@@ -526,13 +540,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
 
   let sandbox: SandboxHandle | undefined;
   let allowedWrites: string[] = [];
-  const jailed =
-    opts.skillId === "execute" ||
-    opts.config.sandbox.skills.includes(opts.skillId) ||
-    resolution.id === "http" ||
-    // ingest --distill feeds untrusted content to the agent (F-042); engine.ts refuses it
-    // without a hardened backend, and here it always runs jailed. The fake test adapter runs nothing.
-    (opts.skillId === "ingest" && resolution.id !== "fake");
+  const jailed = isJailedSpawn(opts.skillId, opts.config.sandbox.skills, resolution.id);
   if (jailed) {
     try {
       assertExecuteSandbox(opts.config, { allowNoSandbox: opts.allowNoSandbox });

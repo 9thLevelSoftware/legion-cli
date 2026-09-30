@@ -97,6 +97,7 @@ import {
   SCHEMA_VERSION,
   type AdapterId,
   type Assumption,
+  normalizePathKey,
   type ControlMode,
   type DiscussDecision,
   type IngestReceipt,
@@ -201,6 +202,7 @@ import type {
   IngestOpts,
   IngestResult,
   ExecuteTaskResult,
+  TicketSource,
   FiledTicketSummary,
   InitOptions,
   IntentState,
@@ -1300,9 +1302,20 @@ export class LegionEngine {
         cliAdapter: opts?.adapter,
         taskAdapter: task?.adapter,
       });
-      if (result.runId) {
-        await this.#fileExtrasFromRun(result.runId, specId, { type: "fix", parentId: task?.id });
-      }
+      const filedExtras = result.runId
+        ? await this.#fileExtrasFromRun(result.runId, specId, {
+            type: "fix",
+            parentId: task?.id,
+            inheritFrom: task
+              ? {
+                  id: task.id,
+                  label: "verified task",
+                  filesAllowed: task.contract.filesAllowed,
+                  verificationCommands: task.contract.verificationCommands,
+                }
+              : undefined,
+          })
+        : undefined;
       const after = await this.snapshotTaskIds();
       const createdTaskIds = after.filter((id) => !before.includes(id));
       if (createdTaskIds.length > 0) {
@@ -1320,7 +1333,7 @@ export class LegionEngine {
         spawned: result.spawned,
         notesPath: await this.#findVerifyNotes(task?.id),
         createdTaskIds,
-        createdTickets: await this.#summarizeTickets(createdTaskIds),
+        createdTickets: filedExtras?.tickets ?? [],
         extrasReverted: result.revert?.extrasReverted ?? [],
       };
     });
@@ -1385,9 +1398,7 @@ export class LegionEngine {
             ]),
           ].sort((a, b) => a.localeCompare(b))
         : [];
-      if (started?.runId) {
-        await this.#fileExtrasFromRun(started.runId, specId);
-      }
+      const filedExtras = started?.runId ? await this.#fileExtrasFromRun(started.runId, specId) : undefined;
       const after = await this.snapshotTaskIds();
       const createdTaskIds = after.filter((id) => !before.includes(id));
       if (createdTaskIds.length > 0) {
@@ -1412,7 +1423,7 @@ export class LegionEngine {
       return {
         verdict,
         createdTaskIds,
-        createdTickets: await this.#summarizeTickets(createdTaskIds),
+        createdTickets: filedExtras?.tickets ?? [],
         extrasReverted: revert?.extrasReverted ?? [],
         rewrittenExistingTaskIds,
       };
@@ -2372,7 +2383,12 @@ export class LegionEngine {
       const filedTickets: FiledTicketSummary[] = [];
       if (runId) {
         const filed = await this.#fileExtrasFromRun(runId, lockedTask.specId, {
-          inheritVerificationCommands: lockedTask.contract.verificationCommands,
+          inheritFrom: {
+            id: lockedTask.id,
+            label: "running task",
+            filesAllowed: lockedTask.contract.filesAllowed,
+            verificationCommands: lockedTask.contract.verificationCommands,
+          },
         });
         extraJsonInvalid = filed.invalid;
         extraJsonTicketIds = filed.ticketIds;
@@ -2382,8 +2398,14 @@ export class LegionEngine {
       if (incident || extras.length > 0 || extraJsonInvalid) {
         let ticketId: string | undefined;
         if (extras.length > 0) {
-          const { task: ticket } = await this.#fileTicketLocked(
+          const { task: ticket, verificationSource } = await this.#fileTicketLocked(
             {
+              inheritFrom: {
+                id: lockedTask.id,
+                label: "running task",
+                filesAllowed: lockedTask.contract.filesAllowed,
+                verificationCommands: lockedTask.contract.verificationCommands,
+              },
               title:
                 extras.length === 1
                   ? `FileContract extra: ${extras[0]}`
@@ -2396,7 +2418,12 @@ export class LegionEngine {
             lockedTask.specId,
           );
           ticketId = ticket.id;
-          filedTickets.push({ id: ticket.id, verificationCommands: ticket.contract.verificationCommands });
+          filedTickets.push({
+            id: ticket.id,
+            verificationCommands: ticket.contract.verificationCommands,
+            filesAllowed: ticket.contract.filesAllowed,
+            verificationSource,
+          });
         }
         ticketId ??= extraJsonTicketIds[0];
         await this.#transitionTaskTo(lockedTask.id, "blocked");
@@ -2683,8 +2710,6 @@ export class LegionEngine {
     const candidates = [
       taskId ? `.legion-cli/qa/verify/${taskId}.md` : undefined,
       ".legion-cli/qa/verify.md",
-      ".legion-cli/qa/notes.md",
-      ".legion-cli/qa/walkthrough.md",
     ];
     for (const path of candidates) {
       if (path && (await this.store.pathExists(path))) return path;
@@ -2728,7 +2753,7 @@ export class LegionEngine {
   async #fileExtrasFromRun(
     runId: string,
     specId: string,
-    defaults?: { type?: NewTicket["type"]; parentId?: string; inheritVerificationCommands?: string[] },
+    defaults?: { type?: NewTicket["type"]; parentId?: string; inheritFrom?: TicketSource },
   ): Promise<{ invalid: boolean; ticketIds: string[]; tickets: FiledTicketSummary[] }> {
     const abs = join(this.projectRoot, ".legion-cli", "cache", "runs", runId, "extra.json");
     let raw: unknown;
@@ -2741,19 +2766,24 @@ export class LegionEngine {
     const ticketIds: string[] = [];
     const tickets: FiledTicketSummary[] = [];
     for (const input of parseExtraJson(raw)) {
-      const { task, coerced } = await this.#fileTicketLocked(
+      const { task, coerced, verificationSource } = await this.#fileTicketLocked(
         {
           ...input,
           fromAgent: true,
           type: input.type ?? defaults?.type,
           parentId: input.parentId ?? defaults?.parentId,
-          inheritVerificationCommands: defaults?.inheritVerificationCommands,
+          inheritFrom: defaults?.inheritFrom,
         },
         specId,
       );
       if (coerced) invalid = true;
       ticketIds.push(task.id);
-      tickets.push({ id: task.id, verificationCommands: task.contract.verificationCommands });
+      tickets.push({
+        id: task.id,
+        verificationCommands: task.contract.verificationCommands,
+        filesAllowed: task.contract.filesAllowed,
+        verificationSource,
+      });
     }
     return { invalid, ticketIds, tickets };
   }
@@ -2761,7 +2791,7 @@ export class LegionEngine {
   async #fileTicketLocked(
     input: NewTicket,
     specIdOverride?: string,
-  ): Promise<{ task: Task; coerced: boolean }> {
+  ): Promise<{ task: Task; coerced: boolean; verificationSource: string }> {
     const title = input.title.trim();
     if (!title) {
       refuse("ticket requires a title", HINT.ticket(input.parentId ?? "TSK-x"));
@@ -2774,7 +2804,7 @@ export class LegionEngine {
     const tasks = await this.#listTasks();
     let parentId = input.parentId;
     let parentAdapter: AdapterId | undefined;
-    let parentVerification: string[] | undefined;
+    let parentSource: TicketSource | undefined;
     if (parentId) {
       const parent = tasks.find((task) => task.id === parentId);
       if (!parent) {
@@ -2785,14 +2815,22 @@ export class LegionEngine {
         }
       } else {
         parentAdapter = parent.adapter;
-        parentVerification = parent.contract.verificationCommands;
+        parentSource = {
+          id: parent.id,
+          label: "parent",
+          filesAllowed: parent.contract.filesAllowed,
+          verificationCommands: parent.contract.verificationCommands,
+        };
       }
     }
     // Agent-filed tickets never bring their own verificationCommands (F-039): they run the
-    // parent's (or the running task's) commands. Human tickets keep what the human typed.
-    const agentVerification = input.fromAgent
-      ? (parentVerification ?? input.inheritVerificationCommands)
-      : undefined;
+    // engine-supplied source task's commands (running/verified task), else the resolved
+    // parent's, else the engine default. An empty source list also falls to the default, and
+    // the returned label says which. Human tickets keep what the human typed.
+    const source = input.fromAgent ? (input.inheritFrom ?? parentSource) : undefined;
+    const agentVerification =
+      source && source.verificationCommands.length > 0 ? [...source.verificationCommands] : undefined;
+    const verificationSource = agentVerification && source ? source.label : "engine default (pnpm test)";
     // From file names (valid or not), under engine.lock, so a corrupt file's id is never
     // reused (F-004).
     const id = await nextFileId(this.store.paths.tasksDir, "TSK", 4);
@@ -2824,6 +2862,18 @@ export class LegionEngine {
       };
       coerced = true;
     }
+    // An agent ticket may only touch files its source task may touch; otherwise it could edit the
+    // scripts/tests its inherited command runs (F-039). Outside that, it gets the default notes/ file.
+    if (!coerced && input.fromAgent && source && (input.contract?.filesAllowed?.length ?? 0) > 0) {
+      const allowed = new Set(source.filesAllowed.map((path) => normalizePathKey(path)));
+      if (!ticket.contract.filesAllowed.every((path) => allowed.has(normalizePathKey(path)))) {
+        ticket = {
+          ...ticket,
+          contract: defaultTicketContract(id, { verificationCommands: agentVerification }),
+          notes: `${ticket.notes} filesAllowed outside ${source.id}'s were replaced by notes/${id}.md.`.trim(),
+        };
+      }
+    }
     await this.#writeTask(ticket, taskMarkdownBody(ticket));
     if (parentId) {
       const parentDoc = await this.store.readTask(parentId);
@@ -2836,7 +2886,7 @@ export class LegionEngine {
     }
     const promoted = await this.#promoteTicketIfReady(id, specId);
     await this.#failLastReviewLocked();
-    return { task: promoted, coerced };
+    return { task: promoted, coerced, verificationSource };
   }
 
   async #newPacketLocked(input: NewPacket): Promise<PacketResult> {
@@ -2906,14 +2956,6 @@ export class LegionEngine {
       }
     }
     return out.sort((a, b) => a.id.localeCompare(b.id));
-  }
-
-  async #summarizeTickets(ids: readonly string[]): Promise<FiledTicketSummary[]> {
-    const out: FiledTicketSummary[] = [];
-    for (const id of ids) {
-      out.push({ id, verificationCommands: (await this.store.readTask(id)).data.contract.verificationCommands });
-    }
-    return out;
   }
 
   /** Spawn may write tasks/**; only execute + verificationCommands may mark done/blocked. */

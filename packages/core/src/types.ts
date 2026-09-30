@@ -310,8 +310,21 @@ export type ExecuteOptions = {
   allowNoSandbox?: boolean;
 };
 
-/** A ticket filed from agent output, with the verification commands it will run (F-039). */
-export type FiledTicketSummary = { id: string; verificationCommands: string[] };
+export type TicketSource = {
+  id: string;
+  label: "running task" | "verified task" | "parent";
+  filesAllowed: readonly string[];
+  verificationCommands: readonly string[];
+};
+
+/** A ticket filed from agent output, with what it will run and where the commands came from (F-039). */
+export type FiledTicketSummary = {
+  id: string;
+  verificationCommands: string[];
+  filesAllowed: string[];
+  /** "parent" | "running task" | "verified task" | "engine default (pnpm test)". */
+  verificationSource: string;
+};
 
 export type ExecuteTaskResult = {
   taskId: string;
@@ -396,8 +409,11 @@ export type NewTicket = {
   notes?: string;
   contract?: Partial<FileContract>;
   adapter?: AdapterId;
-  /** Agent-filed tickets with no resolvable parent inherit these (the running task's commands). */
-  inheritVerificationCommands?: string[];
+  /**
+   * Engine-supplied source for an agent-filed ticket (the running or verified task). Takes
+   * precedence over an agent-chosen parentId for the inherited commands and the filesAllowed cap.
+   */
+  inheritFrom?: TicketSource;
 };
 
 export type NewPacket = {

@@ -331,7 +331,13 @@ export function resolveVerificationTrustTier(
  * Project-relative paths a verification command must not write: git hooks/config and the engine's
  * own state run later with the user's privileges (F-039). Read-only in the bwrap/seatbelt profiles.
  */
-const VERIFY_READONLY_RELS = [".git", ".legion-cli"] as const;
+const VERIFY_READONLY_RELS = [".git", ".legion-cli", ".husky", ".githooks"] as const;
+
+/** The subset of VERIFY_READONLY_RELS present in the project (bwrap/docker fail on a missing mount source). */
+export function verificationReadOnlyRels(projectRoot: string): string[] {
+  const root = resolve(projectRoot);
+  return VERIFY_READONLY_RELS.filter((rel) => existsSync(join(root, rel)));
+}
 
 export function verificationBwrapArgvPrefix(projectRoot: string): string[] {
   const root = resolve(projectRoot);
@@ -357,9 +363,9 @@ export function verificationBwrapArgvPrefix(projectRoot: string): string[] {
   args.push("--bind", root, root);
   // Later mounts win: re-bind the sensitive subtrees read-only over the writable project bind.
   // bwrap fails on a missing source, so only bind what exists.
-  for (const rel of VERIFY_READONLY_RELS) {
+  for (const rel of verificationReadOnlyRels(root)) {
     const path = join(root, rel);
-    if (existsSync(path)) args.push("--ro-bind", path, path);
+    args.push("--ro-bind", path, path);
   }
   args.push("--chdir", root, "--");
   return args;
@@ -417,7 +423,7 @@ export async function prepareVerificationWrapper(
     if (!bin) return undefined;
     return {
       bin,
-      argvPrefix: dockerArgvPrefix({ jailRoot: root }),
+      argvPrefix: dockerArgvPrefix({ jailRoot: root, readOnlyRels: verificationReadOnlyRels(root) }),
       translateInvoke: (invoke: string) => translateHostPathToDocker(invoke, root),
     };
   }
