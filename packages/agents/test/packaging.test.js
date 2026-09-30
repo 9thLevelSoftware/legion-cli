@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { pkgRoot } from "./helpers.js";
 
@@ -106,4 +107,40 @@ test("publish.yml runs the allowlist check before publishing", async () => {
   const check = workflow.indexOf("check-publish-allowlist.mjs");
   const publish = workflow.indexOf("pnpm publish");
   assert.ok(check > 0 && publish > check, "allowlist check runs before pnpm publish");
+});
+
+test("an installed layout finds its bundled skills, even with a shadowing skills/ above the cwd (F-025, R-9/R-10)", async () => {
+  await withTmp(async (dir) => {
+    // <dir>/node_modules/@x/agents/{dist,skills}: the shape npm installs, skills copied by the pack script.
+    const pkg = join(dir, "node_modules", "@x", "agents");
+    await mkdir(pkg, { recursive: true });
+    await cp(join(pkgRoot, "dist"), join(pkg, "dist"), { recursive: true });
+    await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@x/agents", type: "module" }));
+    const copied = node(copyScript, ["--target", join(pkg, "skills")]);
+    assert.equal(copied.status, 0, copied.stderr);
+    // The package's own dependencies resolve through the checkout's node_modules.
+    await symlink(join(pkgRoot, "node_modules"), join(pkg, "node_modules"), "junction");
+
+    // A project (and an ancestor of it) with its own skills/ that must not shadow the bundled copy.
+    const cwd = join(dir, "project", "nested");
+    await mkdir(join(dir, "project", "skills", "plan"), { recursive: true });
+    await writeFile(join(dir, "project", "skills", "plan", "SKILL.md"), "shadow\n");
+    await mkdir(cwd, { recursive: true });
+
+    const env = { ...process.env };
+    delete env.LEGION_CLI_SKILLS_DIR;
+    const probe = `import(${JSON.stringify(pathToFileURL(join(pkg, "dist", "index.js")).href)}).then((m) => console.log(m.findSkillsDir()))`;
+    const run = spawnSync(process.execPath, ["-e", probe], { cwd, env, encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(realpathSync(run.stdout.trim()), realpathSync(join(pkg, "skills")));
+
+    // The explicit override still wins.
+    const override = spawnSync(process.execPath, ["-e", probe], {
+      cwd,
+      env: { ...env, LEGION_CLI_SKILLS_DIR: join(dir, "project", "skills") },
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    assert.equal(override.stdout.trim(), join(dir, "project", "skills"));
+  });
 });

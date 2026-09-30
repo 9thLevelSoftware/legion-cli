@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { parseExtraJson, touchesVerificationEntryPoint } from "../dist/tickets.js";
-import { initGitRepo, initProject, makeTask, quoteArg, seedPlanReady, withEngine, withFakeAdapter } from "./helpers.js";
+import { initGitRepo, initProject, makeTask, quoteArg, REVIEW_NOTES_ARTIFACT, seedPlanReady, withEngine, withFakeAdapter } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
 const PARENT_CMD = `${quoteArg(process.execPath)} -e process.exit(0)`;
@@ -290,8 +290,7 @@ for (const skill of ["verify", "review"]) {
           }
           const runs = (await readdir(join(dir, ".legion-cli", "cache", "runs"))).filter((n) => n.startsWith(`${skill}-`));
           assert.ok(runs.length >= 1, `the ${skill} agent actually ran (${refused?.message ?? "no refusal"})`);
-          // The revert refusal, or PR 2's evidence refusal (this fake reviewer writes only the task file, no notes).
-          if (refused) assert.match(refused.message, /outside SkillContract|reverted|wrote no notes/, "the only acceptable refusals are the revert or the missing-notes one");
+          if (refused) assert.match(refused.message, /outside SkillContract|reverted/, "the only acceptable refusal is the revert one");
           // Evidence (Windows host, fake adapter through the real spawn/revert path): the file is removed
           // after the spawn, so it never becomes a task. If this starts failing, clamp created tasks like extra.json tickets.
           assert.equal(existsSync(join(dir, ".legion-cli", "tasks", "TSK-0002.md")), false);
@@ -301,6 +300,8 @@ for (const skill of ["verify", "review"]) {
           skillsDir,
           fakeArtifacts: [
             { path: ".legion-cli/tasks/TSK-0002.md", content: directTaskMarkdown("TSK-0002", "TSK-0001", HOSTILE_CMD) },
+            // A review that really ran leaves notes (PR 2's evidence rule); without them it would be refused for that reason instead.
+            ...(skill === "review" ? [REVIEW_NOTES_ARTIFACT] : []),
           ],
         },
       );

@@ -11,7 +11,7 @@ const LAYER_1 = [
   ["spec", "Write the short contract + wireframes"],
   ["plan", "Break into tasks I can see on the board"],
   ["execute", "Do the next ready task"],
-  ["verify", "Optional walkthrough notes (not a ship gate)"],
+  ["verify", "Optional agent walkthrough (not a ship gate; notes not retained yet)"],
   ["review", "Spec-level review; fix tasks or in-place rewrites mean FAIL; PASS needs exit 0 and notes"],
   ["qa", "Score the product"],
   ["ship", "Final human review; stage the diff"],
@@ -32,7 +32,7 @@ const LIFECYCLE_CORE = [
   ["spec new", "Start the next increment after ship", ""],
   ["plan", "Break into tasks I can see on the board", "--adapter"],
   ["execute [id]", "Do the next ready task", "--fix, --until-blocked, --adapter, --allow-no-sandbox (TTY confirmation)"],
-  ["verify [id]", "Optional walkthrough notes (not a ship gate)", "--adapter"],
+  ["verify [id]", "Optional agent walkthrough (not a ship gate; notes not retained yet)", "--adapter"],
   ["review", "Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review; PASS needs exit 0 and notes", "--adapter"],
   ["qa", "Score the product (when the slice is done)", "--mode full|no-browser"],
   ["qa checklist", "Tick AC items when no browser", "--tick"],
@@ -69,7 +69,7 @@ const BOARD_EXTRAS = [
 
 const SHIPPED_ADJACENT = [
   ["serve", "Dashboard plus read-only MCP HTTP (MCP HTTP is loopback-only)", "--port, --expose (needs --no-mcp-http: MCP HTTP is loopback-only), --no-open, --mcp-http/--no-mcp-http, --webmcp, --token-stdout"],
-  ["dashboard", "Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist); not the source of truth)", "--no-open, --port, --expose"],
+  ["dashboard", "Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist); not the source of truth)", "--no-open, --port, --expose, --webmcp, --token-stdout"],
   ["packet new", "PM/designer request without the DAG", "--title, --request, --requester"],
   ["packet respond", "Spawn tickets from a packet (does not execute)", "--message, --title, --type, --priority"],
   ["context compact", "Manual compaction of done tasks", ""],

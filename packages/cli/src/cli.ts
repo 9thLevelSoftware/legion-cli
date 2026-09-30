@@ -361,7 +361,7 @@ export function createProgram(): Command {
     });
 
 
-  addGlobalOptions(program.command("verify").description("Optional walkthrough notes (not a ship gate)"))
+  addGlobalOptions(program.command("verify").description("Optional agent walkthrough (not a ship gate; notes not retained yet)"))
     .argument("[id]", "task id")
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .allowExcessArguments(false)
