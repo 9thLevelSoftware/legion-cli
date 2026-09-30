@@ -56,7 +56,7 @@ pnpm exec legion-cli intent
 See `legion-cli help --all` for the full rows. One sentence each:
 
 - `chat` — REPL that routes into engine verbs (`--once`, `--adapter`, `--fork`).
-- `undo` — revert the last completed task or Legion commit.
+- `undo` — revert the last completed task or Legion commit. Only the highest-id done task goes back to `todo`; the spec's other done tasks stay done. Undoing a ship commit needs a clean tracked tree and no revert in progress; it moves the phase back to `executing` and marks the ship receipt reverted.
 - `recipe list` / `recipe run` — workflow recipes from `.legion-cli/recipes/*.yaml`.
 - `repl` — host-mode interactive REPL (NO SANDBOX).
 - `serve` / `dashboard` — local board; writes are CLI or token-gated POST (`ticket|wikiTrust|qaChecklist`).

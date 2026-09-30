@@ -52,3 +52,14 @@ export function assertCanTransition(from: Phase, to: Phase): void {
     refuse(`cannot transition from ${from} to ${to}`, hintForIllegalTransition(from, to));
   }
 }
+
+/** Edges only `undo` may take. They are deliberately not in LEGAL_PHASE_TRANSITIONS. */
+export const UNDO_ONLY_PHASE_TRANSITIONS: Readonly<Partial<Record<Phase, readonly Phase[]>>> = {
+  shipped: ["executing"],
+};
+
+export function assertCanUndoTransition(from: Phase, to: Phase): void {
+  if (!(UNDO_ONLY_PHASE_TRANSITIONS[from]?.includes(to) ?? false)) {
+    refuse(`undo cannot move from ${from} to ${to}`, HINT.status);
+  }
+}

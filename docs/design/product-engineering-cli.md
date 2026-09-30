@@ -1207,7 +1207,7 @@ Off the default window. Packets spawn tickets, not execute. Compaction is manual
 | `legion-cli design-system show \| install \| import-od \| generate` | Local dir or `github:owner/repo@tag` (integrity + minisign) |
 | `legion-cli init --mode brownfield` | Sets `project.mode`; `--adapter` still required; 10-verb `execute` stays in-place |
 | `legion-cli chat` | REPL that routes into engine verbs (`--once`, `--adapter`, `--fork`). Session files: `packages/schema/json/chat-session.json`. Actions: `packages/schema/json/chat-action.json`. |
-| `legion-cli undo` | Revert the last completed task or Legion commit |
+| `legion-cli undo` | Revert the last completed task or Legion commit (only the highest-id done task returns to `todo`) |
 | `legion-cli recipe list \| run` | Workflow recipes from `.legion-cli/recipes/*.yaml` |
 | `legion-cli repl` | Host-mode interactive REPL (NO SANDBOX; `--lang node\|python`) |
 

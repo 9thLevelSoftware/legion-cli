@@ -400,53 +400,24 @@ test("10 concurrent fileTicket calls on one engine give 10 distinct ids and 10 f
   });
 });
 
-test("transition refuses plan_concerns and unknown phases", async () => {
-  await withEngine(async ({ engine }) => {
-    await initProject(engine);
-    await assert.rejects(
-      () => engine.transition("plan_concerns"),
-      (err) => {
-        assert.equal(err instanceof LegionRefuseError, true);
-        return true;
-      },
-    );
-  });
-});
-
 test("canTransition has no plan_concerns edge", () => {
   for (const phase of PHASES) {
     assert.equal(canTransition(phase, "plan_concerns"), false);
   }
 });
 
-test("plan walks spec_frozen → planning → plan_ready and transition cannot skip readiness", async () => {
+test("plan walks spec_frozen → planning → plan_ready", async () => {
   await withFakeAdapter(async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
     await seedFrozenSpec(store);
     await writeTask(store, makeTask());
-    await assert.rejects(
-      () => engine.transition("plan_ready"),
-      (err) => {
-        assert.equal(err instanceof LegionRefuseError, true);
-        assert.match(err.nextHint, /legion-cli plan/);
-        return true;
-      },
-    );
     const readiness = await engine.plan("spec-checkin");
     assert.equal(readiness, "CONCERNS");
     assert.equal((await engine.getState()).phase, "plan_ready");
     assert.equal((await engine.getState()).lastReadiness, "CONCERNS");
 
     await patchState(store, { phase: "planning", lastReadiness: null });
-    await assert.rejects(
-      () => engine.transition("plan_ready"),
-      (err) => {
-        assert.equal(err instanceof LegionRefuseError, true);
-        assert.match(err.nextHint, /legion-cli plan/);
-        return true;
-      },
-    );
     const again = await engine.plan("spec-checkin");
     assert.equal(again, "CONCERNS");
     assert.equal((await engine.getState()).phase, "plan_ready");

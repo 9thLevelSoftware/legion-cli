@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { Task } from "@9thlevelsoftware/legion-cli-schema";
 import {
   closeEngineCommand,
@@ -9,12 +11,13 @@ import {
   openEngineCommand,
   readBlob,
   readCommandRecord,
+  shipReceiptPath,
   toFsPath,
   writeTextFile,
   type LegionStore,
 } from "@9thlevelsoftware/legion-cli-persist";
 import { HINT, LegionRefuseError, refuse } from "./errors.js";
-import { assertCanTransition } from "./phases.js";
+import { assertCanTransition, assertCanUndoTransition } from "./phases.js";
 import { SHIP_COMMIT_PREFIX } from "./ship.js";
 import { assertTaskStatusTransition, statusAfterUndoDependency } from "./tasks.js";
 
@@ -47,14 +50,100 @@ function classifyCommit(message: string): "ship" | "unknown-legion" | "other" {
   return "other";
 }
 
+function git(root: string, args: string[]): { ok: boolean; out: string; stdout: string } {
+  const result = spawnSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
+  const stdout = (result.stdout ?? "").trimEnd();
+  return { ok: result.status === 0, out: (result.stderr || result.stdout || "").trimEnd(), stdout };
+}
+
+const STATE_MD_POSIX = ".legion-cli/STATE.md";
+const stateMdPath = (root: string): string => join(root, ...STATE_MD_POSIX.split("/"));
+
+/**
+ * Refuse, before anything is written, when reverting the ship commit could lose work:
+ * - a revert, cherry-pick or sequencer run of the user's is in progress (we must not abort it);
+ * - the ship commit is the first to contain `.legion-cli/STATE.md` (the revert would delete it);
+ * - ANY tracked file is dirty, including under `.legion-cli/`. This is what makes the rollback's
+ *   `git reset --hard` safe: with a clean tracked tree it only discards the revert and undo's own
+ *   journaled writes. Untracked files are never touched by reset.
+ */
+function assertShipRevertSafe(root: string, sha: string): void {
+  for (const ref of ["REVERT_HEAD", "CHERRY_PICK_HEAD"]) {
+    if (git(root, ["rev-parse", "-q", "--verify", ref]).ok) {
+      refuse(`undo needs a quiet repository: a ${ref.replace("_HEAD", "").toLowerCase().replace("_", "-")} is in progress`, "git status");
+    }
+  }
+  const gitDir = git(root, ["rev-parse", "--git-dir"]).stdout;
+  if (gitDir && existsSync(join(resolve(root, gitDir), "sequencer"))) {
+    refuse("undo needs a quiet repository: a sequencer operation is in progress", "git status");
+  }
+  const inShip = git(root, ["cat-file", "-e", `${sha}:${STATE_MD_POSIX}`]).ok;
+  const inParent = git(root, ["cat-file", "-e", `${sha}^:${STATE_MD_POSIX}`]).ok;
+  if (inShip && !inParent) {
+    refuse(
+      `undo would remove ${STATE_MD_POSIX}: ship commit ${sha.slice(0, 7)} is the first commit that contains .legion-cli/`,
+      "git status",
+    );
+  }
+  const dirty = git(root, ["status", "--porcelain", "--untracked-files=no"]);
+  const paths = dirty.stdout
+    .split(/\r?\n/)
+    .map((line) => line.slice(3).replaceAll("\\", "/"))
+    .filter(Boolean);
+  if (paths.length > 0) {
+    refuse(`undo needs a clean tracked tree; commit or stash: ${paths.slice(0, 3).join(", ")}`, "git status");
+  }
+}
+
+/**
+ * The revert deletes the ship receipt from the tree. Put it back, marked reverted, so the audit
+ * trail still says what was shipped and that it was taken back.
+ */
+/** Only a structured marker is ever appended; never git's own text. */
+function withRevertedMarker(receipt: string, sha: string | null): string {
+  if (/^- reverted: true$/m.test(receipt)) return receipt.endsWith("\n") ? receipt : `${receipt}\n`;
+  return `${receipt}\n- reverted: true\n${sha ? `- revertedCommit: ${sha}\n` : ""}`;
+}
+
+/** Ship without a revert commit: mark the receipt that is still on disk. */
+async function markShipReceiptReverted(root: string, specId: string | null | undefined): Promise<void> {
+  const rel = specId ? shipReceiptPath(specId) : ".legion-cli/audit/ship.md";
+  const abs = toFsPath(root, rel);
+  if (!existsSync(abs)) return;
+  const text = await readFile(abs, "utf8");
+  await writeTextFile(abs, withRevertedMarker(text, null), { root });
+}
+
+async function keepRevertedReceipts(root: string, sha: string): Promise<void> {
+  const added = git(root, ["diff-tree", "--no-commit-id", "--name-only", "--diff-filter=A", "-r", sha]);
+  if (!added.ok) return;
+  for (const path of added.out.split(/\r?\n/)) {
+    if (!/^\.legion-cli\/audit\/ship(-[^/]+)?\.md$/.test(path)) continue;
+    const shown = git(root, ["show", `${sha}:${path}`]);
+    if (!shown.ok) continue;
+    const marked = withRevertedMarker(shown.stdout, sha);
+    await writeTextFile(toFsPath(root, path), marked, { root, skipJournal: true });
+  }
+}
+
+function defaultGitRevert(root: string, sha: string): { ok: boolean; out: string } {
+  return git(root, ["revert", "--no-edit", sha]);
+}
+
+let gitRevertFn: (root: string, sha: string) => { ok: boolean; out: string } = defaultGitRevert;
+
+/** Test seam: run a different revert (e.g. one that really conflicts) in place of `git revert <ship>`. */
+export function setUndoGitRevert(fn: ((root: string, sha: string) => { ok: boolean; out: string }) | null): void {
+  gitRevertFn = fn ?? defaultGitRevert;
+}
+
 function gitRevertNoEdit(root: string, sha: string): void {
-  const revert = spawnSync("git", ["revert", "--no-edit", sha], {
-    cwd: root,
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  if (revert.status !== 0) {
-    refuse(`git revert failed: ${(revert.stderr || revert.stdout).trim()}`, "git status");
+  const revert = gitRevertFn(root, sha);
+  if (!revert.ok) {
+    // assertShipRevertSafe proved no revert was in progress, so a REVERT_HEAD now is ours: abort
+    // it (never reset --hard) so no conflict markers or half-done revert are left behind.
+    if (git(root, ["rev-parse", "-q", "--verify", "REVERT_HEAD"]).ok) git(root, ["revert", "--abort"]);
+    refuse(`git revert failed and was aborted: ${revert.out.split(/\r?\n/)[0] ?? ""}`, "git status");
   }
 }
 
@@ -141,6 +230,31 @@ async function rollbackUndo(
   refuse(`undo rollback failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`, HINT.undo);
 }
 
+/**
+ * After an undo the phase must agree with the tasks. `shipped -> executing` is legal only here
+ * (assertCanUndoTransition); it also drops the review and QA that certified the work, and marks
+ * the ship receipt reverted when the ship is what is being taken back.
+ */
+async function rewindPhase(store: LegionStore, root: string): Promise<void> {
+  if (!existsSync(stateMdPath(root))) return;
+  const stateDoc = await store.readState();
+  const phase = stateDoc.data.phase;
+  if (phase !== "ready_to_ship" && phase !== "shipped") return;
+  if (phase === "shipped") assertCanUndoTransition(phase, "executing");
+  else assertCanTransition(phase, "executing");
+  await store.writeState(
+    {
+      ...stateDoc.data,
+      phase: "executing",
+      lastReview: null,
+      lastQaId: null,
+      ...(phase === "ready_to_ship" ? { lastReadiness: null } : {}),
+    },
+    stateDoc.body,
+  );
+  if (phase === "shipped") await markShipReceiptReverted(root, stateDoc.data.activeSpecId);
+}
+
 async function undoLastTaskLocked(opts: {
   projectRoot: string;
   store: LegionStore;
@@ -153,6 +267,7 @@ async function undoLastTaskLocked(opts: {
   }
   const shipCommit = head && classifyCommit(head.message) === "ship" ? head : null;
 
+  // Limitation: only the highest-id done task goes back to todo; the spec's other done tasks stay done.
   let target: { data: Task; body: string } | null = null;
   if (opts.taskId) {
     try {
@@ -182,6 +297,8 @@ async function undoLastTaskLocked(opts: {
     refuse("no task or commit found to undo", HINT.status);
   }
 
+  if (shipCommit) assertShipRevertSafe(root, shipCommit.sha);
+
   const commandId = `undo-${randomBytes(8).toString("hex")}`;
   await openEngineCommand(root, commandId);
   const preimages = await loadUndoPreimages(root, commandId);
@@ -194,25 +311,24 @@ async function undoLastTaskLocked(opts: {
       gitRevertNoEdit(root, shipCommit.sha);
       gitReverted = true;
       commitSha = shipCommit.sha;
+      if (!existsSync(stateMdPath(root))) {
+        refuse(`undo removed ${STATE_MD_POSIX}; the revert was rolled back`, "git status");
+      }
+      await keepRevertedReceipts(root, shipCommit.sha);
     }
 
     if (target) {
       const undoneId = target.data.id;
-      await writeTaskStatus(opts.store, target, "todo", "[undo]: reverted to todo");
-
-      const stateDoc = await opts.store.readState();
-      if (stateDoc.data.phase === "ready_to_ship") {
-        assertCanTransition(stateDoc.data.phase, "executing");
-        await opts.store.writeState(
-          {
-            ...stateDoc.data,
-            phase: "executing",
-            lastReview: null,
-            lastReadiness: null,
-          },
-          stateDoc.body,
-        );
+      let current: { data: Task; body: string } | null = target;
+      if (shipCommit) {
+        // The revert may have restored an older snapshot of this task; act on what is on disk now.
+        current = await opts.store.readTask(undoneId).catch(() => null);
       }
+      if (current && current.data.status === "done") {
+        await writeTaskStatus(opts.store, current, "todo", "[undo]: reverted to todo");
+      }
+
+      await rewindPhase(opts.store, root);
 
       const entries = await listTaskFiles(root);
       for (const entry of entries) {
@@ -236,10 +352,13 @@ async function undoLastTaskLocked(opts: {
       return {
         taskId: undoneId,
         commitSha,
-        message: `Reverted task ${undoneId} to todo${commitSha ? ` (reverted commit ${commitSha.slice(0, 7)})` : ""}`,
+        message:
+          `Reverted task ${undoneId} to todo${commitSha ? ` (reverted commit ${commitSha.slice(0, 7)})` : ""}. ` +
+          "Only the highest-id done task goes back to todo; the spec's other done tasks stay done.",
       };
     }
 
+    if (shipCommit) await rewindPhase(opts.store, root);
     await closeEngineCommand(root, commandId);
     return {
       taskId: null,

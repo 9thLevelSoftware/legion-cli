@@ -12,7 +12,7 @@ const enginePath = join(repoRoot, "packages", "core", "src", "engine.ts");
 const HARD_GATE_DETECTORS = {
   "Intent confirmation": /intent confirmation requires/,
   "Product decisions": /spec requires decisions captured/,
-  "Spec approval": /spec freeze requires legion-cli spec approve/,
+  "Spec approval": /spec approve requires phase spec_draft/,
   Scope: /FileContract extra|outside SkillContract/,
   Deletion: /FileContract extra/,
   "Skipping QA / degraded QA": /allow-degraded-qa/,
