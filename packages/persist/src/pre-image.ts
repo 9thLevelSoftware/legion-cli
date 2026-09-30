@@ -278,7 +278,18 @@ export async function listOpenCommandIds(projectRoot: string): Promise<string[]>
   return open.sort();
 }
 
-async function walkFiles(projectRoot: string, relDir: string, out: string[]): Promise<void> {
+/** Optional visit hook: called with each posix path (file or directory) the walk touches. */
+export type RestoreWalkVisit = (posix: string) => void;
+
+async function walkFiles(
+  projectRoot: string,
+  relDir: string,
+  out: string[],
+  visit?: RestoreWalkVisit,
+): Promise<void> {
+  // Excluded subtrees (worktrees, index/journal, cache/runs, ...) hold nothing restorable: never enumerate.
+  if (relDir && isExcludedRestorePath(relDir)) return;
+  visit?.(relDir);
   const abs = relDir ? toFsPath(projectRoot, relDir) : projectRoot;
   try {
     const st = await lstat(abs);
@@ -302,25 +313,43 @@ async function walkFiles(projectRoot: string, relDir: string, out: string[]): Pr
   for (const entry of entries) {
     const posix = relDir ? `${relDir}/${entry.name}` : entry.name;
     if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory()) await walkFiles(projectRoot, posix, out);
+    if (entry.isDirectory()) await walkFiles(projectRoot, posix, out, visit);
     else if (entry.isFile()) out.push(posix);
   }
 }
 
+/** Static directory prefix of a root or glob: the segments before the first wildcard segment. */
+function staticRootPrefix(root: string): string {
+  const kept: string[] = [];
+  for (const seg of root.split("/")) {
+    if (seg.includes("*") || seg.includes("?")) break;
+    if (seg) kept.push(seg);
+  }
+  return kept.join("/");
+}
+
+const PINNED_WALK_ROOTS = [
+  ".legion-cli/STATE.md",
+  ".legion-cli/config.yaml",
+  ".legion-cli/tasks",
+  ".legion-cli/specs",
+  ".legion-cli/qa",
+];
+
 export async function listRestoreManifestPaths(
   projectRoot: string,
   extraRoots: readonly string[] = [],
+  visit?: RestoreWalkVisit,
 ): Promise<string[]> {
   const found: string[] = [];
-  await walkFiles(projectRoot, ".legion-cli", found);
-  const extraStarts = extraRoots
-    .map(toPosixPath)
-    .filter((root) => root.startsWith(".legion-cli/") && !isExcludedRestorePath(root.replace(/\/\*\*$/, "/")));
-  for (const root of extraStarts) {
-    const base = root.replace(/\/\*\*$/, "").replace(/\/\*$/, "");
-    if (base.includes("*")) continue;
-    await walkFiles(projectRoot, base, found);
+  // Walk only roots isRestoreManifestPath can accept: the pinned roots plus each extra root's static prefix.
+  const starts = new Set<string>(PINNED_WALK_ROOTS);
+  for (const root of extraRoots.map(toPosixPath)) {
+    if (!root.startsWith(".legion-cli/")) continue;
+    const prefix = staticRootPrefix(root);
+    if (prefix === ".legion-cli" || prefix.startsWith(".legion-cli/")) starts.add(prefix);
   }
+  for (const start of [...starts].sort()) await walkFiles(projectRoot, start, found, visit);
   const unique = [...new Set(found)];
   return unique.filter((posix) => isRestoreManifestPath(posix, extraRoots)).sort();
 }

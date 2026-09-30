@@ -39,6 +39,8 @@ const ENGINE_OWNED = [
   ".legion-cli/sandbox/**",
 ];
 
+const ENGINE_OWNED_RES = ENGINE_OWNED.map(globToRegExp);
+
 export function skillContract(skillId: SkillId, opts: { runId: string; specId?: string }): SkillContract {
   const roots = SKILL_CONTRACTS[skillId].map((root) =>
     root.replaceAll("<id>", opts.runId).replaceAll("<activeSpecId>", opts.specId ?? "*"),
@@ -100,7 +102,7 @@ export function isImplicitForbidden(posixPath: string): boolean {
 }
 
 export function isEngineOwned(posixPath: string): boolean {
-  return ENGINE_OWNED.some((pattern) => matchesGlob(pattern, posixPath));
+  return ENGINE_OWNED_RES.some((re) => re.test(posixPath));
 }
 
 export function isAllowedPath(posixPath: string, allowedRoots: readonly string[]): boolean {

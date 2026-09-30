@@ -5,7 +5,14 @@ export const GENERATED_END = "<!-- legion-cli:generated:end -->";
 
 const DEFAULT_NOTES = "## Notes\nHuman prose below this line is preserved across --refresh.\n";
 
-export function renderArchitecture(file: FingerprintFile): string {
+export function renderArchitecture(file: FingerprintFile, opts: { omitted?: number } = {}): string {
+  const omitted = opts.omitted ?? 0;
+  const degraded =
+    omitted > 0
+      ? [
+          `> Degraded map: ${file.modules.length} modules are listed (the largest); ${omitted} smaller modules were left out to keep the map bounded.`,
+        ]
+      : [];
   const modules = file.modules.map((module) => {
     const exports = module.exports.join(", ");
     return `- \`${module.path}\` — exports: ${exports}`;
@@ -16,6 +23,7 @@ export function renderArchitecture(file: FingerprintFile): string {
     `backend: ${file.backend}`,
     `rootHash: ${file.rootHash}`,
     "## Modules",
+    ...degraded,
     ...modules,
     GENERATED_END,
     "",

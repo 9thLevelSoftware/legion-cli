@@ -118,11 +118,33 @@ async function posixInside(projectRoot: string, absPath: string): Promise<string
   }
 }
 
+export type WalkReport = {
+  files: WalkedFile[];
+  /** Modules found beyond the cap and left out (the smallest ones). */
+  omitted: number;
+  /** Modules found before degrading. */
+  total: number;
+};
+
 export async function walkSources(opts: {
   projectRoot: string;
   roots: readonly string[] | null;
   ignore: readonly string[];
+  maxModules?: number;
 }): Promise<WalkedFile[]> {
+  return (await walkSourcesReport(opts)).files;
+}
+
+/**
+ * Walk sources; above maxModules keep the largest modules (ties by path) and report how many were left out.
+ */
+export async function walkSourcesReport(opts: {
+  projectRoot: string;
+  roots: readonly string[] | null;
+  ignore: readonly string[];
+  maxModules?: number;
+}): Promise<WalkReport> {
+  const maxModules = opts.maxModules ?? MAX_MODULES;
   const projectRoot = resolve(opts.projectRoot);
   const rules = compileIgnore(opts.ignore);
   const out: WalkedFile[] = [];
@@ -201,9 +223,6 @@ export async function walkSources(opts: {
         continue;
       }
       if (buf.byteLength > MAX_FILE_BYTES || looksBinary(buf)) continue;
-      if (out.length >= MAX_MODULES) {
-        refuse("map exceeds 10000 modules", MAP_HINT.noLsp);
-      }
       seenFiles.add(posix);
       out.push({ path: posix, absPath: abs, language, text: buf.toString("utf8") });
     }
@@ -222,6 +241,13 @@ export async function walkSources(opts: {
     await walkDir(start);
   }
 
-  out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return out;
+  const total = out.length;
+  let kept = out;
+  if (total > maxModules) {
+    kept = [...out]
+      .sort((a, b) => b.text.length - a.text.length || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+      .slice(0, maxModules);
+  }
+  kept.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return { files: kept, omitted: total - kept.length, total };
 }

@@ -350,6 +350,47 @@ test("F-054: dead-in-progress recovery scans cache/runs once per lock, not per t
   });
 });
 
+test("F-031: recovery skips the cache/runs scan with no current task and no in-flight task", async () => {
+  await withEngine(async ({ dir, store, engine }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    const state = await store.readState();
+    await store.writeState({ ...state.data, phase: "executing", currentTaskId: null }, state.body);
+    const runsDir = join(dir, ".legion-cli", "cache", "runs");
+    await mkdir(runsDir, { recursive: true });
+    for (let i = 0; i < 50; i += 1) await mkdir(join(runsDir, `old-${i}`), { recursive: true });
+    resetListCacheResumesCalls();
+    await engine.recoverStaleInProgress();
+    assert.equal(listCacheResumesCalls, 0, "no scan when nothing can be in flight");
+
+    // A dead in_progress task with no current task is still found and recovered.
+    await writeTask(store, makeTask({ id: "TSK-0002", status: "in_progress" }));
+    await mkdir(join(runsDir, "dead-1"), { recursive: true });
+    await writeFile(
+      join(runsDir, "dead-1", "resume.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-resume/v1",
+        runId: "dead-1",
+        taskId: "TSK-0002",
+        skillId: "execute",
+        preSpawnRef: "UNBORN",
+        startedAt: new Date(Date.now() - 5000).toISOString(),
+        pid: 2_000_000_000,
+        adapterId: "fake",
+        binary: "(in-process)",
+        argvSummary: "{{pointer}}",
+        resolutionSource: "default",
+      })}
+`,
+      "utf8",
+    );
+    resetListCacheResumesCalls();
+    await engine.recoverStaleInProgress();
+    assert.equal(listCacheResumesCalls, 1);
+    assert.equal((await store.readTask("TSK-0002")).data.status, "blocked");
+  });
+});
+
 test("second execute is refused while a task is verifying", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ dir, store }) => {

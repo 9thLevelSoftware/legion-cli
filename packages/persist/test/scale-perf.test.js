@@ -213,3 +213,63 @@ test("A-007 50k wall-clock gate", { skip: process.env.LEGION_A007_GATE !== "1" }
   });
 });
 
+
+test("F-034 manifest walk visits no entry under worktrees, index, cache, sandbox or chat", async () => {
+  const { listRestoreManifestPaths } = await import("../dist/index.js");
+  await withTempDir(async (dir) => {
+    const put = async (rel, body = "x\n") => {
+      await mkdir(join(dir, ...rel.split("/").slice(0, -1)), { recursive: true });
+      await writeFile(join(dir, ...rel.split("/")), body);
+    };
+    await put(".legion-cli/STATE.md");
+    await put(".legion-cli/config.yaml");
+    await put(".legion-cli/tasks/TSK-0001.md");
+    await put(".legion-cli/specs/spec-a/prd.md");
+    await put(".legion-cli/qa/scores/q1.json");
+    await put(".legion-cli/wiki/product/intent.md");
+    await put(".legion-cli/discuss/d1/notes.md");
+    await put(".legion-cli/decisions/D-1.md");
+    for (let i = 0; i < 20; i += 1) {
+      await put(`.legion-cli/worktrees/run/pr-${i}/src/a.ts`);
+      await put(`.legion-cli/index/journal/commands/c${i}.json`);
+      await put(`.legion-cli/cache/runs/r${i}/resume.json`);
+      await put(`.legion-cli/cache/live-spawn/r${i}.json`);
+    }
+    await put(".legion-cli/sandbox/s/a");
+    await put(".legion-cli/chat/c.json");
+
+    const visited = [];
+    const found = await listRestoreManifestPaths(dir, [".legion-cli/wiki/**", ".legion-cli/discuss/*/notes.md", ".legion-cli/**"], (p) =>
+      visited.push(p),
+    );
+    const bad = visited.filter((p) => /^\.legion-cli\/(worktrees|index|cache|sandbox|chat|audit|runs)(\/|$)/.test(p));
+    assert.deepEqual(bad, []);
+    for (const expected of [
+      ".legion-cli/STATE.md",
+      ".legion-cli/config.yaml",
+      ".legion-cli/tasks/TSK-0001.md",
+      ".legion-cli/specs/spec-a/prd.md",
+      ".legion-cli/qa/scores/q1.json",
+      ".legion-cli/wiki/product/intent.md",
+      ".legion-cli/discuss/d1/notes.md",
+      ".legion-cli/decisions/D-1.md",
+    ]) {
+      assert.ok(found.includes(expected), `missing ${expected}`);
+    }
+    assert.equal(found.some((p) => /\/(worktrees|index|cache|sandbox|chat)\//.test(p)), false);
+
+    // Default (no extra roots) walks only the pinned roots.
+    const pinnedVisited = [];
+    const pinned = await listRestoreManifestPaths(dir, [], (p) => pinnedVisited.push(p));
+    assert.deepEqual(pinned, [
+      ".legion-cli/STATE.md",
+      ".legion-cli/config.yaml",
+      ".legion-cli/tasks/TSK-0001.md",
+      ".legion-cli/specs/spec-a/prd.md",
+      ".legion-cli/qa/scores/q1.json",
+    ].sort());
+    assert.ok(pinnedVisited.every((p) => !p.startsWith(".legion-cli/wiki") && !p.startsWith(".legion-cli/discuss")));
+    // The old whole-tree walk would have visited every one of the 80+ excluded files.
+    assert.ok(pinnedVisited.length < 15, `visited ${pinnedVisited.length}`);
+  });
+});

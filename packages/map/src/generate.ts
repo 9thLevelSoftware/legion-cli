@@ -19,7 +19,7 @@ import { MAP_HINT, refuse } from "./errors.js";
 import { fingerprintHash, fingerprintRoot, uniqueSorted } from "./fingerprint.js";
 import { collectLspExports, detectLspServer, MAX_LSP_FILES, type LspSpawnFn, type ResolveBinaryFn } from "./lsp.js";
 import { MAX_NAMES, parseSource } from "./parse.js";
-import { DEFAULT_IGNORE, resolveMapRoots, walkSources } from "./walk.js";
+import { DEFAULT_IGNORE, resolveMapRoots, walkSourcesReport } from "./walk.js";
 
 export type MapLspMode = "require" | "off" | "auto";
 
@@ -152,7 +152,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   const config = await loadMapConfig(root);
   const ignore = [...new Set([...(options.ignore ?? config.ignore ?? []), ...DEFAULT_IGNORE])];
   const roots = resolveMapRoots(root, options.roots ?? config.roots);
-  const files = await walkSources({ projectRoot: root, roots, ignore });
+  const { files, omitted } = await walkSourcesReport({ projectRoot: root, roots, ignore });
 
   const paths = legionPaths(root);
   const fingerprintsPath = join(paths.mapDir, "fingerprints.json");
@@ -221,7 +221,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   if (unchanged && existing) {
     if (options.refresh || existingArch === undefined) {
       await ensureRealMapDir(root, paths.mapDir);
-      await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(existing)), {
+      await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(existing, { omitted })), {
         root,
       });
     }
@@ -244,7 +244,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
 
   await ensureRealMapDir(root, paths.mapDir);
   await writeMapFile(fingerprintsPath, `${JSON.stringify(fingerprints, null, 2)}\n`, { root });
-  await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(fingerprints)), { root });
+  await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(fingerprints, { omitted })), { root });
 
   return { backend, fingerprints, architecturePath, fingerprintsPath, changed };
 }

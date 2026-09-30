@@ -47,6 +47,7 @@ import {
   invalidTaskMessage,
   isPidAlive,
   listTaskFiles,
+  listTaskSummaries,
   liveRuns,
   readLiveRun,
   nextFileId,
@@ -3676,6 +3677,16 @@ export class LegionEngine {
   async #recoverDeadInProgressLocked(): Promise<void> {
     const state = await this.#readState();
     if (state.phase === "uninitialized") return;
+    // Only a task that is (or may be) in flight needs a run lookup: skip the cache/runs scan when
+    // there is no current task and the summary index shows no in_progress/verifying task. An
+    // unreadable task (ok:false) can never be recovered (readTask throws below), so it is ignored.
+    if (!state.currentTaskId) {
+      const summaries = await listTaskSummaries(this.projectRoot);
+      const inFlight = summaries.some(
+        (row) => row.ok && (row.status === "in_progress" || row.status === "verifying"),
+      );
+      if (!inFlight) return;
+    }
     const resumes = await listCacheResumes(this.projectRoot);
     const latestByTask = new Map<string, (typeof resumes)[number]>();
     for (const resume of resumes) {

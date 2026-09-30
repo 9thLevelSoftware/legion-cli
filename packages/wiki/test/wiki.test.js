@@ -778,3 +778,63 @@ test("garden stays report-only and does not write the wiki catalog", async () =>
     assert.equal(await store.pathExists(WIKI_TOPICS_STORE_PATH), false);
   });
 });
+
+test("F-029 brief at 6000 pages: at most two renders, bodies read bounded by the cap not the wiki", async () => {
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { briefCounters, resetBriefCounters, SESSION_BRIEF_CHAR_CAP } = await import("../dist/index.js");
+  await withStore(async ({ dir, store }) => {
+    const pagesDir = join(dir, ".legion-cli", "wiki", "bulk");
+    await mkdir(pagesDir, { recursive: true });
+    const total = 6000;
+    for (let start = 0; start < total; start += 250) {
+      const jobs = [];
+      for (let i = start; i < Math.min(total, start + 250); i += 1) {
+        const name = `page-${String(i).padStart(5, "0")}`;
+        jobs.push(
+          writeFile(
+            join(pagesDir, `${name}.md`),
+            `---\nschemaVersion: legion-cli-wiki-page/v1\ntitle: Page ${name}\ntrust: reviewed\nupdated: 2026-09-01T12:00:00.000Z\n---\n\nSummary of ${name} goes here. It has a second sentence.\n`,
+          ),
+        );
+      }
+      await Promise.all(jobs);
+    }
+    await store.rebuild();
+    resetBriefCounters();
+    const brief = await buildSessionBrief(store);
+    assert.ok(briefCounters.renders <= 2, `renders ${briefCounters.renders}`);
+    // Each page line is at least ~30 chars, so the cap bounds the pages that can ever be shown.
+    assert.ok(briefCounters.bodiesLoaded < total / 2, `bodies loaded ${briefCounters.bodiesLoaded}`);
+    assert.ok(briefCounters.summaries <= briefCounters.bodiesLoaded);
+    assert.ok(brief.wiki.length > 0 && brief.wiki.length < total);
+    assert.ok(brief.characterCount <= SESSION_BRIEF_CHAR_CAP);
+    assert.equal(brief.characterCount, renderSessionBrief(brief).length);
+  });
+});
+
+test("F-029 assembleSessionBrief matches the drop-from-the-tail reference", () => {
+  const wiki = Array.from({ length: 900 }, (_, i) => ({
+    path: `.legion-cli/wiki/p${i}.md`,
+    title: `Page ${i}`,
+    summary: i % 3 === 0 ? null : `line one ${i}\nline two ${i}`,
+    trust: i % 3 === 0 ? "untrusted" : "reviewed",
+  }));
+  const input = {
+    project: { name: "Checkin", mode: "greenfield", controlMode: "guarded" },
+    phase: "executing",
+    blockers: [],
+    decisions: [],
+  };
+  const fast = assembleSessionBrief({ ...input, wiki });
+  // Reference: the original loop (strip summaries when over, then drop one page at a time).
+  let ref = wiki;
+  const cap = SESSION_BRIEF_CHAR_CAP;
+  const len = (w) => renderSessionBrief({ ...assembleSessionBrief({ ...input, wiki: [] }), wiki: w }).length;
+  if (len(ref) > cap) {
+    ref = ref.map((p) => ({ ...p, summary: null }));
+    while (len(ref) > cap && ref.length > 0) ref = ref.slice(0, -1);
+  }
+  assert.deepEqual(fast.wiki, ref);
+  assert.ok(fast.characterCount <= cap);
+});

@@ -17,10 +17,19 @@ import {
   type QAScore,
   type SessionBrief,
 } from "@9thlevelsoftware/legion-cli-schema";
-import { hubs, loadWikiLinks, loadWikiPages, type WikiPageRow } from "./graph.js";
+import { hubs, loadWikiBodies, loadWikiLinks, loadWikiPageHeads, type WikiPageHead } from "./graph.js";
 import { twoLineSummary } from "./parser.js";
 
 export const SESSION_BRIEF_CHAR_CAP = 24_000;
+
+/** Work counters (tests assert bounded work, not wall time). */
+export const briefCounters = { renders: 0, summaries: 0, bodiesLoaded: 0 };
+
+export function resetBriefCounters(): void {
+  briefCounters.renders = 0;
+  briefCounters.summaries = 0;
+  briefCounters.bodiesLoaded = 0;
+}
 
 async function listMarkdown(dir: string): Promise<string[]> {
   let names: string[];
@@ -80,11 +89,12 @@ async function loadLastQa(store: LegionReader, lastQaId: string | null | undefin
   }
 }
 
-function wikiEntry(page: WikiPageRow): SessionBrief["wiki"][number] {
+function wikiEntry(page: WikiPageHead, body: string): SessionBrief["wiki"][number] {
   if (page.trust === "untrusted") {
     return { path: page.path, title: page.title, summary: null, trust: "untrusted" };
   }
-  const summary = twoLineSummary(page.body);
+  briefCounters.summaries += 1;
+  const summary = twoLineSummary(body);
   return {
     path: page.path,
     title: page.title,
@@ -93,12 +103,18 @@ function wikiEntry(page: WikiPageRow): SessionBrief["wiki"][number] {
   };
 }
 
+/** Rendered length of a page line when its summary is dropped (the smallest a page can be). */
+function minWikiLineLength(page: Pick<WikiPageHead, "title" | "path" | "trust">): number {
+  const line = page.trust === "untrusted" ? `- ${page.title} (${page.path}) untrusted` : `- ${page.title} (${page.path})`;
+  return line.length + 1;
+}
+
 function rankWikiPages(
-  pages: WikiPageRow[],
+  pages: WikiPageHead[],
   hubIds: Set<string>,
   specLinked: Set<string>,
-): WikiPageRow[] {
-  const score = (page: WikiPageRow): number => {
+): WikiPageHead[] {
+  const score = (page: WikiPageHead): number => {
     if (hubIds.has(page.id)) return 0;
     if (specLinked.has(page.id) || [...specLinked].some((id) => page.id.endsWith(id) || id.endsWith(page.id))) {
       return 1;
@@ -107,6 +123,19 @@ function rankWikiPages(
     return 3;
   };
   return [...pages].sort((a, b) => score(a) - score(b) || a.id.localeCompare(b.id));
+}
+
+function wikiLines(page: SessionBrief["wiki"][number]): string[] {
+  if (page.trust === "untrusted") return [`- ${page.title} (${page.path}) untrusted`];
+  const lines = [`- ${page.title} (${page.path})`];
+  if (page.summary) for (const summaryLine of page.summary.split("\n")) lines.push(`  ${summaryLine}`);
+  return lines;
+}
+
+function wikiChunkLength(page: SessionBrief["wiki"][number]): number {
+  let n = 0;
+  for (const line of wikiLines(page)) n += line.length + 1;
+  return n;
 }
 
 export function renderSessionBrief(brief: SessionBrief): string {
@@ -152,18 +181,7 @@ export function renderSessionBrief(brief: SessionBrief): string {
   if (brief.wiki.length === 0) {
     lines.push("- (none)");
   } else {
-    for (const page of brief.wiki) {
-      if (page.trust === "untrusted") {
-        lines.push(`- ${page.title} (${page.path}) untrusted`);
-      } else if (page.summary) {
-        lines.push(`- ${page.title} (${page.path})`);
-        for (const summaryLine of page.summary.split("\n")) {
-          lines.push(`  ${summaryLine}`);
-        }
-      } else {
-        lines.push(`- ${page.title} (${page.path})`);
-      }
-    }
+    for (const page of brief.wiki) lines.push(...wikiLines(page));
   }
   if (brief.contract) {
     lines.push("");
@@ -215,17 +233,37 @@ export function assembleSessionBrief(input: {
     wiki,
     ...(skills !== undefined ? { skills } : {}),
   });
-  const render = (): string => renderSessionBrief(withCount(snapshot(), ""));
+  // Rendering never reads characterCount, so the schema is parsed once, at the end (withCount).
+  const render = (): string => {
+    briefCounters.renders += 1;
+    return renderSessionBrief({ ...snapshot(), characterCount: 0 } as SessionBrief);
+  };
 
-  let rendered = render();
-  if (rendered.length > SESSION_BRIEF_CHAR_CAP) {
+  // Single pass: size the fixed part once (empty wiki renders "- (none)\n"), then pick the longest
+  // wiki prefix that fits from running lengths instead of re-rendering after every dropped page.
+  const EMPTY_WIKI_LEN = "- (none)\n".length;
+  const wikiEmpty = wiki;
+  wiki = [];
+  const fixedLen = render().length - EMPTY_WIKI_LEN;
+  wiki = wikiEmpty;
+  const fit = (chunks: number[]): number => {
+    let total = fixedLen;
+    const prefix = [0];
+    for (const n of chunks) {
+      total += n;
+      prefix.push(total);
+    }
+    let k = chunks.length;
+    while (k > 0 && prefix[k]! > SESSION_BRIEF_CHAR_CAP) k -= 1;
+    return k;
+  };
+  const fullChunks = wiki.map(wikiChunkLength);
+  const fullTotal = fixedLen + (fullChunks.length === 0 ? EMPTY_WIKI_LEN : fullChunks.reduce((x, y) => x + y, 0));
+  if (fullTotal > SESSION_BRIEF_CHAR_CAP) {
     wiki = wiki.map((page) => ({ ...page, summary: null }));
-    rendered = render();
+    wiki = wiki.slice(0, fit(wiki.map(wikiChunkLength)));
   }
-  while (rendered.length > SESSION_BRIEF_CHAR_CAP && wiki.length > 0) {
-    wiki = wiki.slice(0, -1);
-    rendered = render();
-  }
+  let rendered = render();
   if (rendered.length > SESSION_BRIEF_CHAR_CAP && skills && skills.length > 0) {
     skills = skills.map((skill) => ({ ...skill, description: "" }));
     rendered = render();
@@ -316,11 +354,25 @@ export async function buildSessionBrief(
     }
   }
 
-  const pages = loadWikiPages(store.projectRoot);
+  const pages = loadWikiPageHeads(store.projectRoot);
   const links = loadWikiLinks(store.projectRoot);
   const hubIds = new Set(hubs(links).map((row) => row.id));
   const ranked = rankWikiPages(pages, hubIds, specLinked);
-  const wiki = ranked.map(wikiEntry);
+  // Pages past the point where even summary-less lines overflow the cap can never be rendered:
+  // read bodies (and summarise) only for the ranked head that can still fit.
+  let minTotal = 0;
+  let keep = 0;
+  while (keep < ranked.length && minTotal <= SESSION_BRIEF_CHAR_CAP) {
+    minTotal += minWikiLineLength(ranked[keep]!);
+    keep += 1;
+  }
+  const head = ranked.slice(0, keep);
+  const bodies = loadWikiBodies(
+    store.projectRoot,
+    head.filter((page) => page.trust !== "untrusted").map((page) => page.id),
+  );
+  briefCounters.bodiesLoaded += bodies.size;
+  const wiki = head.map((page) => wikiEntry(page, bodies.get(page.id) ?? ""));
   const lastQa = await loadLastQa(store, state.lastQaId);
 
   return assembleSessionBrief({

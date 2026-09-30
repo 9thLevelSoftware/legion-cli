@@ -504,20 +504,37 @@ test("walk skips symlink directory cycles", async () => {
   });
 });
 
-test("map refuses when walk exceeds 10000 modules", { timeout: 180_000 }, async () => {
+test("F-028 map degrades above 10000 modules, keeps the largest and says so in ARCHITECTURE.md", { timeout: 180_000 }, async () => {
   await withTempDir(async (dir) => {
-    await writeManyTs(dir, 10_001);
-    const before = await mapArtifacts(dir);
-    await assert.rejects(
-      () => generateMap(dir),
-      (err) => {
-        assert.equal(err instanceof MapError, true);
-        assert.equal(err.nextHint, "legion-cli map --no-lsp");
-        assert.match(err.message, /10000/);
-        return true;
-      },
-    );
-    assert.deepEqual(await mapArtifacts(dir), before);
+    await writeManyTs(dir, 10_100);
+    // Ten files are bigger than the rest: they must survive the degrade.
+    const big = "export function f() {}\n" + "export const pad = 1;\n".repeat(50);
+    const bigNames = [];
+    for (let i = 0; i < 10; i += 1) {
+      bigNames.push(`src/big${i}.ts`);
+      await writeFile(join(dir, "src", `big${i}.ts`), big);
+    }
+    const result = await generateMap(dir);
+    assert.equal(result.fingerprints.modules.length, 10_000);
+    const paths = new Set(result.fingerprints.modules.map((row) => row.path));
+    for (const name of bigNames) assert.ok(paths.has(name), `${name} dropped`);
+    const arch = await readFile(join(dir, ".legion-cli", "map", "ARCHITECTURE.md"), "utf8");
+    assert.match(arch, /Degraded map: 10000 modules are listed/);
+    assert.match(arch, /110 smaller modules were left out/);
+  });
+});
+
+test("F-028 map at exactly the cap has no degrade note", async () => {
+  const { walkSourcesReport } = await import("../dist/index.js");
+  await withTempDir(async (dir) => {
+    await writeManyTs(dir, 12);
+    const report = await walkSourcesReport({ projectRoot: dir, roots: null, ignore: [], maxModules: 12 });
+    assert.equal(report.files.length, 12);
+    assert.equal(report.omitted, 0);
+    const over = await walkSourcesReport({ projectRoot: dir, roots: null, ignore: [], maxModules: 5 });
+    assert.equal(over.files.length, 5);
+    assert.equal(over.omitted, 7);
+    assert.equal(over.total, 12);
   });
 });
 
