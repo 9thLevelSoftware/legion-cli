@@ -166,6 +166,7 @@ export type { MarkdownDoc, WriteTextOpts } from "./markdown.js";
 export {
   appendChainedAuditLine,
   assertAuditChainUsable,
+  assertAuditAppendable,
   healAuditChain,
   assertStoreRootsNotLinked,
   auditLineDigest,

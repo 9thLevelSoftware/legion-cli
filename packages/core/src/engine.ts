@@ -39,6 +39,7 @@ import {
   parseMarkdownDocument,
   PathEscapeError,
   AuditTamperError,
+  assertAuditAppendable,
   assertAuditChainUsable,
   healAuditChain,
   EngineLockedError,
@@ -2317,6 +2318,8 @@ Approved: ${note}
         refuse("Execute is off in advisory mode", HINT.advisory);
       }
 
+      // Refuse on a bad audit chain before any task or phase moves (the later audit append would).
+      await assertAuditAppendable(this.projectRoot);
       task = await this.#resolveExecuteTask(taskId, state, config);
       if (task.contract.filesAllowed.length === 0 || task.contract.verificationCommands.length === 0) {
         refuse("This task needs a file contract and verification commands", HINT.plan);

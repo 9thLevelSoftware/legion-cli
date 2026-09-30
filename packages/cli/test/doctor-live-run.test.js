@@ -131,3 +131,35 @@ test("doctor --rebaseline-audit is the recorded way out of a corrupt or deleted 
     assert.notEqual(deleted.status, 0, "a deleted chain over a multi-line log is not silently re-chained");
   });
 });
+
+test("doctor --rebaseline-audit refuses while a run is live, then prints what it replaced", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
+    await seedAuditLog(dir);
+    const chain = join(dir, ".legion-cli", "audit", "chain.json");
+    const original = JSON.parse(await readFile(chain, "utf8"));
+    const jsonl = join(dir, ".legion-cli", "audit", "events.jsonl");
+    const lines = (await readFile(jsonl, "utf8")).split(/\r?\n/);
+    const at = lines.findIndex((line) => line.includes("line-1"));
+    lines[at] = lines[at].replace("line-1", "line-X");
+    await writeFile(jsonl, lines.join("\n"), "utf8");
+    const before = await readFile(chain, "utf8");
+
+    const path = await writeMarker(dir, "execute-live", {
+      enginePid: process.pid,
+      engineStartedAt: ownProcessStartedAt(),
+    });
+    const refused = runCli(["doctor", "--rebaseline-audit", "--project", dir], { env });
+    assert.notEqual(refused.status, 0);
+    assert.match(normalize(`${refused.stdout}${refused.stderr}`), /execute run execute-live is live/);
+    assert.equal(await readFile(chain, "utf8"), before, "a refused re-baseline leaves chain.json alone");
+    assert.doesNotMatch(await readFile(jsonl, "utf8"), /audit_rebaselined/);
+
+    await rm(path);
+    const fixed = runCli(["doctor", "--rebaseline-audit", "--project", dir], { env });
+    assert.equal(fixed.status, 0, `${fixed.stdout}${fixed.stderr}`);
+    const out = normalize(fixed.stdout);
+    assert.match(out, new RegExp(`replaced chain: length ${original.length}, digest ${original.lastDigest.slice(0, 12)}`));
+  });
+});

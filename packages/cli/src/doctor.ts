@@ -14,7 +14,7 @@ import {
   hashSkillTree,
   listResolvedSkillCatalog,
 } from "@9thlevelsoftware/legion-cli-agents";
-import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { argvSummarySafe, createLegionEngine, findSkillsDir, refuseIfLiveRun } from "@9thlevelsoftware/legion-cli-core";
 import { httpAdapterNotReadyReason, isHttpAdapterReady } from "@9thlevelsoftware/legion-cli-http";
 import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
@@ -350,10 +350,16 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
 
   if (flags.rebaselineAudit) {
     const state = await engine.getState();
-    const result = await rebaselineAuditChain(opts.project, { phase: state.phase, ts: new Date().toISOString() });
+    const result = await rebaselineAuditChain(opts.project, {
+      phase: state.phase,
+      ts: new Date().toISOString(),
+      // Same guard as every other mutating verb: hands off while an agent run is live.
+      guard: async () => refuseIfLiveRun((await liveRuns(opts.project, { clearDead: true })).live),
+    });
     if (!opts.json) {
       writeOut(
         `Audit chain re-baselined over ${result.lines} line(s)` +
+          `${result.previous ? ` (replaced chain: length ${result.previous.length}, digest ${result.previous.lastDigest.slice(0, 12)})` : " (no previous chain)"}` +
           `${result.unparseable > 0 ? ` (${result.unparseable} not valid JSON)` : ""}; recorded as an audit_rebaselined event.`,
       );
     }

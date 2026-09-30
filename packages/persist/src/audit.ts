@@ -82,10 +82,11 @@ export type AuditRebaselineResult = {
  */
 export async function rebaselineAuditChain(
   projectRoot: string,
-  ctx: { phase: Phase; ts: string; actor?: string },
+  ctx: { phase: Phase; ts: string; actor?: string; /** runs under the lock, before anything is rewritten; throw to refuse */ guard?: () => Promise<void> },
 ): Promise<AuditRebaselineResult> {
   const store = createLegionStore(projectRoot);
   return store.withLock(async () => {
+    if (ctx.guard) await ctx.guard();
     const result = await baselineAuditChain(projectRoot);
     await appendAuditEventLocked(
       projectRoot,

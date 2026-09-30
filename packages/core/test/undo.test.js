@@ -795,3 +795,38 @@ test("standalone undoLastTask still takes the store lock", async () => {
     assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
   });
 });
+
+test("undo never rewinds the audit log: a ship commit that touched it, on success and on rollback", async () => {
+  const { appendChainedAuditLine, assertAuditChainUsable } = await import("@9thlevelsoftware/legion-cli-persist");
+  for (const failStore of [false, true]) {
+    await withEngine(async ({ dir, engine, store }) => {
+      await seedShipCommit(dir, engine, store);
+      // Baseline commit has the audit files as of init; the ship commit adds lines to both.
+      await appendChainedAuditLine(dir, JSON.stringify({ type: "shipish", n: 1 }));
+      await appendChainedAuditLine(dir, JSON.stringify({ type: "shipish", n: 2 }));
+      await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
+      git(dir, ["add", "-A", "-f"]);
+      git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-checkin`]);
+      const shipHead = gitHead(dir);
+      const events = join(dir, ".legion-cli", "audit", "events.jsonl");
+      const chain = join(dir, ".legion-cli", "audit", "chain.json");
+      const eventsBefore = await readFile(events);
+      const chainBefore = await readFile(chain);
+      if (failStore) {
+        store.writeTask = async () => {
+          throw new Error("injected store failure after git");
+        };
+        await assert.rejects(() => engine.undoLastTask(), /injected store failure after git/);
+        assert.equal(gitHead(dir), shipHead);
+        assert.deepEqual(await readFile(events), eventsBefore);
+        assert.deepEqual(await readFile(chain), chainBefore);
+      } else {
+        await engine.undoLastTask();
+        const after = await readFile(events);
+        assert.deepEqual(after.subarray(0, eventsBefore.length), eventsBefore, "audit lines survive the revert");
+        assert.match(after.toString("utf8"), /"type":"undo"/);
+      }
+      await assertAuditChainUsable(dir);
+    });
+  }
+});

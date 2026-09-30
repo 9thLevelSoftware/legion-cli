@@ -985,6 +985,17 @@ export async function assertAuditChainUsable(projectRoot: string): Promise<void>
 }
 
 /**
+ * The exact check the next audit append would make, without writing: a trusted chain must not be
+ * rewound, and an untrusted one is fully replayed. Call before a verb changes any state, so a
+ * chain problem refuses up front instead of after the task or phase has moved.
+ */
+export async function assertAuditAppendable(projectRoot: string): Promise<void> {
+  const stored = await readAuditChain(projectRoot);
+  if (chainTrusted(stored)) await extendAuditChainFromTail(projectRoot, stored);
+  else await verifyAuditChain(projectRoot, { allowExtend: true });
+}
+
+/**
  * Explicit re-baseline: re-chain the whole current log into a fresh chain.json. The caller (under
  * the engine lock) records an audit_rebaselined event afterwards. Returns what was replaced.
  */

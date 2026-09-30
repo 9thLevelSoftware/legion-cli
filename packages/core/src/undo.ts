@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Task } from "@9thlevelsoftware/legion-cli-schema";
 import {
@@ -122,6 +122,37 @@ async function keepRevertedReceipts(root: string, sha: string): Promise<void> {
   }
 }
 
+/**
+ * The audit log is append-only tamper evidence, so undo never rewinds it. `git revert` of the ship
+ * commit would also revert tracked audit files (or delete files the ship commit added); these are
+ * the two files the chain check compares, so their pre-undo bytes are put back after the revert or
+ * a rollback. Untracked or ignored copies are untouched by git and are rewritten only if changed.
+ */
+const AUDIT_CHAIN_FILES = [".legion-cli/audit/events.jsonl", ".legion-cli/audit/chain.json"] as const;
+
+type AuditSnapshot = { posix: string; bytes: Buffer | null };
+
+async function snapshotAuditFiles(root: string): Promise<AuditSnapshot[]> {
+  const out: AuditSnapshot[] = [];
+  for (const posix of AUDIT_CHAIN_FILES) {
+    const abs = toFsPath(root, posix);
+    out.push({ posix, bytes: existsSync(abs) ? await readFile(abs) : null });
+  }
+  return out;
+}
+
+async function restoreAuditFiles(root: string, snapshot: readonly AuditSnapshot[]): Promise<void> {
+  for (const { posix, bytes } of snapshot) {
+    const abs = toFsPath(root, posix);
+    if (bytes) {
+      const current = existsSync(abs) ? await readFile(abs) : null;
+      if (!current || !current.equals(bytes)) await writeTextFile(abs, bytes, { root, skipJournal: true });
+    } else if (existsSync(abs)) {
+      await rm(abs, { force: true });
+    }
+  }
+}
+
 function defaultGitRevert(root: string, sha: string): { ok: boolean; out: string } {
   return git(root, ["revert", "--no-edit", sha]);
 }
@@ -204,11 +235,13 @@ async function rollbackUndo(
   priorHead: string | null,
   gitReverted: boolean,
   preimages: readonly UndoPreimage[],
+  audit: readonly AuditSnapshot[],
 ): Promise<void> {
   let rollbackErr: unknown;
   try {
     if (gitReverted && priorHead) gitResetHardFn(root, priorHead);
     await restoreUndoPreimages(root, preimages);
+    await restoreAuditFiles(root, audit);
   } catch (err) {
     rollbackErr = err;
   }
@@ -295,6 +328,7 @@ async function undoLastTaskLocked(opts: {
   await openEngineCommand(root, commandId);
   const preimages = await loadUndoPreimages(root, commandId);
   const priorHead = head?.sha ?? null;
+  const auditSnapshot = await snapshotAuditFiles(root);
   let gitReverted = false;
 
   try {
@@ -303,6 +337,7 @@ async function undoLastTaskLocked(opts: {
       gitRevertNoEdit(root, shipCommit.sha);
       gitReverted = true;
       commitSha = shipCommit.sha;
+      await restoreAuditFiles(root, auditSnapshot);
       if (!existsSync(stateMdPath(root))) {
         refuse(`undo removed ${STATE_MD_POSIX}; the revert was rolled back`, "git status");
       }
@@ -359,7 +394,7 @@ async function undoLastTaskLocked(opts: {
     };
   } catch (err) {
     try {
-      await rollbackUndo(root, commandId, priorHead, gitReverted, preimages);
+      await rollbackUndo(root, commandId, priorHead, gitReverted, preimages, auditSnapshot);
     } catch (rollbackErr) {
       if (rollbackErr instanceof LegionRefuseError) throw rollbackErr;
       if (err instanceof Error) err.cause = rollbackErr;

@@ -100,6 +100,7 @@ export {
   findSkillsDir,
   listCacheResumesCalls,
   optionalSkillSpawn,
+  refuseIfLiveRun,
   resetListCacheResumesCalls,
   resolveSkillDir,
   resumeRunIsLive,
