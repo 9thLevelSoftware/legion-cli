@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { SymlinkRefusedError } from "@9thlevelsoftware/legion-cli-persist";
+import { SymlinkRefusedError, appendAuditEvent } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionRefuseError } from "../dist/index.js";
 import {
   git,
@@ -386,5 +386,29 @@ test("spec new appends an audit event and does not compact tasks", async () => {
     const taskAfter = await store.readTask("TSK-0001");
     assert.equal(taskAfter.data.status, "done");
     assert.equal(taskAfter.body, taskBefore.body);
+  });
+});
+
+test("ship replays the whole audit chain: a middle-line edit refuses, an untouched log ships", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    for (let i = 0; i < 4; i++) {
+      await appendAuditEvent(dir, {
+        ts: `2026-01-01T00:00:0${i}.000Z`,
+        type: "note",
+        phase: "ready_to_ship",
+        actor: "user",
+        data: { marker: `line-${i}` },
+      });
+    }
+    const jsonl = join(store.paths.auditDir, "events.jsonl");
+    const lines = (await readFile(jsonl, "utf8")).split(/\r?\n/);
+    const at = lines.findIndex((line) => line.includes("line-1"));
+    assert.ok(at > 0 && at < lines.length - 2, "edited line is in the middle of the log");
+    lines[at] = lines[at].replace("line-1", "line-X");
+    await writeFile(jsonl, lines.join("\n"), "utf8");
+    await assert.rejects(() => engine.ship(), (err) => err instanceof LegionRefuseError && /audit chain/.test(err.message));
+    assert.notEqual((await engine.getState()).phase, "shipped");
   });
 });

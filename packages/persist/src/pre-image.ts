@@ -1,10 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, rm, unlink } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readdir, readFile, rm, stat, unlink } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { assertNoLinkInPath, atomicWriteFile } from "./atomic-write.js";
 import { AuditTamperError, RestoreRefusedError, SymlinkRefusedError } from "./errors.js";
 import { legionPaths } from "./layout.js";
 import { clearLiveRun, listLiveRunMarkers, liveRunFromResume, liveRunState } from "./live-run.js";
+import { isTaskMarkdownPath, persistWork } from "./markdown.js";
+import { rememberTaskWrite } from "./tasks-list.js";
 import { toFsPath, toPosixPath } from "./paths.js";
 
 const GENESIS_DIGEST = "0".repeat(64);
@@ -535,6 +537,8 @@ async function applyDigest(
   }
   const bytes = await readBlob(projectRoot, digest);
   await atomicWriteFile(abs, bytes, { root: projectRoot });
+  // A restore is not a `writeTextFile`: keep the derived task-summary cache in step.
+  if (isTaskMarkdownPath(abs)) await rememberTaskWrite(projectRoot, abs, bytes);
 }
 
 function currentHashOf(bytes: Buffer | null): string | null {
@@ -575,7 +579,7 @@ export async function restoreEngineState(
     throw new RestoreRefusedError(`restore refused: unknown command ${commandId}`);
   }
   try {
-    await verifyAuditChain(projectRoot);
+    await healAuditChain(projectRoot);
   } catch (err) {
     if (err instanceof AuditTamperError) {
       try {
@@ -716,10 +720,21 @@ const AUDIT_CHAIN_STORE = ".legion-cli/audit/chain.json";
 export type AuditChainState = {
   lastDigest: string;
   length: number;
+  /** Bytes of events.jsonl the chain covers. Absent in the old format. */
+  byteOffset?: number;
+  /** 2 = byteOffset is trusted for tail-only verification. */
+  format?: number;
 };
+
+/** chain.json layout that carries `byteOffset`. Older files lack it; newer ones are fully re-verified. */
+const AUDIT_CHAIN_FORMAT = 2;
 
 function auditChainAbs(projectRoot: string): string {
   return toFsPath(projectRoot, AUDIT_CHAIN_STORE);
+}
+
+function auditJsonlAbs(projectRoot: string): string {
+  return toFsPath(projectRoot, ".legion-cli/audit/events.jsonl");
 }
 
 export function auditLineDigest(prev: string, line: string): string {
@@ -736,50 +751,170 @@ export async function readAuditChain(projectRoot: string): Promise<AuditChainSta
   return { lastDigest: GENESIS_DIGEST, length: 0 };
 }
 
-export async function appendAuditChainLine(projectRoot: string, _line: string): Promise<AuditChainState> {
-  const paths = legionPaths(projectRoot);
-  await ensureStoreRoot(paths.auditDir, paths.root);
-  const next = await verifyAuditChain(projectRoot, { allowExtend: true });
-  await atomicWriteFile(auditChainAbs(projectRoot), `${JSON.stringify(next)}\n`, {
-    root: paths.auditDir,
-    symlinkMessage: "audit chain path is a symlink",
-  });
+/** Non-empty lines of a buffer, split like the original reader (`\n`, one trailing `\r` dropped). */
+function auditLinesOf(buf: Buffer): string[] {
+  const lines: string[] = [];
+  let start = 0;
+  while (start <= buf.length) {
+    let end = buf.indexOf(0x0a, start);
+    if (end === -1) end = buf.length;
+    let stop = end;
+    if (stop > start && buf[stop - 1] === 0x0d) stop -= 1;
+    const text = buf.toString("utf8", start, stop);
+    if (text.trim().length > 0) lines.push(text);
+    start = end + 1;
+  }
+  return lines;
+}
+
+function extendDigest(digest: string, lines: readonly string[]): string {
+  let next = digest;
+  for (const line of lines) {
+    next = auditLineDigest(next, line);
+    persistWork.auditLinesHashed += 1;
+  }
   return next;
 }
 
+function chainTrusted(stored: AuditChainState): boolean {
+  return (
+    stored.format === AUDIT_CHAIN_FORMAT &&
+    typeof stored.byteOffset === "number" &&
+    Number.isInteger(stored.byteOffset) &&
+    stored.byteOffset >= 0
+  );
+}
+
+async function writeAuditChain(projectRoot: string, state: AuditChainState): Promise<void> {
+  const paths = legionPaths(projectRoot);
+  await atomicWriteFile(auditChainAbs(projectRoot), `${JSON.stringify(state)}\n`, {
+    root: paths.auditDir,
+    symlinkMessage: "audit chain path is a symlink",
+  });
+}
+
+/**
+ * Tail-only verification: the stored chain is trusted for the first `byteOffset` bytes and only
+ * bytes after it are hashed (a crash between the line and the chain write leaves such a tail,
+ * which is healed here). A shorter file is a rewind. The middle of the log is checked by the
+ * full replay in {@link verifyAuditChain}, run at doctor, status and before ship.
+ */
+async function extendAuditChainFromTail(projectRoot: string, stored: AuditChainState): Promise<AuditChainState> {
+  const offset = stored.byteOffset as number;
+  let size = 0;
+  try {
+    size = (await stat(auditJsonlAbs(projectRoot))).size;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  if (size < offset || (size === 0 && stored.length > 0)) throw new AuditTamperError("audit chain rewind refused");
+  const base: AuditChainState = {
+    lastDigest: stored.lastDigest,
+    length: stored.length,
+    byteOffset: offset,
+    format: AUDIT_CHAIN_FORMAT,
+  };
+  if (size === offset) return base;
+  const handle = await open(auditJsonlAbs(projectRoot), "r");
+  let tail: Buffer;
+  try {
+    tail = Buffer.alloc(size - offset);
+    const { bytesRead } = await handle.read(tail, 0, tail.length, offset);
+    persistWork.auditBytesRead += bytesRead;
+    tail = tail.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+  const lines = auditLinesOf(tail);
+  return {
+    format: AUDIT_CHAIN_FORMAT,
+    lastDigest: extendDigest(stored.lastDigest, lines),
+    length: stored.length + lines.length,
+    byteOffset: offset + tail.length,
+  };
+}
+
+/**
+ * Append one line to events.jsonl and advance chain.json. Caller holds the engine lock. Routine
+ * cost is proportional to the unchained tail (normally empty), not to the log.
+ */
+export async function appendChainedAuditLine(projectRoot: string, line: string): Promise<AuditChainState> {
+  const paths = legionPaths(projectRoot);
+  await ensureStoreRoot(paths.auditDir, paths.root);
+  const stored = await readAuditChain(projectRoot);
+  const base = chainTrusted(stored)
+    ? await extendAuditChainFromTail(projectRoot, stored)
+    : await verifyAuditChain(projectRoot, { allowExtend: true });
+  const offset = base.byteOffset ?? 0;
+  let needNewline = false;
+  if (offset > 0) {
+    const handle = await open(auditJsonlAbs(projectRoot), "r");
+    try {
+      const last = Buffer.alloc(1);
+      await handle.read(last, 0, 1, offset - 1);
+      needNewline = last[0] !== 0x0a;
+    } finally {
+      await handle.close();
+    }
+  }
+  const text = `${needNewline ? "\n" : ""}${line}\n`;
+  await appendFile(auditJsonlAbs(projectRoot), text, "utf8");
+  const next: AuditChainState = {
+    format: AUDIT_CHAIN_FORMAT,
+    lastDigest: extendDigest(base.lastDigest, [line]),
+    length: base.length + 1,
+    byteOffset: offset + Buffer.byteLength(text),
+  };
+  await writeAuditChain(projectRoot, next);
+  return next;
+}
+
+/**
+ * Full replay of events.jsonl against chain.json. A stored prefix that no longer matches its digest
+ * (an edited or removed line) is tamper. With `allowExtend`, lines beyond the stored length are
+ * accepted (a crash between the line and the chain write) and returned; without it they are a gap.
+ */
 export async function verifyAuditChain(
   projectRoot: string,
   opts?: { allowExtend?: boolean },
 ): Promise<AuditChainState> {
-  const jsonl = toFsPath(projectRoot, ".legion-cli/audit/events.jsonl");
-  let raw = "";
+  let buf: Buffer;
   try {
-    raw = await readFile(jsonl, "utf8");
+    buf = await readFile(auditJsonlAbs(projectRoot));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     const stored = await readAuditChain(projectRoot);
     if (stored.length > 0) throw new AuditTamperError("audit chain rewind refused");
     return stored;
   }
-  const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
-  let digest = GENESIS_DIGEST;
-  for (const line of lines) digest = auditLineDigest(digest, line);
+  persistWork.auditBytesRead += buf.length;
+  const lines = auditLinesOf(buf);
   const stored = await readAuditChain(projectRoot);
   if (stored.length > lines.length) {
     throw new AuditTamperError("audit chain rewind refused");
   }
-  let replay = GENESIS_DIGEST;
-  for (let i = 0; i < stored.length; i++) replay = auditLineDigest(replay, lines[i] ?? "");
-  if (stored.length > 0 && replay !== stored.lastDigest) {
+  const prefixDigest = extendDigest(GENESIS_DIGEST, lines.slice(0, stored.length));
+  if (stored.length > 0 && prefixDigest !== stored.lastDigest) {
     throw new AuditTamperError("audit chain gap or rewrite");
   }
-  if (lines.length > stored.length) {
-    if (!opts?.allowExtend) {
-      throw new AuditTamperError("audit chain gap or rewrite");
-    }
-    return { lastDigest: digest, length: lines.length };
+  if (lines.length > stored.length && !opts?.allowExtend) {
+    throw new AuditTamperError("audit chain gap or rewrite");
   }
-  return stored.length === 0 && lines.length === 0 ? stored : { lastDigest: digest, length: lines.length };
+  const digest = extendDigest(prefixDigest, lines.slice(stored.length));
+  return { format: AUDIT_CHAIN_FORMAT, lastDigest: digest, length: lines.length, byteOffset: buf.length };
+}
+
+/**
+ * Full replay that also repairs a healable chain (a crash gap, an old-format or newer-format file)
+ * by rewriting chain.json. Tamper still throws. Caller holds the engine lock.
+ */
+export async function healAuditChain(projectRoot: string): Promise<AuditChainState> {
+  const stored = await readAuditChain(projectRoot);
+  const verified = await verifyAuditChain(projectRoot, { allowExtend: true });
+  const same =
+    chainTrusted(stored) && verified.length === stored.length && verified.byteOffset === stored.byteOffset;
+  if (verified.length > 0 && !same) await writeAuditChain(projectRoot, verified);
+  return verified;
 }
 
 export async function assertStoreRootsNotLinked(projectRoot: string): Promise<void> {

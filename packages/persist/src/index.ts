@@ -160,7 +160,8 @@ export {
 } from "./markdown.js";
 export type { MarkdownDoc, WriteTextOpts } from "./markdown.js";
 export {
-  appendAuditChainLine,
+  appendChainedAuditLine,
+  healAuditChain,
   assertStoreRootsNotLinked,
   auditLineDigest,
   closeEngineCommand,
@@ -228,7 +229,8 @@ export {
   verifyMinisign,
 } from "./minisign.js";
 export { hasSecretPattern, redactSecrets } from "./redact.js";
-export { indexDbUsable, openIndexDb, queryIndex, rebuildIndex, REBUILD_SQL } from "./sqlite.js";
+export { indexDbUsable, INDEX_SCHEMA_VERSION, openIndexDb, queryIndex, rebuildIndex, REBUILD_SQL } from "./sqlite.js";
+export type { IndexRebuildResult } from "./sqlite.js";
 export { createLegionStore, LegionStore } from "./store.js";
 export type { LegionReader, LegionStoreOptions, LockClock } from "./store.js";
 export {

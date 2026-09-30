@@ -39,6 +39,7 @@ import {
   parseMarkdownDocument,
   PathEscapeError,
   AuditTamperError,
+  healAuditChain,
   EngineLockedError,
   RestoreRefusedError,
   clearLiveRun,
@@ -1673,6 +1674,8 @@ export class LegionEngine {
     }
 
     const preview = await this.#mutate(async () => {
+      // Routine appends verify only the chain tail; the gate replays the whole log.
+      await healAuditChain(this.projectRoot);
       const state = await this.#readState();
       await this.#assertCanShip(state, opts);
       return this.#stageShipLocked(state);
@@ -3633,8 +3636,10 @@ export class LegionEngine {
         actor,
         data,
       });
-    } catch {
-      // local metrics are best-effort
+    } catch (err) {
+      // Local metrics are best-effort against I/O failures only; a tampered chain is never hidden.
+      if (err instanceof AuditTamperError) throw err;
+      if (typeof (err as NodeJS.ErrnoException)?.code !== "string") throw err;
     }
   }
 

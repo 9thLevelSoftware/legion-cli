@@ -36,6 +36,7 @@ import {
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
+import { auditChainProblem } from "./status.js";
 import { writeJson, writeOut } from "./io.js";
 import { scanWikiSecrets, type SecretHit } from "./secrets.js";
 import { isSpawnableBinary, listOnPath, pathLegionIsLegionCli, runBounded, runTool } from "./which.js";
@@ -507,6 +508,13 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     ...(sandboxAdvisory ? { advisory: true } : {}),
     label: "sandbox",
     detail: sandboxDetail,
+  });
+
+  const auditProblem = await auditChainProblem(opts.project);
+  checks.push({
+    ok: auditProblem === null,
+    label: "audit chain",
+    detail: auditProblem ?? "ok",
   });
 
   const skillsDir = findSkillsDir();

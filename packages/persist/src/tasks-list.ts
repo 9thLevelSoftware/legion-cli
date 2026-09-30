@@ -1,5 +1,5 @@
 import { basename, join } from "node:path";
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { TaskSchema, type Task } from "@9thlevelsoftware/legion-cli-schema";
 import { ZodError } from "zod";
 import { atomicWriteFile, retryFsOp } from "./atomic-write.js";
@@ -67,10 +67,22 @@ export type TaskSummary = {
   ok: boolean;
 };
 
+/** Cache entry: the summary plus the file identity it was read at. No identity means re-read. */
+type TaskSummaryEntry = TaskSummary & { mtimeMs?: number; size?: number };
+
 type TaskSummaryIndex = {
   version: 1;
-  files: Record<string, TaskSummary>;
+  files: Record<string, TaskSummaryEntry>;
 };
+
+async function identityOf(absPath: string): Promise<{ mtimeMs: number; size: number } | null> {
+  try {
+    const st = await stat(absPath);
+    return { mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return null;
+  }
+}
 
 export const TASK_SUMMARIES_STORE = ".legion-cli/index/task-summaries.json";
 
@@ -144,7 +156,7 @@ export async function rememberTaskWrite(
   if (!file.toLowerCase().endsWith(".md")) return;
   try {
     const index = await readSummaryIndex(projectRoot);
-    index.files[file] = summaryFromContents(file, contents);
+    index.files[file] = { ...summaryFromContents(file, contents), ...(await identityOf(absPath)) };
     await writeSummaryIndex(projectRoot, index);
   } catch {
     // ignore
@@ -175,12 +187,22 @@ export async function listTaskSummaries(projectRoot: string): Promise<TaskSummar
     }
   }
   for (const file of names) {
-    if (index.files[file] && typeof index.files[file].ok === "boolean") continue;
     const abs = join(dir, file);
+    const cached = index.files[file];
+    const seen = await identityOf(abs);
+    if (
+      cached &&
+      typeof cached.ok === "boolean" &&
+      seen &&
+      cached.mtimeMs === seen.mtimeMs &&
+      cached.size === seen.size
+    ) {
+      continue;
+    }
     try {
       const raw = await retryFsOp(() => readTextFile(abs));
       persistWork.parseAttempts += 1;
-      index.files[file] = summaryFromContents(file, raw);
+      index.files[file] = { ...summaryFromContents(file, raw), ...(seen ?? {}) };
     } catch {
       index.files[file] = {
         id: file.replace(/\.md$/i, ""),
@@ -200,7 +222,10 @@ export async function listTaskSummaries(projectRoot: string): Promise<TaskSummar
       // ignore
     }
   }
-  return names.map((file) => index.files[file]).filter((row): row is TaskSummary => Boolean(row));
+  return names
+    .map((file) => index.files[file])
+    .filter((row): row is TaskSummaryEntry => Boolean(row))
+    .map(({ mtimeMs: _mtimeMs, size: _size, ...summary }) => summary);
 }
 
 /**

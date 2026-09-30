@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { ownProcessStartedAt } from "@9thlevelsoftware/legion-cli-persist";
+import { appendAuditEvent, ownProcessStartedAt } from "@9thlevelsoftware/legion-cli-persist";
 import { allowCopyJailIn, normalize, runCli, withTempDir } from "./helpers.js";
 
 const repoSkills = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
@@ -61,5 +61,34 @@ test("doctor reports a live run without touching it, and another verb is refused
     assert.match(normalize(`${refused.stdout}${refused.stderr}`), /execute run execute-live is live/);
     const shown = runCli(["control-mode", "--project", dir]);
     assert.equal(shown.status, 0, `${shown.stdout}${shown.stderr}`);
+  });
+});
+
+test("doctor and status report an edited middle audit line", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
+    for (let i = 0; i < 4; i++) {
+      await appendAuditEvent(dir, {
+        ts: `2026-01-01T00:00:0${i}.000Z`,
+        type: "note",
+        phase: "initialized",
+        actor: "user",
+        data: { marker: `line-${i}` },
+      });
+    }
+    const jsonl = join(dir, ".legion-cli", "audit", "events.jsonl");
+    const healthy = runCli(["doctor", "--project", dir], { env });
+    assert.match(normalize(healthy.stdout), /audit chain/);
+    assert.doesNotMatch(normalize(healthy.stdout), /FAIL\s+audit chain/);
+    const lines = (await readFile(jsonl, "utf8")).split(/\r?\n/);
+    const at = lines.findIndex((line) => line.includes("line-1"));
+    lines[at] = lines[at].replace("line-1", "line-X");
+    await writeFile(jsonl, lines.join("\n"), "utf8");
+    const doctor = runCli(["doctor", "--project", dir], { env });
+    assert.notEqual(doctor.status, 0);
+    assert.match(normalize(doctor.stdout), /audit chain/);
+    const status = runCli(["status", "--project", dir, "--plain"], { env });
+    assert.match(normalize(status.stdout), /blocker\taudit chain/);
   });
 });
