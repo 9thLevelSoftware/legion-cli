@@ -180,3 +180,16 @@ test("every writer refuses on an untrusted audit chain before any state moves; r
     assert.notEqual((await engine.getState()).phase, phase, "the same verb works after the rebaseline");
   });
 });
+
+test("task recover refuses on an untrusted audit chain before the task moves", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", status: "verifying" }));
+    await appendChainedAuditLine(dir, JSON.stringify({ type: "seed" }));
+    const chainPath = join(dir, ".legion-cli", "audit", "chain.json");
+    const lines = await auditLines(dir);
+    await writeFile(chainPath, `${JSON.stringify({ lastDigest: "0".repeat(64), length: lines.length + 1 })}\n`, "utf8");
+    await assert.rejects(() => engine.recoverTask("TSK-0001"), /audit chain/);
+    assert.equal((await store.readTask("TSK-0001")).data.status, "verifying");
+  });
+});

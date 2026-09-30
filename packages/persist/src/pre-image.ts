@@ -753,6 +753,12 @@ export type AuditChainState = {
   byteOffset?: number;
   /** 2 = byteOffset is trusted for tail-only verification. */
   format?: number;
+  /**
+   * sha256 of the last chained line: anchors `byteOffset` to the bytes it was taken from. A log
+   * rewritten under the chain (git's CRLF conversion on checkout) moves the offset off a line end,
+   * so the anchor no longer matches and the full replay runs instead of hashing line fragments.
+   */
+  lastLine?: string;
 };
 
 const AUDIT_REMEDY =
@@ -833,8 +839,44 @@ function chainTrusted(stored: AuditChainState): boolean {
     stored.format === AUDIT_CHAIN_FORMAT &&
     typeof stored.byteOffset === "number" &&
     Number.isInteger(stored.byteOffset) &&
-    stored.byteOffset >= 0
+    stored.byteOffset >= 0 &&
+    (stored.length === 0 || typeof stored.lastLine === "string")
   );
+}
+
+function lastLineAnchor(lines: readonly string[]): { lastLine?: string } {
+  const last = lines[lines.length - 1];
+  return last === undefined ? {} : { lastLine: sha256Content(last) };
+}
+
+/** Longest audit line the anchor check reads back; a longer last line just takes the full replay. */
+const AUDIT_ANCHOR_WINDOW = 256 * 1024;
+
+/**
+ * True when the bytes of events.jsonl just before `offset` end with a newline and with the line
+ * the chain says it covered last. False means the offset no longer points at the chained prefix.
+ */
+async function anchorHolds(projectRoot: string, stored: AuditChainState, offset: number): Promise<boolean> {
+  if (offset === 0) return stored.length === 0;
+  const handle = await open(auditJsonlAbs(projectRoot), "r");
+  try {
+    // Read back from the offset, doubling the window until it holds the whole last line: the
+    // routine cost stays proportional to one line, not to the log.
+    for (let span = Math.min(offset, 256); ; span = Math.min(offset, span * 2)) {
+      const window = Buffer.alloc(span);
+      const { bytesRead } = await handle.read(window, 0, span, offset - span);
+      persistWork.auditBytesRead += bytesRead;
+      if (bytesRead !== span || window[span - 1] !== 0x0a) return false;
+      const whole = span === offset || window.lastIndexOf(0x0a, span - 2) !== -1;
+      if (whole) {
+        const last = auditLinesOf(window).at(-1);
+        return last !== undefined && sha256Content(last) === stored.lastLine;
+      }
+      if (span >= AUDIT_ANCHOR_WINDOW) return false;
+    }
+  } finally {
+    await handle.close();
+  }
 }
 
 async function writeAuditChain(projectRoot: string, state: AuditChainState): Promise<void> {
@@ -848,8 +890,11 @@ async function writeAuditChain(projectRoot: string, state: AuditChainState): Pro
 /**
  * Tail-only verification: the stored chain is trusted for the first `byteOffset` bytes and only
  * bytes after it are hashed (a crash between the line and the chain write leaves such a tail,
- * which is healed here). A shorter file is a rewind. The middle of the log is checked by the
- * full replay in {@link verifyAuditChain}, run at doctor, status and before ship.
+ * which is healed here). The middle of the log is checked by the full replay in
+ * {@link verifyAuditChain}, run at doctor, status and before ship. A file shorter than the offset,
+ * or bytes at the offset that no longer end with the last chained line (line endings converted on
+ * checkout), fall back to that full replay: it refuses a real rewind or rewrite and re-anchors a
+ * log whose bytes changed but whose lines did not.
  */
 async function extendAuditChainFromTail(projectRoot: string, stored: AuditChainState): Promise<AuditChainState> {
   const offset = stored.byteOffset as number;
@@ -859,12 +904,15 @@ async function extendAuditChainFromTail(projectRoot: string, stored: AuditChainS
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-  if (size < offset || (size === 0 && stored.length > 0)) throw auditTamper("audit chain rewind refused");
+  if (size < offset || !(await anchorHolds(projectRoot, stored, offset))) {
+    return verifyAuditChain(projectRoot, { allowExtend: true });
+  }
   const base: AuditChainState = {
     lastDigest: stored.lastDigest,
     length: stored.length,
     byteOffset: offset,
     format: AUDIT_CHAIN_FORMAT,
+    ...(stored.lastLine !== undefined ? { lastLine: stored.lastLine } : {}),
   };
   if (size === offset) return base;
   const handle = await open(auditJsonlAbs(projectRoot), "r");
@@ -883,6 +931,7 @@ async function extendAuditChainFromTail(projectRoot: string, stored: AuditChainS
     lastDigest: extendDigest(stored.lastDigest, lines),
     length: stored.length + lines.length,
     byteOffset: offset + tail.length,
+    ...(lines.length > 0 ? lastLineAnchor(lines) : base.lastLine !== undefined ? { lastLine: base.lastLine } : {}),
   };
 }
 
@@ -916,6 +965,7 @@ export async function appendChainedAuditLine(projectRoot: string, line: string):
     lastDigest: extendDigest(base.lastDigest, [line]),
     length: base.length + 1,
     byteOffset: offset + Buffer.byteLength(text),
+    ...lastLineAnchor([line]),
   };
   await writeAuditChain(projectRoot, next);
   return next;
@@ -959,7 +1009,13 @@ export async function verifyAuditChain(
     throw auditTamper("audit chain gap or rewrite");
   }
   const digest = extendDigest(prefixDigest, lines.slice(stored.length));
-  return { format: AUDIT_CHAIN_FORMAT, lastDigest: digest, length: lines.length, byteOffset: buf.length };
+  return {
+    format: AUDIT_CHAIN_FORMAT,
+    lastDigest: digest,
+    length: lines.length,
+    byteOffset: buf.length,
+    ...lastLineAnchor(lines),
+  };
 }
 
 /**
@@ -975,7 +1031,10 @@ export async function assertAuditChainUsable(projectRoot: string): Promise<void>
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
   if (chainTrusted(stored) && size < (stored.byteOffset as number)) {
-    throw auditTamper("audit chain rewind refused");
+    // Shorter than the offset: a rewind, or the same lines with CRLF endings turned back into LF.
+    // Only the line-level replay can tell them apart.
+    await verifyAuditChain(projectRoot, { allowExtend: true });
+    return;
   }
   if (stored.length > 0 && size === 0) throw auditTamper("audit chain rewind refused");
   if (stored.length === 0 && size > 0) {
@@ -1034,6 +1093,7 @@ export async function baselineAuditChain(projectRoot: string): Promise<{
       lastDigest: extendDigest(GENESIS_DIGEST, lines),
       length: lines.length,
       byteOffset: buf.length,
+      ...lastLineAnchor(lines),
     });
   } else {
     await rm(auditChainAbs(projectRoot), { force: true });

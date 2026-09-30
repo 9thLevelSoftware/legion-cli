@@ -2112,6 +2112,8 @@ Approved: ${note}
       }
       // The specific check above is about this task's run; any OTHER live run still refuses.
       refuseIfLiveRun((await liveRuns(this.projectRoot, { clearDead: true })).live);
+      // Entered with allowLive, so the lock-entry append check was skipped: make it before the write.
+      await assertAuditAppendable(this.projectRoot);
       await this.#writeTask({ ...doc.data, status: "blocked" }, doc.body);
       const state = await this.#readState();
       if (state.currentTaskId === taskId) {

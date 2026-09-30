@@ -74,6 +74,28 @@ test("a kill between the event line and the chain write is healed, not tamper", 
   });
 });
 
+test("a log whose line endings were converted to CRLF (git checkout) keeps appending cleanly", async () => {
+  await withTempDir(async (dir) => {
+    await appendMany(dir, 3);
+    const p = paths(dir);
+    const lf = await readFile(p.jsonl, "utf8");
+    await writeFile(p.jsonl, lf.replaceAll("\n", "\r\n"), "utf8");
+    await appendAuditEvent(dir, ev(60));
+    await appendAuditEvent(dir, ev(61));
+    const state = await verifyAuditChain(dir);
+    assert.equal(state.length, 5);
+    // And back to LF (a commit normalised the endings, another checkout): shorter than the offset.
+    const mixed = await readFile(p.jsonl, "utf8");
+    await writeFile(p.jsonl, mixed.replaceAll("\r\n", "\n"), "utf8");
+    await appendAuditEvent(dir, ev(62));
+    assert.equal((await verifyAuditChain(dir)).length, 6);
+    // A real rewind is still refused after the re-anchor.
+    const lines = (await readFile(p.jsonl, "utf8")).split("\n").filter(Boolean);
+    await writeFile(p.jsonl, `${lines.slice(0, 4).join("\r\n")}\r\n`, "utf8");
+    await assert.rejects(() => appendAuditEvent(dir, ev(63)), AuditTamperError);
+  });
+});
+
 test("a middle-line edit is caught by the full replay", async () => {
   await withTempDir(async (dir) => {
     await appendMany(dir, 6);

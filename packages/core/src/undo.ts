@@ -59,11 +59,13 @@ const stateMdPath = (root: string): string => join(root, ...STATE_MD_POSIX.split
  * Refuse, before anything is written, when reverting the ship commit could lose work:
  * - a revert, cherry-pick or sequencer run of the user's is in progress (we must not abort it);
  * - the ship commit is the first to contain `.legion-cli/STATE.md` (the revert would delete it);
- * - ANY tracked file is dirty, including under `.legion-cli/`. This is what makes the rollback's
- *   `git reset --hard` safe: with a clean tracked tree it only discards the revert and undo's own
- *   journaled writes. Untracked files are never touched by reset.
+ * - ANY tracked file is dirty, including under `.legion-cli/`, except the append-only audit files.
+ *   This is what makes the rollback's `git reset --hard` safe: with a clean tracked tree it only
+ *   discards the revert and undo's own journaled writes. Untracked files are never touched by reset.
+ *   Every command (a refused one included) appends to the audit files, so they are returned instead:
+ *   undo snapshots them and puts the bytes back after the revert or a rollback.
  */
-function assertShipRevertSafe(root: string, sha: string): void {
+function assertShipRevertSafe(root: string, sha: string): string[] {
   for (const ref of ["REVERT_HEAD", "CHERRY_PICK_HEAD"]) {
     if (git(root, ["rev-parse", "-q", "--verify", ref]).ok) {
       refuse(`undo needs a quiet repository: a ${ref.replace("_HEAD", "").toLowerCase().replace("_", "-")} is in progress`, "git status");
@@ -86,9 +88,11 @@ function assertShipRevertSafe(root: string, sha: string): void {
     .split(/\r?\n/)
     .map((line) => line.slice(3).replaceAll("\\", "/"))
     .filter(Boolean);
-  if (paths.length > 0) {
-    refuse(`undo needs a clean tracked tree; commit or stash: ${paths.slice(0, 3).join(", ")}`, "git status");
+  const blocking = paths.filter((path) => !AUDIT_APPEND_ONLY.test(path));
+  if (blocking.length > 0) {
+    refuse(`undo needs a clean tracked tree; commit or stash: ${blocking.slice(0, 3).join(", ")}`, "git status");
   }
+  return paths.filter((path) => AUDIT_APPEND_ONLY.test(path));
 }
 
 /**
@@ -133,11 +137,14 @@ async function keepRevertedReceipts(root: string, sha: string): Promise<void> {
  */
 const AUDIT_CHAIN_FILES = [".legion-cli/audit/events.jsonl", ".legion-cli/audit/chain.json"] as const;
 
+/** The chain pair plus the dated summaries: appended by every command, never rewound by undo. */
+const AUDIT_APPEND_ONLY = /^\.legion-cli\/audit\/(events\.jsonl|chain\.json|\d{4}-\d{2}-\d{2}\.md)$/;
+
 type AuditSnapshot = { posix: string; bytes: Buffer | null };
 
-async function snapshotAuditFiles(root: string): Promise<AuditSnapshot[]> {
+async function snapshotAuditFiles(root: string, extra: readonly string[] = []): Promise<AuditSnapshot[]> {
   const out: AuditSnapshot[] = [];
-  for (const posix of AUDIT_CHAIN_FILES) {
+  for (const posix of new Set<string>([...AUDIT_CHAIN_FILES, ...extra])) {
     const abs = toFsPath(root, posix);
     out.push({ posix, bytes: existsSync(abs) ? await readFile(abs) : null });
   }
@@ -156,8 +163,36 @@ async function restoreAuditFiles(root: string, snapshot: readonly AuditSnapshot[
   }
 }
 
+/** Audit files the ship commit changed (the dated summary it appended to, the chain pair). */
+function auditPathsIn(root: string, sha: string): string[] {
+  const changed = git(root, ["diff-tree", "--no-commit-id", "--name-only", "-r", sha]);
+  if (!changed.ok) return [];
+  return changed.stdout.split(/\r?\n/).filter((path) => AUDIT_APPEND_ONLY.test(path));
+}
+
+function trackedAt(root: string, ref: string, paths: readonly string[]): string[] {
+  if (paths.length === 0) return [];
+  const listed = git(root, ["ls-tree", "-r", "--name-only", ref, "--", ...paths]);
+  return listed.ok ? listed.stdout.split(/\r?\n/).filter(Boolean) : [];
+}
+
+/**
+ * Finish the `--no-commit` revert with the audit files at their pre-undo bytes, so the revert
+ * commit itself never carries a rewound log (a later `git checkout` or stash of the audit files
+ * would otherwise silently rewind it). Hooks are skipped, as `git revert` does not run pre-commit.
+ */
+function commitRevertKeepingAudit(root: string, auditTracked: readonly string[]): void {
+  if (!git(root, ["rev-parse", "-q", "--verify", "REVERT_HEAD"]).ok) return;
+  if (auditTracked.length > 0) {
+    const added = git(root, ["add", "-A", "--", ...auditTracked]);
+    if (!added.ok) refuse(`undo could not stage the audit log: ${added.out.split(/\r?\n/)[0] ?? ""}`, "git status");
+  }
+  const commit = git(root, ["commit", "--no-edit", "--no-verify", "--allow-empty"]);
+  if (!commit.ok) refuse(`git commit of the revert failed: ${commit.out.split(/\r?\n/)[0] ?? ""}`, "git status");
+}
+
 function defaultGitRevert(root: string, sha: string): { ok: boolean; out: string } {
-  return git(root, ["revert", "--no-edit", sha]);
+  return git(root, ["revert", "--no-commit", sha]);
 }
 
 let gitRevertFn: (root: string, sha: string) => { ok: boolean; out: string } = defaultGitRevert;
@@ -167,7 +202,7 @@ export function setUndoGitRevert(fn: ((root: string, sha: string) => { ok: boole
   gitRevertFn = fn ?? defaultGitRevert;
 }
 
-function gitRevertNoEdit(root: string, sha: string): void {
+function gitRevertNoCommit(root: string, sha: string): void {
   const revert = gitRevertFn(root, sha);
   if (!revert.ok) {
     // assertShipRevertSafe proved no revert was in progress, so a REVERT_HEAD now is ours: abort
@@ -263,11 +298,21 @@ async function rollbackUndo(
  * (assertCanUndoTransition); it also drops the review and QA that certified the work, and marks
  * the ship receipt reverted when the ship is what is being taken back.
  */
-async function rewindPhase(store: LegionStore, root: string): Promise<void> {
+async function rewindPhase(
+  store: LegionStore,
+  root: string,
+  revert?: { specId: string | null },
+): Promise<void> {
   if (!existsSync(stateMdPath(root))) return;
   const stateDoc = await store.readState();
   const phase = stateDoc.data.phase;
   if (phase !== "ready_to_ship" && phase !== "shipped") return;
+  if (revert) {
+    // After a git revert, STATE is whatever the ship commit's parent recorded. When that is an
+    // earlier ship of another spec, that ship still stands: leave its phase and receipt alone.
+    const active = stateDoc.data.activeSpecId ?? null;
+    if (revert.specId !== null && active !== null && active !== revert.specId) return;
+  }
   if (phase === "shipped") assertCanUndoTransition(phase, "executing");
   else assertCanTransition(phase, "executing");
   await store.writeState(
@@ -280,7 +325,14 @@ async function rewindPhase(store: LegionStore, root: string): Promise<void> {
     },
     stateDoc.body,
   );
-  if (phase === "shipped") await markShipReceiptReverted(root, stateDoc.data.activeSpecId);
+  // A reverted ship commit's receipt is re-added and marked by keepRevertedReceipts.
+  if (phase === "shipped" && !revert) await markShipReceiptReverted(root, stateDoc.data.activeSpecId);
+}
+
+/** The spec a ship commit shipped, from its message (`shipCommitMessage`); null when it names none. */
+function shippedSpecOf(message: string): string | null {
+  const spec = message.slice(SHIP_COMMIT_PREFIX.length).trim();
+  return spec && spec !== "spec" ? spec : null;
 }
 
 async function undoLastTaskLocked(opts: {
@@ -325,7 +377,8 @@ async function undoLastTaskLocked(opts: {
     refuse("no task or commit found to undo", HINT.status);
   }
 
-  if (shipCommit) assertShipRevertSafe(root, shipCommit.sha);
+  const dirtyAudit = shipCommit ? assertShipRevertSafe(root, shipCommit.sha) : [];
+  const revertInfo = shipCommit ? { specId: shippedSpecOf(shipCommit.message) } : undefined;
 
   const commandId = `undo-${randomBytes(8).toString("hex")}`;
   await openEngineCommand(root, commandId);
@@ -336,16 +389,22 @@ async function undoLastTaskLocked(opts: {
 
   try {
     try {
-      auditSnapshot = await snapshotAuditFiles(root);
+      auditSnapshot = await snapshotAuditFiles(root, shipCommit ? [...dirtyAudit, ...auditPathsIn(root, shipCommit.sha)] : []);
     } catch (err) {
       refuse(`undo could not read the audit log, nothing was changed: ${err instanceof Error ? err.message : String(err)}`, HINT.undo);
     }
     let commitSha: string | null = null;
     if (shipCommit) {
-      gitRevertNoEdit(root, shipCommit.sha);
+      // Pending audit appends would make git refuse to revert over them; the snapshot holds them.
+      if (dirtyAudit.length > 0) {
+        const reset = git(root, ["checkout", "--", ...dirtyAudit]);
+        if (!reset.ok) refuse(`undo could not set the audit log aside: ${reset.out.split(/\r?\n/)[0] ?? ""}`, "git status");
+      }
+      gitRevertNoCommit(root, shipCommit.sha);
       gitReverted = true;
       commitSha = shipCommit.sha;
       await restoreAuditFiles(root, auditSnapshot);
+      commitRevertKeepingAudit(root, trackedAt(root, shipCommit.sha, auditSnapshot.map((s) => s.posix)));
       if (!existsSync(stateMdPath(root))) {
         refuse(`undo removed ${STATE_MD_POSIX}; the revert was rolled back`, "git status");
       }
@@ -363,7 +422,7 @@ async function undoLastTaskLocked(opts: {
         await writeTaskStatus(opts.store, current, "todo", "[undo]: reverted to todo");
       }
 
-      await rewindPhase(opts.store, root);
+      await rewindPhase(opts.store, root, revertInfo);
 
       const entries = await listTaskFiles(root);
       for (const entry of entries) {
@@ -384,16 +443,18 @@ async function undoLastTaskLocked(opts: {
       }
 
       await closeEngineCommand(root, commandId);
-      return {
-        taskId: undoneId,
-        commitSha,
-        message:
-          `Reverted task ${undoneId} to todo${commitSha ? ` (reverted commit ${commitSha.slice(0, 7)})` : ""}. ` +
-          "Only the highest-id done task goes back to todo; the spec's other done tasks stay done.",
-      };
+      // After a revert the task may be gone or restored to an older status: say what is on disk.
+      const status = (await opts.store.readTask(undoneId).catch(() => null))?.data.status;
+      const message =
+        status === "todo"
+          ? `Reverted task ${undoneId} to todo${commitSha ? ` (reverted commit ${commitSha.slice(0, 7)})` : ""}. ` +
+            "Only the highest-id done task goes back to todo; the spec's other done tasks stay done."
+          : `Reverted commit ${commitSha?.slice(0, 7) ?? ""}; task ${undoneId} ` +
+            (status ? `is ${status} after the revert.` : "was removed by the revert.");
+      return { taskId: undoneId, commitSha, message };
     }
 
-    if (shipCommit) await rewindPhase(opts.store, root);
+    if (shipCommit) await rewindPhase(opts.store, root, revertInfo);
     await closeEngineCommand(root, commandId);
     return {
       taskId: null,
