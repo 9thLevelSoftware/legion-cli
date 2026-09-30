@@ -430,6 +430,30 @@ test("a .git/hooks swapped for a symlink: incident, and nothing behind the link 
   });
 });
 
+test("a symlinked hook planted in the real hooks dir: incident, the link is removed, its target kept", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX symlink semantics");
+    return;
+  }
+  const outside = await mkdtemp(join(tmpdir(), "legion-hook-target-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  const payload = join(outside, "evil.sh");
+  await writeFile(payload, "#!/bin/sh\necho pwned\n", "utf8");
+  await withEngine(async ({ dir }) => {
+    await writeFile(join(dir, "README.md"), "seed\n", "utf8");
+    initGitRepo(dir);
+    const hooks = join(dir, ".git", "hooks");
+    await mkdir(hooks, { recursive: true });
+    const gitPolicy = await snapshotGitPolicy(dir);
+    const planted = join(hooks, "pre-commit");
+    await symlink(payload, planted);
+    const result = await revertExtras({ projectRoot: dir, preSpawnRef: null, allowedRoots: ["src/main.ts"], gitPolicy });
+    assert.equal(result.incident, true);
+    assert.equal(existsSync(planted), false, "the planted link is gone");
+    assert.equal(await readFile(payload, "utf8"), "#!/bin/sh\necho pwned\n", "its target is untouched");
+  });
+});
+
 test("a Windows junction to .git: git lists through it, revert removes only the link", async (t) => {
   if (process.platform !== "win32") {
     t.skip("junctions are a Windows filesystem feature");

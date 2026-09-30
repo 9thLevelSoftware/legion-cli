@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, readdir, readFile, rm, stat, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, readlink, rm, stat, symlink, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   gitDiscoverChanges,
@@ -170,6 +170,9 @@ async function walk(root: string, rel: string, out: Set<string>): Promise<void> 
 }
 
 /** A symlink or junction reads as `other`: nothing under it is read, removed or written. */
+/** Snapshot value of a symlinked hook: its target, so a planted or retargeted link is an incident. */
+const HOOK_LINK = "\u0000symlink:";
+
 async function dirKind(abs: string): Promise<DirKind> {
   try {
     const st = await lstat(abs);
@@ -190,8 +193,13 @@ export async function snapshotGitPolicy(projectRoot: string): Promise<GitPolicyS
     try {
       const entries = await readdir(hooksDir, { withFileTypes: true });
       for (const entry of entries) {
-        if (!entry.isFile()) continue;
         const posix = `.git/hooks/${entry.name}`;
+        if (entry.isSymbolicLink()) {
+          // git runs a symlinked hook through its target; record the link, never read through it.
+          hooks[posix] = `${HOOK_LINK}${await readlink(join(hooksDir, entry.name)).catch(() => "")}`;
+          continue;
+        }
+        if (!entry.isFile()) continue;
         try {
           // latin1 round-trips arbitrary bytes, so a restored hook is byte-identical.
           hooks[posix] = await readFile(join(hooksDir, entry.name), "latin1");
@@ -258,16 +266,21 @@ async function restoreGitPolicy(
     const abs = join(projectRoot, ...name.split("/"));
     const before = name === ".git/config" ? snapshot.config : snapshot.hooks[name];
     try {
-      let kind: "file" | "absent" | "other" = "absent";
+      let kind: "file" | "link" | "absent" | "other" = "absent";
       try {
-        kind = (await lstat(abs)).isFile() ? "file" : "other";
+        const st = await lstat(abs);
+        kind = st.isSymbolicLink() ? "link" : st.isFile() ? "file" : "other";
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") kind = "other";
       }
-      // Only a regular file directly inside the real dir is removed or overwritten.
+      // Only a regular file or a link directly inside the real dir is removed (the link itself,
+      // never its target) or overwritten.
       if (kind === "other") continue;
+      if (kind === "link") await unlink(abs);
       if (kind === "file") await rm(abs, { force: true });
-      if (before !== null && before !== undefined) {
+      if (before?.startsWith(HOOK_LINK)) {
+        await symlink(before.slice(HOOK_LINK.length), abs);
+      } else if (before !== null && before !== undefined) {
         await writeTextFile(abs, Buffer.from(before, "latin1"), { root: projectRoot, skipJournal: true });
         const mode = snapshot.modes?.[name];
         if (mode !== undefined) await chmod(abs, mode).catch(() => undefined);
