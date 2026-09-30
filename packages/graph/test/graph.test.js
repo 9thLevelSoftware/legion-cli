@@ -5,6 +5,7 @@ import {
   detectDependencyCycle,
   expectedArtifactsFailsPlan,
   filesAllowedFailsPlan,
+  isEngineSoTPath,
   isTaskReady,
   overlappingFilesAllowed,
   pickNextTask,
@@ -288,4 +289,11 @@ test("overlappingFilesAllowed flags case, trailing-dot and directory-prefix over
     overlappingFilesAllowed([t("TSK-0003", ["src", "src/c.ts"]), t("TSK-0001", ["src/a.ts"]), t("TSK-0002", ["src/b.ts"])]).length,
     2,
   );
+});
+
+test("isEngineSoTPath compares the normalised form, whatever the caller passes", () => {
+  assert.equal(isEngineSoTPath(".legion-cli/STATE.md"), true);
+  assert.equal(isEngineSoTPath(".LEGION-CLI/STATE.md"), true);
+  assert.equal(isEngineSoTPath(".legion-cli./tasks/TSK-0001.md"), true);
+  assert.equal(isEngineSoTPath("src/.legion-cli.ts"), false);
 });

@@ -66,7 +66,7 @@ pnpm exec legion-cli doctor
 pnpm exec legion-cli intent
 ```
 
-`doctor` fails closed until the adapter's binary is on PATH and, for `execute`, a hardened sandbox is available. `intent`, `discuss` and `spec` refuse with "no agent available" when the adapter cannot spawn; they do not fall back to canned text.
+`doctor` fails closed until the adapter's binary is on PATH; it only warns when no hardened sandbox is available, and `execute` is what then refuses (unless `--allow-no-sandbox` on a TTY or `sandbox.allowCopyJail`). `intent`, `discuss` and `spec` refuse with "no agent available" when the adapter cannot spawn; they do not fall back to canned text.
 
 `fake` is the CI/test adapter (canned output, no agent). Use it only in tests: `LEGION_CLI_ADAPTER=fake` (PowerShell: `$env:LEGION_CLI_ADAPTER = "fake"`) makes `doctor` treat it as spawnable.
 

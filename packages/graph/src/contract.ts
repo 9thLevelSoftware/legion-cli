@@ -17,9 +17,10 @@ export const DEFAULT_FILES_FORBIDDEN = [
   ".env.*",
 ] as const;
 
-/** Plan-time FileContract SoT (KD-11 gate 1). Tasks do not own `.legion-cli/**`. */
+/** Plan-time FileContract SoT (KD-11 gate 1). Tasks do not own `.legion-cli/**` (normalised form). */
 export function isEngineSoTPath(posixPath: string): boolean {
-  return posixPath === ".legion-cli" || posixPath.startsWith(".legion-cli/");
+  const key = normalizePathKey(posixPath);
+  return key === ".legion-cli" || key.startsWith(".legion-cli/");
 }
 
 /** Plan-time FileContract denylist. Broader than DEFAULT_FILES_FORBIDDEN. */

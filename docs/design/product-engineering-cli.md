@@ -310,7 +310,7 @@ stateDiagram-v2
 - `legion-cli qa` is allowed on a terminal slice when `lastReview == PASS` and no P0 task is `blocked` or not `done`. Blocked **non-P0** tasks do not block qa. A PASS review that created tasks cannot reach qa: `lastReview` is FAIL until a later review creates zero tasks **and** leaves existing `TSK-*.md` byte-identical.
 - On `qa.pass === true` and `lastReview == PASS`, transition `executing → ready_to_ship`.
 - `legion-cli ship` additionally refuses if any P0 task is not `done` (blocked P0 blocks ship).
-- `legion-cli verify` runs an optional agent walkthrough that may file `type: fix` child tasks. It is **not** a ship gate. **Open item:** the verify skill asks the agent to write notes under `.legion-cli/qa/`, but `qa/**` is engine-pinned state that is restored after every spawn, so those notes are **not kept today** (review avoids this by writing to the run cache and letting the engine copy them; verify has no such rule yet). In-process `verificationCommands` after execute are the per-task gate that marks `done`.
+- `legion-cli verify` runs an optional agent walkthrough that may file `type: fix` child tasks. It is **not** a ship gate. **Open item:** verify notes are **not kept today** outside the run cache: `qa/**` is engine-pinned state restored after every spawn, so the verify skill writes its notes to `.legion-cli/cache/runs/<id>/summary.md`, and the engine does not copy them anywhere yet (review's notes are copied by the engine; verify has no such rule yet). In-process `verificationCommands` after execute are the per-task gate that marks `done`.
 
 Illegal transitions throw `LegionRefuseError` with a next-command hint. Documented human-gate flags only: `--allow-degraded-qa`, `--skip-wireframes` (pre-approve only).
 
