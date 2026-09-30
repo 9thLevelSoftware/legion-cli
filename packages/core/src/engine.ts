@@ -1582,7 +1582,7 @@ export class LegionEngine {
     });
   }
 
-  async qaChecklist(ticks: string[]): Promise<void> {
+  async qaChecklist(ticks: string[], opts: { confirmSource?: "tty" | "piped" } = {}): Promise<void> {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const specId = state.activeSpecId;
@@ -1600,6 +1600,11 @@ export class LegionEngine {
         specId,
         ticks: unique,
         updatedAt: nowIso(),
+      });
+      await this.#audit("qa_checklist", state.phase, "user", {
+        specId,
+        ticked: unique.length,
+        confirmSource: opts.confirmSource ?? null,
       });
     });
   }
@@ -3566,6 +3571,7 @@ export class LegionEngine {
       qaPass,
       allowDegradedQa,
       receiptPath,
+      confirmSource: opts.confirmSource ?? null,
     });
 
     const priorHead = isGitRepo(this.projectRoot) ? tryGitHead(this.projectRoot) : null;
@@ -3592,10 +3598,24 @@ export class LegionEngine {
         ? opts.prCreate({ cwd: this.projectRoot, title, body })
         : tryCreatePullRequest(this.projectRoot, title, body);
       if (created.error || !created.url) {
+        // --pr requires --commit and the receipt is always staged, so a commit exists here.
+        // With a prior HEAD, reset the index back to it (this also unstages the preview's paths).
+        // Without one (root commit) the commit cannot be undone here: keep the receipt (it is in
+        // that commit) and record the surviving commit in the audit event.
+        const keptRootCommit = Boolean(receipt.commitSha) && !priorHead;
         if (priorHead && receipt.commitSha) {
           gitResetMixed(this.projectRoot, priorHead);
         }
+        if (!keptRootCommit) {
+          await rm(toFsPath(this.projectRoot, receiptPath), { force: true });
+        }
         await this.#writeState(state);
+        await this.#audit("ship_rolled_back", state.phase, actor, {
+          specId,
+          receiptPath,
+          reason: created.error ?? "no pull request url",
+          ...(keptRootCommit ? { commitKept: receipt.commitSha } : {}),
+        });
         refuse(`gh pr create failed: ${created.error ?? "no pull request url"}`, HINT.shipPrRetry);
       }
       receipt.prUrl = created.url;

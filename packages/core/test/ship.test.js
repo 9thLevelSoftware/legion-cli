@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -386,5 +386,62 @@ test("spec new appends an audit event and does not compact tasks", async () => {
     const taskAfter = await store.readTask("TSK-0001");
     assert.equal(taskAfter.data.status, "done");
     assert.equal(taskAfter.body, taskBefore.body);
+  });
+});
+
+test("ship --pr failure rolls back receipt, audit, phase and staged set consistently", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    const before = initGitRepo(dir);
+    await assert.rejects(() =>
+      engine.ship({ pr: true, commit: true, prCreate: () => ({ error: "gh failed" }) }),
+    );
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+    assert.equal(gitHead(dir), before);
+    assert.equal(existsSync(join(dir, ".legion-cli", "audit", "ship-spec-checkin.md")), false);
+    const events = (await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const types = events.map((e) => e.type);
+    const shipIdx = types.lastIndexOf("ship");
+    assert.equal(types[shipIdx + 1], "ship_rolled_back");
+    assert.equal(events[shipIdx + 1].phase, "ready_to_ship");
+    assert.equal(git(dir, ["diff", "--cached", "--name-only"]).trim(), "");
+  });
+});
+
+test("ship --pr failure with no url (no error text) rolls back the same way", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    const before = initGitRepo(dir);
+    await assert.rejects(() => engine.ship({ pr: true, commit: true, prCreate: () => ({}) }), /no pull request url/);
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+    assert.equal(gitHead(dir), before);
+    assert.equal(existsSync(join(dir, ".legion-cli", "audit", "ship-spec-checkin.md")), false);
+    assert.equal(git(dir, ["diff", "--cached", "--name-only"]).trim(), "");
+  });
+});
+
+test("ship --pr failure in a repo with no prior commit keeps the root commit and records it", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    git(dir, ["init"]);
+    git(dir, ["config", "user.name", "9thLevelSoftware"]);
+    git(dir, ["config", "user.email", "engineering@9thlevelsoftware.com"]);
+    await assert.rejects(() => engine.ship({ pr: true, commit: true, prCreate: () => ({ error: "gh failed" }) }));
+    const head = gitHead(dir);
+    assert.ok(head);
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+    const events = (await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const rolled = events.find((e) => e.type === "ship_rolled_back");
+    assert.equal(rolled.data.commitKept, head);
+    assert.equal(existsSync(join(dir, ".legion-cli", "audit", "ship-spec-checkin.md")), true);
   });
 });

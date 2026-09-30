@@ -301,6 +301,8 @@ export type ShipOptions = {
   pr?: boolean;
   actor?: string;
   confirm?: (preview: ShipPreview) => Promise<boolean>;
+  /** Where the confirm answer came from; recorded in the ship audit event. */
+  confirmSource?: "tty" | "piped";
   /** Test seam for `gh pr create`. */
   prCreate?: (input: { cwd: string; title: string; body: string }) => { url?: string; error?: string };
 };

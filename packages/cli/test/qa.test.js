@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { normalize, runCli, withTempDir } from "./helpers.js";
 
 function quoteArg(value) {
@@ -180,4 +183,66 @@ test("help lists qa and fix", () => {
   assert.match(normalize(qa.stdout), /mode/);
   const fix = runCli(["help", "fix"]);
   assert.match(normalize(fix.stdout), /bug/);
+});
+
+test("qa checklist refuses empty and closed stdin without ticking", async () => {
+  for (const input of ["", "\n"]) {
+    await withTempDir(async (dir) => {
+      await seedQaReady(dir);
+      const stateBefore = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
+      const result = runCli(["qa", "checklist", "--project", dir], { input });
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(normalize(`${result.stdout}\n${result.stderr}`), /explicit y or n/);
+      assert.doesNotMatch(normalize(result.stdout), /Checklist saved/);
+      assert.equal(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8"), stateBefore);
+      const scored = runCli(["qa", "--mode", "no-browser", "--project", dir]);
+      assert.equal(scored.status, 1);
+      assert.match(normalize(scored.stderr), /qa checklist/);
+    });
+  }
+});
+
+test("qa checklist still accepts explicit piped y", async () => {
+  await withTempDir(async (dir) => {
+    await seedQaReady(dir);
+    const result = runCli(["qa", "checklist", "--project", dir], { input: "y\n" });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(result.stdout), /Checklist saved \(1\//);
+  });
+});
+
+async function seedTwoCriteria(dir) {
+  const engine = await seedQaReady(dir);
+  const spec = await engine.store.readSpec("spec-checkin");
+  await engine.store.writeSpec(
+    { ...spec.data, acceptance: [...spec.data.acceptance, { id: "AC-02", statement: "second", kind: "test", priority: "P1" }] },
+    spec.body,
+  );
+}
+
+test("qa checklist: partial answers refuse, explicit n and --tick behave", async () => {
+  await withTempDir(async (dir) => {
+    await seedTwoCriteria(dir);
+    const partial = runCli(["qa", "checklist", "--project", dir], { input: "y\n" });
+    assert.equal(partial.status, 1, `${partial.stdout}\n${partial.stderr}`);
+    assert.match(normalize(partial.stderr), /explicit y or n/);
+    assert.doesNotMatch(normalize(partial.stdout), /Checklist saved/);
+
+    const garbage = runCli(["qa", "checklist", "--project", dir], { input: "y\nmaybe\n" });
+    assert.equal(garbage.status, 1);
+    assert.match(normalize(garbage.stderr), /needs y or n/);
+
+    const mixed = runCli(["qa", "checklist", "--project", dir], { input: "y\nn\n" });
+    assert.equal(mixed.status, 0, `${mixed.stdout}\n${mixed.stderr}`);
+    assert.match(normalize(mixed.stdout), /Checklist saved \(1\/2/);
+    const events = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
+    assert.match(events, /"type":"qa_checklist"[^\n]*"confirmSource":"piped"/);
+
+    const allN = runCli(["qa", "checklist", "--project", dir], { input: "n\nn\n" });
+    assert.equal(allN.status, 0);
+    assert.match(normalize(allN.stdout), /Checklist saved \(0\/2/);
+
+    const tick = runCli(["qa", "checklist", "--tick", "AC-01", "--project", dir], { input: "" });
+    assert.equal(tick.status, 0, `${tick.stdout}\n${tick.stderr}`);
+  });
 });
