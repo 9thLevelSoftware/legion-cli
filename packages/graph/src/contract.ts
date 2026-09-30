@@ -44,17 +44,27 @@ export function filesAllowedFailsPlan(filesAllowed: readonly string[]): boolean 
   );
 }
 
+/**
+ * Allow-side key, as in core's `allowKey`: only as loose as the filesystem. The subset check is
+ * an allow, so folding case or trailing dots on Linux would admit a path the contract never named.
+ */
+function allowKey(path: string): string {
+  if (process.platform === "win32") return normalizePathKey(path);
+  if (process.platform === "darwin") return path.toLowerCase();
+  return path;
+}
+
 /** expectedArtifacts is a subset of filesAllowed (same concrete + SoT checks). */
 export function expectedArtifactsFailsPlan(
   filesAllowed: readonly string[],
   expectedArtifacts: readonly string[],
 ): boolean {
-  const allowed = new Set(filesAllowed.map(normalizePathKey));
+  const allowed = new Set(filesAllowed.map(allowKey));
   return expectedArtifacts.some(
     (path) =>
       !isConcretePosixRepoRelativePath(path) ||
       isImplicitForbiddenPath(path) ||
-      !allowed.has(normalizePathKey(path)),
+      !allowed.has(allowKey(path)),
   );
 }
 

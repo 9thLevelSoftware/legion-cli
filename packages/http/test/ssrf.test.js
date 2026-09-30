@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { isPrivateOrLocalHost as fromSchema } from "@9thlevelsoftware/legion-cli-schema";
@@ -23,12 +24,22 @@ const PRIVATE = [
   "2002:a00:1::",
   "localhost",
   "metadata.google.internal",
+  "fe80::ffff:808:808",
+  "fc00::ffff:808:808",
+  "ff02::ffff:808:808",
+  "fe80::ffff:8.8.8.8",
+  "::ffff:127.0.0.1",
 ];
-const PUBLIC = ["8.8.8.8", "93.184.216.34", "2606:4700:4700::1111"];
+const PUBLIC = ["8.8.8.8", "93.184.216.34", "2606:4700:4700::1111", "::ffff:8.8.8.8"];
 
 test("http and persist resolve the same classifier as schema", () => {
   assert.equal(fromHttp, fromSchema);
   assert.equal(fromPersist, fromSchema);
+});
+
+test("http keeps no private-host list of its own (schema owns the classifier)", async () => {
+  const src = await readFile(new URL("../src/ssrf.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(src, /PRIVATE_HOSTS|metadata\.google\.internal/);
 });
 
 test("one table passes through both the ingest and the http entry points", () => {

@@ -4,7 +4,6 @@ import { HttpAdapterError } from "./errors.js";
 import type { SsrfLookup } from "./types.js";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
-const PRIVATE_HOSTS = new Set(["localhost", "metadata.google.internal"]);
 
 async function defaultLookup(hostname: string): Promise<{ address: string; family: number }> {
   return dns.lookup(hostname, { all: false });

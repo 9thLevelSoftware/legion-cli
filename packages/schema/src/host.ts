@@ -31,29 +31,13 @@ function isPrivateIPv4(octets: number[]): boolean {
   return false;
 }
 
-function hextetsToIpv4(hiHex: string, loHex: string): number[] {
-  const hi = Number.parseInt(hiHex, 16);
-  const lo = Number.parseInt(loHex, 16);
+function hextetsToIpv4(hi: number, lo: number): number[] {
   return [(hi >> 8) & 255, hi & 255, (lo >> 8) & 255, lo & 255];
 }
 
 function normalizeHost(hostname: string): string {
   // Drop an IPv6 zone id (`fe80::1%eth0`): it names an interface, not a different address.
   return hostname.replace(/^\[|\]$/g, "").replace(/%.*$/, "").toLowerCase();
-}
-
-/** IPv4-mapped (::ffff:…) and IPv4-compatible (::x:x / ::d.d.d.d) embed an IPv4 address. */
-function embeddedIpv4(host: string): number[] | null {
-  const h = normalizeHost(host);
-  const mappedDotted = /(?:^|:)ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(h);
-  if (mappedDotted?.[1]) return ipv4Octets(mappedDotted[1]);
-  const mappedHex = /(?:^|:)ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
-  if (mappedHex?.[1] && mappedHex[2]) return hextetsToIpv4(mappedHex[1], mappedHex[2]);
-  const compatDotted = /^::(\d{1,3}(?:\.\d{1,3}){3})$/.exec(h);
-  if (compatDotted?.[1]) return ipv4Octets(compatDotted[1]);
-  const compatHex = /^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
-  if (compatHex?.[1] && compatHex[2]) return hextetsToIpv4(compatHex[1], compatHex[2]);
-  return null;
 }
 
 /** Expand an IPv6 literal to eight 16-bit words, or null when it is not one. */
@@ -82,13 +66,24 @@ function ipv6Words(host: string): number[] | null {
   return [...head, ...new Array<number>(fill).fill(0), ...tail];
 }
 
+/**
+ * IPv4-mapped (::ffff:0:0/96) and IPv4-compatible (::/96) embed an IPv4 address. Anchored on the
+ * leading words: `fe80::ffff:808:808` is link-local, not a mapped 8.8.8.8.
+ */
+function embeddedIpv4(host: string): number[] | null {
+  const words = ipv6Words(host);
+  if (!words || !words.slice(0, 5).every((w) => w === 0)) return null;
+  if (words[5] !== 0xffff && words[5] !== 0) return null;
+  return hextetsToIpv4(words[6]!, words[7]!);
+}
+
 function isPrivateIPv6(host: string): boolean {
   const words = ipv6Words(host);
   if (!words) return false;
   const [w0, w1] = words as [number, number];
   // ::ffff:0:0/96 SIIT (IPv4-translated): the IPv4 address is in the last two words
   if (words.slice(0, 4).every((w) => w === 0) && words[4] === 0xffff && words[5] === 0) {
-    return isPrivateIPv4([words[6]! >> 8, words[6]! & 255, words[7]! >> 8, words[7]! & 255]);
+    return isPrivateIPv4(hextetsToIpv4(words[6]!, words[7]!));
   }
   // ::1 loopback and :: unspecified
   if (words.slice(0, 7).every((w) => w === 0) && (words[7] === 0 || words[7] === 1)) return true;

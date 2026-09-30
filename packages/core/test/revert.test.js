@@ -5,7 +5,8 @@ import { chmod, lstat, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { mkdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 import { appendAuditEvent, gitDiscoverChanges, RestoreRefusedError, sha256Content } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionRefuseError } from "../dist/errors.js";
@@ -379,6 +380,53 @@ test("a restored hook keeps its pre-spawn mode (a disabled hook stays disabled)"
     await revertExtras({ projectRoot: dir, preSpawnRef: null, allowedRoots: ["src/main.ts"], gitPolicy });
     assert.equal(await readFile(hook, "utf8"), "#!/bin/sh\necho ok\n");
     assert.equal((await stat(hook)).mode & 0o111, 0, "still not executable");
+  });
+});
+
+test("chmod +x on a disabled hook is an incident and the mode is restored", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX mode bits are not meaningful on Windows");
+    return;
+  }
+  await withEngine(async ({ dir }) => {
+    await writeFile(join(dir, "README.md"), "seed\n", "utf8");
+    initGitRepo(dir);
+    const hook = join(dir, ".git", "hooks", "pre-commit");
+    await mkdir(join(dir, ".git", "hooks"), { recursive: true });
+    await writeFile(hook, "#!/bin/sh\necho ok\n", "utf8");
+    await chmod(hook, 0o644);
+    const gitPolicy = await snapshotGitPolicy(dir);
+    await chmod(hook, 0o755);
+    const result = await revertExtras({ projectRoot: dir, preSpawnRef: null, allowedRoots: ["src/main.ts"], gitPolicy });
+    assert.equal(result.incident, true);
+    assert.equal(await readFile(hook, "utf8"), "#!/bin/sh\necho ok\n");
+    assert.equal((await stat(hook)).mode & 0o777, 0o644);
+  });
+});
+
+test("a .git/hooks swapped for a symlink: incident, and nothing behind the link is removed", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX symlink semantics");
+    return;
+  }
+  const victim = await mkdtemp(join(tmpdir(), "legion-victim-"));
+  t.after(() => rm(victim, { recursive: true, force: true }));
+  await writeFile(join(victim, "notes.txt"), "keep me\n", "utf8");
+  await writeFile(join(victim, "pre-commit"), "not a hook\n", "utf8");
+  await withEngine(async ({ dir }) => {
+    await writeFile(join(dir, "README.md"), "seed\n", "utf8");
+    initGitRepo(dir);
+    const hooks = join(dir, ".git", "hooks");
+    await mkdir(hooks, { recursive: true });
+    await writeFile(join(hooks, "pre-commit"), "#!/bin/sh\necho ok\n", "utf8");
+    const gitPolicy = await snapshotGitPolicy(dir);
+    await rm(hooks, { recursive: true, force: true });
+    await symlink(victim, hooks, "dir");
+    const result = await revertExtras({ projectRoot: dir, preSpawnRef: null, allowedRoots: ["src/main.ts"], gitPolicy });
+    assert.equal(result.incident, true);
+    assert.equal(await readFile(join(victim, "notes.txt"), "utf8"), "keep me\n");
+    assert.equal(await readFile(join(victim, "pre-commit"), "utf8"), "not a hook\n");
+    assert.equal((await lstat(hooks)).isSymbolicLink(), true, "the link is flagged, not acted on");
   });
 });
 

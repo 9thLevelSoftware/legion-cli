@@ -254,9 +254,17 @@ test("implicit forbidden and plan checks compare normalised forms", () => {
     assert.equal(filesAllowedFailsPlan([bad]), true, bad);
   }
   assert.equal(filesAllowedFailsPlan(["notes~2.md", "src/a.ts"]), false);
-  // expectedArtifacts must be in filesAllowed by normalised key
-  assert.equal(expectedArtifactsFailsPlan(["src/A.ts"], ["src/a.ts"]), false);
+  // expectedArtifacts must be in filesAllowed by the allow-side key (folded only where the FS folds)
+  const caseFolds = process.platform === "win32" || process.platform === "darwin";
+  assert.equal(expectedArtifactsFailsPlan(["src/A.ts"], ["src/a.ts"]), !caseFolds);
   assert.equal(expectedArtifactsFailsPlan(["src/a.ts"], ["src/b.ts"]), true);
+});
+
+test("expectedArtifactsFailsPlan folds case and trailing dots only where the filesystem does", () => {
+  const caseFolds = process.platform === "win32" || process.platform === "darwin";
+  assert.equal(expectedArtifactsFailsPlan(["src/app.ts"], ["SRC/APP.TS"]), !caseFolds);
+  assert.equal(expectedArtifactsFailsPlan(["src/app.ts"], ["src/app.ts."]), process.platform !== "win32");
+  assert.equal(expectedArtifactsFailsPlan(["src/app.ts"], ["src/app.ts"]), false);
 });
 
 test("overlappingFilesAllowed flags case, trailing-dot and directory-prefix overlaps", () => {

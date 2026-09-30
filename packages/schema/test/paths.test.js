@@ -51,10 +51,26 @@ test("shared SSRF classifier is exported from schema and covers the reserved ran
     "fe80::1",
     "fd00::1",
     "::1",
+    // ffff in a non-mapped prefix is not an IPv4 mapping: the IPv6 range decides.
+    "fe80::ffff:808:808",
+    "fc00::ffff:808:808",
+    "ff02::ffff:808:808",
+    "fe80::ffff:8.8.8.8",
+    "::ffff:127.0.0.1",
   ]) {
     assert.equal(isPrivateOrLocalHost(host), true, host);
   }
-  for (const host of ["8.8.8.8", "1.1.1.1", "198.17.0.1", "198.20.0.1", "192.0.2.1", "2606:4700:4700::1111", "example.com"]) {
+  for (const host of [
+    "8.8.8.8",
+    "1.1.1.1",
+    "198.17.0.1",
+    "198.20.0.1",
+    "192.0.2.1",
+    "2606:4700:4700::1111",
+    "example.com",
+    "::ffff:8.8.8.8",
+    "::ffff:808:808",
+  ]) {
     assert.equal(isPrivateOrLocalHost(host), false, host);
   }
 });

@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   ensureGitignore,
+  runGit,
   runResumePath,
   tryGitBranch,
   tryGitHead,
@@ -80,14 +80,8 @@ export function countsTowardSize(relPosix: string): boolean {
 
 /** Line count of tracked code files (git ls-files). Files over 2 MB are skipped. */
 export async function measureRepo(projectRoot: string): Promise<BrownfieldSize> {
-  const listed = spawnSync("git", ["ls-files", "-z"], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    windowsHide: true,
-    shell: false,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  const files = listed.status === 0 ? String(listed.stdout).split("\0").filter(Boolean) : [];
+  const listed = runGit(projectRoot, ["ls-files", "-z"], { maxBuffer: 64 * 1024 * 1024 });
+  const files = listed.status === 0 ? listed.stdout.split("\0").filter(Boolean) : [];
   let count = 0;
   let lines = 0;
   for (const rel of files) {

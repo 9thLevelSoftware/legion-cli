@@ -28,7 +28,11 @@ export type GitPolicySnapshot = {
   hooks: Record<string, string>;
   /** File mode bits per snapshotted path, so a restore does not enable a disabled hook. */
   modes?: Record<string, number>;
+  /** `dir` / `absent` / `other` (symlink, junction, file) for `.git` and `.git/hooks`. */
+  dirs?: Record<string, DirKind>;
 };
+
+type DirKind = "dir" | "absent" | "other";
 
 export type RevertResult = {
   extrasReverted: string[];
@@ -165,34 +169,51 @@ async function walk(root: string, rel: string, out: Set<string>): Promise<void> 
   }
 }
 
+/** A symlink or junction reads as `other`: nothing under it is read, removed or written. */
+async function dirKind(abs: string): Promise<DirKind> {
+  try {
+    const st = await lstat(abs);
+    return !st.isSymbolicLink() && st.isDirectory() ? "dir" : "other";
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "other";
+  }
+}
+
 export async function snapshotGitPolicy(projectRoot: string): Promise<GitPolicySnapshot> {
   const hooks: Record<string, string> = {};
   const modes: Record<string, number> = {};
-  const hooksDir = join(projectRoot, ".git", "hooks");
-  try {
-    const entries = await readdir(hooksDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      const posix = `.git/hooks/${entry.name}`;
-      try {
-        // latin1 round-trips arbitrary bytes, so a restored hook is byte-identical.
-        hooks[posix] = await readFile(join(hooksDir, entry.name), "latin1");
-        modes[posix] = (await stat(join(hooksDir, entry.name))).mode & 0o777;
-      } catch {
-        hooks[posix] = "";
+  const gitDir = join(projectRoot, ".git");
+  const hooksDir = join(gitDir, "hooks");
+  const dirs: Record<string, DirKind> = { ".git": await dirKind(gitDir) };
+  dirs[".git/hooks"] = dirs[".git"] === "dir" ? await dirKind(hooksDir) : "absent";
+  if (dirs[".git/hooks"] === "dir") {
+    try {
+      const entries = await readdir(hooksDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const posix = `.git/hooks/${entry.name}`;
+        try {
+          // latin1 round-trips arbitrary bytes, so a restored hook is byte-identical.
+          hooks[posix] = await readFile(join(hooksDir, entry.name), "latin1");
+          modes[posix] = (await stat(join(hooksDir, entry.name))).mode & 0o777;
+        } catch {
+          hooks[posix] = "";
+        }
       }
+    } catch {
+      // unreadable .git/hooks
     }
-  } catch {
-    // no .git/hooks
   }
   let config: string | null = null;
-  try {
-    config = await readFile(join(projectRoot, ".git", "config"), "latin1");
-    modes[".git/config"] = (await stat(join(projectRoot, ".git", "config"))).mode & 0o777;
-  } catch {
-    config = null;
+  if (dirs[".git"] === "dir") {
+    try {
+      config = await readFile(join(gitDir, "config"), "latin1");
+      modes[".git/config"] = (await stat(join(gitDir, "config"))).mode & 0o777;
+    } catch {
+      config = null;
+    }
   }
-  return { config, hooks, modes };
+  return { config, hooks, modes, dirs };
 }
 
 async function gitPolicyIncidents(
@@ -202,28 +223,51 @@ async function gitPolicyIncidents(
   if (!snapshot) return [];
   const now = await snapshotGitPolicy(projectRoot);
   const incidents: string[] = [];
+  // A `.git` or `.git/hooks` swapped for a link is an incident even though nothing behind it is read.
+  for (const dir of [".git", ".git/hooks"]) {
+    if (snapshot.dirs && now.dirs?.[dir] !== snapshot.dirs[dir]) incidents.push(dir);
+  }
   if (now.config !== snapshot.config) incidents.push(".git/config");
+  else if (snapshot.modes && now.modes?.[".git/config"] !== snapshot.modes[".git/config"]) {
+    incidents.push(".git/config");
+  }
   const names = new Set([...Object.keys(now.hooks), ...Object.keys(snapshot.hooks)]);
   for (const name of names) {
+    // A `chmod +x` on a disabled hook enables it without changing a byte.
     if (now.hooks[name] !== snapshot.hooks[name]) incidents.push(name);
+    else if (snapshot.modes && now.modes?.[name] !== snapshot.modes[name]) incidents.push(name);
   }
   return incidents;
 }
 
-/** Restore the snapshotted `.git/config` and hook files named in `names`; drop hooks that are new. */
+/**
+ * Restore the snapshotted `.git/config` and hook files named in `names`; drop hooks that are new.
+ * Acts only inside a real `.git` / `.git/hooks`: behind a symlink or junction a removal would
+ * empty the link's target, so the incident stands and nothing is touched.
+ */
 async function restoreGitPolicy(
   projectRoot: string,
   snapshot: GitPolicySnapshot,
   names: readonly string[],
 ): Promise<void> {
+  if ((await dirKind(join(projectRoot, ".git"))) !== "dir") return;
+  const hooksReal = (await dirKind(join(projectRoot, ".git", "hooks"))) === "dir";
   for (const name of names) {
+    if (name === ".git" || name === ".git/hooks") continue;
+    if (name !== ".git/config" && !hooksReal) continue;
     const abs = join(projectRoot, ...name.split("/"));
     const before = name === ".git/config" ? snapshot.config : snapshot.hooks[name];
     try {
-      if (before === null || before === undefined) {
-        await rm(abs, { force: true });
-      } else {
-        await rm(abs, { force: true });
+      let kind: "file" | "absent" | "other" = "absent";
+      try {
+        kind = (await lstat(abs)).isFile() ? "file" : "other";
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") kind = "other";
+      }
+      // Only a regular file directly inside the real dir is removed or overwritten.
+      if (kind === "other") continue;
+      if (kind === "file") await rm(abs, { force: true });
+      if (before !== null && before !== undefined) {
         await writeTextFile(abs, Buffer.from(before, "latin1"), { root: projectRoot, skipJournal: true });
         const mode = snapshot.modes?.[name];
         if (mode !== undefined) await chmod(abs, mode).catch(() => undefined);
