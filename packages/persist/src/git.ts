@@ -5,58 +5,82 @@ import type { IngestReceipt } from "@9thlevelsoftware/legion-cli-schema";
 import { PersistError } from "./errors.js";
 import { toPosixPath } from "./paths.js";
 
-function runGit(cwd: string, args: string[]): { status: number; stdout: string; stderr: string } {
+/**
+ * Git output for ls-files, status and diff scales with repo size; the Node default (1 MiB) is far
+ * too small. 256 MiB per stream is a ceiling that still fails closed (ENOBUFS, named) rather than a size to expect.
+ */
+const GIT_MAX_BUFFER = 256 * 1024 * 1024;
+
+export type GitRunResult = { status: number; stdout: string; stderr: string; error?: string };
+
+export function runGit(cwd: string, args: string[], opts: { maxBuffer?: number } = {}): GitRunResult {
   const result = spawnSync("git", args, {
     cwd,
     encoding: "utf8",
     windowsHide: true,
     shell: false,
+    maxBuffer: opts.maxBuffer ?? GIT_MAX_BUFFER,
   });
+  const error = result.error
+    ? `git ${args[0] ?? ""} could not complete (${(result.error as NodeJS.ErrnoException).code ?? result.error.name}): ${result.error.message}`
+    : undefined;
   return {
-    status: result.status ?? 1,
+    status: result.error ? 1 : (result.status ?? 1),
     stdout: result.stdout ?? "",
-    stderr: result.stderr ?? result.error?.message ?? "",
+    stderr: error ?? result.stderr ?? "",
+    ...(error ? { error } : {}),
   };
+}
+
+/**
+ * stderr, else the first 512 bytes of stdout (`git commit` reports "nothing to commit" there).
+ * stdout can be megabytes of listing or diff, so it is never embedded whole.
+ */
+function failText(result: GitRunResult): string {
+  const err = result.stderr.trim();
+  if (err) return err;
+  const out = result.stdout.trim();
+  return out.length > 512 ? `${out.slice(0, 512)}...` : out;
+}
+
+/** Git already reports `/`; only a Windows `\` needs converting. On POSIX a backslash is part of the name. */
+function gitPath(name: string): string {
+  return process.platform === "win32" ? toPosixPath(name) : name;
+}
+
+function nulFields(stdout: string): string[] {
+  return stdout.split("\0").filter((field) => field.length > 0);
 }
 
 function gitLines(cwd: string, args: string[]): string[] {
   const result = runGit(cwd, args);
   if (result.status !== 0) {
-    throw new PersistError(`git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    throw new PersistError(`git ${args.join(" ")} failed: ${failText(result)}`);
   }
-  return result.stdout
-    .split(/\r?\n/)
-    .map((line) => toPosixPath(line.replace(/^"(.*)"$/, "$1").trim()))
-    .filter((line) => line.length > 0);
+  return nulFields(result.stdout).map(gitPath);
 }
 
-function unquoteDiffPath(value: string): string {
-  return toPosixPath(value.replace(/^"(.*)"$/, "$1").trim());
-}
-
-/** Parse one `git diff --name-status` line. R/C include source and destination. */
-function parseNameStatusLine(line: string): string[] {
-  if (!line) return [];
-  const parts = line.split("\t");
-  if (parts.length < 2) return [];
-  const code = parts[0].trim();
-  if (!code) return [];
-  if ((code.startsWith("R") || code.startsWith("C")) && parts.length >= 3) {
-    return [unquoteDiffPath(parts[1]), unquoteDiffPath(parts[2])].filter((path) => path.length > 0);
+/**
+ * Parse `git diff --name-status -z`: `S\0path\0`, and `R100\0source\0dest\0` (also C).
+ * Returns source and destination for renames/copies.
+ */
+function parseNameStatusZ(stdout: string): string[] {
+  const fields = nulFields(stdout);
+  const paths: string[] = [];
+  for (let i = 0; i < fields.length; ) {
+    const code = fields[i++];
+    const count = code.startsWith("R") || code.startsWith("C") ? 2 : 1;
+    for (let n = 0; n < count && i < fields.length; n++) paths.push(gitPath(fields[i++]));
   }
-  return [unquoteDiffPath(parts[1])].filter((path) => path.length > 0);
+  return paths;
 }
 
 function gitNameStatusPaths(cwd: string, args: string[]): string[] {
-  const result = runGit(cwd, args);
+  const result = runGit(cwd, [...args, "-z"]);
   if (result.status !== 0) {
-    throw new PersistError(`git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    throw new PersistError(`git ${args.join(" ")} failed: ${failText(result)}`);
   }
-  const paths: string[] = [];
-  for (const raw of result.stdout.split(/\r?\n/)) {
-    for (const path of parseNameStatusLine(raw)) paths.push(path);
-  }
-  return paths;
+  return parseNameStatusZ(result.stdout);
 }
 
 export function isGitRepo(cwd: string): boolean {
@@ -67,9 +91,18 @@ export function isGitRepo(cwd: string): boolean {
 export function gitHead(cwd: string): string {
   const result = runGit(cwd, ["rev-parse", "HEAD"]);
   if (result.status !== 0) {
-    throw new PersistError(`git rev-parse HEAD failed: ${result.stderr.trim()}`);
+    throw new PersistError(`git rev-parse HEAD failed: ${failText(result)}`);
   }
   return result.stdout.trim();
+}
+
+/** Cached index entries (`<mode> <sha> <stage>	<path>`), NUL-separated in git, one string per entry. */
+export function gitIndexEntries(cwd: string): string[] {
+  const result = runGit(cwd, ["ls-files", "-s", "-z", "--cached", "--full-name"]);
+  if (result.status !== 0) {
+    throw new PersistError(`git ls-files --cached failed: ${failText(result)}`);
+  }
+  return nulFields(result.stdout);
 }
 
 export function gitStatusPorcelain(cwd: string, paths?: string[]): string {
@@ -77,7 +110,7 @@ export function gitStatusPorcelain(cwd: string, paths?: string[]): string {
   if (paths && paths.length > 0) args.push("--", ...paths);
   const result = runGit(cwd, args);
   if (result.status !== 0) {
-    throw new PersistError(`git status failed: ${result.stderr.trim()}`);
+    throw new PersistError(`git status failed: ${failText(result)}`);
   }
   return result.stdout;
 }
@@ -94,13 +127,13 @@ export function commitPaths(cwd: string, paths: string[], message: string): bool
   }
   const add = runGit(cwd, ["add", "--", ...paths]);
   if (add.status !== 0) {
-    throw new PersistError(`git add failed: ${add.stderr.trim() || add.stdout.trim()}`);
+    throw new PersistError(`git add failed: ${failText(add)}`);
   }
   const status = gitStatusPorcelain(cwd, paths);
   if (status.trim() === "") return false;
   const commit = runGit(cwd, ["commit", "-m", message, "--", ...paths]);
   if (commit.status !== 0) {
-    throw new PersistError(`git commit failed: ${commit.stderr.trim() || commit.stdout.trim()}`);
+    throw new PersistError(`git commit failed: ${failText(commit)}`);
   }
   return true;
 }
@@ -128,36 +161,41 @@ export function gitPathExistsAtRef(cwd: string, ref: string, storePath: string):
 export function gitRestoreWorktree(cwd: string, ref: string, storePath: string): void {
   const result = runGit(cwd, ["restore", `--source=${ref}`, "--worktree", "--staged", "--", storePath]);
   if (result.status !== 0) {
-    throw new PersistError(`git restore failed for ${storePath}: ${result.stderr.trim()}`);
+    throw new PersistError(`git restore failed for ${storePath}: ${failText(result)}`);
   }
 }
 
 export function gitRmWorktree(cwd: string, storePath: string): void {
   const result = runGit(cwd, ["rm", "-f", "--", storePath]);
   if (result.status !== 0) {
-    throw new PersistError(`git rm failed for ${storePath}: ${result.stderr.trim()}`);
+    throw new PersistError(`git rm failed for ${storePath}: ${failText(result)}`);
   }
 }
 
-function porcelainPaths(cwd: string): string[] {
-  const result = runGit(cwd, ["status", "--porcelain", "-uall"]);
-  if (result.status !== 0) {
-    throw new PersistError(`git status failed: ${result.stderr.trim()}`);
-  }
+/**
+ * `status --porcelain=v1 -z`: records are `XY <path>\0`; a rename or copy (X or Y is R/C) is
+ * `XY <dest>\0<source>\0`, destination first. Both are returned: revert needs the source.
+ */
+function parsePorcelainZ(stdout: string): string[] {
+  const fields = stdout.split("\0");
   const paths: string[] = [];
-  for (const raw of result.stdout.split(/\r?\n/)) {
-    if (raw.length < 4) continue;
-    const rest = raw.slice(3);
-    const renamed = rest.split(" -> ");
-    const target = renamed.length > 1 ? renamed[1] : rest;
-    const posix = toPosixPath(target.replace(/^"(.*)"$/, "$1").trim());
-    if (posix) paths.push(posix);
-    if (renamed.length > 1) {
-      const from = toPosixPath(renamed[0].replace(/^"(.*)"$/, "$1").trim());
-      if (from) paths.push(from);
+  for (let i = 0; i < fields.length; i++) {
+    const record = fields[i];
+    if (record.length < 4) continue;
+    paths.push(gitPath(record.slice(3)));
+    if (/[RC]/.test(record.slice(0, 2)) && i + 1 < fields.length && fields[i + 1].length > 0) {
+      paths.push(gitPath(fields[++i]));
     }
   }
   return paths;
+}
+
+function porcelainPaths(cwd: string): string[] {
+  const result = runGit(cwd, ["status", "--porcelain=v1", "-z", "-uall"]);
+  if (result.status !== 0) {
+    throw new PersistError(`git status failed: ${failText(result)}`);
+  }
+  return parsePorcelainZ(result.stdout);
 }
 
 /**
@@ -175,7 +213,7 @@ export function gitDiscoverChanges(cwd: string, preSpawnRef: string | null): str
     for (const path of gitNameStatusPaths(cwd, ["diff", "--name-status", preSpawnRef])) paths.add(path);
   }
   for (const path of porcelainPaths(cwd)) paths.add(path);
-  for (const path of gitLines(cwd, ["ls-files", "--others", "--exclude-standard"])) paths.add(path);
+  for (const path of gitLines(cwd, ["ls-files", "-z", "--others", "--exclude-standard"])) paths.add(path);
   return [...paths];
 }
 
@@ -224,7 +262,7 @@ export function sameWorktreePath(a: string, b: string): boolean {
 export function listGitWorktrees(cwd: string): GitWorktree[] {
   const result = runGit(cwd, ["worktree", "list", "--porcelain"]);
   if (result.status !== 0) {
-    throw new PersistError(`git worktree list failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    throw new PersistError(`git worktree list failed: ${failText(result)}`);
   }
   const out: GitWorktree[] = [];
   let current: GitWorktree | null = null;
@@ -375,7 +413,7 @@ export function gitWorktreeAdd(cwd: string, worktreePath: string, branch: string
     : ["worktree", "add", "-b", branch, abs, ...(startPoint ? [startPoint] : [])];
   const result = runGit(cwd, args);
   if (result.status !== 0) {
-    throw new PersistError(`git worktree add failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    throw new PersistError(`git worktree add failed: ${failText(result)}`);
   }
   return abs;
 }
@@ -394,7 +432,7 @@ export function gitWorktreeRemove(cwd: string, worktreePath: string, opts: { for
   const args = ["worktree", "remove", ...(opts.force ? ["--force"] : []), listed.path];
   const result = runGit(cwd, args);
   if (result.status !== 0) {
-    throw new PersistError(`git worktree remove failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    throw new PersistError(`git worktree remove failed: ${failText(result)}`);
   }
   gitWorktreePrune(cwd);
   return true;
@@ -405,7 +443,7 @@ export function gitBranchCreate(cwd: string, branch: string, startPoint: string)
   if (gitBranchExists(cwd, branch)) return false;
   const result = runGit(cwd, ["branch", branch, startPoint]);
   if (result.status !== 0) {
-    throw new PersistError(`git branch failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    throw new PersistError(`git branch failed: ${failText(result)}`);
   }
   return true;
 }
@@ -443,20 +481,20 @@ export function gitAdd(cwd: string, paths: string[]): void {
   if (paths.length === 0) return;
   const add = runGit(cwd, ["add", "--", ...paths]);
   if (add.status !== 0) {
-    throw new PersistError(`git add failed: ${add.stderr.trim() || add.stdout.trim()}`);
+    throw new PersistError(`git add failed: ${failText(add)}`);
   }
 }
 
 export function gitDiffCached(cwd: string): string {
   const result = runGit(cwd, ["diff", "--cached"]);
   if (result.status !== 0) {
-    throw new PersistError(`git diff --cached failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    throw new PersistError(`git diff --cached failed: ${failText(result)}`);
   }
   return result.stdout;
 }
 
 export function gitStagedPaths(cwd: string): string[] {
-  return gitLines(cwd, ["diff", "--cached", "--name-only"]);
+  return gitLines(cwd, ["diff", "--cached", "--name-only", "-z"]);
 }
 
 export function gitHasStaged(cwd: string): boolean {
@@ -468,14 +506,14 @@ export function gitRestoreStaged(cwd: string, paths: string[]): void {
   if (paths.length === 0) return;
   const result = runGit(cwd, ["restore", "--staged", "--", ...paths]);
   if (result.status !== 0) {
-    throw new PersistError(`git restore --staged failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    throw new PersistError(`git restore --staged failed: ${failText(result)}`);
   }
 }
 
 export function gitCommitIndex(cwd: string, message: string): string {
   const commit = runGit(cwd, ["commit", "-m", message]);
   if (commit.status !== 0) {
-    throw new PersistError(`git commit failed: ${commit.stderr.trim() || commit.stdout.trim()}`);
+    throw new PersistError(`git commit failed: ${failText(commit)}`);
   }
   return gitHead(cwd);
 }
@@ -484,6 +522,6 @@ export function gitCommitIndex(cwd: string, message: string): string {
 export function gitResetMixed(cwd: string, ref: string): void {
   const result = runGit(cwd, ["reset", "--mixed", ref]);
   if (result.status !== 0) {
-    throw new PersistError(`git reset failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    throw new PersistError(`git reset failed: ${failText(result)}`);
   }
 }

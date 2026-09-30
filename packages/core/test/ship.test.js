@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -370,6 +371,54 @@ test("ship refuses a staged file modified between preview and commit", async () 
       },
     );
     assert.equal((await engine.getState()).phase, "ready_to_ship");
+  });
+});
+
+test("ship does not refuse when only .legion-cli/STATE.md changes between preview and commit", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
+    initGitRepo(dir);
+    await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    const receipt = await engine.ship({
+      commit: true,
+      confirm: async () => {
+        const statePath = join(dir, ".legion-cli", "STATE.md");
+        await writeFile(statePath, `${await readFile(statePath, "utf8")}\n`, "utf8");
+        git(dir, ["add", "--", ".legion-cli/STATE.md"]);
+        return true;
+      },
+    });
+    assert.equal(receipt.committed, true);
+  });
+});
+
+test("ship preview and confirm complete when the index listing exceeds 1 MiB", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
+    // Long names keep the file count (and runtime) low while the index listing passes 1 MiB.
+    const pad = "p".repeat(75);
+    for (let d = 0; d < 40; d++) {
+      const sub = join(dir, "bulk", `dir-${d}`);
+      await mkdir(sub, { recursive: true });
+      for (let i = 0; i < 200; i++) await writeFile(join(sub, `${pad}-${i}.txt`), "");
+    }
+    initGitRepo(dir);
+    const listing = spawnSync("git", ["ls-files", "-s", "-z", "--cached", "--full-name"], {
+      cwd: dir,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.ok(listing.stdout.length > 1024 * 1024, "index listing must exceed the default 1 MiB buffer");
+    await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    const receipt = await engine.ship({ commit: true });
+    assert.equal(receipt.committed, true);
+    assert.equal(receipt.phase, "shipped");
   });
 });
 
