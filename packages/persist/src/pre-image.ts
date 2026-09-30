@@ -813,7 +813,7 @@ export async function readAuditChain(projectRoot: string): Promise<AuditChainSta
 function auditLinesOf(buf: Buffer): string[] {
   const lines: string[] = [];
   let start = 0;
-  while (start <= buf.length) {
+  while (start < buf.length) {
     let end = buf.indexOf(0x0a, start);
     if (end === -1) end = buf.length;
     let stop = end;
