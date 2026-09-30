@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { parseCommandLine, runCommand as runArgv, splitCommand } from "@9thlevelsoftware/legion-cli-agents";
 import { createLegionStore, writeTextFile } from "@9thlevelsoftware/legion-cli-persist";
 import type { QAScore, Spec } from "@9thlevelsoftware/legion-cli-schema";
-import { extractJsonPayload, reportFailClosed } from "./reports.js";
+import { extractJsonPayload, parseTestReport, reportFailClosed } from "./reports.js";
 import { scoreQa, scoreSpecReports, ZERO_TESTS_REASON, type QaMode } from "./score.js";
 import { specHasUi } from "./tags.js";
 
@@ -77,6 +77,20 @@ export async function runCommand(cwd: string, command: string, opts?: QaCommandO
   };
 }
 
+/**
+ * A runner that timed out, was killed by a signal, or exited non-zero is not evidence of a pass,
+ * even when its report lists only passes. A plain non-zero exit is tolerated only when the report
+ * itself shows failed tests, because then the failures are already counted.
+ */
+function runnerFailClosedReason(capture: CommandCapture, report: unknown, label: string): string | undefined {
+  if (!capture.started || capture.timedOut) return undefined; // reported by the caller's own warning
+  if (capture.status === null) return `${label} command was killed by a signal; treated as failed`;
+  if (capture.status === 0) return undefined;
+  const failedCounted = report != null && parseTestReport(report).some((test) => !test.ok && !test.skipped);
+  if (failedCounted) return undefined;
+  return `${label} command exited with code ${capture.status} without a report of failed tests; treated as failed`;
+}
+
 export type RunProjectQaOptions = {
   projectRoot: string;
   spec: Pick<Spec, "id" | "acceptance" | "wireframesIndex">;
@@ -134,6 +148,7 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
   const needsPlaywright = opts.mode === "full" && specHasUi(opts.spec);
   let playwrightReport: unknown;
   let playwrightRan = false;
+  let playwrightCapture: CommandCapture | undefined;
   if (needsPlaywright) {
     const pwCapture = await runCommand(
       opts.projectRoot,
@@ -145,13 +160,39 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
     } else if (pwCapture.timedOut) {
       warnings.push(`playwright command timed out after ${timeoutMs} ms and was stopped`);
     }
+    playwrightCapture = pwCapture;
     const pwAbs = join(qaDir, "playwright.json");
     playwrightReport = await writeEvidence(opts.projectRoot, pwAbs, pwCapture);
     evidencePaths.push(".legion-cli/qa/playwright.json");
     playwrightRan = Boolean(pwCapture.started && playwrightReport && typeof playwrightReport === "object");
   }
 
-  const failClosed = !unitCapture.started || reportFailClosed(unitReport);
+  let runnerFailClosed = Boolean(unitCapture.timedOut);
+  const unitReason = runnerFailClosedReason(unitCapture, unitReport, "unit");
+  if (unitReason) {
+    warnings.push(unitReason);
+    runnerFailClosed = true;
+  }
+  if (playwrightCapture) {
+    const pwReason = runnerFailClosedReason(playwrightCapture, playwrightReport, "playwright");
+    if (pwReason) {
+      warnings.push(pwReason);
+      runnerFailClosed = true;
+    }
+    if (playwrightCapture.timedOut) runnerFailClosed = true;
+  }
+  const failClosed = !unitCapture.started || reportFailClosed(unitReport) || runnerFailClosed;
+  if (opts.spec.acceptance.some((ac) => ac.priority === "P0")) {
+    const seen = [
+      ...(unitReport != null ? parseTestReport(unitReport) : []),
+      ...(playwrightReport != null ? parseTestReport(playwrightReport) : []),
+    ];
+    if (seen.length > 0 && !seen.some((test) => test.priority === "P0")) {
+      warnings.push(
+        "spec has P0 acceptance criteria but no test is tagged @p0; untagged tests are scored P1 and do not fail the P0 gate",
+      );
+    }
+  }
   const scoreOpts = {
     spec: opts.spec,
     mode: opts.mode,

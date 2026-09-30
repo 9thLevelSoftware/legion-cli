@@ -3,7 +3,7 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { INTENT_Q, LegionRefuseError, canTransition, PHASES } from "../dist/index.js";
+import { INTENT_Q, LegionEngine, LegionRefuseError, canTransition, PHASES } from "../dist/index.js";
 import {
   initProject,
   makeQaScore,
@@ -15,6 +15,7 @@ import {
   seedPlanReady,
   withEngine,
   withFakeAdapter,
+  withReviewNotes,
   writeSpec,
   writeTask,
 } from "./helpers.js";
@@ -107,7 +108,7 @@ test("PASS readiness lands in plan_ready", async () => {
 
 test("executing stays until every slice task is done or blocked", async () => {
   await withFakeAdapter(async () => {
-    await withEngine(async ({ engine, store }) => {
+    await withEngine(async ({ engine, store, dir }) => {
       await initProject(engine);
       const verify = [passingVerificationCommand()];
       await seedPlanReady(store, {
@@ -132,7 +133,8 @@ test("executing stays until every slice task is done or blocked", async () => {
         slice.map((task) => `${task.id}:${task.status}`),
         ["TSK-0001:done", "TSK-0002:blocked"],
       );
-      const review = await engine.review();
+      // Review notes are outside execute's contract, so the reviewer is its own engine.
+      const review = await new LegionEngine(dir, undefined, withReviewNotes()).review();
       assert.equal(review.verdict, "PASS");
       assert.equal((await engine.getState()).phase, "executing");
     });
@@ -160,7 +162,7 @@ test("slice is all tasks of activeSpecId", async () => {
       );
       const review = await engine.review();
       assert.equal(review.verdict, "PASS");
-    });
+    }, withReviewNotes());
   });
 });
 
@@ -210,7 +212,7 @@ test("review PASS only if spawn created zero new tasks", async () => {
     assert.equal(pass.verdict, "PASS");
     assert.deepEqual(pass.createdTaskIds, []);
     assert.equal((await engine.getState()).lastReview, "PASS");
-  });
+  }, withReviewNotes());
   });
 });
 
@@ -485,7 +487,7 @@ test("reopening a blocked slice task after review PASS invalidates lastReview", 
         return true;
       },
     );
-  });
+  }, withReviewNotes());
   });
 });
 
@@ -511,6 +513,6 @@ test("qa is refused after a review that filed fix tasks until re-review PASS", a
     const score = await engine.qa({ score: makeQaScore() });
     assert.equal(score.pass, true);
     assert.equal((await engine.getState()).phase, "ready_to_ship");
-  });
+  }, withReviewNotes());
   });
 });

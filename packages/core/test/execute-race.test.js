@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { createLegionStore, isPidAlive } from "@9thlevelsoftware/legion-cli-persist";
+import { createLegionStore, isPidAlive, listOpenCommandIds } from "@9thlevelsoftware/legion-cli-persist";
 import { HINT, LegionEngine, LegionRefuseError } from "../dist/index.js";
 import {
+  failingVerificationCommand,
   initGitRepo,
   initProject,
   makeTask,
@@ -17,6 +18,7 @@ import {
   seedPlanReady,
   withEngine,
   withFakeAdapter,
+  withReviewNotes,
 } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
@@ -149,7 +151,7 @@ test("two processes execute auto: second is refused and never two in_progress", 
           () => parent.execute("auto"),
           (err) => {
             assert.equal(err instanceof LegionRefuseError, true);
-            assert.match(err.message, /in_progress/);
+            assert.match(err.message, /is live/);
             assert.equal(err.nextHint, HINT.status);
             return true;
           },
@@ -179,10 +181,10 @@ test("task amend is refused while review wait is live", async () => {
     await withEngine(async ({ store, dir }) => {
       const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "review-ready");
       const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "review-release");
-      const engine = new LegionEngine(dir, undefined, {
+      const engine = new LegionEngine(dir, undefined, withReviewNotes({
         skillsDir,
         fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
-      });
+      }));
       await initProject(engine);
       await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
       initGitRepo(dir);
@@ -193,7 +195,7 @@ test("task amend is refused while review wait is live", async () => {
         () => engine.amendTask("TSK-0001", contract),
         (err) => {
           assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /task amend is refused while review is running/);
+          assert.match(err.message, /review run .* is live/);
           assert.equal(err.nextHint, HINT.status);
           return true;
         },
@@ -223,7 +225,7 @@ test("ticket create is refused while execute wait is live", async () => {
         () => engine.fileTicket({ title: "park extra" }),
         (err) => {
           assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /ticket create is refused while /);
+          assert.match(err.message, /execute run .* is live/);
           assert.equal(err.nextHint, HINT.status);
           return true;
         },
@@ -340,7 +342,7 @@ test("amend and ship refuse while a fake long spawn is in_progress", async () =>
           }),
         (err) => {
           assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /in_progress/);
+          assert.match(err.message, /is live/);
           assert.equal(err.nextHint, HINT.status);
           return true;
         },
@@ -349,7 +351,7 @@ test("amend and ship refuse while a fake long spawn is in_progress", async () =>
         () => other.ship(),
         (err) => {
           assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /in_progress/);
+          assert.match(err.message, /is live/);
           assert.equal(err.nextHint, HINT.status);
           return true;
         },
@@ -423,5 +425,146 @@ test("empty lock file does not steal during a waiter", async () => {
     const { EngineLockedError } = await import("@9thlevelsoftware/legion-cli-persist");
     await assert.rejects(() => store.acquireLock({ timeoutMs: 200 }), EngineLockedError);
     assert.equal(await readFile(store.paths.lock, "utf8"), "");
+  });
+});
+
+// PR 4: "hands off during execute". One guard in the lock entry refuses every mutating verb
+// while a run is live; status/next/doctor and read-only verbs stay allowed.
+async function withHeldExecute(fn, opts = {}) {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ store, dir }) => {
+      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "hold-ready");
+      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "hold-release");
+      const engine = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
+      });
+      await initProject(engine);
+      await seedExecute(store, opts.seed);
+      if (opts.beforeGit) await opts.beforeGit(dir);
+      initGitRepo(dir);
+      const pending = engine.execute("auto");
+      await waitUntil(() => existsSync(readyPath), 10_000, "fake wait never became ready");
+      let released = false;
+      const release = async () => {
+        released = true;
+        await writeFile(releasePath, "go\n");
+        return pending;
+      };
+      try {
+        await fn({ store, dir, engine, pending, release });
+      } finally {
+        if (!released) {
+          await writeFile(releasePath, "go\n");
+          await pending.catch(() => undefined);
+        }
+      }
+    });
+  });
+}
+
+test("verify, spec, discuss, intent, ingest and control-mode are refused while execute is live", async () => {
+  await withHeldExecute(async ({ dir, release }) => {
+    const other = new LegionEngine(dir, undefined, { skillsDir });
+    const verbs = {
+      verify: () => other.verify(),
+      spec: () => other.draftSpec(),
+      discuss: () => other.startDiscuss(),
+      intent: () => other.beginIntent(),
+      ingest: () => other.ingest([join(dir, "src", "main.ts")]),
+      "control-mode": () => other.setControlMode("guarded"),
+    };
+    for (const [name, run] of Object.entries(verbs)) {
+      await assert.rejects(run, (err) => {
+        assert.equal(err instanceof LegionRefuseError, true, `${name}: ${err?.message}`);
+        assert.match(err.message, /execute run execute-[^ ]+ is live/, name);
+        assert.equal(err.nextHint, HINT.status, name);
+        return true;
+      });
+    }
+    const result = await release();
+    assert.equal(result.status, "done");
+  });
+});
+
+test("status, next and read-only verbs stay allowed while execute is live", async () => {
+  await withHeldExecute(async ({ dir, store, release }) => {
+    const other = new LegionEngine(dir, undefined, { skillsDir });
+    await other.recoverStaleInProgress();
+    assert.equal(await other.getControlMode(), "guarded");
+    assert.deepEqual(await other.assumeList(), []);
+    await other.nextTasks();
+    assert.equal((await store.readTask("TSK-0001")).data.status, "in_progress");
+    const result = await release();
+    assert.equal(result.status, "done");
+  });
+});
+
+test("a second engine's read-only entry does not restore the live run's open command", async () => {
+  await withHeldExecute(async ({ dir, release }) => {
+    const before = await listOpenCommandIds(dir);
+    assert.equal(before.length, 1, "the live run has one open engine command");
+    const other = new LegionEngine(dir, undefined, { skillsDir });
+    await other.recoverStaleInProgress();
+    assert.deepEqual(await listOpenCommandIds(dir), before);
+    const result = await release();
+    assert.equal(result.status, "done");
+    assert.deepEqual(await listOpenCommandIds(dir), []);
+  });
+});
+
+test("the owning run's own relock is not refused and its marker is cleared", async () => {
+  await withHeldExecute(async ({ dir, release }) => {
+    const markerDir = join(dir, ".legion-cli", "cache", "live-spawn");
+    const names = readdirSync(markerDir);
+    assert.equal(names.length, 1);
+    const marker = JSON.parse(readFileSync(join(markerDir, names[0]), "utf8"));
+    assert.equal(marker.enginePid, process.pid);
+    assert.equal(marker.taskId, "TSK-0001");
+    assert.equal(typeof marker.agentPid, "number", "the real engine records the agent pid in the marker");
+    assert.equal(marker.agentPid, process.pid);
+    assert.equal(typeof marker.agentStartedAt, "number");
+    assert.match(names[0], /^execute-/);
+    const result = await release();
+    assert.equal(result.status, "done");
+    assert.deepEqual(readdirSync(markerDir), []);
+  });
+});
+
+test("characterisation: a clean out-of-contract edit during a hold is reverted (hands off is the rule)", async () => {
+  // Accepted behavior (user decision: hands off, no concurrent-edit support). The guard blocks
+  // other legion verbs; an editor edit is still restored to the pre-spawn ref and reported.
+  await withHeldExecute(
+    async ({ dir, release }) => {
+      await writeFile(join(dir, "notes.txt"), "edited by a human mid-run\n", "utf8");
+      const result = await release();
+      assert.deepEqual(result.tasks[0].extrasReverted, ["notes.txt"]);
+      assert.equal(readFileSync(join(dir, "notes.txt"), "utf8").replace(/\r\n/g, "\n"), "original\n");
+    },
+    { beforeGit: (dir) => writeFile(join(dir, "notes.txt"), "original\n", "utf8") },
+  );
+});
+
+test("execute warns, naming the files, when the tree is dirty inside filesAllowed", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ store, dir }) => {
+      const engine = new LegionEngine(dir, undefined, { skillsDir });
+      await initProject(engine);
+      await seedExecute(store, { verify: [failingVerificationCommand()] });
+      await mkdir(join(dir, "src"), { recursive: true });
+      await writeFile(join(dir, "src", "main.ts"), "// committed\n", "utf8");
+      initGitRepo(dir);
+      await writeFile(join(dir, "src", "main.ts"), "// human edit before execute\n", "utf8");
+      const result = await engine.execute("auto");
+      assert.ok(
+        result.warnings.some((w) => /uncommitted changes inside filesAllowed/.test(w) && w.includes("src/main.ts")),
+        JSON.stringify(result.warnings),
+      );
+      // Documented: the dirty file is inside the contract, so a failed task's revert keeps it
+      // (or the agent's overwrite of it); it is never restored to the committed content.
+      assert.equal(result.status, "blocked");
+      const kept = readFileSync(join(dir, "src", "main.ts"), "utf8").split(String.fromCharCode(13) + String.fromCharCode(10)).join(String.fromCharCode(10));
+      assert.equal(kept, "// human edit before execute" + String.fromCharCode(10));
+    });
   });
 });

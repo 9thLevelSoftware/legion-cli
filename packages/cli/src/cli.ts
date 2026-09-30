@@ -372,7 +372,7 @@ export function createProgram(): Command {
     });
 
   addGlobalOptions(
-    program.command("review").description("Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review"),
+    program.command("review").description("Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review; PASS needs exit 0 and notes"),
   )
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .allowExcessArguments(false)

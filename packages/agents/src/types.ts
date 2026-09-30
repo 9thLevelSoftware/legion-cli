@@ -80,6 +80,8 @@ export interface AgentResult {
   stdoutPath: string;
   stderrPath: string;
   summaryPath?: string;
+  /** Spawn failure message (for example ENOENT) when the process never ran. */
+  errorMessage?: string;
 }
 
 export type GenericAdapterConfig = {
@@ -111,6 +113,10 @@ export type AdapterCreateOptions = {
   artifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
   timedOut?: boolean;
+  /** Fake only: exit code the fake agent reports (default 0). */
+  exitCode?: number;
+  /** Fake only: skip writing summary.md (an agent that produced nothing). */
+  omitSummary?: boolean;
   holdWait?: FakeHoldWait;
   onWait?: () => Promise<void>;
   /** Fixture: AgentHandle.pid (default process.pid). Use an exited child to prove post-wait recovery. */

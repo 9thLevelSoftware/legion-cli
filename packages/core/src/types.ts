@@ -36,6 +36,10 @@ export type LegionEngineOptions = {
   fakeArtifacts?: FakeArtifact[];
   fakeThrowAfterWrite?: boolean;
   fakeTimedOut?: boolean;
+  /** Test-only: exit code the fake agent reports. */
+  fakeExitCode?: number;
+  /** Test-only: fake agent writes no summary. */
+  fakeOmitSummary?: boolean;
   fakeHoldWait?: FakeHoldWait;
   fakeOnWait?: () => Promise<void>;
   fakeHandlePid?: number;
@@ -325,6 +329,10 @@ export type ExecuteTaskResult = {
   trustTierNote?: string;
   adapterId?: AdapterId;
   resolutionSource?: AdapterResolutionSource;
+  /** Set when the agent exited non-zero; shown as a warning (verification commands remain the evidence). */
+  agentExitWarning?: string;
+  /** Set when the tree was dirty inside the task filesAllowed at start (F-007 residual). */
+  dirtyWarning?: string;
 };
 
 export type ExecuteResult = {
@@ -341,6 +349,8 @@ export type VerifyResult = {
   notesPath?: string;
   createdTaskIds: string[];
   extrasReverted: string[];
+  /** One line per skipped or non-zero agent run; verify is optional, so these warn instead of failing. */
+  warnings: string[];
 };
 
 export type ReviewResult = {
@@ -348,6 +358,8 @@ export type ReviewResult = {
   createdTaskIds: string[];
   extrasReverted: string[];
   rewrittenExistingTaskIds: string[];
+  /** Non-zero agent exit on a review that still ended FAIL (filed tasks). */
+  warnings: string[];
 };
 
 export type ShipReceipt = {

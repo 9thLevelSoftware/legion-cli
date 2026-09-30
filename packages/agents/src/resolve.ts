@@ -45,6 +45,8 @@ export function createAdapter(id: AgentAdapterId, options: AdapterCreateOptions 
         holdWait: options.holdWait,
         onWait: options.onWait,
         handlePid: options.handlePid,
+        exitCode: options.exitCode,
+        omitSummary: options.omitSummary,
       });
     case "claude":
       return new ClaudeAdapter(options.extraArgs ?? []);
@@ -89,6 +91,8 @@ export function resolveAdapter(
     holdWait: options.holdWait,
     onWait: options.onWait,
     handlePid: options.handlePid,
+    exitCode: options.exitCode,
+    omitSummary: options.omitSummary,
   });
 }
 
