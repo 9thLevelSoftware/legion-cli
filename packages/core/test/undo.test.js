@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +28,7 @@ import {
   initGitRepo,
   initProject,
   makeTask,
+  passingVerificationCommand,
   patchState,
   seedFrozenSpec,
   seedPlanReady,
@@ -176,11 +178,40 @@ test("in_progress -> todo is illegal; undo cascades in_progress dependents to bl
 
 test("phase move outside LEGAL_PHASE_TRANSITIONS is refused by the engine", async () => {
   assert.equal(canTransition("initialized", "executing"), false);
+  assert.equal(canTransition("shipped", "executing"), true, "the one edge only undo uses");
   await withEngine(async ({ engine }) => {
     await initProject(engine);
-    await assert.rejects(() => engine.transition("executing"), (err) =>
-      isRefuse(err, /cannot transition from initialized to executing/, /legion-cli/),
-    );
+    await assert.rejects(() => engine.execute("auto"), (err) => err instanceof LegionRefuseError);
+    assert.equal((await engine.getState()).phase, "initialized");
+  });
+});
+
+test("the state write refuses a phase move the on-disk phase does not allow", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ dir, store }) => {
+      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "ready");
+      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "release");
+      const engine = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
+      });
+      await initProject(engine);
+      await seedPlanReady(store, {
+        task: { contract: { verificationCommands: [passingVerificationCommand()] } },
+      });
+      initGitRepo(dir);
+      const pending = engine.execute("auto");
+      for (let i = 0; i < 500 && !existsSync(readyPath); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(existsSync(readyPath), true, "fake wait never became ready");
+      // A writer that bypasses the engine abandons the project while the agent runs unlocked.
+      await patchState(store, { phase: "abandoned" });
+      await writeFile(releasePath, "go\n");
+      const result = await pending;
+      assert.match(JSON.stringify(result), /cannot transition from abandoned to executing/);
+      assert.equal((await store.readState()).data.phase, "abandoned", "the run must not resurrect the phase");
+    });
   });
 });
 
@@ -227,6 +258,7 @@ test("unknown-type legion commits are refused; ship commits are reverted", async
   await withEngine(async ({ dir, engine, store }) => {
     await initProject(engine);
     await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    await patchState(store, { phase: "shipped", lastReview: "PASS", lastQaId: "qa-1" });
     initGitRepo(dir);
     await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
     git(dir, ["add", "shipped.txt"]);
@@ -237,6 +269,52 @@ test("unknown-type legion commits are refused; ship commits are reverted", async
     assert.ok(result.commitSha);
     assert.notEqual(gitHead(dir), before);
     assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
+    const state = await engine.getState();
+    assert.equal(state.phase, "executing");
+    assert.equal(state.lastReview, null);
+    assert.equal(state.lastQaId, null);
+  });
+});
+
+test("undo of a ship commit that cannot revert cleanly aborts the revert and keeps local edits", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    await patchState(store, { phase: "shipped" });
+    initGitRepo(dir);
+    const notePath = join(dir, ".legion-cli", "note.md");
+    await writeFile(notePath, "before\n", "utf8");
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-m", "note"]);
+    await writeFile(notePath, "shipped\n", "utf8");
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-checkin`]);
+    const shipHead = gitHead(dir);
+    await writeFile(notePath, "my uncommitted edit\n", "utf8");
+
+    await assert.rejects(() => engine.undoLastTask(), (err) => isRefuse(err, /git revert failed/, /git status/));
+    assert.equal(gitHead(dir), shipHead);
+    assert.equal(existsSync(join(dir, ".git", "REVERT_HEAD")), false);
+    assert.equal(await readFile(notePath, "utf8"), "my uncommitted edit\n", "no reset --hard over the edit");
+    assert.equal((await engine.getState()).phase, "shipped");
+    assert.equal((await store.readTask("TSK-0001")).data.status, "done");
+  });
+});
+
+test("undo of a ship commit refuses when tracked edits outside .legion-cli would be at risk", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    await writeFile(join(dir, "app.txt"), "one\n", "utf8");
+    initGitRepo(dir);
+    await writeFile(join(dir, "shipped.txt"), "ship\n", "utf8");
+    git(dir, ["add", "shipped.txt"]);
+    git(dir, ["commit", "-m", `${SHIP_COMMIT_PREFIX} spec-checkin`]);
+    const shipHead = gitHead(dir);
+    await writeFile(join(dir, "app.txt"), "two\n", "utf8");
+    await assert.rejects(() => engine.undoLastTask(), (err) => isRefuse(err, /clean tracked tree/, /git status/));
+    assert.equal(gitHead(dir), shipHead);
+    assert.equal(await readFile(join(dir, "app.txt"), "utf8"), "two\n");
   });
 });
 
@@ -515,7 +593,6 @@ test("refusal matrix: illegal transitions are named refusals across callers", as
   const illegalPhases = [
     ["initialized", "executing"],
     ["abandoned", "executing"],
-    ["shipped", "executing"],
     ["uninitialized", "shipped"],
     ["ready_to_ship", "initialized"],
   ];
@@ -540,8 +617,8 @@ test("refusal matrix: illegal transitions are named refusals across callers", as
     await initProject(engine);
     await seedPlanReady(store, { phase: "executing", task: { status: "in_progress" } });
 
-    await assert.rejects(() => engine.transition("spec_draft"), (err) =>
-      isRefuse(err, /cannot transition from executing to spec_draft/),
+    await assert.rejects(() => engine.newSpec(), (err) =>
+      isRefuse(err, /Start a new spec after this one ships or is abandoned/),
     );
 
     const chatDropped = sanitizeChatAction({ type: "execute" }, { phase: "executing", utterance: "execute" });

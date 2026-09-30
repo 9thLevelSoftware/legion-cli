@@ -134,7 +134,7 @@ import {
   specIdFromName,
 } from "./intent.js";
 import { isAllowedPath } from "./contracts.js";
-import { assertCanTransition, assertLegalPhase } from "./phases.js";
+import { assertCanTransition } from "./phases.js";
 import { evaluateReadiness, type ReadinessReport } from "./readiness.js";
 import { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
 import {
@@ -503,31 +503,7 @@ export class LegionEngine {
     });
   }
 
-  async transition(to: Phase): Promise<void> {
-    const target = assertLegalPhase(to);
-    return this.#mutate(async () => {
-      const state = await this.#readState();
-      if (target === "initialized") {
-        refuse("run legion-cli init", HINT.init);
-      }
-      if (target === "spec_frozen") {
-        refuse("spec freeze requires legion-cli spec approve", HINT.specApprove);
-      }
-      if (target === "plan_ready" || target === "plan_failed") {
-        refuse("plan_ready and plan_failed require legion-cli plan", HINT.plan);
-      }
-      assertCanTransition(state.phase, target);
-      if (target === "ready_to_ship") {
-        await this.#assertReadyToShip(state);
-      }
-      if (target === "shipped") {
-        await this.#assertCanShip(state, {});
-      }
-      await this.#writeState({ ...state, phase: target });
-    });
-  }
-
-  async approveSpec(specId: string, actor: Actor): Promise<void> {
+  async approveSpec(specId: string, actor: Actor, opts: { message?: string } = {}): Promise<void> {
     return this.#mutate(async () => {
       const state = await this.#readState();
       if (state.phase !== "spec_draft") {
@@ -561,7 +537,11 @@ export class LegionEngine {
           frozenAt: nowIso(),
           frozenBy: actor.id,
         };
-        await this.store.writeSpec(frozen, specBody);
+        const note = opts.message?.trim();
+        await this.store.writeSpec(frozen, note ? `${specBody.trim()}
+
+Approved: ${note}
+` : specBody);
       }
       const project = await this.store.readProject();
       if (project.data.activeSpecId !== specId) {
@@ -685,7 +665,7 @@ export class LegionEngine {
       }
       const after = await this.#readState();
       if (after.phase !== phaseBefore) {
-        await this.#writeState({ ...after, phase: phaseBefore });
+        await this.#writeState({ ...after, phase: phaseBefore }, "ingest-restore");
       }
       return {
         ...receipt,
@@ -3336,7 +3316,16 @@ export class LegionEngine {
     return (await this.store.readState()).data;
   }
 
-  async #writeState(state: StateFile): Promise<void> {
+  /**
+   * Every phase change passes through here and is checked against the phase on disk (same-phase
+   * writes are fine). `allow` names the few writes that deliberately undo a move:
+   * a ship that failed after writing `shipped`, and ingest putting back the phase it started in.
+   */
+  async #writeState(state: StateFile, allow?: "ship-rollback" | "ingest-restore"): Promise<void> {
+    if (!allow) {
+      const onDisk = await this.#readState();
+      if (onDisk.phase !== state.phase) assertCanTransition(onDisk.phase, state.phase);
+    }
     await this.store.writeState(state, stateBody(state));
   }
 
@@ -3621,7 +3610,7 @@ export class LegionEngine {
         if (!keptRootCommit) {
           await rm(toFsPath(this.projectRoot, receiptPath), { force: true });
         }
-        await this.#writeState(state);
+        await this.#writeState(state, "ship-rollback");
         await this.#audit("ship_rolled_back", state.phase, actor, {
           specId,
           receiptPath,

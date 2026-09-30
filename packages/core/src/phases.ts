@@ -17,7 +17,8 @@ export const LEGAL_PHASE_TRANSITIONS: Readonly<Record<Phase, readonly Phase[]>> 
   plan_ready: ["executing", "abandoned"],
   executing: ["executing", "ready_to_ship", "shipped", "abandoned"],
   ready_to_ship: ["shipped", "executing", "abandoned"],
-  shipped: ["intent_draft"],
+  // shipped -> executing is used only by undo (undo.ts); no engine verb writes it.
+  shipped: ["intent_draft", "executing"],
   abandoned: ["intent_draft"],
 };
 
