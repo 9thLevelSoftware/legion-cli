@@ -38,9 +38,10 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function assistantMessage(json: unknown): { content: string; toolCalls: OpenAiToolCall[] } {
+function assistantMessage(json: unknown): { content: string; toolCalls: OpenAiToolCall[]; hasMessage: boolean } {
   const root = asRecord(json);
   const choices = Array.isArray(root.choices) ? root.choices : [];
+  const hasMessage = choices.length > 0 && Object.keys(asRecord(asRecord(choices[0]).message)).length > 0;
   const first = asRecord(choices[0]);
   const message = asRecord(first.message);
   const content = typeof message.content === "string" ? message.content : "";
@@ -58,7 +59,7 @@ function assistantMessage(json: unknown): { content: string; toolCalls: OpenAiTo
       },
     });
   }
-  return { content, toolCalls };
+  return { content, toolCalls, hasMessage };
 }
 
 class HttpHandle implements HttpAgentHandle {
@@ -195,7 +196,12 @@ export class HttpAdapter {
           lookup: this.#lookup,
         });
         stdout.push(`HTTP ${res.status} POST /chat/completions round=${round}\n`);
-        const { content, toolCalls } = assistantMessage(res.json);
+        const { content, toolCalls, hasMessage } = assistantMessage(res.json);
+        // A 200 with an error body, no choices or an empty message is a failed run, not an empty success.
+        if (!hasMessage) return fail("adapter.http response had no choices[0].message");
+        if (toolCalls.length === 0 && content.trim().length === 0) {
+          return fail("adapter.http response had neither content nor tool calls");
+        }
         lastContent = content;
         if (toolCalls.length === 0) break;
         messages.push({
@@ -204,6 +210,7 @@ export class HttpAdapter {
           tool_calls: toolCalls,
         });
         for (const call of toolCalls) {
+          if (signal.aborted) return fail("adapter.http aborted", { aborted: true, exitCode: null });
           const output = await dispatchToolCall(call, job.httpHost, job.skillId);
           messages.push({
             role: "tool",

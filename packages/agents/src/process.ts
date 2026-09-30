@@ -124,6 +124,7 @@ class ChildAgentHandle implements AgentHandle {
   readonly #stderr: WriteStream;
   readonly #done: Promise<AgentResult>;
   #exitCode: number | null = null;
+  #errorMessage: string | undefined;
   #exited = false;
   #aborted = false;
   #timedOut = false;
@@ -158,7 +159,10 @@ class ChildAgentHandle implements AgentHandle {
     };
 
     opts.child.once("exit", (code) => onExit(code));
-    opts.child.once("error", () => onExit(null));
+    opts.child.once("error", (err) => {
+      this.#errorMessage ??= err instanceof Error ? err.message : String(err);
+      onExit(null);
+    });
 
     const timeoutMs = opts.job.timeoutMs > 0 ? opts.job.timeoutMs : DEFAULT_TIMEOUT_MS;
     this.#timeout = setTimeout(() => {
@@ -208,6 +212,7 @@ class ChildAgentHandle implements AgentHandle {
       stdoutPath: this.#stdoutPath,
       stderrPath: this.#stderrPath,
       summaryPath,
+      ...(this.#errorMessage ? { errorMessage: this.#errorMessage } : {}),
     });
   }
 }

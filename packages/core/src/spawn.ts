@@ -164,6 +164,8 @@ export type OptionalSpawnResult = {
   revert: RevertResult | null;
   error?: unknown;
   timedOut?: boolean;
+  exitCode?: number | null;
+  agentErrorMessage?: string;
   durationMs?: number;
   resolution?: AdapterResolution;
   binary?: string;
@@ -184,6 +186,8 @@ export type SkillSpawnOpts = {
   fakeArtifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
   timedOut?: boolean;
+  exitCode?: number;
+  omitSummary?: boolean;
   required?: boolean;
   cliAdapter?: AdapterId;
   taskAdapter?: AdapterId;
@@ -228,7 +232,27 @@ export type WaitedSkillSpawn = {
   error?: unknown;
   timedOut: boolean;
   durationMs: number;
+  /** Agent exit code; null when killed or never started. */
+  exitCode?: number | null;
+  /** Spawn failure message (for example ENOENT) when the process never ran. */
+  agentErrorMessage?: string;
+  aborted?: boolean;
 };
+
+/** Describes a run that did not end with exit code 0, or undefined when it did. A timeout is reported separately. */
+export function agentExitProblem(waited: {
+  exitCode?: number | null;
+  timedOut?: boolean;
+  agentErrorMessage?: string;
+}): string | undefined {
+  if (waited.timedOut || waited.exitCode === undefined || waited.exitCode === 0) return undefined;
+  if (waited.exitCode === null) {
+    return waited.agentErrorMessage
+      ? `agent did not run to completion (${waited.agentErrorMessage})`
+      : "agent was killed or did not start (no exit code)";
+  }
+  return `agent exited with code ${waited.exitCode}`;
+}
 
 const CONFIG_READ_SET = [
   "package.json",
@@ -438,6 +462,8 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     artifacts: opts.fakeArtifacts ?? [],
     throwAfterWrite: opts.throwAfterWrite,
     timedOut: opts.timedOut,
+    exitCode: opts.exitCode,
+    omitSummary: opts.omitSummary,
     holdWait: opts.holdWait,
     onWait: opts.onWait,
     handlePid: opts.handlePid,
@@ -469,7 +495,8 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     skillId: opts.skillId,
     skillDir,
     skillsDir,
-    promptBody: opts.promptBody,
+    // the run id is only known here; prompts name run-cache paths with a literal <id>
+    promptBody: opts.promptBody.replaceAll("<id>", runId),
     allowedRoots,
     fileContract: opts.fileContract,
     store: opts.store,
@@ -620,14 +647,20 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
 export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spawned: true }>): Promise<WaitedSkillSpawn> {
   let error: unknown;
   let timedOut = false;
+  let exitCode: number | null | undefined;
+  let agentErrorMessage: string | undefined;
+  let aborted = false;
   try {
     const agentResult = await started.handle.wait();
     timedOut = Boolean(agentResult.timedOut);
+    exitCode = agentResult.exitCode;
+    agentErrorMessage = agentResult.errorMessage;
+    aborted = Boolean(agentResult.aborted);
     if (timedOut) error = new AgentError("spawn timed out");
   } catch (err) {
     error = err;
   }
-  return { error, timedOut, durationMs: Date.now() - started.started };
+  return { error, timedOut, durationMs: Date.now() - started.started, exitCode, agentErrorMessage, aborted };
 }
 
 export async function finishStartedSpawn(
@@ -716,6 +749,8 @@ export async function optionalSkillSpawn(opts: SkillSpawnOpts): Promise<Optional
     revert,
     error: waited.error,
     timedOut: waited.timedOut,
+    exitCode: waited.exitCode,
+    agentErrorMessage: waited.agentErrorMessage,
     durationMs: waited.durationMs,
     resolution: started.resolution,
     binary: started.binary,

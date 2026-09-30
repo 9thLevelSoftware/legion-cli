@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -220,5 +220,47 @@ test("intent discuss spec do not accept --adapter", async () => {
     assert.doesNotMatch(normalize(intentHelp.stdout), /--adapter/);
     const discussHelp = runCli(["help", "discuss"]);
     assert.doesNotMatch(normalize(discussHelp.stdout), /--adapter/);
+  });
+});
+
+const INTENT_INPUT =
+  [
+    "Teammates who keep missing who's in the office.",
+    "They ping five chat apps every morning.",
+    "People can tap in or out on their phone in under five seconds.",
+    "Do not change auth. We will not build payroll, badges, or calendar sync.",
+    "Y",
+  ].join("\n") + "\n";
+
+test("intent, discuss and spec stop with a doctor hint when no agent is available", async () => {
+  await withTempDir(async (dir) => {
+    const noAgent = { noAgent: true, env: { LEGION_CLI_ADAPTER: "" } };
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+
+    // intent confirmation is the step that spawns; the refusal must leave the phase and files alone.
+    const intent = runCli(["intent", "--project", dir, "--done"], { ...noAgent, input: INTENT_INPUT });
+    assert.notEqual(intent.status, 0);
+    assert.match(normalize(intent.stderr + intent.stdout), /no agent available for interview/);
+    assert.match(normalize(intent.stderr + intent.stdout), /legion-cli doctor/);
+    assert.match(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8"), /phase: intent_draft/);
+    const specsDir = join(dir, ".legion-cli", "specs");
+    assert.equal(existsSync(specsDir) ? (await readdir(specsDir)).length : 0, 0);
+
+    // the refused run already saved the answers; with an agent only the confirmation is left
+    const ok = runCli(["intent", "--project", dir, "--done"], { input: "Y\n" });
+    assert.equal(ok.status, 0, ok.stderr);
+    const discuss = runCli(["discuss", "--project", dir], { ...noAgent, input: "Y\nY\nY\n" });
+    assert.notEqual(discuss.status, 0);
+    assert.match(normalize(discuss.stderr + discuss.stdout), /no agent available for discuss/);
+    assert.match(normalize(discuss.stderr + discuss.stdout), /legion-cli doctor/);
+    assert.match(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8"), /phase: intent_ready/);
+
+    const accepted = acceptDiscuss(dir);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    const spec = runCli(["spec", "--project", dir], noAgent);
+    assert.notEqual(spec.status, 0);
+    assert.match(normalize(spec.stderr + spec.stdout), /no agent available for spec/);
+    assert.match(normalize(spec.stderr + spec.stdout), /legion-cli doctor/);
   });
 });

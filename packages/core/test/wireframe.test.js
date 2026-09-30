@@ -19,6 +19,9 @@ import {
 import { initGitRepo, initProject, withEngine } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
+
+// intent, discuss and spec stop without a spawnable agent; this file drives them with the in-process fake.
+process.env.LEGION_CLI_ADAPTER = "fake";
 const fixtureNeutral = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "design-systems", "_fixture-neutral");
 
 async function fillTwoScreens(engine) {

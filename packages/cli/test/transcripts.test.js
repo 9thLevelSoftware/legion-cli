@@ -737,7 +737,15 @@ test("Checkin session key lines match the design-doc walkthrough (golden)", asyn
     const execute = runCli(["execute", "--until-blocked", "--project", dir], fake);
     assert.equal(execute.status, 0, `${execute.stdout}\n${execute.stderr}`);
 
-    const review = runCli(["review", "--project", dir], fake);
+    // a fake reviewer that leaves notes (existing artifact seam); without them review is refused, not PASS
+    const review = runCli(["review", "--project", dir], {
+      env: {
+        ...fake.env,
+        LEGION_CLI_FAKE_ARTIFACTS: JSON.stringify([
+          { path: ".legion-cli/cache/runs/<id>/review.md", content: "Fake review: the slice meets the spec." },
+        ]),
+      },
+    });
     assert.equal(review.status, 0, `${review.stdout}\n${review.stderr}`);
 
     const specDoc = await engine.store.readSpec("spec-checkin");
