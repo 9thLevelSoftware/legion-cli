@@ -6,9 +6,9 @@ export {
 } from "./catalog.js";
 export {
   assembleSessionBrief,
-  briefCounters,
+  briefCounters, // @internal test support
   buildSessionBrief,
-  resetBriefCounters,
+  resetBriefCounters, // @internal test support
   ensureWikiIndex,
   renderSessionBrief,
   SESSION_BRIEF_CHAR_CAP,

@@ -273,3 +273,84 @@ test("F-034 manifest walk visits no entry under worktrees, index, cache, sandbox
     assert.ok(pinnedVisited.length < 15, `visited ${pinnedVisited.length}`);
   });
 });
+
+test("F-034 narrowed manifest walk equals the old full-walk-plus-filter manifest for every extra-root shape", async () => {
+  const { listRestoreManifestPaths, isRestoreManifestPath } = await import("../dist/index.js");
+  const { readdir } = await import("node:fs/promises");
+  await withTempDir(async (dir) => {
+    const put = async (rel) => {
+      await mkdir(join(dir, ...rel.split("/").slice(0, -1)), { recursive: true });
+      await writeFile(join(dir, ...rel.split("/")), "x\n");
+    };
+    const files = [
+      ".legion-cli/STATE.md",
+      ".legion-cli/config.yaml",
+      ".legion-cli/stray.txt",
+      ".legion-cli/tasks/TSK-0001.md",
+      ".legion-cli/tasks/sub/deep.md",
+      ".legion-cli/specs/spec-a/prd.md",
+      ".legion-cli/specs/spec-a/wireframes/w.html",
+      ".legion-cli/qa/scores/q1.json",
+      ".legion-cli/wiki/README.md",
+      ".legion-cli/wiki/product/intent.md",
+      ".legion-cli/wiki/product/a1.md",
+      ".legion-cli/design/tokens.json",
+      ".legion-cli/design/sys/x.css",
+      ".legion-cli/map/ARCHITECTURE.md",
+      ".legion-cli/map/fingerprints.json",
+      ".legion-cli/tickets/T-1.md",
+      ".legion-cli/tickets/sub/T-2.md",
+      ".legion-cli/packets/P-1.md",
+      ".legion-cli/discuss/d1/notes.md",
+      ".legion-cli/decisions/D-1.md",
+      ".legion-cli/plans/p.md",
+      ".legion-cli/worktrees/run/pr-1/src/a.ts",
+      ".legion-cli/worktrees/run/pr-1/.legion-cli/tasks/x.md",
+      ".legion-cli/index/journal/commands/c1.json",
+      ".legion-cli/index/pre-images/ab/cd",
+      ".legion-cli/cache/runs/r1/resume.json",
+      ".legion-cli/cache/live-spawn/r1.json",
+      ".legion-cli/sandbox/s/a",
+      ".legion-cli/chat/c.json",
+      ".legion-cli/audit/2026-01-01.md",
+      ".legion-cli/runs/r/a",
+    ];
+    for (const rel of files) await put(rel);
+
+    async function fullWalk(rel, out) {
+      const entries = await readdir(join(dir, ...rel.split("/")), { withFileTypes: true });
+      for (const entry of entries) {
+        const posix = `${rel}/${entry.name}`;
+        if (entry.isDirectory()) await fullWalk(posix, out);
+        else if (entry.isFile()) out.push(posix);
+      }
+    }
+    const all = [];
+    await fullWalk(".legion-cli", all);
+    const reference = (extra) => all.filter((p) => isRestoreManifestPath(p, extra)).sort();
+
+    const shapes = [
+      [],
+      [".legion-cli/STATE.md"],
+      [".legion-cli/wiki/README.md"],
+      [".legion-cli/wiki/**"],
+      [".legion-cli/wiki/*/intent.md"],
+      [".legion-cli/wiki/product/a?.md"],
+      [".legion-cli/design/**"],
+      [".legion-cli/design/*.json"],
+      [".legion-cli/map/ARCHITECTURE.md", ".legion-cli/map/fingerprints.json"],
+      [".legion-cli/tickets/**", ".legion-cli/packets/*.md"],
+      [".legion-cli/*/notes.md"],
+      [".legion-cli/d*/**"],
+      [".legion-cli/**"],
+      [".legion-cli/*"],
+      [".legion-cli/cache/**", ".legion-cli/worktrees/**", ".legion-cli/index/**"],
+      [".legion-cli/discuss/d1", ".legion-cli/decisions/D-1.md", ".legion-cli/missing/**"],
+      ["src/outside.ts", "wiki/**"],
+    ];
+    for (const extra of shapes) {
+      const got = await listRestoreManifestPaths(dir, extra);
+      assert.deepEqual(got, reference(extra), `extra roots ${JSON.stringify(extra)}`);
+    }
+  });
+});

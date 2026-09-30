@@ -773,6 +773,7 @@ export class LegionEngine {
           resolveBinary: opts.resolveBinary,
           spawnLsp: opts.spawnLsp,
           lspDeadlineMs: opts.lspDeadlineMs,
+          maxModules: opts.maxModules,
         });
       } catch (err) {
         if (err instanceof MapError) refuse(err.message, err.nextHint);
@@ -807,7 +808,7 @@ export class LegionEngine {
         });
         await writeMapFile(
           architecturePath,
-          mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints)),
+          mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints, { omitted: generated.omitted })),
           { root: this.projectRoot },
         );
         if (revert.incident) {
@@ -3680,6 +3681,9 @@ export class LegionEngine {
     // Only a task that is (or may be) in flight needs a run lookup: skip the cache/runs scan when
     // there is no current task and the summary index shows no in_progress/verifying task. An
     // unreadable task (ok:false) can never be recovered (readTask throws below), so it is ignored.
+    // Assumption: the summary index is an mtime+size cache under index/ (agents cannot write it); a
+    // status flip that keeps both identical would hide an in-flight task until the next lock entry
+    // sees a changed file. Reading every task file instead would cost O(tasks) parsing per lock entry.
     if (!state.currentTaskId) {
       const summaries = await listTaskSummaries(this.projectRoot);
       const inFlight = summaries.some(

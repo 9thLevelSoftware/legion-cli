@@ -524,17 +524,44 @@ test("F-028 map degrades above 10000 modules, keeps the largest and says so in A
   });
 });
 
-test("F-028 map at exactly the cap has no degrade note", async () => {
+test("F-028 degrade keeps the largest modules, ties by path, reads only kept files, deterministically", async () => {
   const { walkSourcesReport } = await import("../dist/index.js");
   await withTempDir(async (dir) => {
-    await writeManyTs(dir, 12);
-    const report = await walkSourcesReport({ projectRoot: dir, roots: null, ignore: [], maxModules: 12 });
-    assert.equal(report.files.length, 12);
-    assert.equal(report.omitted, 0);
-    const over = await walkSourcesReport({ projectRoot: dir, roots: null, ignore: [], maxModules: 5 });
-    assert.equal(over.files.length, 5);
-    assert.equal(over.omitted, 7);
-    assert.equal(over.total, 12);
+    await mkdir(join(dir, "src"), { recursive: true });
+    // Distinct sizes: g (largest) .. e; then a tie group a,b,c,d of equal size.
+    const body = (n) => "export const x = 1;\n".repeat(n);
+    const sizes = { g: 9, f: 8, e: 7, a: 1, b: 1, c: 1, d: 1 };
+    for (const [name, n] of Object.entries(sizes)) await writeFile(join(dir, "src", name + ".ts"), body(n));
+    const all = await walkSourcesReport({ projectRoot: dir, roots: null, ignore: [], maxModules: 7 });
+    assert.equal(all.files.length, 7);
+    assert.equal(all.omitted, 0);
+    assert.equal(all.filesRead, 7);
+    const run = () => walkSourcesReport({ projectRoot: dir, roots: null, ignore: [], maxModules: 5 });
+    const first = await run();
+    const second = await run();
+    assert.deepEqual(first.files.map((f) => f.path), ["src/a.ts", "src/b.ts", "src/e.ts", "src/f.ts", "src/g.ts"]);
+    assert.deepEqual(second.files.map((f) => f.path), first.files.map((f) => f.path));
+    assert.equal(first.omitted, 2);
+    assert.equal(first.total, 7);
+    assert.ok(first.filesRead <= 5, "files read " + first.filesRead);
+  });
+});
+
+test("F-028 the degraded note is refreshed when only the omitted count changes", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, "src"), { recursive: true });
+    const big = "export const x = 1;\n".repeat(9);
+    for (const name of ["a", "b", "c"]) await writeFile(join(dir, "src", name + ".ts"), big);
+    await writeFile(join(dir, "src", "s1.ts"), "export const s = 1;\n");
+    const archPath = join(dir, ".legion-cli", "map", "ARCHITECTURE.md");
+    const first = await generateMap(dir, { maxModules: 3 });
+    assert.equal(first.omitted, 1);
+    assert.match(await readFile(archPath, "utf8"), /1 smaller modules were left out/);
+    await writeFile(join(dir, "src", "s2.ts"), "export const s = 2;\n");
+    const second = await generateMap(dir, { maxModules: 3 });
+    assert.equal(second.omitted, 2);
+    assert.deepEqual(second.changed, []);
+    assert.match(await readFile(archPath, "utf8"), /2 smaller modules were left out/);
   });
 });
 

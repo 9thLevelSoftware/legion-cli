@@ -34,6 +34,8 @@ export type WalkedFile = {
   text: string;
 };
 
+type Candidate = Omit<WalkedFile, "text"> & { size: number };
+
 /** Minimatch-lite for ignore globs (`**`, `*`, `?`). */
 export function globToRegExp(glob: string): RegExp {
   const pattern = glob.replaceAll("\\", "/");
@@ -122,8 +124,10 @@ export type WalkReport = {
   files: WalkedFile[];
   /** Modules found beyond the cap and left out (the smallest ones). */
   omitted: number;
-  /** Modules found before degrading. */
+  /** Candidate modules found before degrading. */
   total: number;
+  /** Files whose contents were read (at most the kept count plus unreadable/binary ones). */
+  filesRead: number;
 };
 
 export async function walkSources(opts: {
@@ -147,7 +151,8 @@ export async function walkSourcesReport(opts: {
   const maxModules = opts.maxModules ?? MAX_MODULES;
   const projectRoot = resolve(opts.projectRoot);
   const rules = compileIgnore(opts.ignore);
-  const out: WalkedFile[] = [];
+  // The walk keeps metadata only; contents are read after selection, for the kept files alone.
+  const out: Candidate[] = [];
   const seenDirs = new Set<string>();
   const seenFiles = new Set<string>();
   const starts =
@@ -216,15 +221,8 @@ export async function walkSourcesReport(opts: {
       }
       const size = targetSize ?? meta.size;
       if (size > MAX_FILE_BYTES) continue;
-      let buf: Buffer;
-      try {
-        buf = await readFile(abs);
-      } catch {
-        continue;
-      }
-      if (buf.byteLength > MAX_FILE_BYTES || looksBinary(buf)) continue;
       seenFiles.add(posix);
-      out.push({ path: posix, absPath: abs, language, text: buf.toString("utf8") });
+      out.push({ path: posix, absPath: abs, language, size });
     }
   }
 
@@ -245,9 +243,23 @@ export async function walkSourcesReport(opts: {
   let kept = out;
   if (total > maxModules) {
     kept = [...out]
-      .sort((a, b) => b.text.length - a.text.length || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+      .sort((x, y) => y.size - x.size || (x.path < y.path ? -1 : x.path > y.path ? 1 : 0))
       .slice(0, maxModules);
   }
-  kept.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return { files: kept, omitted: total - kept.length, total };
+  kept.sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
+  const files: WalkedFile[] = [];
+  let filesRead = 0;
+  for (const candidate of kept) {
+    let buf: Buffer;
+    filesRead += 1;
+    try {
+      buf = await readFile(candidate.absPath);
+    } catch {
+      continue;
+    }
+    if (buf.byteLength > MAX_FILE_BYTES || looksBinary(buf)) continue;
+    const { size: _size, ...rest } = candidate;
+    files.push({ ...rest, text: buf.toString("utf8") });
+  }
+  return { files, omitted: total - kept.length, total, filesRead };
 }

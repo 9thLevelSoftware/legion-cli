@@ -22,7 +22,7 @@ import { twoLineSummary } from "./parser.js";
 
 export const SESSION_BRIEF_CHAR_CAP = 24_000;
 
-/** Work counters (tests assert bounded work, not wall time). */
+/** @internal Work counters for tests (assert bounded work, not wall time); not a stable API. */
 export const briefCounters = { renders: 0, summaries: 0, bodiesLoaded: 0 };
 
 export function resetBriefCounters(): void {

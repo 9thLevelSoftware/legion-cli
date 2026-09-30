@@ -779,14 +779,14 @@ test("garden stays report-only and does not write the wiki catalog", async () =>
   });
 });
 
-test("F-029 brief at 6000 pages: at most two renders, bodies read bounded by the cap not the wiki", async () => {
+test("F-029 brief at 3000 pages: at most two renders on the wiki-trim path, bodies read bounded by the cap", async () => {
   const { mkdir, writeFile } = await import("node:fs/promises");
   const { join } = await import("node:path");
   const { briefCounters, resetBriefCounters, SESSION_BRIEF_CHAR_CAP } = await import("../dist/index.js");
   await withStore(async ({ dir, store }) => {
     const pagesDir = join(dir, ".legion-cli", "wiki", "bulk");
     await mkdir(pagesDir, { recursive: true });
-    const total = 6000;
+    const total = 3000;
     for (let start = 0; start < total; start += 250) {
       const jobs = [];
       for (let i = start; i < Math.min(total, start + 250); i += 1) {
@@ -804,8 +804,11 @@ test("F-029 brief at 6000 pages: at most two renders, bodies read bounded by the
     resetBriefCounters();
     const brief = await buildSessionBrief(store);
     assert.ok(briefCounters.renders <= 2, `renders ${briefCounters.renders}`);
-    // Each page line is at least ~30 chars, so the cap bounds the pages that can ever be shown.
-    assert.ok(briefCounters.bodiesLoaded < total / 2, `bodies loaded ${briefCounters.bodiesLoaded}`);
+    // Renders: 1 (fixed part) + 1 (final) on the wiki-trim path; the skills-description fallbacks
+    // (not exercised here) can add up to 2 more. Each page line here is >= 40 chars, so the cap admits
+    // at most cap/40 pages; allow a small slack for the page that crosses the cap.
+    const maxPages = Math.ceil(SESSION_BRIEF_CHAR_CAP / 40) + 2;
+    assert.ok(briefCounters.bodiesLoaded <= maxPages, `bodies loaded ${briefCounters.bodiesLoaded} > ${maxPages}`);
     assert.ok(briefCounters.summaries <= briefCounters.bodiesLoaded);
     assert.ok(brief.wiki.length > 0 && brief.wiki.length < total);
     assert.ok(brief.characterCount <= SESSION_BRIEF_CHAR_CAP);

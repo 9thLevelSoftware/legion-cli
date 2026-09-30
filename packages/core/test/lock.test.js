@@ -391,6 +391,25 @@ test("F-031: recovery skips the cache/runs scan with no current task and no in-f
   });
 });
 
+test("F-031: recovery still scans when a task is current or a task is verifying", async () => {
+  for (const scenario of ["current", "verifying"]) {
+    await withEngine(async ({ dir, store, engine }) => {
+      await initProject(engine);
+      const status = scenario === "current" ? "in_progress" : "verifying";
+      await writeTask(store, makeTask({ id: "TSK-0001", status }));
+      const state = await store.readState();
+      await store.writeState(
+        { ...state.data, phase: "executing", currentTaskId: scenario === "current" ? "TSK-0001" : null },
+        state.body,
+      );
+      await mkdir(join(dir, ".legion-cli", "cache", "runs"), { recursive: true });
+      resetListCacheResumesCalls();
+      await engine.recoverStaleInProgress();
+      assert.equal(listCacheResumesCalls, 1, `scenario ${scenario} must scan`);
+    });
+  }
+});
+
 test("second execute is refused while a task is verifying", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ dir, store }) => {
