@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, open, type FileHandle } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { scrubSecretsEnv } from "./env-scrub.js";
-import { cmdScriptLaunch, resolveBinary, unwrapCmdShim } from "./which.js";
+import { cmdScriptLaunch, resolveBinary, unwrapCmdShim, withNoCwdExeSearch } from "./which.js";
 
 export type RunCommandOptions = {
   cwd: string;
@@ -97,7 +97,7 @@ function buildEnv(opts: RunCommandOptions): NodeJS.ProcessEnv {
       : scrubSecretsEnv(process.env, { extraNames: opts.secretEnvNames ?? [] });
   // A nested `node --test` inherits this and exits 0 without running anything.
   delete env.NODE_TEST_CONTEXT;
-  return { ...env, ...opts.envOverrides };
+  return withNoCwdExeSearch({ ...env, ...opts.envOverrides });
 }
 
 function killTree(child: ChildProcess): void {

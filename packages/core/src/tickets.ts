@@ -1,3 +1,4 @@
+import { normalizePathKey } from "@9thlevelsoftware/legion-cli-schema";
 import { mergeFilesForbidden } from "@9thlevelsoftware/legion-cli-graph";
 import {
   AdapterIdSchema,
@@ -72,13 +73,66 @@ export function parseExtraJson(raw: unknown): NewTicket[] {
         expectedArtifacts: Array.isArray(rec.expectedArtifacts)
           ? rec.expectedArtifacts.filter((path): path is string => typeof path === "string")
           : undefined,
-        verificationCommands: Array.isArray(rec.verificationCommands)
-          ? rec.verificationCommands.filter((cmd): cmd is string => typeof cmd === "string")
-          : undefined,
+        // verificationCommands are never taken from agent output: an agent-filed ticket runs with
+        // its parent's commands (engine.ts #fileTicketLocked), so the agent cannot certify itself.
       },
     });
   }
   return tickets;
+}
+
+const ENTRY_BASENAMES = new Set([
+  "package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "pnpm-workspace.yaml",
+  "yarn.lock", "bun.lock", "bun.lockb", ".npmrc", ".yarnrc", ".yarnrc.yml", "makefile", "gnumakefile",
+  "justfile", "taskfile.yml", "taskfile.yaml", "pyproject.toml", "tox.ini", "pytest.ini", "setup.cfg",
+  "setup.py", "conftest.py", "noxfile.py", "cargo.toml", "cargo.lock", "build.rs", "go.mod", "go.sum",
+  "gemfile", "gemfile.lock", "rakefile", "build.gradle", "build.gradle.kts", "pom.xml", ".gitlab-ci.yml",
+  "jenkinsfile", "dockerfile", "bunfig.toml", ".swcrc", "cmakelists.txt", "deno.json", "deno.jsonc",
+  "deno.lock", "composer.json", "composer.lock", "requirements.txt", "constraints.txt", "pipfile", "pipfile.lock",
+  "poetry.lock", "uv.lock", "directory.build.props", "directory.build.targets", "global.json",
+  "nuget.config", "settings.gradle", "settings.gradle.kts", "gradlew", "mvnw", "flake.nix", "shell.nix", ".babelrc", ".mocharc.json", ".mocharc.js", ".mocharc.yml",
+]);
+const ENTRY_BASENAME_PATTERNS = [
+  /^next\.config\..+$/,
+  /^requirements[^/]*\.txt$/,
+  /\.(csproj|vbproj|fsproj|sln|slnx|gemspec)$/,
+  /^tsconfig(\..+)?\.json$/,
+  /^(vitest|vite|jest|playwright|karma|babel|rollup|webpack|eslint|prettier|cypress|tsup|turbo)\.config\..+$/,
+  /^\.eslintrc(\..+)?$/,
+  /^\.prettierrc(\..+)?$/,
+  /\.(test|spec)\.[^.]+$/,
+];
+const ENTRY_DIRS = new Set([
+  "scripts", ".github", ".husky", ".githooks", ".circleci", ".gitlab", "test", "tests", "__tests__", "spec", "specs", "e2e",
+]);
+
+/**
+ * True when a path is something a verification command runs or is configured by (F-039): package
+ * manifests and lockfiles, build/test/lint config, scripts, CI and hook dirs, test files. An agent
+ * ticket that may edit these could rewrite what its inherited command executes. Also true for any
+ * path named by a token of the inherited commands.
+ */
+export function touchesVerificationEntryPoint(paths: readonly string[], commands: readonly string[] = []): boolean {
+  const referenced = new Set(
+    commands.flatMap((cmd) => cmd.split(/\s+/)).map((tok) => normalizeEntryPath(tok.replace(/^["']|["']$/g, ""))).filter(Boolean),
+  );
+  return paths.some((raw) => {
+    const path = normalizeEntryPath(raw);
+    if (!path) return false;
+    const segments = path.split("/");
+    const base = segments.at(-1) ?? "";
+    return (
+      ENTRY_BASENAMES.has(base) ||
+      ENTRY_BASENAME_PATTERNS.some((pattern) => pattern.test(base)) ||
+      segments.slice(0, -1).some((seg) => ENTRY_DIRS.has(seg)) ||
+      referenced.has(path)
+    );
+  });
+}
+
+/** Backslashes to "/", then the shared segment-wise key (case, trailing dots/spaces, :streams). */
+function normalizeEntryPath(raw: string): string {
+  return normalizePathKey(raw.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, ""));
 }
 
 export function taskMarkdownBody(task: Task): string {

@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { WIKI_INDEX_STORE_PATH } from "@9thlevelsoftware/legion-cli-wiki";
 
-import { DISTILL_SOURCE_MAX_CHARS } from "../dist/index.js";
+import { DISTILL_SOURCE_MAX_CHARS, LegionRefuseError } from "../dist/index.js";
 import {
   git,
   initGitRepo,
@@ -281,6 +281,66 @@ test("distill prompt wraps untrusted source", async () => {
         assert.match(prompt, /skillId: ingest/);
       },
       { skillsDir },
+    );
+  });
+});
+
+test("distill refuses with a real adapter and no hardened sandbox, before writing anything", async () => {
+  await withEngine(
+    async ({ dir, engine }) => {
+      await engine.init({
+        name: "Checkin",
+        adapter: "generic",
+        generic: { binary: process.execPath, args: ["-e", "process.exit(0)", "{{pointer}}"] },
+      });
+      await writeFile(join(dir, "notes.md"), "# Notes\n\nDurable fact.\n", "utf8");
+      await assert.rejects(
+        () => engine.ingest(["notes.md"], { noCommit: true, distill: true }),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /needs a hardened sandbox/);
+          assert.match(err.message, /bwrap on Linux, seatbelt on macOS, or Docker/);
+          assert.match(err.message, /Windows without Docker/);
+          return true;
+        },
+      );
+      assert.deepEqual(await ingestRunNames(dir), [], "no agent was spawned");
+      assert.equal(existsSync(join(dir, ".legion-cli", "wiki", "ingested")), false, "nothing was ingested");
+      // Excerpt-only ingest is unchanged on the same configuration.
+      const receipt = await engine.ingest(["notes.md"], { noCommit: true });
+      assert.ok(receipt.pagesCreated.length >= 1);
+      assert.equal(receipt.distillRan, undefined);
+    },
+    { skillsDir, fakeDistillSandboxHardened: false },
+  );
+});
+
+test("ingest is jailed for real adapters and exempt for the fake adapter; the jail reads the wiki", async () => {
+  const { isJailedSpawn, sandboxReadSet } = await import("../dist/spawn.js");
+  assert.equal(isJailedSpawn("ingest", ["execute"], "claude"), true);
+  assert.equal(isJailedSpawn("ingest", ["execute"], "generic"), true);
+  assert.equal(isJailedSpawn("ingest", ["execute"], "fake"), false);
+  assert.equal(isJailedSpawn("interview", ["execute"], "claude"), false);
+  assert.equal(isJailedSpawn("execute", [], "fake"), true);
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    const set = sandboxReadSet({ projectRoot: dir, runId: "ingest-x", skillId: "ingest" });
+    assert.ok(set.includes(".legion-cli/wiki"), "distill links existing catalog titles");
+    const other = sandboxReadSet({ projectRoot: dir, runId: "spec-x", skillId: "spec" });
+    assert.ok(!other.includes(".legion-cli/wiki"));
+  });
+});
+
+test("fake adapter is exempt from the distill refusal even when no hardened sandbox is reported", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ dir, engine }) => {
+        await initProject(engine);
+        await writeFile(join(dir, "notes.md"), "# Notes\n\nDurable fact.\n", "utf8");
+        const receipt = await engine.ingest(["notes.md"], { noCommit: true, distill: true });
+        assert.equal(receipt.distillRan, true);
+      },
+      { skillsDir, fakeDistillSandboxHardened: false },
     );
   });
 });

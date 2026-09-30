@@ -253,13 +253,32 @@ const CONFIG_READ_SET = [
   "scripts",
 ] as const;
 
-function sandboxReadSet(opts: {
+/**
+ * execute, configured skills and the http adapter run jailed. ingest --distill feeds untrusted
+ * content to the agent (F-042): engine.ts refuses it without a hardened backend, and it always
+ * runs jailed here. The fake test adapter runs no agent, so it is exempt.
+ */
+export function isJailedSpawn(skillId: SkillId, configuredSkills: readonly string[], adapterId: string): boolean {
+  return (
+    skillId === "execute" ||
+    configuredSkills.includes(skillId) ||
+    adapterId === "http" ||
+    (skillId === "ingest" && adapterId !== "fake")
+  );
+}
+
+export function sandboxReadSet(opts: {
   projectRoot: string;
   runId: string;
+  skillId?: SkillId;
   specId?: string;
   taskId?: string;
 }): string[] {
   const out = [`.legion-cli/cache/skills/${opts.runId}`, `.legion-cli/cache/runs/${opts.runId}`];
+  // Distill links existing catalog titles, so the jailed ingest agent reads the wiki.
+  if (opts.skillId === "ingest" && existsSync(join(opts.projectRoot, ".legion-cli", "wiki"))) {
+    out.push(".legion-cli/wiki");
+  }
   if (opts.specId) out.push(`.legion-cli/specs/${opts.specId}`);
   if (opts.taskId) out.push(`.legion-cli/tasks/${opts.taskId}.md`);
   for (const name of CONFIG_READ_SET) {
@@ -531,10 +550,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
 
   let sandbox: SandboxHandle | undefined;
   let allowedWrites: string[] = [];
-  const jailed =
-    opts.skillId === "execute" ||
-    opts.config.sandbox.skills.includes(opts.skillId) ||
-    resolution.id === "http";
+  const jailed = isJailedSpawn(opts.skillId, opts.config.sandbox.skills, resolution.id);
   if (jailed) {
     try {
       assertExecuteSandbox(opts.config, { allowNoSandbox: opts.allowNoSandbox });
@@ -557,6 +573,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       readSet: sandboxReadSet({
         projectRoot: opts.projectRoot,
         runId,
+        skillId: opts.skillId,
         specId: opts.specId,
         taskId: opts.taskId,
       }),

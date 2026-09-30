@@ -102,6 +102,7 @@ import {
   SCHEMA_VERSION,
   type AdapterId,
   type Assumption,
+  normalizePathKey,
   type ControlMode,
   type DiscussDecision,
   type IngestReceipt,
@@ -121,7 +122,7 @@ import {
   type TaskStatus,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { copyShippedCraft, isBrandViolationBlockingFreeze } from "@9thlevelsoftware/legion-cli-design-system";
-import { assertExecuteSandbox, SandboxError } from "@9thlevelsoftware/legion-cli-sandbox";
+import { assertExecuteSandbox, hardenedSandboxAvailable, SandboxError } from "@9thlevelsoftware/legion-cli-sandbox";
 import { HINT, LegionRefuseError, refuse, refuseKind } from "./errors.js";
 import { assertIngestSourceAllowed } from "./ingest-guard.js";
 import { decisionFileName, templateDecisions } from "./discuss.js";
@@ -170,7 +171,13 @@ import {
   regressionVerifyCommand,
 } from "./fix.js";
 import { packetFromInput, packetMarkdownBody } from "./packets.js";
-import { defaultTicketContract, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
+import {
+  defaultTicketContract,
+  parseExtraJson,
+  taskMarkdownBody,
+  ticketFromInput,
+  touchesVerificationEntryPoint,
+} from "./tickets.js";
 import {
   displayStagedRoots,
   ghAvailable,
@@ -209,6 +216,8 @@ import type {
   IngestOpts,
   IngestResult,
   ExecuteTaskResult,
+  TicketSource,
+  FiledTicketSummary,
   InitOptions,
   IntentState,
   LegionEngineOptions,
@@ -354,6 +363,7 @@ export class LegionEngine {
   readonly store: LegionStore;
   readonly #skillsDir?: string;
   readonly #fakeArtifacts: FakeArtifact[];
+  readonly #fakeDistillSandboxHardened: boolean | undefined;
   readonly #fakeThrowAfterWrite: boolean;
   readonly #fakeTimedOut: boolean;
   readonly #fakeExitCode?: number;
@@ -373,6 +383,7 @@ export class LegionEngine {
     this.store = store ?? createLegionStore(projectRoot);
     this.#skillsDir = options?.skillsDir;
     this.#fakeArtifacts = options?.fakeArtifacts ?? [];
+    this.#fakeDistillSandboxHardened = options?.fakeDistillSandboxHardened;
     this.#fakeThrowAfterWrite = Boolean(options?.fakeThrowAfterWrite);
     this.#fakeTimedOut = Boolean(options?.fakeTimedOut);
     this.#fakeExitCode = options?.fakeExitCode;
@@ -612,6 +623,7 @@ Approved: ${note}
       if (opts?.transcript) {
         assertIngestSourceAllowed(this.projectRoot, opts.transcript);
       }
+      if (opts?.distill) await this.#assertDistillSandbox();
       const autoCommit = opts?.noCommit !== true;
       if (autoCommit && !isGitRepo(this.projectRoot)) {
         refuse("ingest auto-commit requires a git repository", HINT.noCommit);
@@ -1303,9 +1315,21 @@ Approved: ${note}
         cliAdapter: opts?.adapter,
         taskAdapter: task?.adapter,
       });
-      if (result.runId) {
-        await this.#fileExtrasFromRun(result.runId, specId, { type: "fix", parentId: task?.id });
-      }
+      const filedExtras = result.runId
+        ? await this.#fileExtrasFromRun(result.runId, specId, {
+            type: "fix",
+            parentId: task?.id,
+            agentSourceless: !task,
+            inheritFrom: task
+              ? {
+                  id: task.id,
+                  label: "verified task",
+                  filesAllowed: task.contract.filesAllowed,
+                  verificationCommands: task.contract.verificationCommands,
+                }
+              : undefined,
+          })
+        : undefined;
       const after = await this.snapshotTaskIds();
       const createdTaskIds = after.filter((id) => !before.includes(id));
       if (createdTaskIds.length > 0) {
@@ -1330,6 +1354,7 @@ Approved: ${note}
         spawned: result.spawned,
         notesPath: await this.#findVerifyNotes(task?.id),
         createdTaskIds,
+        createdTickets: filedExtras?.tickets ?? [],
         extrasReverted: result.revert?.extrasReverted ?? [],
         warnings: this.#verifyWarnings(result),
       };
@@ -1407,9 +1432,9 @@ Approved: ${note}
             ]),
           ].sort((a, b) => a.localeCompare(b))
         : [];
-      if (started?.runId) {
-        await this.#fileExtrasFromRun(started.runId, specId);
-      }
+      const filedExtras = started?.runId
+        ? await this.#fileExtrasFromRun(started.runId, specId, { agentSourceless: true })
+        : undefined;
       const after = await this.snapshotTaskIds();
       const createdTaskIds = after.filter((id) => !before.includes(id));
       if (createdTaskIds.length > 0) {
@@ -1474,6 +1499,7 @@ Approved: ${note}
       return {
         verdict,
         createdTaskIds,
+        createdTickets: filedExtras?.tickets ?? [],
         extrasReverted: revert?.extrasReverted ?? [],
         rewrittenExistingTaskIds,
         warnings: reviewWarnings,
@@ -2450,17 +2476,32 @@ Approved: ${note}
 
         let extraJsonInvalid = false;
         let extraJsonTicketIds: string[] = [];
+        const filedTickets: FiledTicketSummary[] = [];
         if (runId) {
-          const filed = await this.#fileExtrasFromRun(runId, lockedTask.specId);
+          const filed = await this.#fileExtrasFromRun(runId, lockedTask.specId, {
+            inheritFrom: {
+              id: lockedTask.id,
+              label: "running task",
+              filesAllowed: lockedTask.contract.filesAllowed,
+              verificationCommands: lockedTask.contract.verificationCommands,
+            },
+          });
           extraJsonInvalid = filed.invalid;
           extraJsonTicketIds = filed.ticketIds;
+          filedTickets.push(...filed.tickets);
         }
 
         if (incident || extras.length > 0 || extraJsonInvalid) {
           let ticketId: string | undefined;
           if (extras.length > 0) {
-            const { task: ticket } = await this.#fileTicketLocked(
+            const { task: ticket, verificationSource } = await this.#fileTicketLocked(
               {
+                inheritFrom: {
+                  id: lockedTask.id,
+                  label: "running task",
+                  filesAllowed: lockedTask.contract.filesAllowed,
+                  verificationCommands: lockedTask.contract.verificationCommands,
+                },
                 title:
                   extras.length === 1
                     ? `FileContract extra: ${extras[0]}`
@@ -2473,6 +2514,12 @@ Approved: ${note}
               lockedTask.specId,
             );
             ticketId = ticket.id;
+            filedTickets.push({
+              id: ticket.id,
+              verificationCommands: ticket.contract.verificationCommands,
+              filesAllowed: ticket.contract.filesAllowed,
+              verificationSource,
+            });
           }
           ticketId ??= extraJsonTicketIds[0];
           await this.#transitionTaskTo(lockedTask.id, "blocked");
@@ -2491,6 +2538,7 @@ Approved: ${note}
               incident,
               headMoved,
               ticketId,
+              filedTickets,
             }),
           };
         }
@@ -2523,6 +2571,7 @@ Approved: ${note}
           adapterId,
           resolutionSource,
           agentExitWarning,
+          filedTickets,
         };
       });
 
@@ -2625,6 +2674,7 @@ Approved: ${note}
           adapterId: post.adapterId,
           resolutionSource: post.resolutionSource,
           ...(post.agentExitWarning ? { agentExitWarning: post.agentExitWarning } : {}),
+          ...(post.filedTickets.length > 0 ? { filedTickets: post.filedTickets } : {}),
           ...(reason ? { reason } : {}),
           ...(trustTierNote ? { trustTierNote } : {}),
         };
@@ -2762,8 +2812,6 @@ Approved: ${note}
     const candidates = [
       taskId ? `.legion-cli/qa/verify/${taskId}.md` : undefined,
       ".legion-cli/qa/verify.md",
-      ".legion-cli/qa/notes.md",
-      ".legion-cli/qa/walkthrough.md",
     ];
     for (const path of candidates) {
       if (path && (await this.store.pathExists(path))) return path;
@@ -2807,37 +2855,51 @@ Approved: ${note}
   async #fileExtrasFromRun(
     runId: string,
     specId: string,
-    defaults?: { type?: NewTicket["type"]; parentId?: string },
-  ): Promise<{ invalid: boolean; ticketIds: string[] }> {
+    defaults?: {
+      type?: NewTicket["type"];
+      parentId?: string;
+      inheritFrom?: TicketSource;
+      agentSourceless?: boolean;
+    },
+  ): Promise<{ invalid: boolean; ticketIds: string[]; tickets: FiledTicketSummary[] }> {
     const abs = join(this.projectRoot, ".legion-cli", "cache", "runs", runId, "extra.json");
     let raw: unknown;
     try {
       raw = JSON.parse(await readFile(abs, "utf8"));
     } catch {
-      return { invalid: false, ticketIds: [] };
+      return { invalid: false, ticketIds: [], tickets: [] };
     }
     let invalid = false;
     const ticketIds: string[] = [];
+    const tickets: FiledTicketSummary[] = [];
     for (const input of parseExtraJson(raw)) {
-      const { task, coerced } = await this.#fileTicketLocked(
+      const { task, coerced, verificationSource } = await this.#fileTicketLocked(
         {
           ...input,
           fromAgent: true,
           type: input.type ?? defaults?.type,
           parentId: input.parentId ?? defaults?.parentId,
+          inheritFrom: defaults?.inheritFrom,
+          agentSourceless: defaults?.agentSourceless,
         },
         specId,
       );
       if (coerced) invalid = true;
       ticketIds.push(task.id);
+      tickets.push({
+        id: task.id,
+        verificationCommands: task.contract.verificationCommands,
+        filesAllowed: task.contract.filesAllowed,
+        verificationSource,
+      });
     }
-    return { invalid, ticketIds };
+    return { invalid, ticketIds, tickets };
   }
 
   async #fileTicketLocked(
     input: NewTicket,
     specIdOverride?: string,
-  ): Promise<{ task: Task; coerced: boolean }> {
+  ): Promise<{ task: Task; coerced: boolean; verificationSource: string }> {
     const title = input.title.trim();
     if (!title) {
       refuse("ticket requires a title", HINT.ticket(input.parentId ?? "TSK-x"));
@@ -2848,8 +2910,10 @@ Approved: ${note}
       refuse("ticket requires an active spec", HINT.spec);
     }
     const tasks = await this.#listTasks();
-    let parentId = input.parentId;
+    const sourceless = Boolean(input.fromAgent && input.agentSourceless);
+    let parentId = sourceless ? undefined : input.parentId;
     let parentAdapter: AdapterId | undefined;
+    let parentSource: TicketSource | undefined;
     if (parentId) {
       const parent = tasks.find((task) => task.id === parentId);
       if (!parent) {
@@ -2860,8 +2924,22 @@ Approved: ${note}
         }
       } else {
         parentAdapter = parent.adapter;
+        parentSource = {
+          id: parent.id,
+          label: "parent",
+          filesAllowed: parent.contract.filesAllowed,
+          verificationCommands: parent.contract.verificationCommands,
+        };
       }
     }
+    // Agent-filed tickets never bring their own verificationCommands (F-039): they run the
+    // engine-supplied source task's commands (running/verified task), else the resolved
+    // parent's, else the engine default. An empty source list also falls to the default, and
+    // the returned label says which. Human tickets keep what the human typed.
+    const source = input.fromAgent && !sourceless ? (input.inheritFrom ?? parentSource) : undefined;
+    const agentVerification =
+      source && source.verificationCommands.length > 0 ? [...source.verificationCommands] : undefined;
+    const verificationSource = agentVerification && source ? source.label : "engine default (pnpm test)";
     // From file names (valid or not), under engine.lock, so a corrupt file's id is never
     // reused (F-004).
     const id = await nextFileId(this.store.paths.tasksDir, "TSK", 4);
@@ -2870,6 +2948,9 @@ Approved: ${note}
       title,
       parentId,
       adapter: input.adapter ?? parentAdapter,
+      ...(input.fromAgent
+        ? { contract: { ...input.contract, verificationCommands: agentVerification } }
+        : {}),
     });
     const contractInvalid =
       filesAllowedFailsPlan(ticket.contract.filesAllowed) ||
@@ -2886,9 +2967,38 @@ Approved: ${note}
       }
       ticket = {
         ...ticket,
-        contract: defaultTicketContract(id),
+        contract: defaultTicketContract(id, { verificationCommands: agentVerification }),
       };
       coerced = true;
+    }
+    // An agent ticket may only touch files its source task may touch; otherwise it could edit the
+    // scripts/tests its inherited command runs (F-039). Outside that, it gets the default notes/ file.
+    if (!coerced && input.fromAgent && source && (input.contract?.filesAllowed?.length ?? 0) > 0) {
+      const allowed = new Set(source.filesAllowed.map((path) => normalizePathKey(path)));
+      if (!ticket.contract.filesAllowed.every((path) => allowed.has(normalizePathKey(path)))) {
+        ticket = {
+          ...ticket,
+          contract: defaultTicketContract(id, { verificationCommands: agentVerification }),
+          notes: `${ticket.notes} filesAllowed outside ${source.id}'s were replaced by notes/${id}.md.`.trim(),
+        };
+      }
+    }
+    // Any agent ticket: no engine source means the agent's files are not trusted at all, and a source
+    // never legitimises verification entry points (package.json, scripts, tests, CI, hooks, configs,
+    // files named by the inherited commands). Those get the default notes/<id>.md contract.
+    if (input.fromAgent && (input.contract?.filesAllowed?.length ?? 0) > 0) {
+      const reason = sourceless
+        ? "no engine-supplied source task"
+        : touchesVerificationEntryPoint(ticket.contract.filesAllowed, ticket.contract.verificationCommands)
+          ? "a verification entry point"
+          : undefined;
+      if (reason && ticket.contract.filesAllowed.some((path) => !path.startsWith("notes/"))) {
+        ticket = {
+          ...ticket,
+          contract: defaultTicketContract(id, { verificationCommands: agentVerification }),
+          notes: `${ticket.notes} filesAllowed replaced by notes/${id}.md (${reason}).`.trim(),
+        };
+      }
     }
     await this.#writeTask(ticket, taskMarkdownBody(ticket));
     if (parentId) {
@@ -2902,7 +3012,7 @@ Approved: ${note}
     }
     const promoted = await this.#promoteTicketIfReady(id, specId);
     await this.#failLastReviewLocked();
-    return { task: promoted, coerced };
+    return { task: promoted, coerced, verificationSource };
   }
 
   async #newPacketLocked(input: NewPacket): Promise<PacketResult> {
@@ -3856,6 +3966,29 @@ Approved: ${note}
   /** Persist must not import wiki; catalog is engine-authored while holding the lock. */
   async #refreshWikiCatalogLocked(): Promise<void> {
     await writeWikiCatalog(this.store);
+  }
+
+  /**
+   * `ingest --distill` runs an agent on untrusted content (F-042/A-002). Refuse up front, before
+   * anything is written, when the agent would have to run without a hardened sandbox. An adapter
+   * that cannot spawn stays a soft skip (nothing would run), and the fake test adapter runs no agent.
+   */
+  async #assertDistillSandbox(): Promise<void> {
+    let config: LegionConfig;
+    try {
+      config = await this.#readConfig();
+    } catch {
+      return;
+    }
+    const resolution = resolveAdapterId({ config, skillId: "ingest" });
+    if (resolution.id === "fake") return;
+    if (!(await isResolvedAdapterSpawnable(config, resolution.id))) return;
+    const hardened = this.#fakeDistillSandboxHardened ?? hardenedSandboxAvailable(config.sandbox);
+    if (hardened) return;
+    refuse(
+      "ingest --distill runs an agent on untrusted content and needs a hardened sandbox: bwrap on Linux, seatbelt on macOS, or Docker (on Windows without Docker, distill is unavailable)",
+      HINT.distillNoSandbox,
+    );
   }
 
   async #maybeDistillLocked(

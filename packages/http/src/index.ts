@@ -1,6 +1,6 @@
 export { completionsUrl, HttpAdapter } from "./adapter.js";
 export { HttpAdapterError } from "./errors.js";
-export { httpAdapterNotReadyReason, isHttpAdapterReady } from "./ssrf.js";
+export { httpAdapterNotReadyReason, isHttpAdapterReady, isPrivateOrLocalHost } from "./ssrf.js";
 export {
   dispatchToolCall,
   isRunCommandAllowed,

@@ -488,7 +488,7 @@ test(".git hooks incident blocks and does not rm .git", async () => {
   });
 });
 
-test(".git/config change is an incident and does not delete .git", async () => {
+test(".git/config change is an incident, is restored, and does not delete .git", async () => {
   await withEngine(async ({ dir }) => {
     await writeFile(join(dir, "README.md"), "seed\n", "utf8");
     initGitRepo(dir);
@@ -507,7 +507,7 @@ test(".git/config change is an incident and does not delete .git", async () => {
     assert.equal(existsSync(join(dir, ".git")), true);
     assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
     assert.equal(existsSync(configPath), true);
-    assert.match(await readFile(configPath, "utf8"), /pwn = status/);
+    assert.equal(await readFile(configPath, "utf8"), before, "pre-spawn .git/config is restored");
     assert.equal(git(dir, ["rev-parse", "--is-inside-work-tree"]), "true");
   });
 });

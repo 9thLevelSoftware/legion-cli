@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -12,6 +11,7 @@ import {
   readBlob,
   readCommandRecord,
   shipReceiptPath,
+  runGit,
   toFsPath,
   writeTextFile,
   type LegionStore,
@@ -33,11 +33,7 @@ type HeadCommit = { sha: string; message: string };
 
 function readHeadCommit(root: string): HeadCommit | null {
   if (!isGitRepo(root)) return null;
-  const gitLog = spawnSync("git", ["log", "-1", "--format=%H %s"], {
-    cwd: root,
-    encoding: "utf8",
-    windowsHide: true,
-  });
+  const gitLog = runGit(root, ["log", "-1", "--format=%H %s"]);
   if (gitLog.status !== 0 || !gitLog.stdout.trim()) return null;
   const [sha, ...msgParts] = gitLog.stdout.trim().split(" ");
   if (!sha) return null;
@@ -51,7 +47,7 @@ function classifyCommit(message: string): "ship" | "unknown-legion" | "other" {
 }
 
 function git(root: string, args: string[]): { ok: boolean; out: string; stdout: string } {
-  const result = spawnSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
+  const result = runGit(root, args);
   const stdout = (result.stdout ?? "").trimEnd();
   return { ok: result.status === 0, out: (result.stderr || result.stdout || "").trimEnd(), stdout };
 }
@@ -148,11 +144,7 @@ function gitRevertNoEdit(root: string, sha: string): void {
 }
 
 function defaultGitResetHard(root: string, ref: string): void {
-  const result = spawnSync("git", ["reset", "--hard", ref], {
-    cwd: root,
-    encoding: "utf8",
-    windowsHide: true,
-  });
+  const result = runGit(root, ["reset", "--hard", ref]);
   if (result.status !== 0) {
     refuse(`git reset failed during undo rollback: ${(result.stderr || result.stdout).trim()}`, "git status");
   }

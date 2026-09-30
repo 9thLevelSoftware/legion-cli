@@ -4,9 +4,12 @@ export {
   WINDOWS_ALLOWLIST_TRUST_TIER_NOTE,
   assertExecuteSandbox,
   detectSandbox,
+  hardenedSandboxAvailable,
   materializeJail,
   prepareVerificationWrapper,
   resolveVerificationTrustTier,
+  verificationBwrapArgvPrefix,
+  verificationReadOnlyRels,
   verificationSeatbeltProfile,
 } from "./sandbox.js";
 export {

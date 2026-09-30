@@ -29,8 +29,13 @@ export type {
   TaskStatus,
 } from "./versions.js";
 
+export { isPrivateOrLocalHost } from "./host.js";
+
 export {
   ConcretePosixPathSchema,
+  isShortNameSegment,
+  normalizePathKey,
+  normalizePathSegment,
   isConcretePosixRepoRelativePath,
   isPosixRepoRelativeRoot,
   PosixAllowedRootSchema,

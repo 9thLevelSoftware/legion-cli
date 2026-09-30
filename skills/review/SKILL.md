@@ -24,7 +24,7 @@ PASS also needs evidence: exit code 0 and a non-empty notes file written by this
 
 Allowed roots:
 
-- `.legion-cli/qa/**` (engine-owned: the engine restores anything this spawn writes here, so do not put evidence there)
+- `.legion-cli/qa/review.md` only (engine-owned: `qa/**` is restored after every spawn, so the engine writes this file itself from your run-cache notes; scores and checklists are engine-owned)
 - `.legion-cli/tasks/**`
 - `.legion-cli/cache/runs/<id>/**`
 

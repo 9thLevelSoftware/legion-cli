@@ -2,7 +2,7 @@ import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-
 import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
-import { writeJson, writeOut } from "./io.js";
+import { ticketVerificationLine, writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 
 /** Test seam: fake adapter artifacts when LEGION_CLI_ADAPTER=fake. */
@@ -58,6 +58,9 @@ export async function runReview(opts: CliOpts, flags: { adapter?: string } = {})
     writeOut("Review FAIL.");
   }
   for (const line of result.warnings) writeOut(`Warning: ${line}`);
+  for (const filed of result.createdTickets) {
+    writeOut(ticketVerificationLine(filed));
+  }
   writeOut(`Next: ${next.run}`);
   writeOut(`Dashboard: ${viewer}`);
   return passed ? 0 : 1;
