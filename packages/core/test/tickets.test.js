@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { parseExtraJson } from "../dist/tickets.js";
+import { parseExtraJson, touchesVerificationEntryPoint } from "../dist/tickets.js";
 import { initGitRepo, initProject, makeTask, quoteArg, seedPlanReady, withEngine, withFakeAdapter } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
@@ -275,12 +276,21 @@ for (const skill of ["verify", "review"]) {
           await initProject(engine);
           await seedPlanReady(store, { phase: "executing", lastReview: "PASS", task: { status: "done" } });
           let created = [];
-          try {
-            const result = skill === "verify" ? await engine.verify("TSK-0001") : await engine.review();
+          let refused;
+          if (skill === "verify") {
+            const result = await engine.verify("TSK-0001");
+            assert.equal(result.spawned, true, "the verify agent actually ran");
             created = result.createdTaskIds;
-          } catch {
-            // review may refuse after reverting; the assertion below is on what remains on disk
+          } else {
+            try {
+              created = (await engine.review()).createdTaskIds;
+            } catch (err) {
+              refused = err;
+            }
           }
+          const runs = (await readdir(join(dir, ".legion-cli", "cache", "runs"))).filter((n) => n.startsWith(`${skill}-`));
+          assert.ok(runs.length >= 1, `the ${skill} agent actually ran (${refused?.message ?? "no refusal"})`);
+          if (refused) assert.match(refused.message, /outside SkillContract|reverted/, "the only acceptable refusal is the revert one");
           // Evidence (Windows host, fake adapter through the real spawn/revert path): the file is removed
           // after the spawn, so it never becomes a task. If this starts failing, clamp created tasks like extra.json tickets.
           assert.equal(existsSync(join(dir, ".legion-cli", "tasks", "TSK-0002.md")), false);
@@ -327,3 +337,91 @@ function directTaskMarkdown(id, parentId, cmd) {
     "",
   ].join("\n");
 }
+
+test("touchesVerificationEntryPoint flags manifests, configs, scripts, CI, hooks, tests and command-referenced files", () => {
+  for (const path of [
+    "package.json", "PACKAGE.JSON", "./package.json", "pnpm-lock.yaml", "sub/package.json", "Makefile",
+    "scripts/check.js", ".github/workflows/ci.yml", ".husky/pre-commit", ".githooks/pre-push",
+    "vitest.config.ts", "jest.config.js", "tsconfig.json", "tsconfig.build.json", "eslint.config.mjs",
+    "test/a.js", "packages/x/tests/a.js", "src/a.test.ts", "src/a.spec.js", "conftest.py",
+  ]) {
+    assert.equal(touchesVerificationEntryPoint([path]), true, path);
+  }
+  assert.equal(touchesVerificationEntryPoint(["src/app.ts", "notes/TSK-0002.md", "docs/readme.md"]), false);
+  assert.equal(touchesVerificationEntryPoint(["tools/run.sh"], ["bash tools/run.sh --all"]), true, "named by a command");
+  assert.equal(touchesVerificationEntryPoint(["tools/other.sh"], ["bash tools/run.sh"]), false);
+});
+
+test("verify: an agent ticket inside the verified task's files is still coerced when it is a verification entry point", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store }) => {
+        await initProject(engine);
+        await seedPlanReady(store, {
+          phase: "executing",
+          lastReview: "PASS",
+          task: {
+            status: "done",
+            contract: {
+              filesAllowed: ["src/main.ts", "package.json"],
+              expectedArtifacts: ["src/main.ts"],
+              verificationCommands: [PARENT_CMD],
+            },
+          },
+        });
+        const result = await engine.verify("TSK-0001");
+        const ticket = (await store.readTask("TSK-0002")).data;
+        assert.deepEqual(ticket.contract.filesAllowed, ["notes/TSK-0002.md"]);
+        assert.match(ticket.notes, /verification entry point/);
+        assert.deepEqual(result.createdTickets[0].filesAllowed, ["notes/TSK-0002.md"]);
+      },
+      { skillsDir, fakeArtifacts: extraArtifact({ title: "edit manifest", type: "fix", filesAllowed: ["package.json"] }) },
+    );
+  });
+});
+
+test("review: an agent ticket cannot pick its parent or its files; default commands and notes/ contract, printed with the true source", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store }) => {
+        await initProject(engine);
+        await seedPlanReady(store, {
+          phase: "executing",
+          lastReview: "PASS",
+          task: {
+            status: "done",
+            contract: {
+              filesAllowed: ["package.json"],
+              expectedArtifacts: ["package.json"],
+              verificationCommands: [PARENT_CMD],
+            },
+          },
+        });
+        const result = await engine.review();
+        assert.deepEqual(result.createdTaskIds, ["TSK-0002"]);
+        const ticket = (await store.readTask("TSK-0002")).data;
+        assert.equal(ticket.parentId, undefined, "agent parentId ignored");
+        assert.deepEqual(ticket.contract.filesAllowed, ["notes/TSK-0002.md"]);
+        assert.deepEqual(ticket.contract.verificationCommands, ["pnpm test"]);
+        assert.deepEqual(result.createdTickets, [
+          {
+            id: "TSK-0002",
+            verificationCommands: ["pnpm test"],
+            filesAllowed: ["notes/TSK-0002.md"],
+            verificationSource: "engine default (pnpm test)",
+          },
+        ]);
+      },
+      {
+        skillsDir,
+        fakeArtifacts: extraArtifact({
+          title: "rewrite the test entry",
+          parentId: "TSK-0001",
+          type: "fix",
+          filesAllowed: ["package.json"],
+          verificationCommands: [HOSTILE_CMD],
+        }),
+      },
+    );
+  });
+});

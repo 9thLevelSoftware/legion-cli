@@ -210,6 +210,9 @@ test("review spawn cannot stamp status done; child must execute before re-review
             return true;
           },
         );
+        // A review-filed ticket runs the engine default (pnpm test); the human sets what this repo runs.
+        assert.deepEqual(child.contract.verificationCommands, ["pnpm test"]);
+        await store.writeTask({ ...child, contract: { ...child.contract, verificationCommands: verify } }, "child\n");
         // same tree, no review fixture — execute must not rewrite the child as done
         const runner = new LegionEngine(dir, undefined, { skillsDir });
         const executed = await runner.execute("TSK-0002");
@@ -316,7 +319,7 @@ test("review spawn notes-only edit of existing TSK is FAIL and restores bytes", 
   });
 });
 
-test("review extra.json files a child without treating parent blocks as a rewrite", async () => {
+test("review extra.json files an unlinked child (agent parentId ignored) without a rewrite", async () => {
   await withFakeAdapter(async () => {
     await withEngine(
       async ({ engine, store }) => {
@@ -328,10 +331,10 @@ test("review extra.json files a child without treating parent blocks as a rewrit
         assert.deepEqual(review.rewrittenExistingTaskIds, []);
         assert.equal((await engine.getState()).lastReview, "FAIL");
         const child = (await store.readTask("TSK-0002")).data;
-        assert.equal(child.parentId, "TSK-0001");
-        assert.deepEqual(child.blockedBy, ["TSK-0001"]);
+        assert.equal(child.parentId, undefined, "review has no engine source: the agent parentId is ignored");
+        assert.deepEqual(child.blockedBy, []);
         const parent = (await store.readTask("TSK-0001")).data;
-        assert.ok(parent.blocks.includes("TSK-0002"));
+        assert.equal(parent.blocks.includes("TSK-0002"), false);
         assert.equal(parent.status, "done");
       },
       {

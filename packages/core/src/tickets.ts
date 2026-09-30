@@ -80,6 +80,53 @@ export function parseExtraJson(raw: unknown): NewTicket[] {
   return tickets;
 }
 
+const ENTRY_BASENAMES = new Set([
+  "package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "pnpm-workspace.yaml",
+  "yarn.lock", "bun.lock", "bun.lockb", ".npmrc", ".yarnrc", ".yarnrc.yml", "makefile", "gnumakefile",
+  "justfile", "taskfile.yml", "taskfile.yaml", "pyproject.toml", "tox.ini", "pytest.ini", "setup.cfg",
+  "setup.py", "conftest.py", "noxfile.py", "cargo.toml", "cargo.lock", "build.rs", "go.mod", "go.sum",
+  "gemfile", "gemfile.lock", "rakefile", "build.gradle", "build.gradle.kts", "pom.xml", ".gitlab-ci.yml",
+  "jenkinsfile", "dockerfile", ".babelrc", ".mocharc.json", ".mocharc.js", ".mocharc.yml",
+]);
+const ENTRY_BASENAME_PATTERNS = [
+  /^tsconfig(\..+)?\.json$/,
+  /^(vitest|vite|jest|playwright|karma|babel|rollup|webpack|eslint|prettier|cypress|tsup|turbo)\.config\..+$/,
+  /^\.eslintrc(\..+)?$/,
+  /^\.prettierrc(\..+)?$/,
+  /\.(test|spec)\.[^.]+$/,
+];
+const ENTRY_DIRS = new Set([
+  "scripts", ".github", ".husky", ".githooks", ".circleci", ".gitlab", "test", "tests", "__tests__", "spec", "specs", "e2e",
+]);
+
+/**
+ * True when a path is something a verification command runs or is configured by (F-039): package
+ * manifests and lockfiles, build/test/lint config, scripts, CI and hook dirs, test files. An agent
+ * ticket that may edit these could rewrite what its inherited command executes. Also true for any
+ * path named by a token of the inherited commands.
+ */
+export function touchesVerificationEntryPoint(paths: readonly string[], commands: readonly string[] = []): boolean {
+  const referenced = new Set(
+    commands.flatMap((cmd) => cmd.split(/\s+/)).map((tok) => normalizeEntryPath(tok.replace(/^["']|["']$/g, ""))).filter(Boolean),
+  );
+  return paths.some((raw) => {
+    const path = normalizeEntryPath(raw);
+    if (!path) return false;
+    const segments = path.split("/");
+    const base = segments.at(-1) ?? "";
+    return (
+      ENTRY_BASENAMES.has(base) ||
+      ENTRY_BASENAME_PATTERNS.some((pattern) => pattern.test(base)) ||
+      segments.slice(0, -1).some((seg) => ENTRY_DIRS.has(seg)) ||
+      referenced.has(path)
+    );
+  });
+}
+
+function normalizeEntryPath(raw: string): string {
+  return raw.trim().replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "").toLowerCase();
+}
+
 export function taskMarkdownBody(task: Task): string {
   const parent = task.parentId ? `Parent: ${task.parentId}.\n` : "";
   return `${parent}${task.title}\n`;

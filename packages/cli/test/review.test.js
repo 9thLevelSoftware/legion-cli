@@ -215,7 +215,7 @@ test("verify --adapter bogus refuses", async () => {
   });
 });
 
-test("review prints where an agent-filed ticket's verification commands came from", async () => {
+test("review prints the true source of an agent-filed ticket's verification commands", async () => {
   await withTempDir(async (dir) => {
     await seedExecutingDone(dir);
     const fakeArtifacts = JSON.stringify([
@@ -234,7 +234,7 @@ test("review prints where an agent-filed ticket's verification commands came fro
       env: { LEGION_CLI_ADAPTER: "fake", LEGION_CLI_FAKE_ARTIFACTS: fakeArtifacts },
     });
     const out = normalize(result.stdout);
-    assert.match(out, /TSK-0002 verification \(from parent\): .+ \[filesAllowed: notes\/TSK-0002\.md\]/);
+    assert.match(out, /TSK-0002 verification \(from engine default \(pnpm test\)\): pnpm test \[filesAllowed: notes\/TSK-0002\.md\]/);
     assert.doesNotMatch(out, /attacker/);
   });
 });

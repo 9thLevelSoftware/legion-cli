@@ -163,7 +163,13 @@ import {
   regressionVerifyCommand,
 } from "./fix.js";
 import { packetFromInput, packetMarkdownBody } from "./packets.js";
-import { defaultTicketContract, parseExtraJson, taskMarkdownBody, ticketFromInput } from "./tickets.js";
+import {
+  defaultTicketContract,
+  parseExtraJson,
+  taskMarkdownBody,
+  ticketFromInput,
+  touchesVerificationEntryPoint,
+} from "./tickets.js";
 import {
   displayStagedRoots,
   ghAvailable,
@@ -1306,6 +1312,7 @@ export class LegionEngine {
         ? await this.#fileExtrasFromRun(result.runId, specId, {
             type: "fix",
             parentId: task?.id,
+            agentSourceless: !task,
             inheritFrom: task
               ? {
                   id: task.id,
@@ -1398,7 +1405,9 @@ export class LegionEngine {
             ]),
           ].sort((a, b) => a.localeCompare(b))
         : [];
-      const filedExtras = started?.runId ? await this.#fileExtrasFromRun(started.runId, specId) : undefined;
+      const filedExtras = started?.runId
+        ? await this.#fileExtrasFromRun(started.runId, specId, { agentSourceless: true })
+        : undefined;
       const after = await this.snapshotTaskIds();
       const createdTaskIds = after.filter((id) => !before.includes(id));
       if (createdTaskIds.length > 0) {
@@ -2753,7 +2762,12 @@ export class LegionEngine {
   async #fileExtrasFromRun(
     runId: string,
     specId: string,
-    defaults?: { type?: NewTicket["type"]; parentId?: string; inheritFrom?: TicketSource },
+    defaults?: {
+      type?: NewTicket["type"];
+      parentId?: string;
+      inheritFrom?: TicketSource;
+      agentSourceless?: boolean;
+    },
   ): Promise<{ invalid: boolean; ticketIds: string[]; tickets: FiledTicketSummary[] }> {
     const abs = join(this.projectRoot, ".legion-cli", "cache", "runs", runId, "extra.json");
     let raw: unknown;
@@ -2773,6 +2787,7 @@ export class LegionEngine {
           type: input.type ?? defaults?.type,
           parentId: input.parentId ?? defaults?.parentId,
           inheritFrom: defaults?.inheritFrom,
+          agentSourceless: defaults?.agentSourceless,
         },
         specId,
       );
@@ -2802,7 +2817,8 @@ export class LegionEngine {
       refuse("ticket requires an active spec", HINT.spec);
     }
     const tasks = await this.#listTasks();
-    let parentId = input.parentId;
+    const sourceless = Boolean(input.fromAgent && input.agentSourceless);
+    let parentId = sourceless ? undefined : input.parentId;
     let parentAdapter: AdapterId | undefined;
     let parentSource: TicketSource | undefined;
     if (parentId) {
@@ -2827,7 +2843,7 @@ export class LegionEngine {
     // engine-supplied source task's commands (running/verified task), else the resolved
     // parent's, else the engine default. An empty source list also falls to the default, and
     // the returned label says which. Human tickets keep what the human typed.
-    const source = input.fromAgent ? (input.inheritFrom ?? parentSource) : undefined;
+    const source = input.fromAgent && !sourceless ? (input.inheritFrom ?? parentSource) : undefined;
     const agentVerification =
       source && source.verificationCommands.length > 0 ? [...source.verificationCommands] : undefined;
     const verificationSource = agentVerification && source ? source.label : "engine default (pnpm test)";
@@ -2871,6 +2887,23 @@ export class LegionEngine {
           ...ticket,
           contract: defaultTicketContract(id, { verificationCommands: agentVerification }),
           notes: `${ticket.notes} filesAllowed outside ${source.id}'s were replaced by notes/${id}.md.`.trim(),
+        };
+      }
+    }
+    // Any agent ticket: no engine source means the agent's files are not trusted at all, and a source
+    // never legitimises verification entry points (package.json, scripts, tests, CI, hooks, configs,
+    // files named by the inherited commands). Those get the default notes/<id>.md contract.
+    if (input.fromAgent && (input.contract?.filesAllowed?.length ?? 0) > 0) {
+      const reason = sourceless
+        ? "no engine-supplied source task"
+        : touchesVerificationEntryPoint(ticket.contract.filesAllowed, ticket.contract.verificationCommands)
+          ? "a verification entry point"
+          : undefined;
+      if (reason && ticket.contract.filesAllowed.some((path) => !path.startsWith("notes/"))) {
+        ticket = {
+          ...ticket,
+          contract: defaultTicketContract(id, { verificationCommands: agentVerification }),
+          notes: `${ticket.notes} filesAllowed replaced by notes/${id}.md (${reason}).`.trim(),
         };
       }
     }

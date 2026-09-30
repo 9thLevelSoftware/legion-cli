@@ -414,6 +414,11 @@ export type NewTicket = {
    * precedence over an agent-chosen parentId for the inherited commands and the filesAllowed cap.
    */
   inheritFrom?: TicketSource;
+  /**
+   * Set by the engine for agent spawns with no engine-supplied source (review, verify without a
+   * task): the agent's own parentId and filesAllowed are ignored (default commands, notes/<id>.md).
+   */
+  agentSourceless?: boolean;
 };
 
 export type NewPacket = {
