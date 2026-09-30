@@ -67,7 +67,7 @@ async function auditLines(dir) {
   return raw.split("\n").map((line) => line.trimEnd()).filter((line) => line !== "");
 }
 
-for (const setup of ["tracked-before-ship", "older-baseline", "untracked-state"]) {
+for (const setup of ["tracked-before-ship", "older-baseline", "untracked-state", "audit-dir-ignored"]) {
   test(`undo of a ship commit keeps the audit log append-only and every verb usable (${setup})`, async () => {
     await withFakeAdapter(async () => {
       await withEngine(async ({ dir, engine, store }) => {
@@ -79,10 +79,17 @@ for (const setup of ["tracked-before-ship", "older-baseline", "untracked-state"]
           git(dir, ["rm", "-r", "--cached", "-q", ".legion-cli"]);
           git(dir, ["commit", "-m", "stop tracking legion state"]);
         }
+        if (setup === "audit-dir-ignored") {
+          // Only the audit directory is ignored: ship --commit succeeds with untracked audit files.
+          await writeFile(join(dir, ".gitignore"), ".legion-cli/audit/\n.legion-cli/index/\n", "utf8");
+          git(dir, ["rm", "-r", "--cached", "-q", "--ignore-unmatch", ".legion-cli/index"]);
+          git(dir, ["add", ".gitignore"]);
+          git(dir, ["commit", "-m", "ignore the audit directory"]);
+        }
         await engine.execute("auto");
         await new LegionEngine(dir, undefined, withReviewNotes({ skillsDir })).review();
         await engine.qa({ score: makeQaScore({ specId: (await engine.getState()).activeSpecId }) });
-        if (setup === "tracked-before-ship") commitAll(dir, "legion state before ship");
+        if (setup === "tracked-before-ship" || setup === "audit-dir-ignored") commitAll(dir, "legion state before ship");
         await engine.ship({ commit: true });
         const beforeUndo = await auditLines(dir);
 
@@ -133,8 +140,9 @@ test("a refused execute (audit chain) never leaves the task in_progress", async 
       await assert.rejects(() => engine.execute("auto"), /audit chain/);
       const after = await store.readTask("TSK-0001");
       assert.equal(after.data.status, before.data.status, "task status is untouched by the refusal");
-      const state = await engine.getState().catch(() => null);
-      if (state) assert.equal(state.currentTaskId, null);
+      const state = await engine.getState();
+      assert.equal(state.phase, "plan_ready", "phase is untouched by the refusal");
+      assert.equal(state.currentTaskId, null);
     });
   });
 });

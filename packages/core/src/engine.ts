@@ -3873,6 +3873,9 @@ Approved: ${note}
           if (!already) {
             // Fail closed before any state change if the audit chain is unreadable or rewound.
             await assertAuditChainUsable(this.projectRoot);
+            // Writers also get the exact append-time check (full replay only for an old-format chain),
+            // so a bad chain refuses before any state moves; read-only entries keep the cheap check.
+            if (!opts?.allowLive) await assertAuditAppendable(this.projectRoot);
             // Provably dead run markers are dropped here; live ones keep their open command
             // (reconcile skips them) and refuse every mutating entry below.
             const { live } = await liveRuns(this.projectRoot, { clearDead: true });

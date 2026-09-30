@@ -127,6 +127,9 @@ async function keepRevertedReceipts(root: string, sha: string): Promise<void> {
  * commit would also revert tracked audit files (or delete files the ship commit added); these are
  * the two files the chain check compares, so their pre-undo bytes are put back after the revert or
  * a rollback. Untracked or ignored copies are untouched by git and are rewritten only if changed.
+ * The pair is written log first, chain last: a hard crash between the two leaves the chain behind
+ * the log (a healable gap) or, if the ship commit had added chain.json, no chain over a multi-line
+ * log, which refuses loudly until `doctor --rebaseline-audit`.
  */
 const AUDIT_CHAIN_FILES = [".legion-cli/audit/events.jsonl", ".legion-cli/audit/chain.json"] as const;
 
@@ -328,10 +331,15 @@ async function undoLastTaskLocked(opts: {
   await openEngineCommand(root, commandId);
   const preimages = await loadUndoPreimages(root, commandId);
   const priorHead = head?.sha ?? null;
-  const auditSnapshot = await snapshotAuditFiles(root);
+  let auditSnapshot: AuditSnapshot[] = [];
   let gitReverted = false;
 
   try {
+    try {
+      auditSnapshot = await snapshotAuditFiles(root);
+    } catch (err) {
+      refuse(`undo could not read the audit log, nothing was changed: ${err instanceof Error ? err.message : String(err)}`, HINT.undo);
+    }
     let commitSha: string | null = null;
     if (shipCommit) {
       gitRevertNoEdit(root, shipCommit.sha);

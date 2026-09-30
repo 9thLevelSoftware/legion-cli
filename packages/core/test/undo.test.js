@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -816,7 +816,17 @@ test("undo never rewinds the audit log: a ship commit that touched it, on succes
         store.writeTask = async () => {
           throw new Error("injected store failure after git");
         };
-        await assert.rejects(() => engine.undoLastTask(), /injected store failure after git/);
+        // Damage the audit files as the rollback's reset runs, so a missing restore shows on any OS.
+        setUndoGitResetHard((root, ref) => {
+          git(root, ["reset", "--hard", ref]);
+          writeFileSync(events, "damaged");
+          writeFileSync(chain, "damaged");
+        });
+        try {
+          await assert.rejects(() => engine.undoLastTask(), /injected store failure after git/);
+        } finally {
+          setUndoGitResetHard(null);
+        }
         assert.equal(gitHead(dir), shipHead);
         assert.deepEqual(await readFile(events), eventsBefore);
         assert.deepEqual(await readFile(chain), chainBefore);
