@@ -526,6 +526,10 @@ export class LegionEngine {
       if (spec.status !== "draft" && !resuming) {
         refuse(`spec ${specId} is ${spec.status}, not draft`, HINT.specApprove);
       }
+      const note = opts.message?.trim();
+      if (resuming && note && !specBody.includes(`Approved: ${note}`)) {
+        await this.store.writeSpec(spec, `${specBody.trim()}\n\nApproved: ${note}\n`);
+      }
       if (!resuming) {
         const answers = await this.#loadIntentAnswers();
         if (await isBrandViolationBlockingFreeze(this.projectRoot, spec, answers.mapped.screens)) {
@@ -537,7 +541,6 @@ export class LegionEngine {
           frozenAt: nowIso(),
           frozenBy: actor.id,
         };
-        const note = opts.message?.trim();
         await this.store.writeSpec(frozen, note ? `${specBody.trim()}
 
 Approved: ${note}
@@ -609,7 +612,6 @@ Approved: ${note}
       if (opts?.transcript) {
         assertIngestSourceAllowed(this.projectRoot, opts.transcript);
       }
-      const phaseBefore = state.phase;
       const autoCommit = opts?.noCommit !== true;
       if (autoCommit && !isGitRepo(this.projectRoot)) {
         refuse("ingest auto-commit requires a git repository", HINT.noCommit);
@@ -663,10 +665,7 @@ Approved: ${note}
         }
         throw err;
       }
-      const after = await this.#readState();
-      if (after.phase !== phaseBefore) {
-        await this.#writeState({ ...after, phase: phaseBefore }, "ingest-restore");
-      }
+      // Ingest never changes the phase. If another writer moved it meanwhile, leave that move alone.
       return {
         ...receipt,
         ...(distillSkipped ? { distillSkipped } : {}),
@@ -3318,14 +3317,17 @@ Approved: ${note}
 
   /**
    * Every phase change passes through here and is checked against the phase on disk (same-phase
-   * writes are fine). `allow` names the few writes that deliberately undo a move:
-   * a ship that failed after writing `shipped`, and ingest putting back the phase it started in.
+   * writes are fine). `allow` names the one write that deliberately undoes a move:
+   * a ship that failed after writing `shipped` (`shipped` back to `ready_to_ship`/`executing`).
    */
-  async #writeState(state: StateFile, allow?: "ship-rollback" | "ingest-restore"): Promise<void> {
-    if (!allow) {
-      const onDisk = await this.#readState();
-      if (onDisk.phase !== state.phase) assertCanTransition(onDisk.phase, state.phase);
-    }
+  async #writeState(state: StateFile, allow?: "ship-rollback"): Promise<void> {
+    const onDisk = await this.#readState();
+    // The one exemption is exactly the edge it names: a ship that failed after writing `shipped`.
+    const shipRollback =
+      allow === "ship-rollback" &&
+      onDisk.phase === "shipped" &&
+      (state.phase === "ready_to_ship" || state.phase === "executing");
+    if (onDisk.phase !== state.phase && !shipRollback) assertCanTransition(onDisk.phase, state.phase);
     await this.store.writeState(state, stateBody(state));
   }
 

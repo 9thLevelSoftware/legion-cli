@@ -71,7 +71,7 @@ async function driveToPlanReady(engine, store, dir) {
   return spec;
 }
 
-for (const setup of ["committed-before-ship", "first-committed-by-ship"]) {
+for (const setup of ["committed-before-ship", "first-committed-by-ship", "older-baseline"]) {
   test(`journey: init to ship, then undo keeps phase, task and receipt in agreement (${setup})`, async () => {
     await withFakeAdapter(async () => {
       await withEngine(async ({ dir, engine, store }) => {
@@ -117,10 +117,17 @@ for (const setup of ["committed-before-ship", "first-committed-by-ship"]) {
         const undone = await engine.undoLastTask();
         assert.equal(undone.taskId, "TSK-0001");
         const state = await engine.getState();
-        assert.equal(state.phase, "executing");
         assert.equal(state.lastReview, null);
         assert.equal(state.lastQaId, null);
-        assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
+        if (setup === "older-baseline") {
+          // .legion-cli was last committed at plan_ready: the revert restores that snapshot, and the
+          // phase and task agree with it (the stale done task doc is not written back over it).
+          assert.equal(state.phase, "plan_ready");
+          assert.equal((await store.readTask("TSK-0001")).data.status, "ready");
+        } else {
+          assert.equal(state.phase, "executing");
+          assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
+        }
         assert.equal(existsSync(join(dir, ".git", "REVERT_HEAD")), false);
         // The revert deletes the receipt; undo puts it back, marked reverted.
         const kept = await readFile(join(store.paths.auditDir, "ship-spec-checkin.md"), "utf8");
@@ -164,23 +171,73 @@ test("journey: a failing reviewer blocks qa and ship", async () => {
       );
       await assert.rejects(() => engine.ship(), (err) => err instanceof LegionRefuseError);
       assert.notEqual((await engine.getState()).phase, "shipped");
-      void git;
+      assert.equal((await engine.getState()).phase, "executing");
+      const fix = await store.readTask("TSK-0002");
+      assert.equal(fix.data.title, "fix walkthrough finding");
+      assert.equal(fix.data.status === "done", false);
     });
   });
 });
 
+async function shippedProject(engine, store, dir, opts) {
+  await initProject(engine);
+  await driveToPlanReady(engine, store, dir);
+  initGitRepo(dir);
+  await engine.execute("auto");
+  await new LegionEngine(dir, undefined, withReviewNotes({ skillsDir })).review();
+  await engine.qa({ score: makeQaScore({ specId: (await engine.getState()).activeSpecId }) });
+  return engine.ship(opts);
+}
+
+for (const variant of ["ship without --commit", "a later commit on top of the ship commit"]) {
+  test(`journey: undo after ${variant} rewinds the phase and marks the receipt reverted`, async () => {
+    await withFakeAdapter(async () => {
+      await withEngine(async ({ dir, engine, store }) => {
+        const shipHere = variant.startsWith("ship without");
+        await shippedProject(engine, store, dir, shipHere ? {} : { commit: true });
+        if (!shipHere) git(dir, ["commit", "--allow-empty", "-m", "later work"]);
+        assert.equal((await engine.getState()).phase, "shipped");
+
+        const undone = await engine.undoLastTask();
+        assert.equal(undone.commitSha, null, "no ship commit at HEAD, so nothing is reverted in git");
+        const state = await engine.getState();
+        assert.equal(state.phase, "executing");
+        assert.equal(state.lastReview, null);
+        assert.equal(state.lastQaId, null);
+        assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
+        const receipt = await readFile(join(store.paths.auditDir, "ship-spec-checkin.md"), "utf8");
+        assert.match(receipt, /- reverted: true/);
+        assert.equal((receipt.match(/- reverted: true/g) ?? []).length, 1);
+      });
+    });
+  });
+}
+
 test("no package outside core writes lifecycle documents through the engine's store", async () => {
   const packagesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  // Every lifecycle writer of the store, by dot, bracket or destructuring access. wiki legitimately
+  // writes wiki pages and YAML through its own store handle, so it is checked for lifecycle writers only.
+  const lifecycle = "write(?:State|Spec|Task|Project|Config|Context|Discuss|IntentAnswers|Decision|Assumption|Packet)\\w*";
+  const anyWriter = "(?:write|delete|append)[A-Z]\\w*";
+  const patterns = (writer) => [
+    new RegExp(`\\bstore\\s*(?:\\?\\.|\\.)\\s*${writer}\\b`),
+    new RegExp(`\\bstore\\s*\\[\\s*["'\`]${writer}`),
+    new RegExp(`\\{[^}]*\\b${writer}\\b[^}]*\\}\\s*=\\s*[\\w.]*store\\b`),
+  ];
   const offenders = [];
+  let visited = 0;
   for (const pkg of await readdir(packagesDir)) {
     if (pkg === "core" || pkg === "persist") continue;
     const srcDir = join(packagesDir, pkg, "src");
     if (!existsSync(srcDir)) continue;
+    const forbidden = patterns(pkg === "wiki" ? lifecycle : anyWriter);
     for (const name of await readdir(srcDir, { recursive: true })) {
-      if (!String(name).endsWith(".ts")) continue;
+      if (!/\.(ts|mts|js|mjs)$/.test(String(name))) continue;
+      visited += 1;
       const text = await readFile(join(srcDir, String(name)), "utf8");
-      if (/\bstore\.(writeState|writeSpec|writeTask|writeProject)\(/.test(text)) offenders.push(`${pkg}/src/${name}`);
+      if (forbidden.some((re) => re.test(text))) offenders.push(`${pkg}/src/${name}`);
     }
   }
+  assert.ok(visited > 50, `the scan visited ${visited} files; the layout changed`);
   assert.deepEqual(offenders, []);
 });

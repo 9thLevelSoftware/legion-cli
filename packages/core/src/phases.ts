@@ -17,8 +17,7 @@ export const LEGAL_PHASE_TRANSITIONS: Readonly<Record<Phase, readonly Phase[]>> 
   plan_ready: ["executing", "abandoned"],
   executing: ["executing", "ready_to_ship", "shipped", "abandoned"],
   ready_to_ship: ["shipped", "executing", "abandoned"],
-  // shipped -> executing is used only by undo (undo.ts); no engine verb writes it.
-  shipped: ["intent_draft", "executing"],
+  shipped: ["intent_draft"],
   abandoned: ["intent_draft"],
 };
 
@@ -51,5 +50,16 @@ export function assertCanTransition(from: Phase, to: Phase): void {
   if (from === to && to === "executing") return;
   if (!canTransition(from, to)) {
     refuse(`cannot transition from ${from} to ${to}`, hintForIllegalTransition(from, to));
+  }
+}
+
+/** Edges only `undo` may take. They are deliberately not in LEGAL_PHASE_TRANSITIONS. */
+export const UNDO_ONLY_PHASE_TRANSITIONS: Readonly<Partial<Record<Phase, readonly Phase[]>>> = {
+  shipped: ["executing"],
+};
+
+export function assertCanUndoTransition(from: Phase, to: Phase): void {
+  if (!(UNDO_ONLY_PHASE_TRANSITIONS[from]?.includes(to) ?? false)) {
+    refuse(`undo cannot move from ${from} to ${to}`, HINT.status);
   }
 }
