@@ -146,3 +146,37 @@ test("a refused execute (audit chain) never leaves the task in_progress", async 
     });
   });
 });
+
+test("every writer refuses on an untrusted audit chain before any state moves; readers and the rebaseline still work", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    await appendChainedAuditLine(dir, JSON.stringify({ type: "seed" }));
+    // Old-format chain.json (no byteOffset) claiming one line more than the log has: the cheap
+    // lock-entry check passes, only the append-time replay sees it.
+    const chainPath = join(dir, ".legion-cli", "audit", "chain.json");
+    const lines = await auditLines(dir);
+    await writeFile(chainPath, `${JSON.stringify({ lastDigest: "0".repeat(64), length: lines.length + 1 })}\n`, "utf8");
+    const phase = (await engine.getState()).phase;
+    const taskBefore = (await store.readTask("TSK-0001")).data.status;
+    const eventsBefore = await auditLines(dir);
+
+    await assert.rejects(() => engine.beginIntent(), /audit chain/);
+    await assert.rejects(() => engine.undoLastTask(), /audit chain/);
+    assert.equal((await engine.getState()).phase, phase, "phase did not move");
+    assert.equal((await store.readTask("TSK-0001")).data.status, taskBefore, "task status did not move");
+    assert.deepEqual((await auditLines(dir)).slice(0, eventsBefore.length), eventsBefore);
+
+    // Read entries do not throw from this check.
+    assert.ok(await engine.getState());
+    const status = cli(dir, ["status", "--plain"]);
+    assert.match(status.text, /audit chain/i, "status reports the problem instead of crashing");
+    const doctor = cli(dir, ["doctor"]);
+    assert.match(doctor.text, /audit chain/i);
+
+    const fixed = cli(dir, ["doctor", "--rebaseline-audit"]);
+    assert.match(fixed.text, /re-baselined/);
+    await engine.beginIntent();
+    assert.notEqual((await engine.getState()).phase, phase, "the same verb works after the rebaseline");
+  });
+});
