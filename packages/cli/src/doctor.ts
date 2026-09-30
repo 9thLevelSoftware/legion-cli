@@ -20,6 +20,7 @@ import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cl
 import {
   liveRuns,
   readAuditEvents,
+  rebaselineAuditChain,
   summarizeAuditMetrics,
   type LocalMetrics,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -36,6 +37,7 @@ import {
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
+import { auditChainProblem } from "./status.js";
 import { writeJson, writeOut } from "./io.js";
 import { scanWikiSecrets, type SecretHit } from "./secrets.js";
 import { isSpawnableBinary, listOnPath, pathLegionIsLegionCli, runBounded, runTool } from "./which.js";
@@ -252,6 +254,8 @@ function formatCheck(check: DoctorCheck): string {
 
 export type DoctorMetricsFlags = {
   metrics?: boolean;
+  /** Re-chain the current audit log after review and record an audit_rebaselined event. */
+  rebaselineAudit?: boolean;
 };
 
 async function qaScoresFallback(projectRoot: string): Promise<{ runs: number; passes: number }> {
@@ -343,6 +347,17 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   const engine = createLegionEngine(opts.project);
   const checks: DoctorCheck[] = [];
   const warnings: string[] = [];
+
+  if (flags.rebaselineAudit) {
+    const state = await engine.getState();
+    const result = await rebaselineAuditChain(opts.project, { phase: state.phase, ts: new Date().toISOString() });
+    if (!opts.json) {
+      writeOut(
+        `Audit chain re-baselined over ${result.lines} line(s)` +
+          `${result.unparseable > 0 ? ` (${result.unparseable} not valid JSON)` : ""}; recorded as an audit_rebaselined event.`,
+      );
+    }
+  }
 
   const nodeVersion = process.versions.node;
   checks.push({
@@ -507,6 +522,13 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     ...(sandboxAdvisory ? { advisory: true } : {}),
     label: "sandbox",
     detail: sandboxDetail,
+  });
+
+  const auditProblem = await auditChainProblem(opts.project);
+  checks.push({
+    ok: auditProblem === null,
+    label: "audit chain",
+    detail: auditProblem ?? "ok",
   });
 
   const skillsDir = findSkillsDir();

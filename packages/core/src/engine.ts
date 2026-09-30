@@ -39,6 +39,8 @@ import {
   parseMarkdownDocument,
   PathEscapeError,
   AuditTamperError,
+  assertAuditChainUsable,
+  healAuditChain,
   EngineLockedError,
   RestoreRefusedError,
   clearLiveRun,
@@ -1683,6 +1685,8 @@ Approved: ${note}
     }
 
     const preview = await this.#mutate(async () => {
+      // Routine appends verify only the chain tail; the gate replays the whole log.
+      await healAuditChain(this.projectRoot);
       const state = await this.#readState();
       await this.#assertCanShip(state, opts);
       return this.#stageShipLocked(state);
@@ -3754,8 +3758,10 @@ Approved: ${note}
         actor,
         data,
       });
-    } catch {
-      // local metrics are best-effort
+    } catch (err) {
+      // Best-effort except tamper: I/O and validation failures are swallowed, a tampered or
+      // unreadable chain is never hidden (lock entry also checks it before mutating).
+      if (err instanceof AuditTamperError) throw err;
     }
   }
 
@@ -3847,6 +3853,8 @@ Approved: ${note}
         async () => {
           let guardError: unknown;
           if (!already) {
+            // Fail closed before any state change if the audit chain is unreadable or rewound.
+            await assertAuditChainUsable(this.projectRoot);
             // Provably dead run markers are dropped here; live ones keep their open command
             // (reconcile skips them) and refuse every mutating entry below.
             const { live } = await liveRuns(this.projectRoot, { clearDead: true });

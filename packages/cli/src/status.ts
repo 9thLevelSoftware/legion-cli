@@ -1,6 +1,11 @@
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import { EXPOSE_BIND, LOOPBACK_BIND, readLiveServe } from "@9thlevelsoftware/legion-cli-dashboard";
-import { listTaskSummaries, PersistValidationError } from "@9thlevelsoftware/legion-cli-persist";
+import {
+  AuditTamperError,
+  listTaskSummaries,
+  PersistValidationError,
+  verifyAuditChain,
+} from "@9thlevelsoftware/legion-cli-persist";
 import type { AdapterId, LegionConfig, ProjectFile, StateFile } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
@@ -101,6 +106,22 @@ function formatPlain(input: {
   return lines.join("\n");
 }
 
+/**
+ * Full replay of the audit chain (routine appends verify only the tail). Null when sound; the
+ * message when a stored line was edited or removed, or chain.json/events.jsonl is unreadable.
+ * A crash gap is healable and not reported.
+ */
+export async function auditChainProblem(projectRoot: string): Promise<string | null> {
+  try {
+    await verifyAuditChain(projectRoot, { allowExtend: true });
+    return null;
+  } catch (err) {
+    if (err instanceof AuditTamperError) return err.message;
+    const message = err instanceof Error ? err.message : String(err);
+    return `audit chain unreadable: ${message}`;
+  }
+}
+
 export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknown>): Promise<number> {
   const engine = createLegionEngine(opts.project);
   const state = await engine.getState();
@@ -114,6 +135,10 @@ export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknow
     : [];
   const next = nextCommand(state, slice, project?.mode, config?.control_mode);
   const blockers = collectBlockers(state.lastReadiness, state.lastReview, slice);
+  const auditProblem = state.phase === "uninitialized" ? null : await auditChainProblem(opts.project);
+  if (auditProblem) {
+    blockers.push({ kind: "audit", detail: `audit chain: ${auditProblem} (run \`legion-cli doctor\`)` });
+  }
   const { viewer, live: viewerLive } = await liveViewer(opts.project);
   const code = statusExitCode(state.lastReadiness, slice);
   const current = summaries.find((row) => row.id === state.currentTaskId);
