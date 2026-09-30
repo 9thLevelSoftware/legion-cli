@@ -107,16 +107,18 @@ function formatPlain(input: {
 }
 
 /**
- * Full replay of the audit chain (routine appends verify only the tail). Null when sound or when
- * the log cannot be read; the message when a stored line was edited or removed. A crash gap is
- * healable and not reported.
+ * Full replay of the audit chain (routine appends verify only the tail). Null when sound; the
+ * message when a stored line was edited or removed, or chain.json/events.jsonl is unreadable.
+ * A crash gap is healable and not reported.
  */
 export async function auditChainProblem(projectRoot: string): Promise<string | null> {
   try {
     await verifyAuditChain(projectRoot, { allowExtend: true });
     return null;
   } catch (err) {
-    return err instanceof AuditTamperError ? err.message : null;
+    if (err instanceof AuditTamperError) return err.message;
+    const message = err instanceof Error ? err.message : String(err);
+    return `audit chain unreadable: ${message}`;
   }
 }
 

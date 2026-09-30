@@ -41,7 +41,7 @@ const LIFECYCLE_CORE = [
 
 const ALWAYS_ON = [
   ["status (default)", "Where am I? What next?", "--blockers, --plain"],
-  ["doctor", "Is my laptop ready?", "--metrics"],
+  ["doctor", "Is my laptop ready?", "--metrics, --rebaseline-audit"],
   ["control-mode [mode]", "Show or set guarded|advisory", ""],
   ["ingest <src…>", "Teach Legion CLI from these files/links", "--transcript, --diff, --no-commit, --distill"],
   ["wiki trust <page>", "I have read this ingested page; treat it as real", ""],

@@ -51,6 +51,7 @@ export {
   TASK_SUMMARIES_STORE,
 } from "./tasks-list.js";
 export type { TaskFileEntry, TaskFileErrorKind, TaskSummary } from "./tasks-list.js";
+export type { AuditRebaselineResult } from "./audit.js";
 export {
   abandonReceiptBody,
   abandonReceiptPath,
@@ -61,6 +62,7 @@ export {
   auditDayPath,
   auditEventsPath,
   formatAuditDayLine,
+  rebaselineAuditChain,
   readAuditCursor,
   readAuditDelta,
   readAuditEvents,
@@ -161,6 +163,7 @@ export {
 export type { MarkdownDoc, WriteTextOpts } from "./markdown.js";
 export {
   appendChainedAuditLine,
+  assertAuditChainUsable,
   healAuditChain,
   assertStoreRootsNotLinked,
   auditLineDigest,

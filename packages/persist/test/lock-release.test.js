@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { acquireEngineLock } from "../dist/index.js";
+import { acquireEngineLock, EngineLockedError } from "../dist/index.js";
 
 test("release leaves a lock file that now holds another token", async () => {
   const dir = await mkdtemp(join(tmpdir(), "legion-lockrel-"));
@@ -23,15 +23,18 @@ test("release leaves a lock file that now holds another token", async () => {
   }
 });
 
-test("a zero-timeout contended acquire fails fast without the slow identity probe", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "legion-lockrel-"));
+test("timeoutMs 0 skips the deep identity probe: a reused-PID lock is not stolen, while a waiting acquire steals it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "legion-lockprobe-"));
   try {
     const lockPath = join(dir, "engine.lock");
-    const held = await acquireEngineLock(lockPath);
-    const started = Date.now();
-    await assert.rejects(() => acquireEngineLock(lockPath, { timeoutMs: 0 }));
-    assert.ok(Date.now() - started < 1000);
-    await held.release();
+    // Held by a live process (our parent) whose recorded start time is ancient: only the deep
+    // probe can prove PID reuse and steal it.
+    const payload = `${JSON.stringify({ pid: process.ppid, pidStartedAt: 1, acquiredAt: "2020-01-01T00:00:00.000Z", token: "old" })}\n`;
+    await writeFile(lockPath, payload, "utf8");
+    await assert.rejects(() => acquireEngineLock(lockPath, { timeoutMs: 0 }), EngineLockedError);
+    assert.equal(existsSync(lockPath), true, "no probe, so nothing was stolen");
+    const stolen = await acquireEngineLock(lockPath, { timeoutMs: 200 });
+    await stolen.release();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

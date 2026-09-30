@@ -227,6 +227,9 @@ async function collectPages(
   return pages;
 }
 
+/** Skip lists already printed by this process, so repeated rebuilds do not repeat the warning. */
+const reportedSkips = new Set<string>();
+
 export type IndexRebuildResult = {
   /** Pages written to the new index. */
   pages: number;
@@ -260,7 +263,10 @@ async function collectIndexRows<T>(
  * write, so a failure or crash leaves the previous index untouched (and a leftover tmp file is
  * simply replaced). Caller holds the engine lock.
  */
-export async function rebuildIndex(projectRoot: string): Promise<IndexRebuildResult> {
+export async function rebuildIndex(
+  projectRoot: string,
+  opts?: { /** test seam: runs after the tmp db is complete, before it replaces the live one */ beforeRename?: () => Promise<void> | void },
+): Promise<IndexRebuildResult> {
   const paths = legionPaths(projectRoot);
   await mkdir(paths.indexDir, { recursive: true });
   const skipped: string[] = [];
@@ -328,8 +334,10 @@ export async function rebuildIndex(projectRoot: string): Promise<IndexRebuildRes
             body_hash: page.body_hash,
             updated_at: page.updated_at,
           });
-        } catch {
-          // A duplicate id or path (two files mapping to one page): report it, keep the rest.
+        } catch (err) {
+          // Only a duplicate id or path (two files mapping to one page) is skipped; any other
+          // database error fails the rebuild and the previous index stays in place.
+          if (!String((err as { code?: unknown }).code ?? "").startsWith("SQLITE_CONSTRAINT")) throw err;
           skipped.push(`${page.path} (duplicate page id or path)`);
           continue;
         }
@@ -354,8 +362,18 @@ export async function rebuildIndex(projectRoot: string): Promise<IndexRebuildRes
     await rm(tmp, { force: true });
     throw err;
   }
+  try {
+    if (opts?.beforeRename) await opts.beforeRename();
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err;
+  }
+  // A hot journal/WAL left beside the old live db would be replayed into the new file.
+  for (const suffix of ["-journal", "-wal", "-shm"]) await rm(`${paths.db}${suffix}`, { force: true });
   await retryFsOp(() => rename(tmp, paths.db));
-  if (skipped.length > 0) {
+  const reportKey = skipped.join("|");
+  if (skipped.length > 0 && !reportedSkips.has(reportKey)) {
+    reportedSkips.add(reportKey);
     process.stderr.write(
       `legion-cli: index rebuild skipped ${skipped.length} file(s): ${skipped.slice(0, 5).join("; ")}${skipped.length > 5 ? "; ..." : ""}
 `,

@@ -20,6 +20,7 @@ import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cl
 import {
   liveRuns,
   readAuditEvents,
+  rebaselineAuditChain,
   summarizeAuditMetrics,
   type LocalMetrics,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -253,6 +254,8 @@ function formatCheck(check: DoctorCheck): string {
 
 export type DoctorMetricsFlags = {
   metrics?: boolean;
+  /** Re-chain the current audit log after review and record an audit_rebaselined event. */
+  rebaselineAudit?: boolean;
 };
 
 async function qaScoresFallback(projectRoot: string): Promise<{ runs: number; passes: number }> {
@@ -344,6 +347,17 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   const engine = createLegionEngine(opts.project);
   const checks: DoctorCheck[] = [];
   const warnings: string[] = [];
+
+  if (flags.rebaselineAudit) {
+    const state = await engine.getState();
+    const result = await rebaselineAuditChain(opts.project, { phase: state.phase, ts: new Date().toISOString() });
+    if (!opts.json) {
+      writeOut(
+        `Audit chain re-baselined over ${result.lines} line(s)` +
+          `${result.unparseable > 0 ? ` (${result.unparseable} not valid JSON)` : ""}; recorded as an audit_rebaselined event.`,
+      );
+    }
+  }
 
   const nodeVersion = process.versions.node;
   checks.push({

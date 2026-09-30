@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { SymlinkRefusedError, appendAuditEvent } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionRefuseError } from "../dist/index.js";
+import { appendFile } from "node:fs/promises";
 import {
   git,
   gitHead,
@@ -389,7 +390,7 @@ test("spec new appends an audit event and does not compact tasks", async () => {
   });
 });
 
-test("ship replays the whole audit chain: a middle-line edit refuses, an untouched log ships", async () => {
+test("ship replays the whole audit chain: a middle-line edit refuses", async () => {
   await withEngine(async ({ engine, store, dir }) => {
     await initProject(engine);
     await seedReadyToShip(store);
@@ -410,5 +411,42 @@ test("ship replays the whole audit chain: a middle-line edit refuses, an untouch
     await writeFile(jsonl, lines.join("\n"), "utf8");
     await assert.rejects(() => engine.ship(), (err) => err instanceof LegionRefuseError && /audit chain/.test(err.message));
     assert.notEqual((await engine.getState()).phase, "shipped");
+  });
+});
+
+test("ship heals a crash gap in the audit chain (an event line without its chain write) and ships", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    const jsonl = join(store.paths.auditDir, "events.jsonl");
+    const event = { schemaVersion: "legion-cli-audit/v1", ts: "2026-01-01T00:00:00.000Z", type: "note", phase: "ready_to_ship", actor: "user", data: {} };
+    await appendFile(jsonl, JSON.stringify(event) + String.fromCharCode(10), "utf8");
+    const receipt = await engine.ship();
+    assert.equal(receipt.phase, "shipped");
+  });
+});
+
+test("ship and other mutating verbs refuse before changing state when chain.json is corrupt, naming the remedy", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    await writeFile(join(store.paths.auditDir, "chain.json"), "{not json", "utf8");
+    await assert.rejects(
+      () => engine.ship(),
+      (err) => err instanceof LegionRefuseError && /chain\.json/.test(err.message) && /rebaseline-audit/.test(err.message),
+    );
+    assert.notEqual((await engine.getState()).phase, "shipped");
+  });
+});
+
+test("a deleted chain.json over a multi-line log refuses ship (no silent re-chain)", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    for (let i = 0; i < 3; i++) {
+      await appendAuditEvent(store.projectRoot, { ts: "2026-01-01T00:00:0" + i + ".000Z", type: "note", phase: "ready_to_ship", actor: "user", data: { i } });
+    }
+    await rm(join(store.paths.auditDir, "chain.json"));
+    await assert.rejects(() => engine.ship(), (err) => err instanceof LegionRefuseError && /rebaseline-audit/.test(err.message));
   });
 });

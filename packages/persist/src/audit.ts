@@ -6,7 +6,7 @@ import { EngineLockedError } from "./errors.js";
 import { abandonReceiptPath, auditDayPath, auditEventsPath, legionPaths, shipReceiptPath } from "./layout.js";
 import { persistWork } from "./markdown.js";
 import { toFsPath } from "./paths.js";
-import { appendChainedAuditLine } from "./pre-image.js";
+import { appendChainedAuditLine, baselineAuditChain } from "./pre-image.js";
 import { createLegionStore } from "./store.js";
 
 const dayWriteTails = new Map<string, Promise<void>>();
@@ -67,6 +67,40 @@ async function appendAuditEventLocked(projectRoot: string, parsed: AuditEvent): 
   await appendChainedAuditLine(projectRoot, JSON.stringify(parsed));
   await appendAuditDay(projectRoot, parsed);
   return parsed;
+}
+
+export type AuditRebaselineResult = {
+  lines: number;
+  unparseable: number;
+  previous: { length: number; lastDigest: string } | null;
+};
+
+/**
+ * The one recorded remediation for an unreadable, reset or mismatched chain: under the engine
+ * lock, re-chain the current log and append an `audit_rebaselined` event describing what was
+ * replaced. Nothing here vouches that the log is authentic; the operator reviews it first.
+ */
+export async function rebaselineAuditChain(
+  projectRoot: string,
+  ctx: { phase: Phase; ts: string; actor?: string },
+): Promise<AuditRebaselineResult> {
+  const store = createLegionStore(projectRoot);
+  return store.withLock(async () => {
+    const result = await baselineAuditChain(projectRoot);
+    await appendAuditEventLocked(
+      projectRoot,
+      AuditEventSchema.parse({
+        schemaVersion: SCHEMA_VERSION.audit,
+        ts: ctx.ts,
+        type: "audit_rebaselined",
+        phase: ctx.phase,
+        taskId: null,
+        actor: ctx.actor ?? "user",
+        data: { lines: result.lines, unparseable: result.unparseable, previous: result.previous },
+      }),
+    );
+    return result;
+  });
 }
 
 export function auditDayFromTs(ts: string): string {

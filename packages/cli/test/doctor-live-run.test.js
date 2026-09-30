@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -80,15 +80,54 @@ test("doctor and status report an edited middle audit line", async () => {
     const jsonl = join(dir, ".legion-cli", "audit", "events.jsonl");
     const healthy = runCli(["doctor", "--project", dir], { env });
     assert.match(normalize(healthy.stdout), /audit chain/);
-    assert.doesNotMatch(normalize(healthy.stdout), /FAIL\s+audit chain/);
+    assert.equal(healthy.status, 0);
+    assert.match(normalize(healthy.stdout), /ok {4}audit chain/);
     const lines = (await readFile(jsonl, "utf8")).split(/\r?\n/);
     const at = lines.findIndex((line) => line.includes("line-1"));
     lines[at] = lines[at].replace("line-1", "line-X");
     await writeFile(jsonl, lines.join("\n"), "utf8");
     const doctor = runCli(["doctor", "--project", dir], { env });
     assert.notEqual(doctor.status, 0);
-    assert.match(normalize(doctor.stdout), /audit chain/);
+    assert.match(normalize(doctor.stdout), /FAIL {2}audit chain/);
     const status = runCli(["status", "--project", dir, "--plain"], { env });
     assert.match(normalize(status.stdout), /blocker\taudit chain/);
+  });
+});
+
+async function seedAuditLog(dir) {
+  for (let i = 0; i < 4; i++) {
+    await appendAuditEvent(dir, {
+      ts: `2026-01-01T00:00:0${i}.000Z`,
+      type: "note",
+      phase: "initialized",
+      actor: "user",
+      data: { marker: `line-${i}` },
+    });
+  }
+}
+
+test("doctor --rebaseline-audit is the recorded way out of a corrupt or deleted chain.json", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
+    await seedAuditLog(dir);
+    const chain = join(dir, ".legion-cli", "audit", "chain.json");
+    await writeFile(chain, "{not json", "utf8");
+    const broken = runCli(["doctor", "--project", dir], { env });
+    assert.notEqual(broken.status, 0);
+    assert.match(normalize(broken.stdout), /FAIL {2}audit chain/);
+    assert.match(normalize(broken.stdout), /rebaseline-audit/);
+    const status = runCli(["status", "--project", dir, "--plain"], { env });
+    assert.match(normalize(status.stdout), /blocker	audit chain/);
+    const fixed = runCli(["doctor", "--rebaseline-audit", "--project", dir], { env });
+    assert.match(normalize(fixed.stdout), /re-baselined/);
+    assert.equal(fixed.status, 0);
+    const again = runCli(["doctor", "--project", dir], { env });
+    assert.equal(again.status, 0);
+    const log = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
+    assert.match(log, /"type":"audit_rebaselined"/);
+    await rm(chain);
+    const deleted = runCli(["doctor", "--project", dir], { env });
+    assert.notEqual(deleted.status, 0, "a deleted chain over a multi-line log is not silently re-chained");
   });
 });

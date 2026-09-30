@@ -39,6 +39,7 @@ import {
   parseMarkdownDocument,
   PathEscapeError,
   AuditTamperError,
+  assertAuditChainUsable,
   healAuditChain,
   EngineLockedError,
   RestoreRefusedError,
@@ -3637,9 +3638,9 @@ export class LegionEngine {
         data,
       });
     } catch (err) {
-      // Local metrics are best-effort against I/O failures only; a tampered chain is never hidden.
+      // Best-effort except tamper: I/O and validation failures are swallowed, a tampered or
+      // unreadable chain is never hidden (lock entry also checks it before mutating).
       if (err instanceof AuditTamperError) throw err;
-      if (typeof (err as NodeJS.ErrnoException)?.code !== "string") throw err;
     }
   }
 
@@ -3731,6 +3732,8 @@ export class LegionEngine {
         async () => {
           let guardError: unknown;
           if (!already) {
+            // Fail closed before any state change if the audit chain is unreadable or rewound.
+            await assertAuditChainUsable(this.projectRoot);
             // Provably dead run markers are dropped here; live ones keep their open command
             // (reconcile skips them) and refuse every mutating entry below.
             const { live } = await liveRuns(this.projectRoot, { clearDead: true });

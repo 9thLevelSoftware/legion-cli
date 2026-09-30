@@ -726,6 +726,13 @@ export type AuditChainState = {
   format?: number;
 };
 
+const AUDIT_REMEDY =
+  "Review .legion-cli/audit/events.jsonl, then run `legion-cli doctor --rebaseline-audit` to accept it as the new baseline (recorded as an audit_rebaselined event).";
+
+function auditTamper(reason: string): AuditTamperError {
+  return new AuditTamperError(`${reason}. ${AUDIT_REMEDY}`);
+}
+
 /** chain.json layout that carries `byteOffset`. Older files lack it; newer ones are fully re-verified. */
 const AUDIT_CHAIN_FORMAT = 2;
 
@@ -742,13 +749,29 @@ export function auditLineDigest(prev: string, line: string): string {
 }
 
 export async function readAuditChain(projectRoot: string): Promise<AuditChainState> {
+  let raw: string;
   try {
-    const parsed = JSON.parse(await readFile(auditChainAbs(projectRoot), "utf8")) as AuditChainState;
-    if (parsed && typeof parsed.lastDigest === "string" && typeof parsed.length === "number") return parsed;
+    raw = await readFile(auditChainAbs(projectRoot), "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    return { lastDigest: GENESIS_DIGEST, length: 0 };
   }
-  return { lastDigest: GENESIS_DIGEST, length: 0 };
+  let parsed: AuditChainState | null = null;
+  try {
+    parsed = JSON.parse(raw) as AuditChainState;
+  } catch {
+    parsed = null;
+  }
+  if (
+    !parsed ||
+    typeof parsed.lastDigest !== "string" ||
+    typeof parsed.length !== "number" ||
+    !Number.isInteger(parsed.length) ||
+    parsed.length < 0
+  ) {
+    throw auditTamper("audit chain unreadable: .legion-cli/audit/chain.json is corrupt, empty or has the wrong shape");
+  }
+  return parsed;
 }
 
 /** Non-empty lines of a buffer, split like the original reader (`\n`, one trailing `\r` dropped). */
@@ -807,7 +830,7 @@ async function extendAuditChainFromTail(projectRoot: string, stored: AuditChainS
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-  if (size < offset || (size === 0 && stored.length > 0)) throw new AuditTamperError("audit chain rewind refused");
+  if (size < offset || (size === 0 && stored.length > 0)) throw auditTamper("audit chain rewind refused");
   const base: AuditChainState = {
     lastDigest: stored.lastDigest,
     length: stored.length,
@@ -876,32 +899,106 @@ export async function appendChainedAuditLine(projectRoot: string, line: string):
  */
 export async function verifyAuditChain(
   projectRoot: string,
-  opts?: { allowExtend?: boolean },
+  opts?: { allowExtend?: boolean; /** test seam: runs between the chain read and the log read */ afterChainRead?: () => Promise<void> },
 ): Promise<AuditChainState> {
+  // Chain first, log second: an append landing between the reads only makes the log longer than
+  // the stored length (the accepted crash-gap shape), never shorter (a false rewind).
+  const stored = await readAuditChain(projectRoot);
+  if (opts?.afterChainRead) await opts.afterChainRead();
   let buf: Buffer;
   try {
     buf = await readFile(auditJsonlAbs(projectRoot));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    const stored = await readAuditChain(projectRoot);
-    if (stored.length > 0) throw new AuditTamperError("audit chain rewind refused");
+    if (stored.length > 0) throw auditTamper("audit chain rewind refused");
     return stored;
   }
   persistWork.auditBytesRead += buf.length;
   const lines = auditLinesOf(buf);
-  const stored = await readAuditChain(projectRoot);
   if (stored.length > lines.length) {
-    throw new AuditTamperError("audit chain rewind refused");
+    throw auditTamper("audit chain rewind refused");
+  }
+  if (stored.length === 0 && lines.length > 1) {
+    // A missing or reset chain.json must not quietly bless a log that may already be edited.
+    throw auditTamper("audit chain missing or reset for a non-empty log");
   }
   const prefixDigest = extendDigest(GENESIS_DIGEST, lines.slice(0, stored.length));
   if (stored.length > 0 && prefixDigest !== stored.lastDigest) {
-    throw new AuditTamperError("audit chain gap or rewrite");
+    throw auditTamper("audit chain gap or rewrite");
   }
   if (lines.length > stored.length && !opts?.allowExtend) {
-    throw new AuditTamperError("audit chain gap or rewrite");
+    throw auditTamper("audit chain gap or rewrite");
   }
   const digest = extendDigest(prefixDigest, lines.slice(stored.length));
   return { format: AUDIT_CHAIN_FORMAT, lastDigest: digest, length: lines.length, byteOffset: buf.length };
+}
+
+/**
+ * Cheap pre-mutation check (no full replay): chain.json must be readable, the log must not be
+ * shorter than the chain covers, and a reset chain must not sit over a multi-line log.
+ */
+export async function assertAuditChainUsable(projectRoot: string): Promise<void> {
+  const stored = await readAuditChain(projectRoot);
+  let size = 0;
+  try {
+    size = (await stat(auditJsonlAbs(projectRoot))).size;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  if (chainTrusted(stored) && size < (stored.byteOffset as number)) {
+    throw auditTamper("audit chain rewind refused");
+  }
+  if (stored.length > 0 && size === 0) throw auditTamper("audit chain rewind refused");
+  if (stored.length === 0 && size > 0) {
+    const lines = auditLinesOf(await readFile(auditJsonlAbs(projectRoot)));
+    if (lines.length > 1) throw auditTamper("audit chain missing or reset for a non-empty log");
+  }
+}
+
+/**
+ * Explicit re-baseline: re-chain the whole current log into a fresh chain.json. The caller (under
+ * the engine lock) records an audit_rebaselined event afterwards. Returns what was replaced.
+ */
+export async function baselineAuditChain(projectRoot: string): Promise<{
+  lines: number;
+  unparseable: number;
+  previous: { length: number; lastDigest: string } | null;
+}> {
+  let previous: { length: number; lastDigest: string } | null = null;
+  try {
+    const stored = await readAuditChain(projectRoot);
+    previous = stored.length > 0 ? { length: stored.length, lastDigest: stored.lastDigest } : null;
+  } catch {
+    previous = null;
+  }
+  let buf = Buffer.alloc(0);
+  try {
+    buf = await readFile(auditJsonlAbs(projectRoot));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  const lines = auditLinesOf(buf);
+  let unparseable = 0;
+  for (const line of lines) {
+    try {
+      JSON.parse(line);
+    } catch {
+      unparseable += 1;
+    }
+  }
+  const paths = legionPaths(projectRoot);
+  await ensureStoreRoot(paths.auditDir, paths.root);
+  if (lines.length > 0) {
+    await writeAuditChain(projectRoot, {
+      format: AUDIT_CHAIN_FORMAT,
+      lastDigest: extendDigest(GENESIS_DIGEST, lines),
+      length: lines.length,
+      byteOffset: buf.length,
+    });
+  } else {
+    await rm(auditChainAbs(projectRoot), { force: true });
+  }
+  return { lines: lines.length, unparseable, previous };
 }
 
 /**
