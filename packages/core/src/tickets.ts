@@ -1,3 +1,4 @@
+import { normalizePathKey } from "@9thlevelsoftware/legion-cli-schema";
 import { mergeFilesForbidden } from "@9thlevelsoftware/legion-cli-graph";
 import {
   AdapterIdSchema,
@@ -86,9 +87,15 @@ const ENTRY_BASENAMES = new Set([
   "justfile", "taskfile.yml", "taskfile.yaml", "pyproject.toml", "tox.ini", "pytest.ini", "setup.cfg",
   "setup.py", "conftest.py", "noxfile.py", "cargo.toml", "cargo.lock", "build.rs", "go.mod", "go.sum",
   "gemfile", "gemfile.lock", "rakefile", "build.gradle", "build.gradle.kts", "pom.xml", ".gitlab-ci.yml",
-  "jenkinsfile", "dockerfile", ".babelrc", ".mocharc.json", ".mocharc.js", ".mocharc.yml",
+  "jenkinsfile", "dockerfile", "bunfig.toml", ".swcrc", "cmakelists.txt", "deno.json", "deno.jsonc",
+  "deno.lock", "composer.json", "composer.lock", "requirements.txt", "constraints.txt", "pipfile", "pipfile.lock",
+  "poetry.lock", "uv.lock", "directory.build.props", "directory.build.targets", "global.json",
+  "nuget.config", "settings.gradle", "settings.gradle.kts", "gradlew", "mvnw", "flake.nix", "shell.nix", ".babelrc", ".mocharc.json", ".mocharc.js", ".mocharc.yml",
 ]);
 const ENTRY_BASENAME_PATTERNS = [
+  /^next\.config\..+$/,
+  /^requirements[^/]*\.txt$/,
+  /\.(csproj|vbproj|fsproj|sln|slnx|gemspec)$/,
   /^tsconfig(\..+)?\.json$/,
   /^(vitest|vite|jest|playwright|karma|babel|rollup|webpack|eslint|prettier|cypress|tsup|turbo)\.config\..+$/,
   /^\.eslintrc(\..+)?$/,
@@ -123,8 +130,9 @@ export function touchesVerificationEntryPoint(paths: readonly string[], commands
   });
 }
 
+/** Backslashes to "/", then the shared segment-wise key (case, trailing dots/spaces, :streams). */
 function normalizeEntryPath(raw: string): string {
-  return raw.trim().replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "").toLowerCase();
+  return normalizePathKey(raw.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, ""));
 }
 
 export function taskMarkdownBody(task: Task): string {

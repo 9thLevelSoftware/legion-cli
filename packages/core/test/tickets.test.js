@@ -425,3 +425,26 @@ test("review: an agent ticket cannot pick its parent or its files; default comma
     );
   });
 });
+
+test("touchesVerificationEntryPoint sees through NTFS aliases (trailing dots/spaces, case, streams)", () => {
+  for (const path of [
+    "package.json.", "package.json ", "package.json. .", "PACKAGE.JSON", "package.json:stream",
+    "scripts./x.js", "Scripts /x.js", "SCRIPTS/x.js", ".GitHub./workflows/ci.yml", "sub/Package.JSON.",
+  ]) {
+    assert.equal(touchesVerificationEntryPoint([path]), true, JSON.stringify(path));
+  }
+  // command tokens are normalised the same way
+  assert.equal(touchesVerificationEntryPoint(["tools/Run.sh."], ["bash tools/run.sh"]), true);
+  assert.equal(touchesVerificationEntryPoint(["tools/run.sh"], ["bash Tools/RUN.sh ."]), true);
+});
+
+test("touchesVerificationEntryPoint covers other ecosystems' manifests and configs", () => {
+  for (const path of [
+    "bunfig.toml", ".swcrc", "next.config.mjs", "CMakeLists.txt", "app/App.csproj", "App.sln", "deno.json",
+    "pyproject.toml", "Cargo.toml", "go.mod", "pom.xml", "build.gradle", "build.gradle.kts", "setup.py",
+    "requirements.txt", "requirements-dev.txt", "Gemfile", "composer.json", "x/lib.gemspec",
+  ]) {
+    assert.equal(touchesVerificationEntryPoint([path]), true, path);
+  }
+  assert.equal(touchesVerificationEntryPoint(["src/main.ts", "docs/requirements.md"]), false);
+});
