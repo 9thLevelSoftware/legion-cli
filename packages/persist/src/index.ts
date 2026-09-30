@@ -18,6 +18,20 @@ export {
 } from "./atomic-write.js";
 export { nextFileId } from "./ids.js";
 export {
+  clearLiveRun,
+  createLiveRun,
+  LIVE_RUN_SCHEMA,
+  listLiveRunMarkers,
+  liveRunDir,
+  liveRunFromResume,
+  liveRunMarkerPath,
+  liveRuns,
+  readLiveRun,
+  liveRunState,
+  recordLiveRunAgent,
+} from "./live-run.js";
+export type { LiveRunMarker, LiveRunState } from "./live-run.js";
+export {
   identitySpawnEnv,
   IDENTITY_TIMEOUT_MS,
   ownProcessStartedAt,

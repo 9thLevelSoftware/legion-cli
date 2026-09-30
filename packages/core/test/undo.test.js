@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { listOpenCommandIds } from "@9thlevelsoftware/legion-cli-persist";
+import { listOpenCommandIds, ownProcessStartedAt } from "@9thlevelsoftware/legion-cli-persist";
 import {
   applyChatAction,
   canTransition,
@@ -56,6 +56,27 @@ async function writeLiveResume(dir, taskId) {
       argvSummary: "{{pointer}}",
       resolutionSource: "default",
     })}\n`,
+    "utf8",
+  );
+}
+
+/** The live-run marker a real execute leaves while its agent runs. */
+async function writeLiveMarker(dir, taskId) {
+  const runId = `live-${taskId}`;
+  const markerDir = join(dir, ".legion-cli", "cache", "live-spawn");
+  await mkdir(markerDir, { recursive: true });
+  await writeFile(
+    join(markerDir, `${runId}.json`),
+    JSON.stringify({
+      schemaVersion: "legion-cli-live-run/v1",
+      runId,
+      skillId: "execute",
+      taskId,
+      enginePid: process.pid,
+      engineStartedAt: ownProcessStartedAt(),
+      agentPid: null,
+      startedAt: new Date().toISOString(),
+    }),
     "utf8",
   );
 }
@@ -383,8 +404,9 @@ test("undo refuses during a live execute", async () => {
     );
     await patchState(store, { phase: "executing", currentTaskId: "TSK-0002" });
     await writeLiveResume(dir, "TSK-0002");
+    await writeLiveMarker(dir, "TSK-0002");
     await assert.rejects(() => engine.undoLastTask(), (err) =>
-      isRefuse(err, /undo is refused while TSK-0002 is in_progress/, /legion-cli status/),
+      isRefuse(err, /execute run live-TSK-0002 is live/, /legion-cli status/),
     );
     assert.equal((await store.readTask("TSK-0002")).data.status, "in_progress");
     assert.equal((await store.readTask("TSK-0001")).data.status, "done");
