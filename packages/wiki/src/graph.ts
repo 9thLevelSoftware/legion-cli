@@ -23,6 +23,28 @@ export function loadWikiLinks(projectRoot: string): WikiLinkRow[] {
   );
 }
 
+export type WikiPageHead = Omit<WikiPageRow, "body">;
+
+/** Same rows as loadWikiPages without the (large) body column. */
+export function loadWikiPageHeads(projectRoot: string): WikiPageHead[] {
+  return queryIndex<WikiPageHead>(projectRoot, "SELECT id, path, title, trust FROM pages");
+}
+
+/** Bodies for a bounded set of page ids (chunked to stay under SQLite's variable limit). */
+export function loadWikiBodies(projectRoot: string, ids: readonly string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
+    const rows = queryIndex<{ id: string; body: string }>(
+      projectRoot,
+      `SELECT id, body FROM pages WHERE id IN (${chunk.map(() => "?").join(",")})`,
+      chunk,
+    );
+    for (const row of rows) out.set(row.id, row.body);
+  }
+  return out;
+}
+
 export function loadWikiPages(projectRoot: string): WikiPageRow[] {
   return queryIndex<WikiPageRow>(
     projectRoot,

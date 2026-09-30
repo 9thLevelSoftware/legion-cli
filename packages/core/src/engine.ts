@@ -47,6 +47,7 @@ import {
   invalidTaskMessage,
   isPidAlive,
   listTaskFiles,
+  listTaskSummaries,
   liveRuns,
   readLiveRun,
   nextFileId,
@@ -763,6 +764,7 @@ Approved: ${note}
           resolveBinary: opts.resolveBinary,
           spawnLsp: opts.spawnLsp,
           lspDeadlineMs: opts.lspDeadlineMs,
+          maxModules: opts.maxModules,
         });
       } catch (err) {
         if (err instanceof MapError) refuse(err.message, err.nextHint);
@@ -797,7 +799,7 @@ Approved: ${note}
         });
         await writeMapFile(
           architecturePath,
-          mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints)),
+          mergeArchitecture(existingArch, renderArchitecture(generated.fingerprints, { omitted: generated.omitted })),
           { root: this.projectRoot },
         );
         if (revert.incident) {
@@ -3797,6 +3799,19 @@ Approved: ${note}
   async #recoverDeadInProgressLocked(): Promise<void> {
     const state = await this.#readState();
     if (state.phase === "uninitialized") return;
+    // Only a task that is (or may be) in flight needs a run lookup: skip the cache/runs scan when
+    // there is no current task and the summary index shows no in_progress/verifying task. An
+    // unreadable task (ok:false) can never be recovered (readTask throws below), so it is ignored.
+    // Assumption: the summary index is an mtime+size cache under index/ (agents cannot write it); a
+    // status flip that keeps both identical would hide an in-flight task until the next lock entry
+    // sees a changed file. Reading every task file instead would cost O(tasks) parsing per lock entry.
+    if (!state.currentTaskId) {
+      const summaries = await listTaskSummaries(this.projectRoot);
+      const inFlight = summaries.some(
+        (row) => row.ok && (row.status === "in_progress" || row.status === "verifying"),
+      );
+      if (!inFlight) return;
+    }
     const resumes = await listCacheResumes(this.projectRoot);
     const latestByTask = new Map<string, (typeof resumes)[number]>();
     for (const resume of resumes) {

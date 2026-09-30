@@ -13,6 +13,9 @@ export {
   loadPersistedLspDiagnostics,
 } from "./lsp.js";
 export type { LspDiagnostic, LspSpawnFn, ResolveBinaryFn, DiagnosticSourceFile } from "./lsp.js";
+/** @internal test support (counter tests); not a stable API. */
+export { walkSourcesReport } from "./walk.js";
+export type { WalkReport } from "./walk.js";
 export { parseSource } from "./parse.js";
 export type { ParseResult } from "./parse.js";
 export { computeRepoPageRank, formatRepoMap, repoMapWork, resetRepoMapWork } from "./repo-map.js";

@@ -19,7 +19,7 @@ import { MAP_HINT, refuse } from "./errors.js";
 import { fingerprintHash, fingerprintRoot, uniqueSorted } from "./fingerprint.js";
 import { collectLspExports, detectLspServer, MAX_LSP_FILES, type LspSpawnFn, type ResolveBinaryFn } from "./lsp.js";
 import { MAX_NAMES, parseSource } from "./parse.js";
-import { DEFAULT_IGNORE, resolveMapRoots, walkSources } from "./walk.js";
+import { DEFAULT_IGNORE, resolveMapRoots, walkSourcesReport } from "./walk.js";
 
 export type MapLspMode = "require" | "off" | "auto";
 
@@ -32,6 +32,8 @@ export type MapOptions = {
   spawnLsp?: LspSpawnFn;
   /** Test hook: LSP file-loop budget (default 60s). */
   lspDeadlineMs?: number;
+  /** Test hook: module cap (default 10,000). */
+  maxModules?: number;
 };
 
 export type GenerateMapResult = {
@@ -40,6 +42,8 @@ export type GenerateMapResult = {
   architecturePath: string;
   fingerprintsPath: string;
   changed: string[];
+  /** Candidate modules left out because the map is capped (0 when not degraded). */
+  omitted: number;
 };
 
 async function loadMapConfig(projectRoot: string): Promise<MapConfig> {
@@ -152,7 +156,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   const config = await loadMapConfig(root);
   const ignore = [...new Set([...(options.ignore ?? config.ignore ?? []), ...DEFAULT_IGNORE])];
   const roots = resolveMapRoots(root, options.roots ?? config.roots);
-  const files = await walkSources({ projectRoot: root, roots, ignore });
+  const { files, omitted } = await walkSourcesReport({ projectRoot: root, roots, ignore, maxModules: options.maxModules });
 
   const paths = legionPaths(root);
   const fingerprintsPath = join(paths.mapDir, "fingerprints.json");
@@ -219,11 +223,11 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
   const existingArch = await readExistingMapFile(architecturePath);
 
   if (unchanged && existing) {
-    if (options.refresh || existingArch === undefined) {
+    // Also rewrite when the generated block differs (e.g. the omitted count moved among modules below the cutoff).
+    const merged = mergeArchitecture(existingArch, renderArchitecture(existing, { omitted }));
+    if (options.refresh || existingArch === undefined || merged !== existingArch.replaceAll("\r\n", "\n")) {
       await ensureRealMapDir(root, paths.mapDir);
-      await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(existing)), {
-        root,
-      });
+      await writeMapFile(architecturePath, merged, { root });
     }
     return {
       backend: existing.backend,
@@ -231,6 +235,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
       architecturePath,
       fingerprintsPath,
       changed: [],
+      omitted,
     };
   }
 
@@ -244,7 +249,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
 
   await ensureRealMapDir(root, paths.mapDir);
   await writeMapFile(fingerprintsPath, `${JSON.stringify(fingerprints, null, 2)}\n`, { root });
-  await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(fingerprints)), { root });
+  await writeMapFile(architecturePath, mergeArchitecture(existingArch, renderArchitecture(fingerprints, { omitted })), { root });
 
-  return { backend, fingerprints, architecturePath, fingerprintsPath, changed };
+  return { backend, fingerprints, architecturePath, fingerprintsPath, changed, omitted };
 }

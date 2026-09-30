@@ -8,6 +8,8 @@ export type MapOptions = {
   resolveBinary?: GenerateMapOptions["resolveBinary"];
   spawnLsp?: GenerateMapOptions["spawnLsp"];
   lspDeadlineMs?: number;
+  /** Test hook: module cap passed to generateMap. */
+  maxModules?: number;
 };
 
 export type MapResult = {

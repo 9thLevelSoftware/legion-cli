@@ -335,3 +335,24 @@ test("map refuses while execute is in_progress; its live-run marker is unchanged
     });
   });
 });
+
+test("F-028 the degraded-map note survives the engine map path with a spawned map skill", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, dir }) => {
+      await initProject(engine);
+      await mkdir(join(dir, "src"), { recursive: true });
+      for (const name of ["a", "b", "c", "d", "e"]) {
+        await writeFile(join(dir, "src", `${name}.ts`), `export const ${name} = 1;\n`.repeat(name === "e" ? 5 : 1), "utf8");
+      }
+      initGitRepo(dir);
+      const spawning = new LegionEngine(dir, undefined, { fakeArtifacts: [] });
+      const result = await spawning.map({ lsp: "off", maxModules: 3 });
+      assert.equal(result.modules, 3);
+      const runNames = await readdir(join(dir, ".legion-cli", "cache", "runs"));
+      assert.ok(runNames.some((name) => name.startsWith("map-")), "map skill spawn must have run");
+      const arch = await readFile(join(dir, ".legion-cli", "map", "ARCHITECTURE.md"), "utf8");
+      assert.match(arch, /Degraded map: 3 modules are listed/);
+      assert.match(arch, /2 smaller modules were left out/);
+    });
+  });
+});
