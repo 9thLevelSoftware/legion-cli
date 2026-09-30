@@ -28,10 +28,16 @@ import {
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
 import {
   AuditTamperError,
+  clearLiveRun,
+  createLiveRun,
   isPidAlive,
+  liveRunFromResume,
+  liveRunState,
   openEngineCommand,
+  recordLiveRunAgent,
   RestoreRefusedError,
   type LegionReader,
+  type LiveRunMarker,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   assertExecuteSandbox,
@@ -81,56 +87,33 @@ export async function resolveSkillDir(opts: {
   return resolveOverlaySkillDir(opts);
 }
 
-type LiveSpawnMarker = { enginePid: number; skillId: SkillId; runId: string };
-
-function liveSpawnPath(projectRoot: string): string {
-  return join(projectRoot, ".legion-cli", "cache", "live-spawn.json");
+/**
+ * Refuse while any listed run is live (its engine or agent still holds the recorded identity).
+ * `ownRunId` is the run this call is finishing: the owning engine's own relock is exempt.
+ * `live` comes from `liveRuns()`, which also clears provably dead markers and migrates the legacy file.
+ */
+function liveRunMarkerRel(runId: string): string {
+  return `.legion-cli/cache/live-spawn/${runId}.json`;
 }
 
-export async function writeLiveSpawnMarker(
-  projectRoot: string,
-  skillId: SkillId,
-  runId: string,
-): Promise<void> {
-  await mkdir(join(projectRoot, ".legion-cli", "cache"), { recursive: true });
-  await writeFile(
-    liveSpawnPath(projectRoot),
-    `${JSON.stringify({ enginePid: process.pid, skillId, runId })}\n`,
-    "utf8",
+export function refuseIfLiveRun(live: readonly LiveRunMarker[], opts?: { ownRunId?: string }): void {
+  const other = live.find((marker) => !(marker.runId === opts?.ownRunId && marker.enginePid === process.pid));
+  if (!other) return;
+  const task = other.taskId ? ` (task ${other.taskId})` : "";
+  const where = other.evidence
+    ? `This run has no marker; the evidence is ${other.evidence} (check that its pids are a legion agent)`
+    : `if a process there is not a legion agent, delete ${liveRunMarkerRel(other.runId)}`;
+  refuse(
+    `refused while another legion command is running: ${other.skillId} run ${other.runId} is live${task}. ` +
+      `Hands off the tree until it finishes. Check with legion-cli status; if it died, legion-cli doctor clears its marker (${where})`,
+    HINT.status,
   );
 }
 
-export async function clearLiveSpawnMarker(projectRoot: string, runId?: string): Promise<void> {
-  try {
-    if (runId) {
-      const raw = await readFile(liveSpawnPath(projectRoot), "utf8");
-      const parsed = JSON.parse(raw) as LiveSpawnMarker;
-      if (parsed.runId !== runId) return;
-    }
-    await unlink(liveSpawnPath(projectRoot));
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-}
-
-export async function readLiveSpawnMarker(projectRoot: string): Promise<LiveSpawnMarker | null> {
-  try {
-    const parsed = JSON.parse(await readFile(liveSpawnPath(projectRoot), "utf8")) as LiveSpawnMarker;
-    if (typeof parsed?.enginePid !== "number" || typeof parsed.skillId !== "string") return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export async function refuseIfLiveSkillSpawn(projectRoot: string, action: string): Promise<void> {
-  const live = await readLiveSpawnMarker(projectRoot);
-  if (!live) return;
-  if (!isPidAlive(live.enginePid)) {
-    await clearLiveSpawnMarker(projectRoot);
-    return;
-  }
-  refuse(`${action} is refused while ${live.skillId} is running`, HINT.status);
+/** Treat a resume.json as a run marker: same identity check, keyed on the run's recorded start. */
+export async function resumeAsLiveRun(resume: ResumeFile): Promise<LiveRunMarker | null> {
+  const marker = liveRunFromResume(resume);
+  return (await liveRunState(marker)).live ? marker : null;
 }
 
 function skillMissingHint(skillId: SkillId): string {
@@ -587,6 +570,19 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     });
   }
 
+  // The marker exists before the agent does, so an engine crash right after spawn still leaves a
+  // record; the agent pid is added once known. `wx`: never overwrites another run's marker.
+  let liveMarker: LiveRunMarker;
+  try {
+    liveMarker = await createLiveRun(opts.projectRoot, {
+      runId,
+      skillId: opts.skillId,
+      taskId: opts.taskId ?? null,
+    });
+  } catch (err) {
+    await sandbox?.destroy().catch(() => undefined);
+    throw err;
+  }
   let handle: AgentHandle;
   try {
     const spawnOpts = sandbox?.spawnOpts();
@@ -617,10 +613,19 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     });
   } catch (err) {
     await sandbox?.destroy().catch(() => undefined);
+    await clearLiveRun(opts.projectRoot, runId).catch(() => undefined);
     throw err;
   }
-  await writeResume(handle.pid);
-  await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, runId);
+  try {
+    await writeResume(handle.pid);
+    if (handle.pid && handle.pid > 0) await recordLiveRunAgent(opts.projectRoot, liveMarker, handle.pid);
+  } catch (err) {
+    // Never leave a running agent no one owns: stop it, drop the jail and the marker, rethrow.
+    await handle.abort().catch(() => undefined);
+    await sandbox?.destroy().catch(() => undefined);
+    await clearLiveRun(opts.projectRoot, runId).catch(() => undefined);
+    throw err;
+  }
   return {
     spawned: true,
     runId,
@@ -665,9 +670,11 @@ export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spa
 
 export async function finishStartedSpawn(
   started: Extract<StartedSkillSpawn, { spawned: true }>,
+  opts?: { keepMarker?: boolean },
 ): Promise<RevertResult> {
   let copied: string[] = [];
   let dropped: string[] = [];
+  let agentStillAlive = false;
   const resumePath = join(
     started.revertCtx.projectRoot,
     ".legion-cli",
@@ -698,6 +705,7 @@ export async function finishStartedSpawn(
     }
     const childPid = started.handle.pid;
     const agentAlive = Boolean(childPid && childPid !== process.pid && isPidAlive(childPid));
+    agentStillAlive = agentAlive;
     let revert;
     try {
       revert = await revertExtras({
@@ -732,7 +740,8 @@ export async function finishStartedSpawn(
       await writeFile(resumePath, resumeRaw, "utf8").catch(() => undefined);
     }
     await started.sandbox?.destroy().catch(() => undefined);
-    await clearLiveSpawnMarker(started.revertCtx.projectRoot, started.runId);
+    // A surviving agent keeps its marker: the guard must hold while anything can still write.
+    if (!agentStillAlive && !opts?.keepMarker) await clearLiveRun(started.revertCtx.projectRoot, started.runId);
   }
 }
 

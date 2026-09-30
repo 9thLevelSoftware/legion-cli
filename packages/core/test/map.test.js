@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -287,7 +287,7 @@ test("map spawn restore replaces a symlink ARCHITECTURE.md without reading the t
   });
 });
 
-test("map refuses while execute is in_progress; live-spawn.json unchanged", async () => {
+test("map refuses while execute is in_progress; its live-run marker is unchanged", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
       const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "map-ready");
@@ -314,7 +314,9 @@ test("map refuses while execute is in_progress; live-spawn.json unchanged", asyn
         if (Date.now() - start > 10_000) throw new Error("fake wait never became ready");
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      const livePath = join(dir, ".legion-cli", "cache", "live-spawn.json");
+      const liveDir = join(dir, ".legion-cli", "cache", "live-spawn");
+      const [liveName] = readdirSync(liveDir);
+      const livePath = join(liveDir, liveName);
       const liveBefore = await readFile(livePath, "utf8");
       await assert.rejects(
         () => engine.map({ lsp: "off" }),

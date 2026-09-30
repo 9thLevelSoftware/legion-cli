@@ -329,6 +329,8 @@ export type ExecuteTaskResult = {
   resolutionSource?: AdapterResolutionSource;
   /** Set when the agent exited non-zero; shown as a warning (verification commands remain the evidence). */
   agentExitWarning?: string;
+  /** Set when the tree was dirty inside the task filesAllowed at start (F-007 residual). */
+  dirtyWarning?: string;
 };
 
 export type ExecuteResult = {

@@ -115,6 +115,49 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
   });
 }
 
+/**
+ * Kill the agent tree when this engine is interrupted or exits. POSIX agents run in their own
+ * process group, so the terminal's Ctrl-C never reaches them; without this they keep writing into
+ * the project after Legion is gone. Windows children die with the engine only when they share its
+ * job object, so the same hooks run there too. Under the Docker/bwrap wrapper the killed pid is the
+ * wrapper client, so a container may outlive an interrupt (its writes stay in the jail). Handlers do not run on a Windows console close or
+ * `taskkill /F`: the identity-based live-run marker is what makes the next command see a survivor.
+ * Mirrors `runCommand`: after killing, let the signal act on us as it would have.
+ */
+function killTreeOnInterrupt(child: ChildProcess, pid: number, exited: Promise<unknown>): void {
+  if (pid <= 0) return;
+  const kill = (): void => {
+    // The child already exited: its pid may belong to someone else now.
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    try {
+      terminate(pid, true);
+    } catch {
+      // best effort: the process may already be gone
+    }
+  };
+  const onExit = (): void => kill();
+  const onSignal = (signal: NodeJS.Signals): void => {
+    kill();
+    remove();
+    if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+  };
+  const onInt = (): void => onSignal("SIGINT");
+  const onTerm = (): void => onSignal("SIGTERM");
+  // A closed terminal sends SIGHUP; the agent has its own process group and would never see it.
+  const onHup = (): void => onSignal("SIGHUP");
+  const remove = (): void => {
+    process.removeListener("exit", onExit);
+    process.removeListener("SIGINT", onInt);
+    process.removeListener("SIGTERM", onTerm);
+    if (process.platform !== "win32") process.removeListener("SIGHUP", onHup);
+  };
+  process.once("exit", onExit);
+  process.once("SIGINT", onInt);
+  process.once("SIGTERM", onTerm);
+  if (process.platform !== "win32") process.once("SIGHUP", onHup);
+  void exited.then(remove, remove);
+}
+
 class ChildAgentHandle implements AgentHandle {
   readonly pid: number;
   readonly #stdoutPath: string;
@@ -238,7 +281,7 @@ export async function spawnAgentProcess(opts: {
     ]);
     throw err;
   }
-  return new ChildAgentHandle({
+  const handle = new ChildAgentHandle({
     job: opts.job,
     child,
     stdout,
@@ -247,4 +290,6 @@ export async function spawnAgentProcess(opts: {
     stderrPath: opts.stderrPath,
     summaryPath: opts.summaryPath,
   });
+  killTreeOnInterrupt(child, handle.pid, handle.wait());
+  return handle;
 }

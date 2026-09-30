@@ -108,7 +108,7 @@ test("F-018: concurrent dashboard+CLI writers never interleave", async () => {
   });
 });
 
-test("F-026/F-040: verify cannot hold engine.lock past the acquire timeout (injected clock)", async () => {
+test("F-026/F-040/F-089: execute drops engine.lock while its verification commands run (injected clock)", async () => {
   await withFakeAdapter(async () => {
     const clock = createInjectedClock();
     await withEngine(async ({ dir }) => {
@@ -392,7 +392,7 @@ test("second execute is refused while a task is verifying", async () => {
       const first = await engine.execute("auto");
       assert.equal(first.status, "done");
       assert.equal(secondErr instanceof LegionRefuseError, true, String(secondErr));
-      assert.match(secondErr.message, /TSK-0001 is verifying/);
+      assert.match(secondErr.message, /execute run execute-.* is live/);
       assert.equal((await store.readTask("TSK-0002")).data.status, "ready");
     });
   });
@@ -433,6 +433,40 @@ test("post-verify STATE.md does not clobber a newer currentTaskId", async () => 
       initGitRepo(dir);
       await engine.execute("auto");
       assert.equal((await store.readState()).data.currentTaskId, "TSK-0002");
+    });
+  });
+});
+
+test("F-048/F-061 documented exception: intent --confirm holds engine.lock across its agent run", async () => {
+  // Unlike execute/review (start, drop the lock, wait, relock), these verbs run the agent inside
+  // one lock hold: verify, intent --confirm, spec and ingest --distill. Other verbs wait for the
+  // lock (and time out with "engine locked") for the length of the run; the run marker is still
+  // written so a second process sees a live run.
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ dir, store }) => {
+      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "confirm-ready");
+      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "confirm-release");
+      const filler = new LegionEngine(dir, undefined, { skillsDir });
+      await initProject(filler);
+      await filler.beginIntent();
+      await filler.intentTurn(["Teammates who miss who is in.", "Five chat apps every morning."]);
+      await filler.intentTurn(["Tap in or out in under five seconds.", "No payroll in v0."]);
+      await filler.intentTurn(["existing auth"]);
+      await filler.intentTurn(["Open the board, tap In, see yourself.", "Empty board, network error."]);
+      await filler.intentTurn(["board", "phone"]);
+      await filler.intentTurn(["none", "none"]);
+      const held = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
+      });
+      const pending = held.confirmIntent({ id: "tester" });
+      const start = Date.now();
+      while (!existsSync(readyPath) && Date.now() - start < 10_000) await delay(20);
+      assert.equal(existsSync(readyPath), true, "agent hold never started");
+      assert.equal(existsSync(store.paths.lock), true, "confirm holds engine.lock while its agent runs");
+      await writeFile(releasePath, "go" + String.fromCharCode(10));
+      await pending;
+      assert.equal(existsSync(store.paths.lock), false);
     });
   });
 });

@@ -4,6 +4,7 @@ import { join, relative, resolve } from "node:path";
 import { assertNoLinkInPath, atomicWriteFile } from "./atomic-write.js";
 import { AuditTamperError, RestoreRefusedError, SymlinkRefusedError } from "./errors.js";
 import { legionPaths } from "./layout.js";
+import { clearLiveRun, listLiveRunMarkers, liveRunFromResume, liveRunState } from "./live-run.js";
 import { toFsPath, toPosixPath } from "./paths.js";
 
 const GENESIS_DIGEST = "0".repeat(64);
@@ -668,13 +669,43 @@ export async function restoreEngineState(
   };
 }
 
+/** resume.json fallback for marker-less runs. Our own pid never counts (in-process fakes, dashboards). */
+async function resumeRunIsForeignAndLive(projectRoot: string, runId: string): Promise<boolean> {
+  try {
+    const raw = await readFile(join(legionPaths(projectRoot).cacheDir, "runs", runId, "resume.json"), "utf8");
+    const resume = JSON.parse(raw) as { runId?: string; skillId?: string; taskId?: string | null; pid?: number | null; enginePid?: number | null; startedAt?: string };
+    if (typeof resume.runId !== "string" || typeof resume.skillId !== "string" || typeof resume.startedAt !== "string") return false;
+    const marker = liveRunFromResume({ ...resume, runId: resume.runId, skillId: resume.skillId, startedAt: resume.startedAt });
+    if (marker.agentPid === process.pid) marker.agentPid = null;
+    if (marker.enginePid === process.pid) marker.enginePid = 0;
+    return (await liveRunState(marker)).live;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Restore every open command whose run is gone. A command whose live-run marker still has a live
+ * engine or agent belongs to a running command: restoring under it would revert its writes
+ * (F-016), so it is left open and skipped. A restored run's dead marker is cleared.
+ */
 export async function reconcileUnfinishedCommands(projectRoot: string): Promise<string[]> {
   const open = await listOpenCommandIds(projectRoot);
+  const markers = new Map((await listLiveRunMarkers(projectRoot)).map((marker) => [marker.runId, marker]));
   const done: string[] = [];
   for (const id of open) {
     const rec = await readCommandRecord(projectRoot, id);
     if (!rec) continue;
+    const marker = markers.get(id);
+    if (marker) {
+      const state = await liveRunState(marker);
+      if (state.live) continue;
+    } else if (await resumeRunIsForeignAndLive(projectRoot, id)) {
+      // No marker (older binary): a recorded process other than us still holds its identity.
+      continue;
+    }
     await restoreEngineState(projectRoot, id, { agentAlive: false, jailWritable: false });
+    if (marker) await clearLiveRun(projectRoot, id);
     done.push(id);
   }
   return done;
