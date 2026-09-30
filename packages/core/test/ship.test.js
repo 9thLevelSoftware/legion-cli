@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -459,6 +459,36 @@ test("ship --pr failure rolls back receipt, audit, phase and staged set consiste
     assert.equal(types[shipIdx + 1], "ship_rolled_back");
     assert.equal(events[shipIdx + 1].phase, "ready_to_ship");
     assert.equal(git(dir, ["diff", "--cached", "--name-only"]).trim(), "");
+  });
+});
+
+test("ship --pr failure still restores STATE when the receipt cannot be removed", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    initGitRepo(dir);
+    const receiptPath = join(dir, ".legion-cli", "audit", "ship-spec-checkin.md");
+    await assert.rejects(() =>
+      engine.ship({
+        pr: true,
+        commit: true,
+        prCreate: () => {
+          // Stand in for a locked file: a non-empty directory that rm(force) cannot remove.
+          rmSync(receiptPath, { force: true });
+          mkdirSync(receiptPath);
+          writeFileSync(join(receiptPath, "held"), "x", "utf8");
+          return { error: "gh failed" };
+        },
+      }),
+      /gh pr create failed/,
+    );
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+    const events = (await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const rolledBack = events.findLast((e) => e.type === "ship_rolled_back");
+    assert.ok(rolledBack?.data?.receiptKept, "the kept receipt is recorded");
   });
 });
 

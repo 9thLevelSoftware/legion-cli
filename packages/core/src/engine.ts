@@ -3731,8 +3731,14 @@ Approved: ${note}
         if (priorHead && receipt.commitSha) {
           gitResetMixed(this.projectRoot, priorHead);
         }
+        // A receipt that cannot be removed (a Windows file lock) must not stop STATE going back.
+        let receiptKept: string | undefined;
         if (!keptRootCommit) {
-          await rm(toFsPath(this.projectRoot, receiptPath), { force: true });
+          try {
+            await rm(toFsPath(this.projectRoot, receiptPath), { force: true });
+          } catch (err) {
+            receiptKept = err instanceof Error ? err.message : String(err);
+          }
         }
         await this.#writeState(state, "ship-rollback");
         await this.#audit("ship_rolled_back", state.phase, actor, {
@@ -3740,6 +3746,7 @@ Approved: ${note}
           receiptPath,
           reason: created.error ?? "no pull request url",
           ...(keptRootCommit ? { commitKept: receipt.commitSha } : {}),
+          ...(receiptKept ? { receiptKept } : {}),
         });
         refuse(`gh pr create failed: ${created.error ?? "no pull request url"}`, HINT.shipPrRetry);
       }
