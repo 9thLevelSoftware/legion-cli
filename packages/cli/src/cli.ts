@@ -171,9 +171,13 @@ export function createProgram(): Command {
 
   addGlobalOptions(program.command("doctor").description("Is my laptop ready?"))
     .option("--metrics", "local-only audit metrics (never phones home)")
+    .option("--rebaseline-audit", "accept the current audit log as the new chain baseline (after review)")
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { metrics?: boolean };
-      const code = await runDoctor(resolveOpts(cmd), { metrics: Boolean(flags.metrics) });
+      const flags = opts as { metrics?: boolean; rebaselineAudit?: boolean };
+      const code = await runDoctor(resolveOpts(cmd), {
+        metrics: Boolean(flags.metrics),
+        rebaselineAudit: Boolean(flags.rebaselineAudit),
+      });
       process.exitCode = code;
     });
 
@@ -372,7 +376,7 @@ export function createProgram(): Command {
     });
 
   addGlobalOptions(
-    program.command("review").description("Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review"),
+    program.command("review").description("Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review; PASS needs exit 0 and notes"),
   )
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .allowExcessArguments(false)

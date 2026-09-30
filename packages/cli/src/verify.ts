@@ -22,6 +22,7 @@ export async function runVerify(opts: CliOpts, flags: { id?: string; adapter?: s
       notesPath: result.notesPath ?? null,
       createdTaskIds: result.createdTaskIds,
       extrasReverted: result.extrasReverted,
+      warnings: result.warnings,
       lastReview: state.lastReview ?? null,
       next: next.run,
       viewer,
@@ -33,6 +34,9 @@ export async function runVerify(opts: CliOpts, flags: { id?: string; adapter?: s
     writeOut(`Walkthrough notes: ${result.notesPath} (optional; not a ship gate).`);
   } else {
     writeOut("Verify complete (optional notes; not a ship gate).");
+  }
+  for (const line of result.warnings) {
+    writeOut(`Warning: ${line}`);
   }
   for (const id of result.createdTaskIds) {
     writeOut(`Filed ${id} (type: fix).`);

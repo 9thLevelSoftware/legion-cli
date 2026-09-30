@@ -39,6 +39,7 @@ export async function runReview(opts: CliOpts, flags: { adapter?: string } = {})
       createdTaskIds: result.createdTaskIds,
       rewrittenExistingTaskIds: result.rewrittenExistingTaskIds,
       extrasReverted: result.extrasReverted,
+      warnings: result.warnings,
       phase: state.phase,
       lastReview: state.lastReview ?? null,
       next: next.run,
@@ -56,6 +57,7 @@ export async function runReview(opts: CliOpts, flags: { adapter?: string } = {})
   } else {
     writeOut("Review FAIL.");
   }
+  for (const line of result.warnings) writeOut(`Warning: ${line}`);
   writeOut(`Next: ${next.run}`);
   writeOut(`Dashboard: ${viewer}`);
   return passed ? 0 : 1;

@@ -16,6 +16,7 @@ import {
   seedPlanReady,
   withEngine,
   withFakeAdapter,
+  withReviewNotes,
   writeUnspawnableGrok,
 } from "./helpers.js";
 
@@ -88,7 +89,7 @@ test("review spawn with zero new tasks is PASS and stays executing", async () =>
         assert.equal((await engine.getState()).phase, "executing");
         assert.equal((await engine.getState()).lastReview, "PASS");
       },
-      { skillsDir },
+      withReviewNotes({ skillsDir }),
     );
   });
 });
@@ -215,7 +216,8 @@ test("review spawn cannot stamp status done; child must execute before re-review
         const executed = await runner.execute("TSK-0002");
         assert.equal(executed.status, "done");
         assert.equal((await store.readTask("TSK-0002")).data.status, "done");
-        const later = await runner.review();
+        // review notes are outside execute's contract, so the reviewer is a separate engine
+        const later = await new LegionEngine(dir, undefined, withReviewNotes({ skillsDir })).review();
         assert.equal(later.verdict, "PASS");
         assert.deepEqual(later.createdTaskIds, []);
         assert.equal((await runner.getState()).lastReview, "PASS");
@@ -516,7 +518,7 @@ test("review prompt.md starts with SessionBrief and has no FileContract heading"
         assert.doesNotMatch(prompt, /^## FileContract$/m);
         assert.ok(prompt.indexOf("## SessionBrief") < prompt.indexOf("## SkillContract"));
       },
-      { skillsDir },
+      withReviewNotes({ skillsDir }),
     );
   });
 });

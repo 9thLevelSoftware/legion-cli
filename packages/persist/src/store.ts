@@ -53,7 +53,7 @@ import {
   type MarkdownDoc,
 } from "./markdown.js";
 import { toFsPath } from "./paths.js";
-import { rebuildIndex } from "./sqlite.js";
+import { rebuildIndex, type IndexRebuildResult } from "./sqlite.js";
 import { DecisionFileSchema, WikiPageSchema, type DecisionFile, type WikiPage } from "./wiki-page.js";
 
 export interface LegionReader {
@@ -375,7 +375,7 @@ export class LegionStore implements LegionReader {
     return readMarkdownFile(toFsPath(this.projectRoot, store), store, IngestReceiptSchema);
   }
 
-  rebuild(): Promise<void> {
+  rebuild(): Promise<IndexRebuildResult> {
     return this.withLock(() => rebuildIndex(this.projectRoot));
   }
 

@@ -10,11 +10,22 @@ const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const bin = join(pkgRoot, "dist", "bin.js");
 export const transcriptsDir = join(pkgRoot, "test", "transcripts");
 
+/** Verbs that stop with "no agent available" unless the adapter is spawnable. */
+const AGENT_VERBS = new Set(["intent", "discuss", "spec"]);
+
+/**
+ * `opts.noAgent: true` runs with no spawnable agent. Otherwise intent, discuss and spec run
+ * with the in-process fake agent, so tests exercise the flow an installed agent would give.
+ */
 export function runCli(args, opts = {}) {
+  const fakeAgent =
+    AGENT_VERBS.has(args[0]) && !opts.noAgent && opts.env?.LEGION_CLI_ADAPTER === undefined
+      ? { LEGION_CLI_ADAPTER: "fake" }
+      : {};
   return spawnSync(process.execPath, [bin, ...args], {
     encoding: "utf8",
     cwd: opts.cwd,
-    env: { ...process.env, ...(opts.env ?? {}) },
+    env: { ...process.env, ...fakeAgent, ...(opts.env ?? {}) },
     windowsHide: true,
     input: opts.input,
   });

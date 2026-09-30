@@ -118,8 +118,8 @@ export const ADAPTER_IDS = [
 ] as const;
 export const AdapterIdSchema = z.enum(ADAPTER_IDS);
 export type AdapterId = z.infer<typeof AdapterIdSchema>;
-/** Spawn-selectable ids for CLI help / `--adapter`. */
-export const ADAPTER_ID_HELP = ADAPTER_IDS.join("|");
+/** Ids for CLI help / `--adapter`. `fake` is test-only: still accepted, never advertised. */
+export const ADAPTER_ID_HELP = ADAPTER_IDS.filter((id) => id !== "fake").join("|");
 
 /** Subscription coding CLIs spawned by PATH name. Frozen vendor argv lives in agents `FROZEN_ARGV_TABLE`. */
 export const EXTRA_ADAPTER_IDS = ["grok", "openai", "codex", "mimo", "minimax"] as const;
