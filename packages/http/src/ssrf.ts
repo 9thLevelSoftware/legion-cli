@@ -9,12 +9,44 @@ async function defaultLookup(hostname: string): Promise<{ address: string; famil
   return dns.lookup(hostname, { all: false });
 }
 
+function ipv4Octets(host: string): number[] | null {
+  const parts = host.split(".");
+  if (parts.length !== 4) return null;
+  const nums = parts.map((part) => Number(part));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  return nums;
+}
+
+function hextetsToIpv4(hiHex: string, loHex: string): number[] {
+  const hi = Number.parseInt(hiHex, 16);
+  const lo = Number.parseInt(loHex, 16);
+  return [(hi >> 8) & 255, hi & 255, (lo >> 8) & 255, lo & 255];
+}
+
+function normalizeHost(hostname: string): string {
+  return hostname.replace(/^\[|\]$/g, "").replace(/%.*$/, "").toLowerCase();
+}
+
+function embeddedIpv4(host: string): number[] | null {
+  const h = normalizeHost(host);
+  const mappedDotted = /(?:^|:)ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(h);
+  if (mappedDotted?.[1]) return ipv4Octets(mappedDotted[1]);
+  const mappedHex = /(?:^|:)ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
+  if (mappedHex?.[1] && mappedHex[2]) return hextetsToIpv4(mappedHex[1], mappedHex[2]);
+  const compatDotted = /^::(\d{1,3}(?:\.\d{1,3}){3})$/.exec(h);
+  if (compatDotted?.[1]) return ipv4Octets(compatDotted[1]);
+  const compatHex = /^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
+  if (compatHex?.[1] && compatHex[2]) return hextetsToIpv4(compatHex[1], compatHex[2]);
+  return null;
+}
+
 export { isPrivateOrLocalHost };
 
 export function isLoopbackHttpHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  const unwrapped = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-  return LOOPBACK_HOSTS.has(host) || LOOPBACK_HOSTS.has(unwrapped);
+  const host = normalizeHost(hostname);
+  if (LOOPBACK_HOSTS.has(host)) return true;
+  const embedded = embeddedIpv4(host);
+  return embedded?.[0] === 127;
 }
 
 export function parseHttpBaseUrl(baseUrl: string): URL {

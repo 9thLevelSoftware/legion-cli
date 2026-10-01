@@ -1,13 +1,14 @@
-import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, findSkillsDir, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { ticketVerificationLine, writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 
-export async function runVerify(opts: CliOpts, flags: { id?: string; adapter?: string }): Promise<number> {
+export async function runVerify(opts: CliOpts, flags: { id?: string; adapter?: string; profile?: string }): Promise<number> {
+  if (flags.adapter && flags.profile) refuse("verify --adapter and --profile are mutually exclusive", "legion-cli verify --profile <name>");
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
-  const result = await engine.verify(flags.id, adapter ? { adapter } : undefined);
+  const result = await engine.verify(flags.id, { ...(adapter ? { adapter } : {}), ...(flags.profile ? { profile: flags.profile } : {}) });
   const state = await engine.getState();
   const slice = await engine.listSliceTasks();
   const next = nextCommand(state, slice);

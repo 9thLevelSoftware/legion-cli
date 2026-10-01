@@ -220,7 +220,7 @@ test("the review prompt names the concrete run-cache notes path, never a literal
         await seedDone(engine, store);
         await engine.review();
         const prompt = await readLatestRunPrompt(dir, "review");
-        assert.match(prompt, /\.legion-cli\/cache\/runs\/review-[a-z0-9]+\/review\.md/);
+        assert.match(prompt, /\.legion-cli\/cache\/runs\/review-[a-z0-9-]+\/review\.md/);
         assert.doesNotMatch(prompt, /<id>/);
       },
       withReviewNotes({ skillsDir }),

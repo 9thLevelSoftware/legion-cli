@@ -184,7 +184,10 @@ function trackedAt(root: string, ref: string, paths: readonly string[]): string[
 function commitRevertKeepingAudit(root: string, auditTracked: readonly string[]): void {
   if (!git(root, ["rev-parse", "-q", "--verify", "REVERT_HEAD"]).ok) return;
   if (auditTracked.length > 0) {
-    const added = git(root, ["add", "-A", "--", ...auditTracked]);
+    // The audit directory may be ignored after these exact files were tracked.
+    // They are derived from the ship commit and filtered by AUDIT_APPEND_ONLY,
+    // so force-add only this closed set while preserving ignore policy elsewhere.
+    const added = git(root, ["add", "-f", "-A", "--", ...auditTracked]);
     if (!added.ok) refuse(`undo could not stage the audit log: ${added.out.split(/\r?\n/)[0] ?? ""}`, "git status");
   }
   const commit = git(root, ["commit", "--no-edit", "--no-verify", "--allow-empty"]);

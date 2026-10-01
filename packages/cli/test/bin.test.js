@@ -470,13 +470,14 @@ test("runBounded caps stdout at 1 MiB and kills the process tree", async () => {
   });
 });
 
-test("help --all init lists --mode; intent drops --resume; dashboard is view-only", () => {
+test("help --all documents execute resume; intent omits it; dashboard is view-only", () => {
   const result = runCli(["help", "--all"]);
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
   const lifecycle = helpSection(out, "Lifecycle core:", "Always-on operations:");
   assert.match(lifecycle, /--mode greenfield\|brownfield/);
-  assert.doesNotMatch(lifecycle, /--resume/);
+  assert.match(lifecycle, /execute \[id\][\s\S]*--resume <runId>/);
+  assert.doesNotMatch(helpSection(lifecycle, "  intent", "  discuss"), /--resume/);
   assert.match(lifecycle, /--done/);
   assert.doesNotMatch(out, /optional writes/);
   assert.match(out, /read-only viewer/);
@@ -523,7 +524,7 @@ test("parent verbs require a subcommand and print Next", () => {
     ["task", /task requires amend/, /Next: legion-cli task amend <id>/],
     ["context", /context requires compact/, /Next: legion-cli context compact/],
     ["run", /run requires promote/, /Next: legion-cli run promote <id>/],
-    ["skills", /skills requires list, install, or show/, /Next: legion-cli skills list/],
+    ["skills", /skills requires list, install, show, or run/, /Next: legion-cli skills list/],
   ];
   for (const [verb, requires, next] of cases) {
     const result = runCli([verb]);

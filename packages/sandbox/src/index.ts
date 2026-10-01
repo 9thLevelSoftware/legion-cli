@@ -6,6 +6,8 @@ export {
   detectSandbox,
   hardenedSandboxAvailable,
   materializeJail,
+  retainedJailIdentity,
+  reopenJail,
   prepareVerificationWrapper,
   resolveVerificationTrustTier,
   verificationBwrapArgvPrefix,
@@ -24,7 +26,10 @@ export {
 } from "./docker.js";
 export type {
   SandboxBackend,
+  SandboxApplyResult,
   SandboxHandle,
+  SandboxOutput,
+  SandboxOutputChange,
   SandboxPolicy,
   VerificationTrustFlags,
   VerificationTrustPosture,

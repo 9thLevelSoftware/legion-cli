@@ -24,6 +24,11 @@ function isPrivateIPv4(octets: number[]): boolean {
   if (a === 100 && b !== undefined && b >= 64 && b <= 127) return true;
   // 192.0.0.0/24 IETF protocol assignments
   if (a === 192 && b === 0 && c === 0) return true;
+  // Documentation networks and the deprecated 6to4 relay prefix are not public endpoints.
+  if (a === 192 && b === 0 && c === 2) return true;
+  if (a === 198 && b === 51 && c === 100) return true;
+  if (a === 203 && b === 0 && c === 113) return true;
+  if (a === 192 && b === 88 && c === 99) return true;
   // 198.18.0.0/15 benchmarking
   if (a === 198 && (b === 18 || b === 19)) return true;
   // 224.0.0.0/4 multicast, 240.0.0.0/4 reserved (includes 255.255.255.255 broadcast)
@@ -89,6 +94,9 @@ function isPrivateIPv6(host: string): boolean {
   if (words.slice(0, 7).every((w) => w === 0) && (words[7] === 0 || words[7] === 1)) return true;
   // fe80::/10 link-local
   if ((w0 & 0xffc0) === 0xfe80) return true;
+  // fec0::/10 deprecated site-local and 2001:db8::/32 documentation.
+  if ((w0 & 0xffc0) === 0xfec0) return true;
+  if (w0 === 0x2001 && w1 === 0x0db8) return true;
   // fc00::/7 unique local
   if ((w0 & 0xfe00) === 0xfc00) return true;
   // ff00::/8 multicast

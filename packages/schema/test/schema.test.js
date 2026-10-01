@@ -154,11 +154,11 @@ test("schemaVersion literals match the design", () => {
   assert.equal(SCHEMA_VERSION.discuss, "legion-cli-discuss/v1");
   assert.equal(SCHEMA_VERSION.ingest, "legion-cli-ingest/v1");
   assert.equal(SCHEMA_VERSION.audit, "legion-cli-audit/v1");
-  assert.equal(SCHEMA_VERSION.resume, "legion-cli-resume/v1");
+  assert.equal(SCHEMA_VERSION.resume, "legion-cli-resume/v2");
   assert.equal(SCHEMA_VERSION.run, "legion-cli-run/v1");
   assert.equal(SCHEMA_VERSION.dag, "legion-cli-dag/v1");
   assert.equal(SCHEMA_VERSION.brownfieldPatterns, "legion-cli-brownfield-patterns/v1");
-  assert.equal(SCHEMA_VERSION.qa, "legion-cli-qa/v1");
+  assert.equal(SCHEMA_VERSION.qa, "legion-cli-qa/v2");
   assert.equal(SCHEMA_VERSION.brief, "legion-cli-brief/v1");
   assert.equal(SCHEMA_VERSION.skillCatalog, "legion-cli-skill-catalog/v1");
   assert.equal(SCHEMA_VERSION.topics, "legion-cli-topics/v1");
@@ -393,11 +393,18 @@ test("QAScore.pass formula", () => {
   };
 
   const base = {
-    schemaVersion: "legion-cli-qa/v1",
+    schemaVersion: "legion-cli-qa/v2",
     id: "qa-1",
     specId: "spec-checkin",
     evidencePaths: [".legion-cli/qa/scores/qa-1.json"],
     createdAt: "2026-09-01T12:00:00Z",
+    criteria: [],
+    missingCriterionIds: [],
+    failedCriterionIds: [],
+    skippedCriterionIds: [],
+    reportFailures: 0,
+    specHash: "a".repeat(64),
+    sourceHash: "b".repeat(64),
   };
 
   const passScore = {
@@ -527,6 +534,7 @@ test("LegionConfig requires adapter.default and defaults ingest.autoCommit", () 
   assert.deepEqual(parsed.sandbox.skills, ["execute"]);
   assert.deepEqual(parsed.skills.trustKeys, []);
   assert.deepEqual(parsed.map, {});
+  assert.deepEqual(parsed.mcpHttpToolAllowlist, []);
 
   assert.equal(
     LegionConfigSchema.safeParse({
@@ -601,6 +609,41 @@ test("LegionConfig requires adapter.default and defaults ingest.autoCommit", () 
       adapter: { default: "fake" },
       qa: { mode: "full", passScore: 70 },
     }).success,
+    false,
+  );
+});
+
+test("telemetry collector is explicit loopback and governed HTTP MCP tools default deny", () => {
+  const base = {
+    schemaVersion: "legion-cli-config/v1",
+    adapter: { default: "fake" },
+  };
+  assert.equal(
+    LegionConfigSchema.parse({
+      ...base,
+      telemetry: { otlpEndpoint: "http://127.0.0.1:4318/v1/metrics" },
+      mcpHttpToolAllowlist: ["repo:read_file"],
+    }).mcpHttpToolAllowlist[0],
+    "repo:read_file",
+  );
+  assert.equal(
+    LegionConfigSchema.parse({ ...base, telemetry: { otlpEndpoint: "https://[::1]:4318" } }).telemetry.otlpEndpoint,
+    "https://[::1]:4318",
+  );
+  for (const endpoint of [
+    "ftp://127.0.0.1/collector",
+    "http://localhost:4318",
+    "https://example.com/v1/metrics",
+    "http://user:secret@127.0.0.1:4318",
+  ]) {
+    assert.equal(
+      LegionConfigSchema.safeParse({ ...base, telemetry: { otlpEndpoint: endpoint } }).success,
+      false,
+      endpoint,
+    );
+  }
+  assert.equal(
+    LegionConfigSchema.safeParse({ ...base, mcpHttpToolAllowlist: ["repo read_file", "repo:tool:extra"] }).success,
     false,
   );
 });
@@ -906,7 +949,7 @@ test("JSON Schema overlays reject .git paths, no-browser pass, and generic witho
   );
 
   const qaBase = {
-    schemaVersion: "legion-cli-qa/v1",
+    schemaVersion: "legion-cli-qa/v2",
     id: "qa-1",
     specId: "spec-checkin",
     mode: "no-browser",
@@ -920,6 +963,13 @@ test("JSON Schema overlays reject .git paths, no-browser pass, and generic witho
     pass: false,
     evidencePaths: [],
     createdAt: "2026-09-01T12:00:00Z",
+    criteria: [{ id: "AC-01", priority: "P0", outcome: "passed" }],
+    missingCriterionIds: [],
+    failedCriterionIds: [],
+    skippedCriterionIds: [],
+    reportFailures: 0,
+    specHash: "a".repeat(64),
+    sourceHash: "b".repeat(64),
   };
   assert.equal(validateQa(qaBase), true);
   assert.equal(validateQa({ ...qaBase, pass: true }), false);
@@ -1213,8 +1263,9 @@ test("ADAPTER_IDS includes http and spawn extras stay strict", () => {
     "mimo",
     "minimax",
     "http",
+    "acp",
   ]);
-  assert.equal(ADAPTER_ID_HELP, "claude|generic|grok|openai|codex|mimo|minimax|http");
+  assert.equal(ADAPTER_ID_HELP, "claude|generic|grok|openai|codex|mimo|minimax|http|acp");
   const configBase = { schemaVersion: "legion-cli-config/v1" };
   assert.equal(
     LegionConfigSchema.safeParse({ ...configBase, adapter: { default: "http" } }).success,

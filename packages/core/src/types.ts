@@ -4,6 +4,7 @@ import type { GardenReport, SearchHit } from "@9thlevelsoftware/legion-cli-wiki"
 import type {
   AdapterId,
   AdapterResolutionSource,
+  AgentUsage,
   Assumption,
   BrownfieldDagNode,
   BrownfieldRoster,
@@ -38,10 +39,18 @@ export type LegionEngineOptions = {
   fakeTimedOut?: boolean;
   /** Test-only: exit code the fake agent reports. */
   fakeExitCode?: number;
+  /** Test-only: per-task exit codes for parallel fake-agent coverage. */
+  fakeExitCodeForTask?: (taskId: string) => number | undefined;
+  /** Test-only: adapter resource cleanup hook for each parallel task. */
+  fakeResourceCleanupForTask?: (taskId: string) => Promise<void>;
   /** Test-only: fake agent writes no summary. */
   fakeOmitSummary?: boolean;
   fakeHoldWait?: FakeHoldWait;
   fakeOnWait?: () => Promise<void>;
+  /** Test-only: runs immediately before each serialized parallel output application. */
+  fakeBeforeParallelApply?: (taskId: string, index: number) => Promise<void>;
+  /** Test-only: can hold one parallel member before its child starts. */
+  fakeBeforeParallelStart?: (taskId: string, index: number) => Promise<void>;
   fakeHandlePid?: number;
   /** Test-only, like the other fake* seams: verification throws this message. */
   fakeVerificationError?: string;
@@ -49,6 +58,8 @@ export type LegionEngineOptions = {
   fakeOnVerify?: () => Promise<void>;
   /** Test-only: runs during qa (lock-free after F-026). Injected-clock advance lives here. */
   fakeOnQa?: () => Promise<void>;
+  /** Test-only: permits QaOptions.score; production engines must execute configured reports. */
+  fakeQaScoreInjection?: boolean;
   verificationTimeoutMs?: number;
   /** Test-only: overrides hardened-backend detection for the `ingest --distill` refusal. */
   fakeDistillSandboxHardened?: boolean;
@@ -76,6 +87,7 @@ export type InitOptions = {
   adapter: AdapterId;
   generic?: { binary: string; args: string[] };
   http?: { baseUrl: string; model: string; apiKeyEnv: string; allowLoopback?: boolean };
+  acp?: { command: string; args: string[]; enabled: true };
   mode?: "greenfield" | "brownfield";
   controlMode?: ControlMode | "autonomous" | string;
   allowCopyJail?: boolean;
@@ -295,6 +307,11 @@ export type ShipPreview = {
   unrelatedUnchanged: boolean;
   unrelated: string[];
   productFingerprint: string;
+  qaCoverage: {
+    missing: string[];
+    failed: string[];
+    skipped: string[];
+  };
 };
 
 export type ShipOptions = {
@@ -310,10 +327,24 @@ export type ShipOptions = {
 };
 
 export type ExecuteOptions = {
+  /** Resume a compatible interrupted engine-owned HTTP run. */
+  resume?: string;
   untilBlocked?: boolean;
   fix?: boolean;
   adapter?: AdapterId;
+  /** Parallel workers for automatic --until-blocked execution (1-4). */
+  jobs?: number;
+  /** Named adapter profile; mutually exclusive with adapter. */
+  profile?: string;
   allowNoSandbox?: boolean;
+  onProgress?: (progress: ExecuteProgress) => void;
+};
+
+export type ExecuteProgress = {
+  taskId: string;
+  stage: "starting" | "running" | "agent-complete" | "integrating" | "verifying" | "done" | "blocked";
+  elapsedMs: number;
+  logPath?: string;
 };
 
 export type TicketSource = {
@@ -349,6 +380,9 @@ export type ExecuteTaskResult = {
   trustTierNote?: string;
   adapterId?: AdapterId;
   resolutionSource?: AdapterResolutionSource;
+  profile?: string;
+  usage?: AgentUsage;
+  limitReason?: string;
   /** Set when the agent exited non-zero; shown as a warning (verification commands remain the evidence). */
   agentExitWarning?: string;
   /** Set when the tree was dirty inside the task filesAllowed at start (F-007 residual). */
@@ -423,6 +457,7 @@ export type NewTicket = {
   notes?: string;
   contract?: Partial<FileContract>;
   adapter?: AdapterId;
+  profile?: string;
   /**
    * Engine-supplied source for an agent-filed ticket (the running or verified task). Takes
    * precedence over an agent-chosen parentId for the inherited commands and the filesAllowed cap.
@@ -460,8 +495,10 @@ export type AmendTaskOptions = {
   blockedBy?: string[];
   blocks?: string[];
   adapter?: AdapterId;
+  profile?: string;
   /** Mutually exclusive with `adapter`. */
   clearAdapter?: boolean;
+  clearProfile?: boolean;
 };
 
 export type CompactedTask = {
@@ -488,6 +525,7 @@ export type WireframeOptions = {
   restyle?: boolean;
   spawn?: boolean;
   adapter?: AdapterId;
+  profile?: string;
 };
 
 export type WireframeResult = {

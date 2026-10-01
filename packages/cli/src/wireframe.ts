@@ -1,4 +1,4 @@
-import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, findSkillsDir, refuse } from "@9thlevelsoftware/legion-cli-core";
 import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
@@ -9,6 +9,7 @@ export type WireframeFlags = {
   restyle?: boolean;
   spawn?: boolean;
   adapter?: string;
+  profile?: string;
 };
 
 /** Test seam: fake adapter artifacts when LEGION_CLI_ADAPTER=fake. */
@@ -25,6 +26,7 @@ function wireframeFakeArtifacts(): FakeArtifact[] | undefined {
 }
 
 export async function runWireframe(opts: CliOpts, flags: WireframeFlags): Promise<number> {
+  if (flags.adapter && flags.profile) refuse("wireframe --adapter and --profile are mutually exclusive", "legion-cli wireframe --profile <name>");
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, {
     skillsDir: findSkillsDir(),
@@ -34,6 +36,7 @@ export async function runWireframe(opts: CliOpts, flags: WireframeFlags): Promis
     restyle: Boolean(flags.restyle),
     spawn: Boolean(flags.spawn),
     ...(adapter ? { adapter } : {}),
+    ...(flags.profile ? { profile: flags.profile } : {}),
   });
   const state = await engine.getState();
   const slice = await engine.listSliceTasks();

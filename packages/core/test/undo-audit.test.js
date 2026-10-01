@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { LegionEngine } from "../dist/index.js";
 import { appendChainedAuditLine, assertAuditChainUsable, verifyAuditChain } from "@9thlevelsoftware/legion-cli-persist";
+import { specHasUi } from "@9thlevelsoftware/legion-cli-qa";
 import {
   commitAll,
   git,
@@ -18,6 +19,7 @@ import {
   withEngine,
   withFakeAdapter,
   withReviewNotes,
+  writeQaFile,
   writeTask,
 } from "./helpers.js";
 
@@ -54,6 +56,28 @@ async function driveToPlanReady(engine, store, dir) {
   await engine.plan(spec.id);
 }
 
+async function passingQaForActiveSpec(engine, store) {
+  const state = await engine.getState();
+  const spec = await store.readSpec(state.activeSpecId);
+  const evidencePaths = [
+    ".legion-cli/qa/runs/qa-1/unit.json",
+    ".legion-cli/qa/runs/qa-1/unit.meta.json",
+  ];
+  if (specHasUi(spec.data)) {
+    evidencePaths.push(
+      ".legion-cli/qa/runs/qa-1/playwright.json",
+      ".legion-cli/qa/runs/qa-1/playwright.meta.json",
+    );
+  }
+  const score = makeQaScore({
+    specId: spec.data.id,
+    criteria: spec.data.acceptance.map(({ id, priority }) => ({ id, priority, outcome: "passed" })),
+    evidencePaths,
+  });
+  await writeQaFile(store, score);
+  return score;
+}
+
 function cli(dir, args) {
   const result = spawnSync(process.execPath, [cliBin, ...args, "--project", dir], {
     encoding: "utf8",
@@ -88,7 +112,7 @@ for (const setup of ["tracked-before-ship", "older-baseline", "untracked-state",
         }
         await engine.execute("auto");
         await new LegionEngine(dir, undefined, withReviewNotes({ skillsDir })).review();
-        await engine.qa({ score: makeQaScore({ specId: (await engine.getState()).activeSpecId }) });
+        await engine.qa({ score: await passingQaForActiveSpec(engine, store) });
         if (setup === "tracked-before-ship" || setup === "audit-dir-ignored") commitAll(dir, "legion state before ship");
         await engine.ship({ commit: true });
         const beforeUndo = await auditLines(dir);

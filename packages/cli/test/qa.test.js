@@ -85,7 +85,7 @@ async function seedQaReady(dir, extra = {}) {
     ...config,
     qa: {
       ...config.qa,
-      unitCommand: extra.unitCommand ?? unitCommand({ tests: [{ title: "health @p0", status: "passed" }] }),
+      unitCommand: extra.unitCommand ?? unitCommand({ tests: [{ title: "health @ac(AC-01) @p0", status: "passed" }] }),
     },
   });
   return engine;
@@ -96,7 +96,7 @@ test("qa scores in-process JSON and prints the visual bucket", async () => {
     await seedQaReady(dir, {
       unitCommand: unitCommand({
         tests: [
-          { title: "health @p0", status: "passed" },
+          { title: "health @ac(AC-01) @p0", status: "passed" },
           { title: "lists @p1", status: "passed" },
           { title: "optional @p2", status: "passed" },
         ],
@@ -131,7 +131,7 @@ test("the configured apiKeyEnv and other secrets do not reach QA's unit command;
       "const names = Object.keys(process.env).map((key) => key.toUpperCase());",
       "const leaked = ['LEGION_TEST_PROVIDER_VAR','FOO_TOKEN','GH_PAT'].filter((name) => names.includes(name));",
       "const ok = leaked.length === 0 && process.env.DATABASE_URL === 'postgres://fixture';",
-      "process.stdout.write(JSON.stringify({ tests: [{ title: 'health @p0', status: ok ? 'passed' : 'failed' }], leaked }));",
+      "process.stdout.write(JSON.stringify({ tests: [{ title: 'health @ac(AC-01) @p0', status: ok ? 'passed' : 'failed' }], leaked }));",
     ].join(" ");
     const engine = await seedQaReady(dir, { unitCommand: `${quoteArg(process.execPath)} -e ${quoteArg(report)}` });
     const config = await engine.store.readConfig();

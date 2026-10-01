@@ -35,7 +35,8 @@
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r --no-bail run test",
-    "prepare": "pnpm run build"
+    "prepare": "pnpm run build",
+    "smoke:consumer": "node scripts/consumer-smoke.mjs"
   },
   "devDependencies": {
     "@9thlevelsoftware/legion-cli": "workspace:*",

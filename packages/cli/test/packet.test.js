@@ -126,7 +126,7 @@ test("packet respond --json lists spawned ticket ids", async () => {
     assert.equal(body.id, "PKT-0001");
     assert.equal(body.status, "responded");
     assert.deepEqual(body.ticketIds, ["TSK-0001"]);
-    assert.equal(body.next, "legion-cli next");
+    assert.match(body.next, /^legion-cli next --project /);
   });
 });
 

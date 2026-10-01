@@ -45,6 +45,22 @@ export {
 export type { WikiPage } from "./parser.js";
 export { searchWiki } from "./search.js";
 export type { SearchHit } from "./search.js";
+export {
+  benchmarkHybridRetrieval,
+  rankHybridRetrieval,
+  rankHybridRetrievalFromVectorResults,
+  rankHybridRetrievalWithLocalEmbeddings,
+} from "./experimental-hybrid.js";
+export type {
+  ExperimentalRetrievalCandidate,
+  ExperimentalVectorSearchResult,
+  FixedCorpusRetrievalCase,
+  HybridRetrievalBenchmark,
+  HybridRetrievalHit,
+  HybridLocalEmbeddingOptions,
+  HybridRetrievalOptions,
+  HybridVectorResultOptions,
+} from "./experimental-hybrid.js";
 export { showPage } from "./show.js";
 export type { ShownPage } from "./show.js";
 export { materializeIngestSources } from "./sources.js";

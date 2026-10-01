@@ -13,6 +13,9 @@ async function confirmShip(preview: ShipPreview, json: boolean): Promise<boolean
   if (!json) {
     writeOut(`Staged: ${preview.stagedDisplay}`);
     writeOut(`Unrelated files unchanged: ${preview.unrelatedUnchanged ? "yes" : "no"}`);
+    writeOut(`QA missing: ${preview.qaCoverage.missing.join(", ") || "none"}`);
+    writeOut(`QA failed: ${preview.qaCoverage.failed.join(", ") || "none"}`);
+    writeOut(`QA skipped: ${preview.qaCoverage.skipped.join(", ") || "none"}`);
     if (preview.diff.trim()) writeOut(preview.diff.trimEnd());
     writeOut("Acceptance criteria met?  [y/n] (an explicit y is required)");
   }

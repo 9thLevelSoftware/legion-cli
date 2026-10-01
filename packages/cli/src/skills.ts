@@ -1,15 +1,23 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  findExtensionsDir,
   findSkillsDir,
+  installExtensionOverlay,
   installSkillOverlay,
+  listExtensionCatalog,
   listResolvedSkillCatalog,
   parseIntegritySha256,
+  parseExtensionFrontmatter,
   parseSkillFrontmatter,
+  resolveExtensionDir,
   resolveSkillDir,
+  runGovernedExtension,
+  exportUsageTelemetry,
   skillCatalogPath,
 } from "@9thlevelsoftware/legion-cli-agents";
-import { createLegionEngine, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
+import { createHttpToolHost, createLegionEngine, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
+import { appendAuditEvent } from "@9thlevelsoftware/legion-cli-persist";
 import { SkillIdSchema, type SkillId } from "@9thlevelsoftware/legion-cli-schema";
 import { installWithLock } from "./install-lock.js";
 import type { CliOpts } from "./io.js";
@@ -30,14 +38,22 @@ function ttyWarn(): ((message: string) => void) | undefined {
 
 export async function runSkillsList(opts: CliOpts): Promise<number> {
   const packaged = findSkillsDir();
-  const result = await listResolvedSkillCatalog({
-    projectRoot: opts.project,
-    packagedSkillsDir: packaged,
-  });
+  const [result, extensionResult] = await Promise.all([
+    listResolvedSkillCatalog({
+      projectRoot: opts.project,
+      packagedSkillsDir: packaged,
+    }),
+    listExtensionCatalog({
+      projectRoot: opts.project,
+      packagedExtensionsDir: findExtensionsDir(),
+    }),
+  ]);
   if (opts.json) {
     writeJson({
       skills: result.catalog.skills,
+      extensions: extensionResult.extensions,
       skipped: result.skipped,
+      extensionsSkipped: extensionResult.skipped,
       overlays: result.overlays.map((row) => ({
         skillId: row.skillId,
         source: row.pin?.source,
@@ -59,11 +75,21 @@ export async function runSkillsList(opts: CliOpts): Promise<number> {
     if (skipped.reason === "missing SKILL.md") continue;
     lines.push(`- ${skipped.path}  skipped  ${skipped.required ? "required" : "optional"}  ${skipped.reason}`);
   }
+  lines.push("", "# Extensions");
+  for (const extension of extensionResult.extensions) {
+    lines.push(`- ${extension.ref}  ${extension.version}  ${extension.description}`);
+  }
+  for (const skipped of extensionResult.skipped) {
+    lines.push(`- ${skipped.path}  skipped  ${skipped.reason}`);
+  }
   writeOut(lines.join("\n"));
   return 0;
 }
 
 export async function runSkillsShow(opts: CliOpts, id: string): Promise<number> {
+  if (id.trim().startsWith("extension:")) {
+    return runExtensionShow(opts, id.trim());
+  }
   const skillId = parseSkillId(id);
   const packaged = findSkillsDir();
   const resolved = await resolveSkillDir({
@@ -119,10 +145,56 @@ export async function runSkillsShow(opts: CliOpts, id: string): Promise<number> 
   return 0;
 }
 
+function parseExtensionRef(ref: string): string {
+  const match = /^extension:([a-z][a-z0-9-]{0,63})$/.exec(ref.trim());
+  if (!match?.[1]) refuse(`unknown extension reference '${ref}'`, HINT.skillsShow);
+  return match[1];
+}
+
+async function runExtensionShow(opts: CliOpts, ref: string): Promise<number> {
+  const extensionId = parseExtensionRef(ref);
+  const resolved = await resolveExtensionDir({
+    projectRoot: opts.project,
+    extensionId,
+    packagedExtensionsDir: findExtensionsDir(),
+  });
+  if (!resolved.ok) refuse(resolved.reason, HINT.skillsShow);
+  let file = join(resolved.extensionDir, "EXTENSION.md");
+  try {
+    await readFile(file, "utf8");
+  } catch {
+    file = join(resolved.extensionDir, "SKILL.md");
+  }
+  const parsed = parseExtensionFrontmatter(
+    await readFile(file, "utf8"),
+    `${resolved.source === "overlay" ? ".legion-cli/extensions" : "extensions"}/${extensionId}/${file.endsWith("EXTENSION.md") ? "EXTENSION.md" : "SKILL.md"}`,
+  );
+  if (!parsed.ok) refuse(parsed.reason, HINT.skillsShow);
+  const payload = {
+    ...parsed.manifest,
+    source: resolved.source,
+    pin: resolved.pin ?? null,
+  };
+  if (opts.json) {
+    writeJson(payload);
+    return 0;
+  }
+  writeOut([
+    `ref: ${payload.ref}`,
+    `source: ${payload.source}`,
+    `version: ${payload.version}`,
+    `description: ${payload.description}`,
+    `requiredTools: ${payload.requiredTools.join(", ") || "(none)"}`,
+    `write: ${payload.permissions.write.join(", ")}`,
+  ].join("\n"));
+  return 0;
+}
+
 export type SkillsInstallFlags = {
   unsigned?: boolean;
   skill?: string;
   integrity?: string;
+  extension?: string;
 };
 
 export async function runSkillsInstall(opts: CliOpts, source: string, flags: SkillsInstallFlags = {}): Promise<number> {
@@ -157,6 +229,34 @@ export async function runSkillsInstall(opts: CliOpts, source: string, flags: Ski
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       refuse(message, HINT.skillsInstall);
+    }
+  }
+  if (flags.extension) {
+    try {
+      const installed = await installWithLock(opts.project, /^github:/i.test(src.trim()), (fetchZip) =>
+        installExtensionOverlay({
+          projectRoot: opts.project,
+          source: src,
+          extensionId: flags.extension,
+          unsigned: Boolean(flags.unsigned),
+          integritySha256,
+          cwd: process.cwd(),
+          trustKeys,
+          ...(fetchZip ? { fetchZip } : {}),
+        }),
+      );
+      if (opts.json) {
+        writeJson({ ok: true, ref: `extension:${installed.extensionId}`, dest: installed.dest, pin: installed.pin, next: `legion-cli skills show extension:${installed.extensionId}` });
+        return 0;
+      }
+      writeOut([
+        `Installed extension:${installed.extensionId}.`,
+        `Pin: ${installed.pin.integrity.sha256}`,
+        `Next: legion-cli skills show extension:${installed.extensionId}`,
+      ].join("\n"));
+      return 0;
+    } catch (err) {
+      refuse(err instanceof Error ? err.message : String(err), HINT.skillsInstall);
     }
   }
   try {
@@ -199,4 +299,92 @@ export async function runSkillsInstall(opts: CliOpts, source: string, flags: Ski
     const message = err instanceof Error ? err.message : String(err);
     refuse(message, HINT.skillsInstall);
   }
+}
+
+export async function runSkillsRun(opts: CliOpts, ref: string, flags: { profile?: string } = {}): Promise<number> {
+  const extensionId = parseExtensionRef(ref);
+  const engine = createLegionEngine(opts.project);
+  if (!(await engine.store.pathExists(".legion-cli/config.yaml"))) {
+    refuse("skills run needs a Legion CLI project first", HINT.init);
+  }
+  const resolved = await resolveExtensionDir({
+    projectRoot: opts.project,
+    extensionId,
+    packagedExtensionsDir: findExtensionsDir(),
+  });
+  if (!resolved.ok) refuse(resolved.reason, HINT.skillsShow);
+  let manifestFile = join(resolved.extensionDir, "EXTENSION.md");
+  try {
+    await readFile(manifestFile, "utf8");
+  } catch {
+    manifestFile = join(resolved.extensionDir, "SKILL.md");
+  }
+  const parsed = parseExtensionFrontmatter(
+    await readFile(manifestFile, "utf8"),
+    `extensions/${extensionId}/${manifestFile.endsWith("EXTENSION.md") ? "EXTENSION.md" : "SKILL.md"}`,
+  );
+  if (!parsed.ok) refuse(parsed.reason, HINT.skillsShow);
+  let result;
+  const config = await engine.store.readConfig();
+  try {
+    result = await runGovernedExtension({
+      projectRoot: opts.project,
+      extensionDir: resolved.extensionDir,
+      manifest: parsed.manifest,
+      config,
+      profile: flags.profile,
+      createHttpToolHost,
+    });
+  } catch (err) {
+    refuse(err instanceof Error ? err.message : String(err), `legion-cli skills run ${ref}`);
+  }
+  const tickets: string[] = [];
+  for (const recommendation of result.recommendations) {
+    const ticket = await engine.fileTicket({
+      title: recommendation.title,
+      type: recommendation.type,
+      priority: recommendation.priority,
+      notes: [`Recommended by ${ref} run ${result.runId}.`, recommendation.detail ?? ""].filter(Boolean).join("\n"),
+    });
+    tickets.push(ticket.id);
+  }
+  const state = await engine.getState();
+  const counts = { passed: 0, failed: 0, unavailable: 0 };
+  for (const check of result.evidence.checks) counts[check.status] += 1;
+  await appendAuditEvent(opts.project, {
+    ts: new Date().toISOString(),
+    type: "extension_run",
+    phase: state.phase,
+    actor: "user",
+    data: {
+      extension: ref,
+      runId: result.runId,
+      adapterId: result.adapterId,
+      profile: result.profile ?? null,
+      outcome: result.status,
+      checks: counts,
+      tickets: tickets.length,
+      usage: result.usage ?? null,
+      limitReason: result.limitReason ?? null,
+    },
+  });
+  await exportUsageTelemetry({
+    endpoint: config.telemetry.otlpEndpoint,
+    adapter: result.adapterId,
+    profile: result.profile,
+    skill: ref,
+    outcome: result.status,
+    usage: result.usage,
+  });
+  const pass = result.status === "complete" && counts.failed === 0 && counts.unavailable === 0;
+  if (opts.json) {
+    writeJson({ ok: pass, ...result, counts, tickets, next: tickets.length > 0 ? "legion-cli next" : `legion-cli skills show ${ref}` });
+    return pass ? 0 : 1;
+  }
+  writeOut(`${ref} run ${result.runId}: ${counts.passed} passed, ${counts.failed} failed, ${counts.unavailable} unavailable.`);
+  writeOut(`Evidence: ${result.evidencePath}`);
+  if (tickets.length > 0) writeOut(`Filed tickets: ${tickets.join(", ")}`);
+  if (result.limitReason) writeOut(`Stopped: ${result.limitReason}`);
+  writeOut(`Next: ${tickets.length > 0 ? "legion-cli next" : `legion-cli skills show ${ref}`}`);
+  return pass ? 0 : 1;
 }

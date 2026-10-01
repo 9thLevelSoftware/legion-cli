@@ -98,13 +98,22 @@ export {
   argvSummarySafe,
   defaultAllowCopyJail,
   findSkillsDir,
+  governedMcpConfigIdentity,
+  governedMcpToolContractIdentity,
+  inspectResumeOwner,
+  listRunRecoveryStatuses,
   listCacheResumesCalls,
   optionalSkillSpawn,
+  preserveStartedHttpSpawnForRecovery,
   refuseIfLiveRun,
   resetListCacheResumesCalls,
   resolveSkillDir,
+  resumeHttpSkillSpawn,
   resumeRunIsLive,
+  updateResumeStage,
 } from "./spawn.js";
+export type { ResumeOwnerStatus, RunRecoveryStatus } from "./spawn.js";
+export { evaluateQaEvidenceFreshness, projectSourceIdentity, qaSourceHash, qaSpecHash } from "./qa-evidence.js";
 export {
   WIREFRAME_PALETTE,
   assertWireframeHtml,
@@ -130,6 +139,8 @@ export {
 } from "./readiness.js";
 export type { ReadinessReport } from "./readiness.js";
 export { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
+export { createHttpToolHost, engineSotRefuseReason, httpAllowedWrites } from "./http-host.js";
+export type { HttpHostOpts } from "./http-host.js";
 export {
   displayStagedRoots,
   isShipAllowedPath,
@@ -184,6 +195,7 @@ export type {
   CompactedTask,
   DecisionInput,
   ExecuteOptions,
+  ExecuteProgress,
   ExecuteResult,
   ExecuteTaskResult,
   FiledTicketSummary,

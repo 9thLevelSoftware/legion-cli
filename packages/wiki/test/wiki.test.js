@@ -205,6 +205,64 @@ test("buildSessionBrief loads mapRootHash from fingerprints.json", async () => {
   });
 });
 
+test("search ranks whole title/path matches before substring matches and BM25 body matches", async () => {
+  await withStore(async ({ store }) => {
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/exact.md",
+      wikiFrontmatter("Release checklist"),
+      "Ordinary notes.",
+    );
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/substring.md",
+      wikiFrontmatter("Release checklist archive"),
+      "Ordinary notes.",
+    );
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/body.md",
+      wikiFrontmatter("Notes"),
+      "Release checklist release checklist release checklist.",
+    );
+    await store.rebuild();
+    const hits = searchWiki(store.projectRoot, "Release checklist");
+    assert.equal(hits[0]?.title, "Release checklist");
+    assert.equal(hits[1]?.title, "Release checklist archive");
+    assert.equal(hits[2]?.title, "Notes");
+  });
+});
+
+test("brief adds a deterministic task map slice with freshness and selection reasons", async () => {
+  await withStore(async ({ store, dir }) => {
+    const task = await store.readTask("TSK-0002");
+    await store.writeTask(
+      { ...task.data, contract: { ...task.data.contract, filesAllowed: ["src/button.ts"] } },
+      task.body,
+    );
+    const mapDir = join(dir, ".legion-cli", "map");
+    await mkdir(mapDir, { recursive: true });
+    await writeFile(
+      join(mapDir, "fingerprints.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-fingerprint/v1",
+        generatedAt: "2026-09-30T12:00:00.000Z",
+        backend: "fallback",
+        rootHash: "c".repeat(64),
+        modules: [
+          { path: "src/button.ts", language: "ts", exports: ["Button"], imports: ["src/theme.ts"], hash: "1".repeat(64) },
+          { path: "src/theme.ts", language: "ts", exports: ["theme"], imports: [], hash: "2".repeat(64) },
+          { path: "src/app.ts", language: "ts", exports: ["App"], imports: ["src/button.ts"], hash: "3".repeat(64) },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    const brief = await buildSessionBrief(store);
+    assert.match(brief.mapFreshness ?? "", /2026-09-30T12:00:00.000Z/);
+    assert.match(brief.mapSlice ?? "", /task-owned: - src\/button\.ts/);
+    assert.match(brief.mapSlice ?? "", /direct dependency: - src\/theme\.ts/);
+    assert.ok(brief.contextSelection?.includes("task-owned: src/button.ts"));
+    assert.match(renderSessionBrief(brief), /Repository map slice:/);
+  });
+});
+
 test("buildSessionBrief omits mapRootHash when map dir is a symlink", async () => {
   await withStore(async ({ store, dir }) => {
     const hash = "b".repeat(64);

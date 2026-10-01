@@ -132,7 +132,7 @@ test("map --json reports next show path", async () => {
     assert.equal(body.ok, true);
     assert.equal(body.path, ".legion-cli/map/ARCHITECTURE.md");
     assert.equal(body.backend, "fallback");
-    assert.equal(body.next, "legion-cli show .legion-cli/map/ARCHITECTURE.md");
+    assert.match(body.next, /^legion-cli show \.legion-cli\/map\/ARCHITECTURE\.md --project /);
   });
 });
 

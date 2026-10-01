@@ -1,19 +1,66 @@
-# Adapter routing — spawn-CLI or http adapter selection (not an open model marketplace)
+# Adapter routing — adapters, named profiles, and usage policy
 
 | Field | Value |
 | --- | --- |
 | **Title** | Adapter routing: per-task and per-skill selection of which coding-agent CLI to spawn |
 | **Author** | Systems Architecture |
 | **Date** | 2026-09-03 |
-| **Status** | Implemented (rev 8 — routing, doctor fail-closed, verified vendor argv and AdapterId `http` have landed; the design of record is `docs/design/product-engineering-cli.md`, which wins where the two differ) |
+| **Status** | Implemented (rev 9 - named profiles, usage accounting and opt-in loopback telemetry; product-engineering-cli.md is the design of record) |
 | **Product** | Legion CLI (`legion-cli`, npm `@9thlevelsoftware/legion-cli`) |
 | **Audience** | Senior engineers implementing the feature; product leads reviewing scope |
-| **Design of record** | `docs/design/product-engineering-cli.md` (rev 14 — twelve previously deferred surfaces shipped; AdapterId `http` in-product) |
+| **Design of record** | `docs/design/product-engineering-cli.md` (rev 15 — reliability, extensions, profiles, and experiments) |
 | **Git author** | 9thLevelSoftware / engineering@9thlevelsoftware.com |
 
 ---
 
 ## Overview
+
+Named profiles add an operator-owned layer over the existing adapter routes. A
+profile selects one existing `AdapterId`, may append explicitly supported model
+arguments, may set an output limit, and may declare reported-usage thresholds and
+pricing. Budgets and prices are unset by default. A price-derived value is always
+reported as an estimate; Legion does not claim a guaranteed provider spending cap.
+
+Resolution order is:
+
+1. explicit CLI `--adapter` or `--profile` (the two flags are mutually exclusive);
+2. `Task.profile`, then the compatible legacy `Task.adapter`, for execute/verify;
+3. `adapter.skillProfiles[skillId]`;
+4. `adapter.routes[skillId]`;
+5. required `adapter.default`.
+
+Example:
+
+```yaml
+adapter:
+  default: claude
+  profiles:
+    fast:
+      adapter: codex
+      modelArgs: [--model, gpt-fast]
+      outputLimit: 4000
+      pricing:
+        inputPerMillionUsd: 1.25
+        outputPerMillionUsd: 5
+      limits:
+        maxRequests: 8
+        maxToolRounds: 16
+        maxReportedTokens: 20000
+        maxEstimatedCostUsd: 2
+  skillProfiles:
+    review: fast
+```
+
+Adapters that cannot report a usage field leave it unknown. Reported token/cost
+thresholds stop work only from values the adapter actually reports. Request and
+tool-round limits are enforced before the next dispatch. `doctor --metrics`
+aggregates local audit events by adapter, profile, skill, and outcome.
+
+OpenTelemetry export is disabled until `telemetry.otlpEndpoint` is set. The
+endpoint must use an explicit loopback IP (`127.0.0.1` or `::1`); redirects are
+not followed. Exported spans contain adapter/profile/skill/outcome and normalized
+usage numbers only. Prompts, source, credentials, repository paths, and tool
+arguments are excluded.
 
 Legion CLI already knows how to start a coding-agent program that is installed on the laptop (`claude`, `generic`, `fake`, `grok`, `openai`, `codex`, `mimo`, `minimax`). `mcode` is the assumed PATH binary for `minimax`, not an AdapterId. **Amendment (PR-11):** AdapterId `http` is an OpenAI-compatible in-process completions client (`packages/http`, `apiKeyEnv`, SSRF-bounded `baseUrl`). Spawn CLIs remain the default path. Nested extras stay spawn-only (no `baseUrl` / `provider` on `adapter.grok`). Inline `apiKey` still fails parse. This is not an open model marketplace. Schema already has `adapter.routes` / `adapter.named` / `Task.adapter` (top-level adapter object `.strict()`). Agents already export `resolveAdapterId` (cli > task > route > default) and extras spawn via `ExtraAdapter`. Engine spawn (`optionalSkillSpawn`) calls `resolveAdapterId` / `isResolvedAdapterSpawnable` and persists resume adapter fields. Doctor fail-closes on required `adapter.routes` via the same spawnable path. CLI `--adapter` has landed on `plan` / `execute` / `review` / `verify` / `fix` (not init-only). Nested extra blocks (`adapter.grok` etc.) **and** the top-level adapter object are `.strict()` so `adapter.apiKey` / `adapter.grok.apiKey` fail parse. Extra adapters spawn with verified vendor argv (KD-7). This RFC remains the routing contract.
 
@@ -642,7 +689,7 @@ Plan is the same shape with the assert **before** `phase: planning`.
 | Plan refuse after writing `planning` | Med | KD-R16: assert routed id first. Test in `refuses.test.js`. |
 | `.strict()` adapter object rejects unknown future knobs | Low | New extra ids are a schema PR. HTTP keys failing is intended. |
 
-Expected load: still one serial spawn on a laptop (`flags.parallelExecute` default false). Resolution is in-process map lookups; `detect()` is PATH `which` + optional `--version` + pointer-arg check, target < 100 ms. Storage: a few YAML keys per task/config; resume grows < 1 KB.
+Expected load: execution remains serial by default (`execution.maxWorkers: 1`). Parallel workers require explicit `execution.maxWorkers` or `execute --jobs`, apply only to automatic `--until-blocked`, and remain bounded at four. Resolution is in-process map lookups; `detect()` is PATH `which` + optional `--version` + pointer-arg check, target < 100 ms. Storage: a few YAML keys per task/config; resume grows < 1 KB.
 
 ---
 
@@ -932,7 +979,7 @@ If product later wants a request-time picker, that is a dashboard write-surface 
 
 ## References
 
-- Design of record: `docs/design/product-engineering-cli.md` (rev 14 — twelve previously deferred surfaces shipped; KD5 extras spawnable + AdapterId `http`; §5.1 frozen argv, doctor, SkillContract table).
+- Design of record: `docs/design/product-engineering-cli.md` (rev 15 — reliability, extensions, profiles, bounded execution, and opt-in experiments).
 - Adapter ids and extras: `packages/schema/src/versions.ts` (`openai`/`codex` both → `codex`).
 - Config / Task / Resume: `packages/schema/src/schemas.ts`.
 - Resolve + create: `packages/agents/src/resolve.ts`, `packages/agents/src/types.ts`, `packages/agents/src/adapters/extra.ts`, `packages/agents/src/argv.ts`.

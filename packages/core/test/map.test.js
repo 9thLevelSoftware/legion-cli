@@ -290,11 +290,20 @@ test("map spawn restore replaces a symlink ARCHITECTURE.md without reading the t
 test("map refuses while execute is in_progress; its live-run marker is unchanged", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
-      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "map-ready");
-      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "map-release");
+      let signalReady;
+      let releaseWait;
+      const ready = new Promise((resolve) => {
+        signalReady = resolve;
+      });
+      const released = new Promise((resolve) => {
+        releaseWait = resolve;
+      });
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
-        fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
+        fakeOnWait: async () => {
+          signalReady();
+          await released;
+        },
       });
       await initProject(engine);
       await seedPlanReady(store, {
@@ -309,29 +318,43 @@ test("map refuses while execute is in_progress; its live-run marker is unchanged
       initGitRepo(dir);
       await seedSources(dir);
       const pending = engine.execute("auto");
-      const start = Date.now();
-      while (!existsSync(readyPath)) {
-        if (Date.now() - start > 10_000) throw new Error("fake wait never became ready");
-        await new Promise((resolve) => setTimeout(resolve, 20));
+      try {
+        let readyTimer;
+        try {
+          await Promise.race([
+            ready,
+            pending.then(
+              () => { throw new Error("execute finished before fake wait"); },
+              (err) => { throw err; },
+            ),
+            new Promise((_, reject) => {
+              readyTimer = setTimeout(() => reject(new Error("fake wait never became ready")), 45_000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(readyTimer);
+        }
+        const liveDir = join(dir, ".legion-cli", "cache", "live-spawn");
+        const [liveName] = readdirSync(liveDir);
+        const livePath = join(liveDir, liveName);
+        const liveBefore = await readFile(livePath, "utf8");
+        await assert.rejects(
+          () => engine.map({ lsp: "off" }),
+          (err) => {
+            assert.equal(err instanceof LegionRefuseError, true);
+            assert.match(err.message, /refused while/);
+            assert.equal(err.nextHint, HINT.status);
+            return true;
+          },
+        );
+        assert.equal(await readFile(livePath, "utf8"), liveBefore);
+        assert.equal(existsSync(join(dir, ".legion-cli", "map", "fingerprints.json")), false);
+      } finally {
+        releaseWait();
+        // Drain the engine before the fixture removes its cache, including assertion failures.
+        await pending.catch(() => undefined);
       }
-      const liveDir = join(dir, ".legion-cli", "cache", "live-spawn");
-      const [liveName] = readdirSync(liveDir);
-      const livePath = join(liveDir, liveName);
-      const liveBefore = await readFile(livePath, "utf8");
-      await assert.rejects(
-        () => engine.map({ lsp: "off" }),
-        (err) => {
-          assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /refused while/);
-          assert.equal(err.nextHint, HINT.status);
-          return true;
-        },
-      );
-      assert.equal(await readFile(livePath, "utf8"), liveBefore);
-      assert.equal(existsSync(join(dir, ".legion-cli", "map", "fingerprints.json")), false);
-      await writeFile(releasePath, "go\n");
-      const result = await pending;
-      assert.equal(result.status, "done");
+      assert.equal((await pending).status, "done");
     });
   });
 });

@@ -40,12 +40,12 @@ test("ship receipt records QA mode/score and writes events.jsonl", async () => {
     const receipt = await engine.ship();
     assert.equal(receipt.phase, "shipped");
     assert.equal(receipt.qaMode, "full");
-    assert.equal(receipt.qaScore, 94);
+    assert.equal(receipt.qaScore, 100);
     assert.equal(receipt.qaPass, true);
     assert.equal((await engine.getState()).phase, "shipped");
     const receiptMd = await readFile(join(store.paths.auditDir, "ship-spec-checkin.md"), "utf8");
     assert.match(receiptMd, /qa\.mode: full/);
-    assert.match(receiptMd, /qa\.total: 94/);
+    assert.match(receiptMd, /qa\.total: 100/);
     const jsonl = await readFile(join(store.paths.auditDir, "events.jsonl"), "utf8");
     assert.match(jsonl, /"type":"ship"/);
     assert.match(jsonl, /"qaMode":"full"/);
@@ -65,6 +65,7 @@ test("ship stages filesAllowed union plus .legion-cli and leaves unrelated files
     initGitRepo(dir);
     await writeFile(join(dir, "src", "main.ts"), "export const ok = false;\n", "utf8");
     await writeFile(join(dir, "unrelated.ts"), "changed\n", "utf8");
+    await writeQaFile(store, makeQaScore());
 
     const receipt = await engine.ship({
       confirm: async (preview) => {
@@ -92,6 +93,7 @@ test("ship --commit creates a commit after confirm", async () => {
     await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
     const before = initGitRepo(dir);
     await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    await writeQaFile(store, makeQaScore());
     const receipt = await engine.ship({ commit: true });
     assert.equal(receipt.committed, true);
     assert.ok(receipt.commitSha);
@@ -134,6 +136,7 @@ test("ship cancel unstages and does not rewrite task bodies", async () => {
     await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
     initGitRepo(dir);
     await writeFile(join(dir, "src", "main.ts"), "export const dirty = true;\n", "utf8");
+    await writeQaFile(store, makeQaScore());
     const taskBefore = await store.readTask("TSK-0001");
     await assert.rejects(
       () => engine.ship({ confirm: async () => false }),
@@ -162,9 +165,9 @@ test("ship --allow-degraded-qa from executing after no-browser QA", async () => 
         total: 70,
         buckets: {
           p0: { points: 40, max: 40, failed: 0 },
-          p1: { points: 18, max: 30, passRate: 0.6 },
-          p2: { points: 12, max: 15, passRate: 0.8 },
-          visual: { points: 15, max: 15, regressions: 0 },
+          p1: { points: 30, max: 30, passRate: 1 },
+          p2: { points: 15, max: 15, passRate: 1 },
+          visual: { points: 0, max: 15, regressions: 1 },
         },
       }),
     });
@@ -208,6 +211,7 @@ test("ship --allow-degraded-qa refuses failed full QA including visual regressio
         mode: "full",
         pass: false,
         total: 85,
+        reportFailures: 1,
         buckets: {
           p0: { points: 40, max: 40, failed: 0 },
           p1: { points: 30, max: 30, passRate: 1 },
@@ -229,6 +233,125 @@ test("ship --allow-degraded-qa refuses failed full QA including visual regressio
   });
 });
 
+test("ship --allow-degraded-qa refuses missing P0 criterion evidence", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedReadyToShip(store, {
+      phase: "executing",
+      score: makeQaScore({
+        mode: "no-browser",
+        criteria: [{ id: "AC-01", priority: "P0", outcome: "missing" }],
+        missingCriterionIds: ["AC-01"],
+        buckets: {
+          p0: { points: 0, max: 40, failed: 1 },
+          p1: { points: 30, max: 30, passRate: 1 },
+          p2: { points: 15, max: 15, passRate: 1 },
+          visual: { points: 0, max: 15, regressions: 1 },
+        },
+        total: 45,
+        pass: false,
+      }),
+    });
+    await assert.rejects(
+      () => engine.ship({ allowDegradedQa: true }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /every P0 criterion/);
+        return true;
+      },
+    );
+  });
+});
+
+test("ship --allow-degraded-qa refuses genuine report failures", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedReadyToShip(store, {
+      phase: "executing",
+      score: makeQaScore({
+        mode: "no-browser",
+        total: 70,
+        pass: false,
+        reportFailures: 1,
+        buckets: {
+          p0: { points: 40, max: 40, failed: 0 },
+          p1: { points: 30, max: 30, passRate: 1 },
+          p2: { points: 15, max: 15, passRate: 1 },
+          visual: { points: 0, max: 15, regressions: 1 },
+        },
+      }),
+    });
+    await assert.rejects(
+      () => engine.ship({ allowDegradedQa: true }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /failed test reports/);
+        return true;
+      },
+    );
+  });
+});
+
+test("ship rejects a persisted score whose P0 outcome contradicts its buckets", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedReadyToShip(store, {
+      score: makeQaScore({
+        criteria: [{ id: "AC-01", priority: "P0", outcome: "missing" }],
+        missingCriterionIds: ["AC-01"],
+      }),
+    });
+    await assert.rejects(
+      () => engine.ship(),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /QA must PASS/);
+        return true;
+      },
+    );
+  });
+});
+
+test("ship rejects a persisted score that omits active SPEC criteria", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedReadyToShip(store, { score: makeQaScore({ criteria: [] }) });
+    await assert.rejects(
+      () => engine.ship(),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /QA must PASS/);
+        return true;
+      },
+    );
+  });
+});
+
+test("ship rejects forged passing scores when command receipts record failure or timeout", async () => {
+  for (const capture of [
+    { started: true, status: 1, timedOut: false },
+    { started: true, status: null, timedOut: true },
+  ]) {
+    await withEngine(async ({ engine, store }) => {
+      await initProject(engine);
+      await seedReadyToShip(store);
+      await writeFile(
+        join(store.paths.qaDir, "runs", "qa-1", "unit.meta.json"),
+        `${JSON.stringify({ version: 1, kind: "unit", capture }, null, 2)}\n`,
+        "utf8",
+      );
+      await assert.rejects(
+        () => engine.ship(),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /QA must PASS/);
+          return true;
+        },
+      );
+    });
+  }
+});
+
 test("ship stages deletions of tracked filesAllowed paths", async () => {
   await withEngine(async ({ engine, store, dir }) => {
     await initProject(engine);
@@ -237,6 +360,7 @@ test("ship stages deletions of tracked filesAllowed paths", async () => {
     await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
     initGitRepo(dir);
     await rm(join(dir, "src", "main.ts"));
+    await writeQaFile(store, makeQaScore());
     const receipt = await engine.ship({
       commit: true,
       confirm: async (preview) => {
@@ -264,6 +388,7 @@ test("ship skips a never-created filesAllowed path", async () => {
     await mkdir(join(dir, "src"), { recursive: true });
     await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
     initGitRepo(dir);
+    await writeQaFile(store, makeQaScore());
     const receipt = await engine.ship();
     assert.equal(receipt.phase, "shipped");
     const staged = git(dir, ["diff", "--cached", "--name-only"]);
@@ -355,6 +480,7 @@ test("ship refuses a staged file modified between preview and commit", async () 
     await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
     initGitRepo(dir);
     await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    await writeQaFile(store, makeQaScore());
     await assert.rejects(
       () =>
         engine.ship({
@@ -383,6 +509,7 @@ test("ship does not refuse when only .legion-cli/STATE.md changes between previe
     await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
     initGitRepo(dir);
     await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    await writeQaFile(store, makeQaScore());
     const receipt = await engine.ship({
       commit: true,
       confirm: async () => {
@@ -417,6 +544,7 @@ test("ship preview and confirm complete when the index listing exceeds 1 MiB", a
     });
     assert.ok(listing.stdout.length > 1024 * 1024, "index listing must exceed the default 1 MiB buffer");
     await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    await writeQaFile(store, makeQaScore());
     const receipt = await engine.ship({ commit: true });
     assert.equal(receipt.committed, true);
     assert.equal(receipt.phase, "shipped");

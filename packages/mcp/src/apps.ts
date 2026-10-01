@@ -74,7 +74,9 @@ async function htmlForPage(projectRoot: string, page: McpAppName): Promise<strin
   if (page === "spec") return renderSpec(snapshot);
   if (page === "graph") return renderGraph(snapshot);
   if (page === "audit") return renderAudit(snapshot);
-  return renderKanban(snapshot);
+  // MCP App resources are static read-only documents. They are not served by
+  // the dashboard HTTP server, so they cannot subscribe to its SSE endpoint.
+  return renderKanban(snapshot, false, false);
 }
 
 export async function readAppContents(store: LegionReader, page: McpAppName, uri: string) {

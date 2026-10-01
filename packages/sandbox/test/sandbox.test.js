@@ -9,7 +9,7 @@ import test from "node:test";
 import { PathEscapeError } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionConfigSchema } from "@9thlevelsoftware/legion-cli-schema";
 
-import { assertExecuteSandbox, detectSandbox, materializeJail, SandboxError } from "../dist/index.js";
+import { assertExecuteSandbox, detectSandbox, materializeJail, reopenJail, SandboxError } from "../dist/index.js";
 import {
   DOCKER_HOST_EXEC_REFUSAL,
   DOCKER_PIDS_LIMIT,
@@ -921,6 +921,173 @@ test("copy-out skips unchanged allowed files", async () => {
       const result = await handle.copyOut();
       assert.equal(result.copied.includes("src/main.ts"), false);
       assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "operator edit\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("reopenJail retains the original copy-in baseline for interrupted HTTP recovery", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const input = policy(dir, { backend: "copy", allowDegradedCopy: true });
+    const original = await materializeJail(input);
+    await writeFile(join(original.jailRoot, "src", "main.ts"), "export const main = 2;\n", "utf8");
+    const reopened = await reopenJail(input);
+    try {
+      assert.equal(reopened.jailRoot, original.jailRoot);
+      const result = await reopened.copyOut();
+      assert.deepEqual(result.dropped, []);
+      assert.deepEqual(result.copied, ["src/main.ts"]);
+      assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "export const main = 2;\n");
+    } finally {
+      await reopened.destroy();
+    }
+  });
+});
+
+test("reopenJail rejects replaced recovery metadata for the same jail path", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const input = policy(dir, { backend: "copy", allowDegradedCopy: true });
+    const original = await materializeJail(input);
+    try {
+      const recordPath = join(dir, ".legion-cli", "cache", "runs", input.runId, "sandbox.json");
+      const record = JSON.parse(await readFile(recordPath, "utf8"));
+      record.nonce = "f".repeat(64);
+      await writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+      await assert.rejects(
+        () => reopenJail({ ...input, expectedIdentity: original.identity }),
+        /sandbox recovery identity changed/,
+      );
+    } finally {
+      await original.destroy();
+    }
+  });
+});
+
+test("reopenJail rejects a recreated jail even when external recovery metadata is unchanged", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const input = policy(dir, { backend: "copy", allowDegradedCopy: true });
+    const original = await materializeJail(input);
+    await rm(original.jailRoot, { recursive: true, force: true });
+    await mkdir(join(original.jailRoot, "src"), { recursive: true });
+    await writeFile(join(original.jailRoot, "src", "main.ts"), "recreated contents\n", "utf8");
+    await assert.rejects(
+      () => reopenJail({ ...input, expectedIdentity: original.identity }),
+      /sandbox recovery sentinel is unavailable/,
+    );
+    await original.destroy();
+  });
+});
+
+test("inspectOutput is read-only and applyOutput copies the inspected change", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const handle = await materializeJail(policy(dir, { backend: "copy" }));
+    try {
+      await writeFile(join(handle.jailRoot, "src", "main.ts"), "agent edit\n", "utf8");
+      const output = await handle.inspectOutput();
+      assert.deepEqual(output.changes.map((change) => [change.path, change.action]), [["src/main.ts", "write"]]);
+      assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "export const main = 1;\n");
+
+      const result = await handle.applyOutput(output);
+      assert.deepEqual(result.conflicts, []);
+      assert.ok(result.copied.includes("src/main.ts"));
+      assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "agent edit\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("applyOutput refuses a host change made after jail materialization", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const handle = await materializeJail(policy(dir, { backend: "copy" }));
+    try {
+      await writeFile(join(handle.jailRoot, "src", "main.ts"), "agent edit\n", "utf8");
+      const output = await handle.inspectOutput();
+      await writeFile(join(dir, "src", "main.ts"), "operator edit\n", "utf8");
+
+      const result = await handle.applyOutput(output);
+      assert.deepEqual(result.copied, []);
+      assert.deepEqual(result.conflicts, ["src/main.ts"]);
+      assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "operator edit\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("applyOutput rejects a forged inspection object outside the captured allowlist", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const handle = await materializeJail(policy(dir, { backend: "copy" }));
+    try {
+      await writeFile(join(handle.jailRoot, "src", "main.ts"), "agent edit\n", "utf8");
+      const output = await handle.inspectOutput();
+      const forged = {
+        ...output,
+        changes: output.changes.map((change) => ({ ...change, path: "src/secret.ts" })),
+      };
+      await assert.rejects(() => handle.applyOutput(forged), /not produced by this jail inspection/);
+      assert.equal(existsSync(join(dir, "src", "secret.ts")), false);
+      assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "export const main = 1;\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("applyOutput preflights every path before writing any member", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await writeFile(join(dir, "src", "other.ts"), "other baseline\n", "utf8");
+    const handle = await materializeJail(policy(dir, {
+      backend: "copy",
+      allowedWrites: ["src/main.ts", "src/other.ts"],
+    }));
+    try {
+      await writeFile(join(handle.jailRoot, "src", "main.ts"), "agent main\n", "utf8");
+      await writeFile(join(handle.jailRoot, "src", "other.ts"), "agent other\n", "utf8");
+      const output = await handle.inspectOutput();
+      await writeFile(join(dir, "src", "other.ts"), "operator other\n", "utf8");
+
+      const result = await handle.applyOutput(output);
+      assert.deepEqual(result.copied, []);
+      assert.deepEqual(result.conflicts, ["src/other.ts"]);
+      assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "export const main = 1;\n");
+      assert.equal(await readFile(join(dir, "src", "other.ts"), "utf8"), "operator other\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("applyOutput drops a parent replaced by a host file without applying a safe sibling", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await mkdir(join(dir, "generated"), { recursive: true });
+    const handle = await materializeJail(policy(dir, {
+      backend: "copy",
+      allowedWrites: ["src/main.ts", "generated/out.ts"],
+    }));
+    try {
+      await writeFile(join(handle.jailRoot, "src", "main.ts"), "agent main\n", "utf8");
+      await mkdir(join(handle.jailRoot, "generated"), { recursive: true });
+      await writeFile(join(handle.jailRoot, "generated", "out.ts"), "agent generated\n", "utf8");
+      const output = await handle.inspectOutput();
+
+      await rm(join(dir, "generated"), { recursive: true, force: true });
+      await writeFile(join(dir, "generated"), "operator parent\n", "utf8");
+
+      const result = await handle.applyOutput(output);
+      assert.deepEqual(result.copied, []);
+      assert.ok(result.dropped.includes("generated/out.ts"));
+      assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "export const main = 1;\n");
+      assert.equal(await readFile(join(dir, "generated"), "utf8"), "operator parent\n");
     } finally {
       await handle.destroy();
     }

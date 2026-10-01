@@ -1,14 +1,23 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 import { createLegionStore, isPidAlive, listOpenCommandIds } from "@9thlevelsoftware/legion-cli-persist";
-import { HINT, LegionEngine, LegionRefuseError } from "../dist/index.js";
+import { materializeJail } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
+  HINT,
+  inspectResumeOwner,
+  LegionEngine,
+  LegionRefuseError,
+  projectSourceIdentity,
+  updateResumeStage,
+} from "../dist/index.js";
+import {
+  git,
   failingVerificationCommand,
   initGitRepo,
   initProject,
@@ -86,6 +95,358 @@ function hangingVerificationCommand() {
 // exited child's pid is not safe here: Windows reuses pids within seconds, and the engine rightly
 // refuses to restore while a live process holds the handle's pid.
 const NEVER_LIVE_PID = 2_000_000_000;
+
+test("resume owner inspection treats a recycled pid as stale", async () => {
+  const resume = {
+    schemaVersion: "legion-cli-resume/v2",
+    runId: "execute-recycled",
+    taskId: "TSK-0001",
+    skillId: "execute",
+    preSpawnRef: "UNBORN",
+    startedAt: "2026-09-30T12:00:00.000Z",
+    stage: "running",
+    pid: process.pid,
+    pidStartedAt: 1000,
+    enginePid: process.pid,
+    enginePidStartedAt: 1000,
+    logs: { stdout: ".legion-cli/cache/runs/execute-recycled/stdout.log", stderr: ".legion-cli/cache/runs/execute-recycled/stderr.log" },
+  };
+  const status = await inspectResumeOwner(resume, async () => 20_000);
+  assert.equal(status, "stale");
+});
+
+test("legacy resume records remain conservatively live when their pid exists", async () => {
+  const resume = {
+    schemaVersion: "legion-cli-resume/v1",
+    runId: "execute-legacy",
+    taskId: "TSK-0001",
+    skillId: "execute",
+    preSpawnRef: "UNBORN",
+    startedAt: new Date().toISOString(),
+    pid: process.pid,
+  };
+  assert.equal(await inspectResumeOwner(resume, async () => null), "live");
+});
+
+test("v2 resume with an alive child but unavailable start identity is unknown", async () => {
+  const resume = {
+    schemaVersion: "legion-cli-resume/v2",
+    runId: "execute-unknown",
+    taskId: "TSK-0001",
+    skillId: "execute",
+    preSpawnRef: "UNBORN",
+    startedAt: "2026-09-30T12:00:00.000Z",
+    stage: "running",
+    stageUpdatedAt: "2026-09-30T12:00:00.000Z",
+    pid: process.pid,
+    pidStartedAt: null,
+    enginePid: 2_000_000_001,
+    enginePidStartedAt: 1000,
+    logs: { stdout: "stdout.log", stderr: "stderr.log" },
+  };
+  assert.equal(await inspectResumeOwner(resume, async () => null), "unknown");
+});
+
+test("released engine ownership does not keep a dead run live", async () => {
+  const resume = {
+    schemaVersion: "legion-cli-resume/v2",
+    runId: "execute-released",
+    taskId: "TSK-0001",
+    skillId: "execute",
+    preSpawnRef: "UNBORN",
+    startedAt: "2026-09-30T12:00:00.000Z",
+    stage: "blocked",
+    stageUpdatedAt: "2026-09-30T12:01:00.000Z",
+    enginePid: process.pid,
+    enginePidStartedAt: 1000,
+    engineOwnershipReleasedAt: "2026-09-30T12:01:00.000Z",
+    logs: { stdout: "stdout.log", stderr: "stderr.log" },
+  };
+  assert.equal(await inspectResumeOwner(resume, async () => 1000), "stale");
+});
+
+test("project source identity includes dirty and untracked files but excludes Legion state", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const version = 1;\n", "utf8");
+    initGitRepo(dir);
+    const initial = await projectSourceIdentity(dir);
+    await mkdir(join(dir, ".legion-cli", "cache"), { recursive: true });
+    await writeFile(join(dir, ".legion-cli", "cache", "identity-noise"), "ignored\n", "utf8");
+    assert.equal(await projectSourceIdentity(dir), initial);
+    await writeFile(join(dir, "src", "main.ts"), "export const version = 2;\n", "utf8");
+    const dirty = await projectSourceIdentity(dir);
+    assert.notEqual(dirty, initial);
+    await writeFile(join(dir, "src", "new.ts"), "export const fresh = true;\n", "utf8");
+    assert.notEqual(await projectSourceIdentity(dir), dirty);
+  });
+});
+
+test("project source identity is unchanged when tracked and untracked tested bytes are only staged", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const version = 1;\n", "utf8");
+    initGitRepo(dir);
+    await writeFile(join(dir, "src", "main.ts"), "export const version = 2;\n", "utf8");
+    await writeFile(join(dir, "src", "new.ts"), "export const fresh = true;\n", "utf8");
+    const beforeStage = await projectSourceIdentity(dir);
+    git(dir, ["add", "src/main.ts", "src/new.ts"]);
+    assert.equal(await projectSourceIdentity(dir), beforeStage);
+  });
+});
+
+test("project source identity changes for a staged mode-only source change", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    await mkdir(join(dir, "src"), { recursive: true });
+    const path = join(dir, "src", "main.ts");
+    await writeFile(path, "export const version = 1;\n", "utf8");
+    initGitRepo(dir);
+    const initial = await projectSourceIdentity(dir);
+    git(dir, ["update-index", "--chmod=+x", "src/main.ts"]);
+    assert.notEqual(await projectSourceIdentity(dir), initial);
+  });
+});
+
+test("POSIX dirty chmod changes source identity and staging it is identity-stable", {
+  skip: process.platform === "win32",
+}, async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    await mkdir(join(dir, "src"), { recursive: true });
+    const path = join(dir, "src", "main.ts");
+    await writeFile(path, "export const version = 1;\n", "utf8");
+    initGitRepo(dir);
+    const initial = await projectSourceIdentity(dir);
+    await chmod(path, 0o755);
+    const changed = await projectSourceIdentity(dir);
+    assert.notEqual(changed, initial);
+    git(dir, ["add", "src/main.ts"]);
+    assert.equal(await projectSourceIdentity(dir), changed);
+  });
+});
+
+test("project source identity is deterministic across many files", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    await mkdir(join(dir, "src", "many"), { recursive: true });
+    await Promise.all(
+      Array.from({ length: 128 }, (_, index) =>
+        writeFile(join(dir, "src", "many", `${String(index).padStart(3, "0")}.ts`), `export const n = ${index};\n`, "utf8"),
+      ),
+    );
+    initGitRepo(dir);
+    const first = await projectSourceIdentity(dir);
+    assert.equal(await projectSourceIdentity(dir), first);
+    await writeFile(join(dir, "src", "many", "064.ts"), "export const n = 640;\n", "utf8");
+    assert.notEqual(await projectSourceIdentity(dir), first);
+  });
+});
+
+test("project source identity changes when a tracked submodule HEAD changes", async () => {
+  await withEngine(async ({ dir }) => {
+    await writeFile(join(dir, "README.md"), "parent\n", "utf8");
+    initGitRepo(dir);
+    const source = `${dir}-submodule-source`;
+    await mkdir(source, { recursive: true });
+    try {
+      await writeFile(join(source, "module.txt"), "one\n", "utf8");
+      initGitRepo(source);
+      git(dir, ["-c", "protocol.file.allow=always", "submodule", "add", pathToFileURL(source).href, "vendor/module"]);
+      git(dir, ["add", ".gitmodules", "vendor/module"]);
+      git(dir, ["commit", "-m", "add submodule"]);
+      const initial = await projectSourceIdentity(dir);
+      const checkout = join(dir, "vendor", "module");
+      git(checkout, ["config", "user.name", "9thLevelSoftware"]);
+      git(checkout, ["config", "user.email", "engineering@9thlevelsoftware.com"]);
+      await writeFile(join(checkout, "module.txt"), "two\n", "utf8");
+      git(checkout, ["add", "module.txt"]);
+      git(checkout, ["commit", "-m", "advance module"]);
+      assert.notEqual(await projectSourceIdentity(dir), initial);
+    } finally {
+      await rm(source, { recursive: true, force: true });
+    }
+  });
+});
+
+test("resume stage updates surface corrupt records instead of silently losing progress", async () => {
+  await withEngine(async ({ dir, engine }) => {
+    await initProject(engine);
+    const runId = "execute-corrupt";
+    const runDir = join(dir, ".legion-cli", "cache", "runs", runId);
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "resume.json"), "{broken", "utf8");
+    await assert.rejects(() => updateResumeStage(dir, runId, "interrupted"), SyntaxError);
+  });
+});
+
+test("fresh-process recovery preserves a compatible HTTP checkpoint for execute --resume", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await seedExecute(store, {
+      phase: "executing",
+      task: { status: "in_progress" },
+    });
+    const state = await store.readState();
+    await store.writeState({ ...state.data, currentTaskId: "TSK-0001" }, state.body);
+    const runId = "execute-http-crash";
+    const runDir = join(dir, ".legion-cli", "cache", "runs", runId);
+    await mkdir(runDir, { recursive: true });
+    const sandbox = await materializeJail({
+      projectRoot: dir,
+      runId,
+      allowedWrites: ["src/main.ts"],
+      readSet: [],
+      backend: "copy",
+      allowDegradedCopy: true,
+    });
+    const sourceIdentity = await projectSourceIdentity(dir);
+    const identities = {
+      promptHash: "prompt",
+      configHash: "config",
+      contractHash: "contract",
+      sourceIdentity,
+      jailIdentity: sandbox.identity,
+    };
+    await writeFile(
+      join(runDir, "http-checkpoint.json"),
+      `${JSON.stringify({
+        version: 1,
+        runId,
+        identities,
+        conversation: [],
+        round: 0,
+        toolOutcomes: [],
+        usage: { requests: 1, toolCalls: 0, model: "fixture" },
+        completion: { status: "complete", summary: "done" },
+        updatedAt: "2026-09-30T12:01:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      join(runDir, "resume.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-resume/v2",
+        runId,
+        taskId: "TSK-0001",
+        skillId: "execute",
+        preSpawnRef: "UNBORN",
+        startedAt: "2026-09-30T12:00:00.000Z",
+        stage: "running",
+        stageUpdatedAt: "2026-09-30T12:00:00.000Z",
+        pid: null,
+        enginePid: 2_000_000_001,
+        enginePidStartedAt: 1,
+        adapterId: "http",
+        logs: { stdout: "stdout.log", stderr: "stderr.log" },
+        checkpointPath: `.legion-cli/cache/runs/${runId}/http-checkpoint.json`,
+        sourceIdentity,
+        contractIdentity: identities.contractHash,
+        jailIdentity: identities.jailIdentity,
+      })}\n`,
+      "utf8",
+    );
+
+    const fresh = new LegionEngine(dir, undefined, { skillsDir });
+    await assert.rejects(
+      () => fresh.execute("auto", { resume: runId, allowNoSandbox: true }),
+      (err) => {
+        assert.doesNotMatch(err.message, /remain in_progress/);
+        return true;
+      },
+    );
+    assert.equal((await store.readTask("TSK-0001")).data.status, "in_progress");
+    const recovered = JSON.parse(await readFile(join(runDir, "resume.json"), "utf8"));
+    assert.equal(recovered.stage, "interrupted");
+    assert.equal(recovered.recoveryCommand, `legion-cli execute --resume ${runId}`);
+  });
+});
+
+test("fresh-process recovery reconciles only pending writes already present in the retained jail", async () => {
+  for (const scenario of [
+    { name: "matching", jailContents: "intended\n", expectedStatus: "in_progress" },
+    { name: "mismatching", jailContents: "different\n", expectedStatus: "blocked" },
+  ]) {
+    await withEngine(async ({ dir, engine, store }) => {
+      await initProject(engine);
+      await seedExecute(store, { phase: "executing", task: { status: "in_progress" } });
+      const state = await store.readState();
+      await store.writeState({ ...state.data, currentTaskId: "TSK-0001" }, state.body);
+      await mkdir(join(dir, "src"), { recursive: true });
+      await writeFile(join(dir, "src", "main.ts"), "baseline\n", "utf8");
+      const runId = `execute-http-write-${scenario.name}`;
+      const runDir = join(dir, ".legion-cli", "cache", "runs", runId);
+      await mkdir(runDir, { recursive: true });
+      const sandbox = await materializeJail({
+        projectRoot: dir,
+        runId,
+        allowedWrites: ["src/main.ts"],
+        readSet: [],
+        backend: "copy",
+        allowDegradedCopy: true,
+      });
+      await writeFile(join(sandbox.jailRoot, "src", "main.ts"), scenario.jailContents, "utf8");
+      const sourceIdentity = await projectSourceIdentity(dir);
+      const identities = {
+        promptHash: "prompt",
+        configHash: "config",
+        contractHash: "contract",
+        sourceIdentity,
+        jailIdentity: sandbox.identity,
+      };
+      const toolArguments = JSON.stringify({ path: "src/main.ts", contents: "intended\n" });
+      await writeFile(join(runDir, "http-checkpoint.json"), `${JSON.stringify({
+        version: 1,
+        runId,
+        identities,
+        conversation: [],
+        round: 1,
+        toolOutcomes: [{
+          id: "write-1",
+          signature: "a".repeat(64),
+          name: "write_file",
+          arguments: toolArguments,
+          status: "pending",
+        }],
+        usage: { requests: 1, toolCalls: 1, model: "fixture" },
+        completion: { status: "running" },
+        updatedAt: "2026-09-30T12:01:00.000Z",
+      }, null, 2)}\n`, "utf8");
+      await writeFile(join(runDir, "resume.json"), `${JSON.stringify({
+        schemaVersion: "legion-cli-resume/v2",
+        runId,
+        taskId: "TSK-0001",
+        skillId: "execute",
+        preSpawnRef: "UNBORN",
+        startedAt: "2026-09-30T12:00:00.000Z",
+        stage: "running",
+        stageUpdatedAt: "2026-09-30T12:00:00.000Z",
+        pid: null,
+        enginePid: 2_000_000_001,
+        enginePidStartedAt: 1,
+        adapterId: "http",
+        logs: { stdout: "stdout.log", stderr: "stderr.log" },
+        checkpointPath: `.legion-cli/cache/runs/${runId}/http-checkpoint.json`,
+        sourceIdentity,
+        contractIdentity: identities.contractHash,
+        jailIdentity: identities.jailIdentity,
+      }, null, 2)}\n`, "utf8");
+
+      const fresh = new LegionEngine(dir, undefined, { skillsDir });
+      await fresh.recoverStaleInProgress();
+      assert.equal((await store.readTask("TSK-0001")).data.status, scenario.expectedStatus);
+      const recovered = JSON.parse(await readFile(join(runDir, "resume.json"), "utf8"));
+      assert.equal(
+        recovered.recoveryCommand,
+        scenario.expectedStatus === "in_progress"
+          ? `legion-cli execute --resume ${runId}`
+          : "legion-cli task amend TSK-0001 --unblock",
+      );
+    });
+  }
+});
 
 test("during a fake long spawn, status is in_progress and engine.lock is absent", async () => {
   await withFakeAdapter(async () => {

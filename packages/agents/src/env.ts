@@ -24,6 +24,7 @@ export const ADAPTER_CREDENTIAL_KEYS = {
   mimo: [] as const,
   minimax: ["MINIMAX_API_KEY"],
   http: [] as const,
+  acp: [] as const,
 } as const satisfies Record<AgentAdapterId, readonly string[]>;
 
 /**
@@ -46,7 +47,7 @@ function inferAdapterIdFromBinary(binary?: string): AgentAdapterId | undefined {
 
 function assumedBinaryBasename(adapterId: AgentAdapterId): string | undefined {
   if (adapterId === "claude") return "claude";
-  if (adapterId === "generic" || adapterId === "fake" || adapterId === "http") return undefined;
+  if (adapterId === "generic" || adapterId === "fake" || adapterId === "http" || adapterId === "acp") return undefined;
   return ASSUMED_EXTRA_BINARIES[adapterId];
 }
 

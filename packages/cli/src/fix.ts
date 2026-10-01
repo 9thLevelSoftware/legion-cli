@@ -1,4 +1,4 @@
-import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, findSkillsDir, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import { confirmAllowNoSandbox, startingTaskLine } from "./execute.js";
 import type { CliOpts } from "./io.js";
@@ -9,8 +9,9 @@ import { closePrompt, slurpStdin } from "./prompt.js";
 export async function runFix(
   opts: CliOpts,
   bug: string,
-  flags: { adapter?: string; allowNoSandbox?: boolean } = {},
+  flags: { adapter?: string; profile?: string; allowNoSandbox?: boolean } = {},
 ): Promise<number> {
+  if (flags.adapter && flags.profile) refuse("fix --adapter and --profile are mutually exclusive", "legion-cli fix --profile <name>");
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
   try {
@@ -23,6 +24,7 @@ export async function runFix(
     fix: true,
     allowNoSandbox: Boolean(flags.allowNoSandbox),
     ...(adapter ? { adapter } : {}),
+    ...(flags.profile ? { profile: flags.profile } : {}),
   });
   const state = await engine.getState();
   const slice = await engine.listSliceTasks();

@@ -17,6 +17,7 @@ import {
 import { withTempDir } from "./helpers.js";
 
 const repoSkills = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
+const packagedSkills = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
 
 function skillMarkdown(skillId, overrides = {}) {
   const required = REQUIRED_SKILL_IDS.includes(skillId);
@@ -260,6 +261,7 @@ test("findSkillsDir honors LEGION_CLI_SKILLS_DIR and does not depend on PATH", a
       else process.env.LEGION_CLI_SKILLS_DIR = previous;
     }
     // Without the override, a skills/ folder next to the cwd does not shadow the module-relative skills.
-    assert.equal(findSkillsDir(dir), repoSkills);
+    assert.equal(findSkillsDir(dir), packagedSkills);
+    assert.notEqual(findSkillsDir(dir), repoSkills);
   });
 });

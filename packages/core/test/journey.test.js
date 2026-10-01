@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { LegionEngine, LegionRefuseError } from "../dist/index.js";
+import { specHasUi } from "@9thlevelsoftware/legion-cli-qa";
 import {
   commitAll,
   git,
@@ -18,6 +19,7 @@ import {
   withEngine,
   withFakeAdapter,
   withReviewNotes,
+  writeQaFile,
   writeTask,
 } from "./helpers.js";
 
@@ -71,6 +73,28 @@ async function driveToPlanReady(engine, store, dir) {
   return spec;
 }
 
+async function passingQaForActiveSpec(engine, store) {
+  const state = await engine.getState();
+  const spec = await store.readSpec(state.activeSpecId);
+  const evidencePaths = [
+    ".legion-cli/qa/runs/qa-1/unit.json",
+    ".legion-cli/qa/runs/qa-1/unit.meta.json",
+  ];
+  if (specHasUi(spec.data)) {
+    evidencePaths.push(
+      ".legion-cli/qa/runs/qa-1/playwright.json",
+      ".legion-cli/qa/runs/qa-1/playwright.meta.json",
+    );
+  }
+  const score = makeQaScore({
+    specId: spec.data.id,
+    criteria: spec.data.acceptance.map(({ id, priority }) => ({ id, priority, outcome: "passed" })),
+    evidencePaths,
+  });
+  await writeQaFile(store, score);
+  return score;
+}
+
 for (const setup of ["committed-before-ship", "first-committed-by-ship", "older-baseline"]) {
   test(`journey: init to ship, then undo keeps phase, task and receipt in agreement (${setup})`, async () => {
     await withFakeAdapter(async () => {
@@ -90,7 +114,7 @@ for (const setup of ["committed-before-ship", "first-committed-by-ship", "older-
 
         const review = await new LegionEngine(dir, undefined, withReviewNotes({ skillsDir })).review();
         assert.equal(review.verdict, "PASS");
-        await engine.qa({ score: makeQaScore({ specId: (await engine.getState()).activeSpecId }) });
+        await engine.qa({ score: await passingQaForActiveSpec(engine, store) });
         assert.equal((await engine.getState()).phase, "ready_to_ship");
 
         if (setup === "committed-before-ship") commitAll(dir, "legion state before ship");
@@ -185,7 +209,7 @@ async function shippedProject(engine, store, dir, opts) {
   initGitRepo(dir);
   await engine.execute("auto");
   await new LegionEngine(dir, undefined, withReviewNotes({ skillsDir })).review();
-  await engine.qa({ score: makeQaScore({ specId: (await engine.getState()).activeSpecId }) });
+  await engine.qa({ score: await passingQaForActiveSpec(engine, store) });
   return engine.ship(opts);
 }
 

@@ -32,20 +32,88 @@ export type SandboxPolicy = {
   allowDegradedCopy?: boolean;
   /** Adapter-scoped vendor keys only; never the full credential dump. */
   credentialKeys?: readonly string[];
+  /** Required identity of a retained jail when reopening after interruption. */
+  expectedIdentity?: string;
+};
+
+export type SandboxOutputChange = {
+  path: string;
+  action: "write" | "delete";
+  /** Hash observed when the jail was materialized; null means the path did not exist. */
+  beforeHash: string | null;
+  /** Hash observed during inspection for writes. */
+  afterHash?: string;
+  /** Immutable inspected bytes so application does not depend on a writable jail. */
+  content?: Buffer;
+};
+
+export type SandboxOutput = {
+  jailRoot: string;
+  changes: SandboxOutputChange[];
+  dropped: string[];
+};
+
+export type SandboxApplyResult = {
+  copied: string[];
+  dropped: string[];
+  conflicts: string[];
 };
 
 export interface SandboxHandle {
   backend: SandboxBackend;
   hardened: boolean;
   jailRoot: string;
+  /** Hash of immutable recovery metadata, including its random creation nonce. */
+  identity: string;
   spawnOpts(): {
     cwd: string;
     env: NodeJS.ProcessEnv;
     wrapper?: { bin: string; argvPrefix: string[] };
     translateInvoke: (invoke: string) => string;
   };
+  inspectOutput(): Promise<SandboxOutput>;
+  applyOutput(output: SandboxOutput): Promise<SandboxApplyResult>;
   copyOut(): Promise<{ copied: string[]; dropped: string[] }>;
   destroy(): Promise<void>;
+}
+
+type SandboxResumeRecord = {
+  version: 2;
+  runId: string;
+  nonce: string;
+  backend: SandboxBackend;
+  hardened: boolean;
+  allowedWrites: string[];
+  copyInHashes: Array<[string, string]>;
+};
+
+function sandboxIdentity(record: SandboxResumeRecord): string {
+  return createHash("sha256").update(JSON.stringify(record), "utf8").digest("hex");
+}
+
+async function assertJailIdentitySentinel(projectRoot: string, runId: string, nonce: string): Promise<void> {
+  const jailRoot = toFsPath(projectRoot, `.legion-cli/sandbox/${runId}`);
+  const sentinel = toFsPath(jailRoot, JAIL_IDENTITY_REL);
+  let info;
+  let raw: unknown;
+  try {
+    info = await lstat(sentinel);
+    raw = JSON.parse(await readFile(sentinel, "utf8"));
+  } catch (err) {
+    throw new SandboxError("sandbox recovery sentinel is unavailable", { cause: err });
+  }
+  if (info.isSymbolicLink() || !info.isFile()) throw new SandboxError("sandbox recovery sentinel is unsafe");
+  if (
+    !raw ||
+    typeof raw !== "object" ||
+    (raw as { version?: unknown }).version !== 1 ||
+    (raw as { runId?: unknown }).runId !== runId ||
+    (raw as { nonce?: unknown }).nonce !== nonce
+  ) throw new SandboxError("sandbox recovery sentinel mismatch");
+}
+
+function sandboxResumePath(projectRoot: string, runId: string): string {
+  return toFsPath(projectRoot, `.legion-cli/cache/runs/${runId}/sandbox.json`);
 }
 
 const HARDENED_REQUIRED =
@@ -488,6 +556,7 @@ function isBlockedRel(posix: string): boolean {
 
 const JAIL_HOME_REL = ".legion-cli/sandbox-home";
 const JAIL_TMP_REL = ".legion-cli/sandbox-tmp";
+const JAIL_IDENTITY_REL = ".legion-cli/sandbox-identity";
 
 const AUTH_HOME_RELS = [
   ".codex",
@@ -504,6 +573,7 @@ function isJailMeta(rel: string): boolean {
     rel.startsWith(`${JAIL_HOME_REL}/`) ||
     rel === JAIL_TMP_REL ||
     rel.startsWith(`${JAIL_TMP_REL}/`) ||
+    rel === JAIL_IDENTITY_REL ||
     rel === ".git-null" ||
     rel.startsWith(".git-null/") ||
     rel === "node_modules" ||
@@ -867,6 +937,7 @@ async function pathHasSymlinkAncestor(abs: string, root: string): Promise<boolea
       const st = await lstat(current);
       if (st.isSymbolicLink()) return true;
     } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOTDIR") return true;
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
     const parent = dirname(current);
@@ -886,10 +957,27 @@ async function parentIsUnsafe(projectRoot: string, parent: string): Promise<bool
   if (samePath(parent, projectRoot)) return false;
   const lexical = lexicalRel(projectRoot, parent);
   if (!lexical || isBlockedRel(lexical)) return true;
+  try {
+    const st = await lstat(parent);
+    if (st.isSymbolicLink() || !st.isDirectory()) return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOTDIR") return true;
+    if (code !== "ENOENT") throw err;
+  }
   return pathHasSymlinkAncestor(parent, projectRoot);
 }
 
 async function safeCopyOutFile(src: string, dest: string, projectRoot: string): Promise<boolean> {
+  return safeWriteOutFile(await readFile(src), dest, projectRoot);
+}
+
+async function safeWriteOutFile(
+  contents: Buffer,
+  dest: string,
+  projectRoot: string,
+  expectedDestHash?: string | null,
+): Promise<boolean> {
   if (await destIsUnsafe(projectRoot, dest)) return false;
   const parent = dirname(dest);
   if (await parentIsUnsafe(projectRoot, parent)) return false;
@@ -901,7 +989,7 @@ async function safeCopyOutFile(src: string, dest: string, projectRoot: string): 
   if (destReal && canonicalBlocked(projectRoot, destReal)) return false;
   const tmp = join(parent, `.legion-copyout-${process.pid}-${randomBytes(8).toString("hex")}`);
   try {
-    await copyFile(src, tmp);
+    await writeFile(tmp, contents);
     try {
       const destSt = await lstat(dest);
       if (destSt.isSymbolicLink()) {
@@ -910,6 +998,10 @@ async function safeCopyOutFile(src: string, dest: string, projectRoot: string): 
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    if (expectedDestHash !== undefined && ((await fileSha256(dest)) ?? null) !== expectedDestHash) {
+      await rm(tmp, { force: true });
+      return false;
     }
     await rename(tmp, dest);
     return true;
@@ -1000,13 +1092,16 @@ async function fileSha256(abs: string): Promise<string | undefined> {
   }
 }
 
-async function copyOutWrites(
-  projectRoot: string,
+function bytesSha256(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function inspectOutputWrites(
   jailRoot: string,
   allowedWrites: readonly string[],
   copyInHashes: ReadonlyMap<string, string>,
-): Promise<{ copied: string[]; dropped: string[] }> {
-  const copied: string[] = [];
+): Promise<SandboxOutput> {
+  const changes: SandboxOutputChange[] = [];
   const dropped: string[] = [];
   const files = (await listJailFiles(jailRoot, allowedWrites)).sort();
   for (const rel of files) {
@@ -1025,7 +1120,8 @@ async function copyOutWrites(
       continue;
     }
     const before = copyInHashes.get(rel);
-    if (before !== undefined && (await fileSha256(src)) === before) continue;
+    const after = await fileSha256(src);
+    if (before !== undefined && after === before) continue;
     if (
       !st.isFile() ||
       st.isSymbolicLink() ||
@@ -1036,44 +1132,190 @@ async function copyOutWrites(
       dropped.push(rel);
       continue;
     }
-    const dest = toFsPath(projectRoot, rel);
-    try {
-      if (!(await safeCopyOutFile(src, dest, projectRoot))) {
-        dropped.push(rel);
-        continue;
-      }
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "EEXIST" || code === "EISDIR" || code === "ENOTDIR") {
-        dropped.push(rel);
-        continue;
-      }
-      throw err;
+    if (!after) {
+      dropped.push(rel);
+      continue;
     }
-    copied.push(rel);
+    changes.push({
+      path: rel,
+      action: "write",
+      beforeHash: before ?? null,
+      afterHash: after,
+      content: await readFile(src),
+    });
   }
   const jailSet = new Set(files);
-  const removed = new Set<string>();
-  for (const allowed of allowedWrites) {
-    if (jailSet.has(allowed) || isBlockedRel(allowed) || allowed.includes("*")) continue;
-    let jailEntryExists = false;
+  for (const [rel, beforeHash] of [...copyInHashes.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    if (jailSet.has(rel) || isBlockedRel(rel) || !matchesAllowed(rel, allowedWrites)) continue;
+    changes.push({ path: rel, action: "delete", beforeHash });
+  }
+  return { jailRoot, changes, dropped: [...new Set(dropped)].sort() };
+}
+
+async function applyOutputWrites(
+  projectRoot: string,
+  jailRoot: string,
+  allowedWrites: readonly string[],
+  output: SandboxOutput,
+): Promise<SandboxApplyResult> {
+  if (!samePath(output.jailRoot, jailRoot)) {
+    throw new SandboxError("sandbox output belongs to a different jail");
+  }
+  const copied: string[] = [];
+  const dropped = [...output.dropped];
+  const conflicts: string[] = [];
+  const seen = new Set<string>();
+  const plan: Array<{ change: SandboxOutputChange; dest: string; before: Buffer | null }> = [];
+  for (const change of output.changes) {
+    const rel = change.path;
+    if (
+      seen.has(rel) ||
+      !isConcretePosixRepoRelativePath(rel) ||
+      isBlockedRel(rel) ||
+      !matchesAllowed(rel, allowedWrites) ||
+      (change.action !== "write" && change.action !== "delete") ||
+      (change.beforeHash !== null && !/^[a-f0-9]{64}$/.test(change.beforeHash))
+    ) {
+      dropped.push(rel);
+      continue;
+    }
+    seen.add(rel);
+    let dest: string;
     try {
-      await lstat(toFsPath(jailRoot, allowed));
-      jailEntryExists = true;
+      dest = toFsPath(projectRoot, rel);
+    } catch {
+      dropped.push(rel);
+      continue;
+    }
+    if ((await destIsUnsafe(projectRoot, dest)) || (await parentIsUnsafe(projectRoot, dirname(dest)))) {
+      dropped.push(rel);
+      continue;
+    }
+    const current = (await fileSha256(dest)) ?? null;
+    if (current !== change.beforeHash) {
+      conflicts.push(rel);
+      continue;
+    }
+    let before: Buffer | null = null;
+    try {
+      const st = await lstat(dest);
+      if (!st.isFile() || st.isSymbolicLink()) {
+        dropped.push(rel);
+        continue;
+      }
+      before = await readFile(dest);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
-    if (jailEntryExists) continue;
-    if (await unlinkAllowedIfGone(projectRoot, allowed, copied)) removed.add(allowed);
-  }
-  for (const allowed of allowedWrites) {
-    if (isBlockedRel(allowed)) continue;
-    for (const rel of await listHostFilesUnder(projectRoot, allowed)) {
-      if (jailSet.has(rel) || removed.has(rel)) continue;
-      if (await unlinkAllowedIfGone(projectRoot, rel, copied)) removed.add(rel);
+    if (change.action === "delete") {
+      plan.push({ change, dest, before });
+      continue;
     }
+    if (!change.afterHash || !change.content || bytesSha256(change.content) !== change.afterHash) {
+      dropped.push(rel);
+      continue;
+    }
+    plan.push({ change, dest, before });
   }
-  return { copied, dropped };
+  if (dropped.length > output.dropped.length || conflicts.length > 0) {
+    return {
+      copied: [],
+      dropped: [...new Set(dropped)].sort(),
+      conflicts: [...new Set(conflicts)].sort(),
+    };
+  }
+  const applied: typeof plan = [];
+  try {
+    for (const item of plan) {
+      if (item.change.action === "delete") {
+        if (((await fileSha256(item.dest)) ?? null) !== item.change.beforeHash) {
+          throw new SandboxError(`sandbox output destination changed during application ${item.change.path}`);
+        }
+        if (item.before !== null) await rm(item.dest, { force: true });
+      } else if (
+        !item.change.content ||
+        !(await safeWriteOutFile(item.change.content, item.dest, projectRoot, item.change.beforeHash))
+      ) {
+        throw new SandboxError(`sandbox output application refused ${item.change.path}`);
+      }
+      applied.push(item);
+      copied.push(item.change.path);
+    }
+  } catch (err) {
+    for (const item of [...applied].reverse()) {
+      const appliedHash = item.change.action === "write" ? item.change.afterHash ?? null : null;
+      if (((await fileSha256(item.dest)) ?? null) !== appliedHash) continue;
+      if (item.before === null) await rm(item.dest, { force: true }).catch(() => undefined);
+      else await safeWriteOutFile(item.before, item.dest, projectRoot, appliedHash).catch(() => false);
+    }
+    throw err;
+  }
+  return {
+    copied,
+    dropped: [...new Set(dropped)].sort(),
+    conflicts: [...new Set(conflicts)].sort(),
+  };
+}
+
+function sandboxHandle(input: {
+  projectRoot: string;
+  jailRoot: string;
+  allowedWrites: string[];
+  copyInHashes: ReadonlyMap<string, string>;
+  backend: SandboxBackend;
+  hardened: boolean;
+  env: NodeJS.ProcessEnv;
+  wrapper?: { bin: string; argvPrefix: string[] };
+  destroyCreated: () => Promise<void>;
+  identity: string;
+}): SandboxHandle {
+  const inspectedOutputs = new WeakSet<SandboxOutput>();
+  const inspectOutput = async (): Promise<SandboxOutput> => {
+    const raw = await inspectOutputWrites(input.jailRoot, input.allowedWrites, input.copyInHashes);
+    for (const change of raw.changes) Object.freeze(change);
+    Object.freeze(raw.changes);
+    Object.freeze(raw.dropped);
+    Object.freeze(raw);
+    inspectedOutputs.add(raw);
+    return raw;
+  };
+  const applyOutput = async (output: SandboxOutput): Promise<SandboxApplyResult> => {
+    if (!inspectedOutputs.has(output)) {
+      throw new SandboxError("sandbox output was not produced by this jail inspection");
+    }
+    inspectedOutputs.delete(output);
+    return applyOutputWrites(input.projectRoot, input.jailRoot, input.allowedWrites, output);
+  };
+  return {
+    backend: input.backend,
+    hardened: input.hardened,
+    jailRoot: input.jailRoot,
+    identity: input.identity,
+    spawnOpts() {
+      const next: {
+        cwd: string;
+        env: NodeJS.ProcessEnv;
+        wrapper?: { bin: string; argvPrefix: string[] };
+        translateInvoke: (invoke: string) => string;
+      } = {
+        cwd: input.jailRoot,
+        env: { ...input.env },
+        translateInvoke: (invoke: string) =>
+          input.backend === "docker" ? translateHostPathToDocker(invoke, input.jailRoot) : invoke,
+      };
+      if (input.wrapper) next.wrapper = { bin: input.wrapper.bin, argvPrefix: [...input.wrapper.argvPrefix] };
+      return next;
+    },
+    copyOut() {
+      return inspectOutput().then(async (output) => {
+        const applied = await applyOutput(output);
+        return { copied: applied.copied, dropped: [...applied.dropped, ...applied.conflicts] };
+      });
+    },
+    inspectOutput,
+    applyOutput,
+    destroy: input.destroyCreated,
+  };
 }
 
 export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHandle> {
@@ -1205,37 +1447,157 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
       }
     }
 
-    // node_modules is jail metadata and is not hashed; extras suppression still needs hashes on hardened.
-    const copyInHashes = await hashJailFiles(jailRoot);
+    const nonce = randomBytes(32).toString("hex");
+    const sentinelPath = toFsPath(jailRoot, JAIL_IDENTITY_REL);
+    await mkdir(dirname(sentinelPath), { recursive: true });
+    await writeFile(
+      sentinelPath,
+      `${JSON.stringify({ version: 1, runId, nonce })}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
 
-    return {
+    // Jail metadata is excluded from output inspection; extras suppression still needs source hashes.
+    const copyInHashes = await hashJailFiles(jailRoot);
+    const resume: SandboxResumeRecord = {
+      version: 2,
+      runId,
+      nonce,
       backend,
       hardened,
-      jailRoot,
-      spawnOpts() {
-        const next: {
-          cwd: string;
-          env: NodeJS.ProcessEnv;
-          wrapper?: { bin: string; argvPrefix: string[] };
-          translateInvoke: (invoke: string) => string;
-        } = {
-          cwd: jailRoot,
-          env: { ...env },
-          translateInvoke: (invoke: string) =>
-            backend === "docker" ? translateHostPathToDocker(invoke, jailRoot) : invoke,
-        };
-        if (wrapper) next.wrapper = { bin: wrapper.bin, argvPrefix: [...wrapper.argvPrefix] };
-        return next;
-      },
-      copyOut() {
-        return copyOutWrites(projectRoot, jailRoot, allowedWrites, copyInHashes);
-      },
-      async destroy() {
-        await destroyCreated();
-      },
+      allowedWrites,
+      copyInHashes: [...copyInHashes.entries()].sort(([a], [b]) => a.localeCompare(b)),
     };
+    const resumePath = sandboxResumePath(projectRoot, runId);
+    await mkdir(dirname(resumePath), { recursive: true });
+    await writeFile(resumePath, `${JSON.stringify(resume, null, 2)}\n`, "utf8");
+    const identity = sandboxIdentity(resume);
+
+    return sandboxHandle({
+      projectRoot,
+      jailRoot,
+      allowedWrites,
+      copyInHashes,
+      backend,
+      hardened,
+      env,
+      ...(wrapper ? { wrapper } : {}),
+      destroyCreated,
+      identity,
+    });
   } catch (err) {
     await destroyCreated();
     throw err;
   }
+}
+
+/** Reopens the exact retained jail and its immutable copy-in baseline for HTTP checkpoint recovery. */
+export async function reopenJail(policy: SandboxPolicy): Promise<SandboxHandle> {
+  const projectRoot = resolve(policy.projectRoot);
+  const runId = assertSafeRunId(policy.runId);
+  const allowedWrites = unique(policy.allowedWrites.map(assertPolicyPath));
+  let record: SandboxResumeRecord;
+  try {
+    record = JSON.parse(await readFile(sandboxResumePath(projectRoot, runId), "utf8")) as SandboxResumeRecord;
+  } catch (err) {
+    throw new SandboxError(`sandbox recovery metadata is unavailable for ${runId}`, { cause: err });
+  }
+  if (
+    record.version !== 2 ||
+    record.runId !== runId ||
+    typeof record.nonce !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.nonce) ||
+    !["bwrap", "seatbelt", "copy", "docker"].includes(record.backend) ||
+    typeof record.hardened !== "boolean" ||
+    !Array.isArray(record.allowedWrites) ||
+    JSON.stringify(record.allowedWrites) !== JSON.stringify(allowedWrites) ||
+    !Array.isArray(record.copyInHashes)
+  ) {
+    throw new SandboxError("sandbox recovery metadata is incompatible");
+  }
+  const identity = sandboxIdentity(record);
+  if (policy.expectedIdentity && policy.expectedIdentity !== identity) {
+    throw new SandboxError("sandbox recovery identity changed");
+  }
+  if (policy.backend && policy.backend !== "auto" && policy.backend !== record.backend) {
+    throw new SandboxError(`sandbox backend changed from ${record.backend} to ${policy.backend}`);
+  }
+  const copyInHashes = new Map<string, string>();
+  for (const entry of record.copyInHashes) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || !/^[a-f0-9]{64}$/.test(entry[1])) {
+      throw new SandboxError("sandbox recovery baseline is malformed");
+    }
+    copyInHashes.set(assertPolicyPath(entry[0]), entry[1]);
+  }
+  const jailRoot = toFsPath(projectRoot, `.legion-cli/sandbox/${runId}`);
+  assertJailRealpath(projectRoot, jailRoot);
+  await assertJailIdentitySentinel(projectRoot, runId, record.nonce);
+  const jailHome = join(jailRoot, ...JAIL_HOME_REL.split("/"));
+  const jailTmp = join(jailRoot, ...JAIL_TMP_REL.split("/"));
+  const authBinds: Array<{ src: string; dest: string }> = [];
+  for (const hostHome of homeRealpaths()) {
+    for (const rel of AUTH_HOME_RELS) {
+      const src = join(hostHome, rel);
+      if (existsSync(src)) authBinds.push({ src, dest: join(jailHome, rel) });
+    }
+  }
+  const binds = realpathsToBind(policy.adapterBinary);
+  if (record.hardened && !binds.ok) throw new SandboxError("sandbox recovery adapter binary is unavailable");
+  const env = buildSandboxEnv(jailRoot, policy.credentialKeys ?? [], process.env, jailHome, jailTmp);
+  let wrapper: { bin: string; argvPrefix: string[] } | undefined;
+  const extraFiles: string[] = [];
+  if (record.backend === "bwrap") {
+    const bin = findRunnableBwrap();
+    if (!bin) throw new SandboxError("retained bwrap jail cannot be reopened");
+    wrapper = { bin, argvPrefix: bwrapArgvPrefix({ jailRoot, projectRoot, bindPaths: binds.ok ? binds.paths : [], jailHome, authBinds }) };
+  } else if (record.backend === "docker") {
+    const bin = findRunnableDocker();
+    if (!bin) throw new SandboxError("retained Docker jail cannot be reopened");
+    wrapper = { bin, argvPrefix: dockerArgvPrefix({ jailRoot }) };
+  } else if (record.backend === "seatbelt") {
+    const bin = findOnPath("sandbox-exec", true);
+    const profilePath = join(legionPaths(projectRoot).sandboxDir, `${runId}.sb`);
+    if (!bin || !existsSync(profilePath)) throw new SandboxError("retained seatbelt jail cannot be reopened");
+    wrapper = { bin, argvPrefix: ["-f", profilePath, "--"] };
+    extraFiles.push(profilePath);
+  }
+  const destroyCreated = async () => {
+    await rm(jailRoot, { recursive: true, force: true });
+    for (const file of extraFiles) await rm(file, { force: true });
+  };
+  return sandboxHandle({
+    projectRoot,
+    jailRoot,
+    allowedWrites,
+    copyInHashes,
+    backend: record.backend,
+    hardened: record.hardened,
+    env,
+    ...(wrapper ? { wrapper } : {}),
+    destroyCreated,
+    identity,
+  });
+}
+
+/** Reads and validates the immutable retained-jail identity without reopening it. */
+export async function retainedJailIdentity(projectRoot: string, rawRunId: string): Promise<string> {
+  projectRoot = resolve(projectRoot);
+  const runId = assertSafeRunId(rawRunId);
+  let record: SandboxResumeRecord;
+  try {
+    record = JSON.parse(await readFile(sandboxResumePath(projectRoot, runId), "utf8")) as SandboxResumeRecord;
+  } catch (err) {
+    throw new SandboxError(`sandbox recovery metadata is unavailable for ${runId}`, { cause: err });
+  }
+  if (
+    record.version !== 2 ||
+    record.runId !== runId ||
+    typeof record.nonce !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.nonce) ||
+    !["bwrap", "seatbelt", "copy", "docker"].includes(record.backend) ||
+    typeof record.hardened !== "boolean" ||
+    !Array.isArray(record.allowedWrites) ||
+    !Array.isArray(record.copyInHashes)
+  ) throw new SandboxError("sandbox recovery metadata is incompatible");
+  await assertJailIdentitySentinel(projectRoot, runId, record.nonce);
+  return sandboxIdentity(record);
 }

@@ -11,6 +11,7 @@ export type TicketCreateFlags = {
   priority?: string;
   adapter?: string;
   route?: string;
+  profile?: string;
 };
 
 function parseType(raw: string | undefined, nextHint: string): "feature" | "fix" | "bug" | undefined {
@@ -42,6 +43,7 @@ export async function runTicketCreate(opts: CliOpts, flags: TicketCreateFlags): 
     type,
     priority,
     ...(persisted.adapter ? { adapter: persisted.adapter } : {}),
+    ...(persisted.profile ? { profile: persisted.profile } : {}),
   });
   if (opts.json) {
     writeJson({

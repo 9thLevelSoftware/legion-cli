@@ -165,13 +165,51 @@ test("chat --once --json pause emits one JSON object", async () => {
       assert.equal(last.status, 0, `${last.stdout}\n${last.stderr}`);
       const body = JSON.parse(last.stdout);
       assert.equal(body.kind, "next");
-      assert.equal(body.next, "legion-cli intent");
+      assert.match(body.next, /^legion-cli intent --project /);
       if (i < 3) assert.equal(body.paused, false);
       else {
         assert.equal(body.paused, true);
         assert.doesNotMatch(last.stdout, /\}\s*\{/);
       }
     }
+  });
+});
+
+test("chat proposal JSON declares awaiting confirmation", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const engine = await patchPhase(dir, "discussing");
+    await engine.store.writeDiscuss(
+      { schemaVersion: "legion-cli-discuss/v1", decisions: [{ id: "D-001", statement: "Ship as mobile web.", status: "proposed" }] },
+      "Proposed decisions.\n",
+    );
+    const result = runCli(["chat", "--once", "ok", "--json", "--project", dir], {
+      env: { LEGION_CLI_CHAT_ACTION: JSON.stringify({ type: "discuss_decide", id: "D-001", status: "accepted" }) },
+    });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.kind, "proposal");
+    assert.equal(payload.confirmation, "awaiting");
+    assert.doesNotMatch(result.stdout, /\}\s*\{/);
+  });
+});
+
+test("chat --fork --json keeps one structured response with fork metadata", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const first = runCli(["chat", "--once", "first", "--project", dir]);
+    assert.equal(first.status, 0, `${first.stdout}\n${first.stderr}`);
+    const chatDir = join(dir, ".legion-cli", "chat");
+    const file = (await readdir(chatDir)).find((name) => name.endsWith(".json"));
+    assert.ok(file);
+    const session = JSON.parse(await readFile(join(chatDir, file), "utf8"));
+    const turnId = session.turns[0].id;
+    const forked = runCli(["chat", "--once", "second", "--fork", turnId, "--json", "--project", dir]);
+    assert.equal(forked.status, 0, `${forked.stdout}\n${forked.stderr}`);
+    const payload = JSON.parse(forked.stdout);
+    assert.equal(payload.fork.fromTurnId, turnId);
+    assert.ok(payload.fork.branchId);
+    assert.doesNotMatch(forked.stdout, /\}\s*\{/);
   });
 });
 

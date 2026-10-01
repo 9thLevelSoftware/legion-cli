@@ -64,6 +64,15 @@ async function assertTranscript(actual, name) {
   assert.equal(normalize(actual), expected);
 }
 
+function normalizeProjectScope(text, project) {
+  return normalize(text).replaceAll(`--project '${project.replaceAll("'", "''")}'`, "--project <project>");
+}
+
+async function assertScopedTranscript(actual, name, project) {
+  const expected = await readGolden(name);
+  assert.equal(normalizeProjectScope(actual, project), expected);
+}
+
 async function seedExecutingSlice(dir, tasks) {
   const engine = createLegionEngine(dir);
   await engine.init({ name: "Checkin", adapter: "fake" });
@@ -89,7 +98,7 @@ test("bare legion-cli is uninitialized status (golden)", async () => {
   await withTempDir(async (dir) => {
     const result = runCli(["--project", dir]);
     assert.equal(result.status, 0, result.stderr);
-    await assertTranscript(result.stdout, "status-uninitialized.stdout.txt");
+    await assertScopedTranscript(result.stdout, "status-uninitialized.stdout.txt", dir);
     assert.equal(normalize(result.stderr), "");
   });
 });
@@ -98,7 +107,18 @@ test("init --name --adapter fake writes templates (golden)", async () => {
   await withTempDir(async (dir) => {
     const result = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(result.status, 0, result.stderr);
-    await assertTranscript(result.stdout, "init.stdout.txt");
+    assert.match(result.stdout, /adapter readiness: ready/);
+    assert.match(result.stdout, /sandbox readiness: (?:ready|needs attention)/);
+    if (result.stdout.includes("sandbox readiness: needs attention")) {
+      assert.match(result.stdout, /Remediation: none; install a supported hardened sandbox, then run legion-cli doctor/);
+    }
+    await assertScopedTranscript(
+      result.stdout
+        .replace(/^sandbox readiness: .+\n/m, "sandbox readiness: <sandbox preflight>\n")
+        .replace(/^Remediation: .+\n/m, ""),
+      "init.stdout.txt",
+      dir,
+    );
 
     const project = await readFile(join(dir, ".legion-cli", "PROJECT.md"), "utf8");
     assert.match(project, /name: Checkin/);
@@ -116,7 +136,7 @@ test("status after init (golden)", async () => {
     assert.equal(init.status, 0, init.stderr);
     const result = runCli(["status", "--project", dir]);
     assert.equal(result.status, 0, result.stderr);
-    await assertTranscript(result.stdout, "status-initialized.stdout.txt");
+    await assertScopedTranscript(result.stdout, "status-initialized.stdout.txt", dir);
   });
 });
 
@@ -143,7 +163,13 @@ test("init --mode brownfield writes templates (golden)", async () => {
       "brownfield",
     ]);
     assert.equal(result.status, 0, result.stderr);
-    await assertTranscript(result.stdout, "init-brownfield.stdout.txt");
+    assert.match(result.stdout, /adapter readiness: ready/);
+    assert.match(result.stdout, /sandbox readiness: (?:ready|needs attention)/);
+    await assertScopedTranscript(
+      result.stdout.replace(/^sandbox readiness: .+\n/m, "sandbox readiness: <sandbox preflight>\n"),
+      "init-brownfield.stdout.txt",
+      dir,
+    );
     const project = await readFile(join(dir, ".legion-cli", "PROJECT.md"), "utf8");
     assert.match(project, /mode: brownfield/);
   });
@@ -170,7 +196,7 @@ test("init requires adapter when non-interactive (golden)", async () => {
   await withTempDir(async (dir) => {
     const result = runCli(["init", "--project", dir, "--name", "Checkin"]);
     assert.equal(result.status, 1);
-    await assertTranscript(result.stderr, "init-missing-adapter.stderr.txt");
+    await assertScopedTranscript(result.stderr, "init-missing-adapter.stderr.txt", dir);
   });
 });
 
@@ -257,7 +283,7 @@ test("status --json after init", async () => {
     assert.equal(body.phase, "initialized");
     assert.equal(body.name, "Checkin");
     assert.equal(body.mode, "greenfield");
-    assert.equal(body.next.run, "legion-cli intent");
+    assert.match(body.next.run, /^legion-cli intent --project /);
   });
 });
 
@@ -342,10 +368,10 @@ test("status hints context compact below Run when a done task has no in_progress
     const out = normalize(result.stdout);
     assert.match(
       out,
-      /Run:  legion-cli execute\nHint: legion-cli context compact\nViewer: legion-cli serve/,
+      /Run:  legion-cli execute --project [^\n]+\nHint: legion-cli context compact --project [^\n]+\nViewer: legion-cli serve --project [^\n]+/,
     );
     const json = runCli(["status", "--json", "--project", dir]);
-    assert.equal(JSON.parse(json.stdout).next.run, "legion-cli execute");
+    assert.match(JSON.parse(json.stdout).next.run, /^legion-cli execute --project /);
   });
 });
 
@@ -367,7 +393,7 @@ test("status omits compact hint when a done task has an in_progress sibling", as
     const result = runCli(["status", "--project", dir]);
     assert.equal(result.status, 0, result.stderr);
     const out = normalize(result.stdout);
-    assert.match(out, /Run:  legion-cli execute\nViewer: legion-cli serve/);
+    assert.match(out, /Run:  legion-cli execute --project [^\n]+\nViewer: legion-cli serve --project [^\n]+/);
     assert.doesNotMatch(out, /Hint: legion-cli context compact/);
   });
 });
@@ -771,11 +797,11 @@ test("Checkin session key lines match the design-doc walkthrough (golden)", asyn
         ...config.qa,
         unitCommand: unitCommand({
           tests: [
-            { title: "p0 @p0", status: "passed" },
+            { title: "p0 @p0 @ac(AC-01)", status: "passed" },
             ...Array.from({ length: 9 }, () => ({ title: "p1 @p1", status: "passed" })),
-            { title: "p1 fail @p1", status: "failed" },
+            { title: "p1 @p1", status: "passed" },
             ...Array.from({ length: 4 }, () => ({ title: "p2 @p2", status: "passed" })),
-            { title: "p2 fail @p2", status: "failed" },
+            { title: "p2 @p2", status: "passed" },
           ],
         }),
       },
@@ -791,7 +817,7 @@ test("Checkin session key lines match the design-doc walkthrough (golden)", asyn
       normalize(execute.stdout),
       normalize(review.stdout),
       normalize(qa.stdout),
-    ].join("\n");
+    ].join("\n").replace(/ --project '[^']*'/g, "");
     const expected = await readGolden("session-checkin.key-lines.txt");
     for (const line of expected.trim().split("\n")) {
       assert.match(combined, new RegExp(line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));

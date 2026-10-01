@@ -244,14 +244,26 @@ async function migrateLegacyMarker(projectRoot: string): Promise<void> {
   const parsed = parseMarker(raw);
   if (parsed && isPidAlive(parsed.enginePid)) {
     try {
-      await ensureMarkerDir(projectRoot);
-      await atomicWriteFile(
-        liveRunMarkerPath(projectRoot, parsed.runId),
-        body({ ...parsed, startedAt: mtime.toISOString() }),
-        { root: legionPaths(projectRoot).root, symlinkMessage: "live-run marker path is a symlink" },
-      );
-    } catch {
-      // keep going: the legacy file is still consumed below
+      const dir = await ensureMarkerDir(projectRoot);
+      const tmp = join(dir, `.${randomBytes(8).toString("hex")}.tmp`);
+      await writeFile(tmp, body({ ...parsed, startedAt: mtime.toISOString() }), { encoding: "utf8", flag: "wx" });
+      try {
+        // Compatibility markers may coexist with a richer current record. Exclusive publication
+        // preserves its task/agent/start identities even if a current writer races migration.
+        await link(tmp, liveRunMarkerPath(projectRoot, parsed.runId));
+      } finally {
+        await unlink(tmp).catch(() => undefined);
+      }
+    } catch (err) {
+      // EEXIST means a current writer won publication; consume compatibility state only
+      // after checking its matching regular record. Other failures keep the legacy guard.
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      const target = liveRunMarkerPath(projectRoot, parsed.runId);
+      const st = await lstat(target);
+      const existing = st.isFile() && !st.isSymbolicLink() ? parseMarker(await readFile(target, "utf8")) : null;
+      if (!existing || existing.runId !== parsed.runId || existing.enginePid !== parsed.enginePid) {
+        throw new Error("legacy live-run migration conflicts with its current marker; legacy guard retained");
+      }
     }
   }
   await unlink(legacy).catch(() => undefined);

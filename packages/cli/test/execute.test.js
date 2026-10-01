@@ -151,9 +151,39 @@ test("help lists execute flags", async () => {
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
   assert.match(out, /until-blocked/);
+  assert.match(out, /jobs/);
   assert.match(out, /fix/);
   assert.match(out, /adapter/);
   assert.match(out, /allow-no-sandbox/);
+});
+
+test("execute --jobs validates the bounded automatic until-blocked surface", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir);
+    for (const args of [
+      ["execute", "--jobs", "2"],
+      ["execute", "TSK-0001", "--until-blocked", "--jobs", "2"],
+      ["execute", "--until-blocked", "--jobs", "5"],
+    ]) {
+      const result = runCli([...args, "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+      assert.equal(result.status, 1, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
+      assert.match(normalize(result.stderr), /--jobs/);
+    }
+  });
+});
+
+test("execute --json keeps progress on stderr and emits one parseable document", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir);
+    const result = runCli(["execute", "--json", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.ok, true);
+    assert.equal(body.taskId, "TSK-0001");
+    assert.match(normalize(result.stderr), /\[TSK-0001\].*(running|verifying)/);
+  });
 });
 
 test("execute --allow-no-sandbox without TTY refuses", async () => {

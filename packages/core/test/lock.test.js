@@ -143,6 +143,7 @@ test("F-026/F-040: qa cannot hold engine.lock past the acquire timeout (injected
     const store = createLegionStore(dir, { clock });
     let lockHeldDuringQa = false;
     const engine = new LegionEngine(dir, store, {
+      fakeQaScoreInjection: true,
       fakeOnQa: async () => {
         lockHeldDuringQa = existsSync(store.paths.lock);
         clock.advance(5 * 60 * 1000);

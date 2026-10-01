@@ -25,10 +25,20 @@ export type { HandleMcpHttpOpts } from "./http.js";
 export {
   buildMcpSpawnEnv,
   closeMcpTransports,
+  createMcpClientTransport,
   LegionMcpClientPool,
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ENV_ALLOWLIST,
   MCP_POOL_MAX,
+  MCP_REMOTE_MAX_RESPONSE_BYTES,
+  MCP_TOOL_TIMEOUT_MS,
   McpClientError,
+  validateMcpRemoteUrl,
 } from "./client.js";
-export type { ExternalMcpTool, McpFailReason, ToolCallResult } from "./client.js";
+export type {
+  ExternalMcpTool,
+  LegionMcpClientPoolOptions,
+  McpFailReason,
+  McpLookup,
+  ToolCallResult,
+} from "./client.js";

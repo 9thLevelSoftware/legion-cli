@@ -54,6 +54,7 @@ export type ChatApplyResult = {
 
 export type ChatRouteOpts = {
   cliAdapter?: AdapterId;
+  cliProfile?: string;
   /** Test seam: model JSON used only when the rule router is unclear. */
   fixtureAction?: unknown;
 };
@@ -564,7 +565,7 @@ export async function routeChatTurn(
       raw = opts.fixtureAction;
     } else {
       const prompt = await buildChatPrompt(engine, text, session);
-      const spawn = await engine.spawnChatSkill(prompt, opts?.cliAdapter);
+      const spawn = await engine.spawnChatSkill(prompt, opts?.cliAdapter, opts?.cliProfile);
       spawned = spawn.spawned;
       raw = spawn.spawned ? await readSpawnedAction(engine.projectRoot, spawn.runId) : undefined;
     }

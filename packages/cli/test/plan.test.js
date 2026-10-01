@@ -252,6 +252,24 @@ test("task amend --adapter persists Task.adapter", async () => {
   });
 });
 
+test("task amend --profile persists Task.profile and rejects adapter ambiguity", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedFrozen(dir);
+    const config = await engine.store.readConfig();
+    await engine.store.writeConfig({
+      ...config,
+      adapter: { ...config.adapter, profiles: { fast: { adapter: "grok", modelArgs: [] } } },
+    });
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["task", "amend", "TSK-0001", "--profile", "fast", "--project", dir]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal((await engine.store.readTask("TSK-0001")).data.profile, "fast");
+    const ambiguous = runCli(["task", "amend", "TSK-0001", "--adapter", "grok", "--profile", "fast", "--project", dir]);
+    assert.equal(ambiguous.status, 1);
+    assert.match(normalize(ambiguous.stderr), /mutually exclusive/);
+  });
+});
+
 test("task amend --route expands named adapter at write", async () => {
   await withTempDir(async (dir) => {
     const engine = await seedFrozen(dir);
@@ -449,6 +467,21 @@ test("ticket create --adapter persists on the new ticket", async () => {
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const engine = createLegionEngine(dir);
     assert.equal((await engine.store.readTask("TSK-0002")).data.adapter, "codex");
+  });
+});
+
+test("ticket create --profile persists on the new ticket", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedFrozen(dir);
+    const config = await engine.store.readConfig();
+    await engine.store.writeConfig({
+      ...config,
+      adapter: { ...config.adapter, profiles: { careful: { adapter: "codex", modelArgs: [] } } },
+    });
+    runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["ticket", "create", "--project", dir, "--title", "profiled extra", "--profile", "careful"]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal((await engine.store.readTask("TSK-0002")).data.profile, "careful");
   });
 });
 
