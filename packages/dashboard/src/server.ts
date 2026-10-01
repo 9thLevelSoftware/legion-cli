@@ -35,6 +35,7 @@ import {
   renderGraph,
   renderKanban,
   renderNotFound,
+  renderServerError,
   renderSpec,
   renderWikiIndex,
   renderWikiPage,
@@ -54,6 +55,7 @@ import {
   WEBMCP_SCRIPT_PATH,
   webmcpHeaders,
 } from "./webmcp.js";
+import { DASHBOARD_SCRIPT } from "./live.js";
 
 const VIEW_METHODS = "GET, HEAD, OPTIONS";
 const ALLOW_METHODS = "GET, HEAD, POST, OPTIONS";
@@ -62,7 +64,7 @@ const MCP_PATH = "/mcp";
 const MCP_ALLOW_METHODS = "GET, HEAD, POST, DELETE, OPTIONS";
 const MCP_ALLOW_HEADERS = "Content-Type, Accept, MCP-Session-Id, MCP-Protocol-Version";
 const CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
+  "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; frame-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
 const CSP_WEBMCP =
   "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; frame-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
@@ -485,6 +487,11 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
       return;
     }
 
+    if (pathname === "/dashboard.js") {
+      send(res, 200, DASHBOARD_SCRIPT, "text/javascript; charset=utf-8", headOnly, cors, webmcp);
+      return;
+    }
+
     if (pathname === "/events") {
       if (headOnly) {
         setSecurityHeaders(res, cors, webmcp);
@@ -661,12 +668,13 @@ export async function startDashboard(opts: DashboardOptions): Promise<DashboardH
   };
 
   const server: Server = createServer((req, res) => {
-    void handle(req, res).catch(() => {
+    void handle(req, res).catch((err: unknown) => {
       if (!res.headersSent) {
-        res.statusCode = 500;
-        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        const message = err instanceof Error ? err.message : "unexpected dashboard server failure";
+        send(res, 500, renderServerError(message, false, opts.projectRoot), "text/html; charset=utf-8", false, undefined, false);
+        return;
       }
-      res.end("Internal Server Error\n");
+      res.end();
     });
   });
 

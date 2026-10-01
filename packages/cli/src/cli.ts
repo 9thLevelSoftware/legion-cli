@@ -65,7 +65,7 @@ import { runVerify } from "./verify.js";
 import { runContextCompact } from "./context.js";
 import { runGarden } from "./garden.js";
 import { runWikiTrust } from "./wiki.js";
-import { runSkillsInstall, runSkillsList, runSkillsShow } from "./skills.js";
+import { runSkillsInstall, runSkillsList, runSkillsRun, runSkillsShow } from "./skills.js";
 import { runWireframe } from "./wireframe.js";
 
 const pkg = JSON.parse(
@@ -93,6 +93,16 @@ function requireSub(verb: string, sub: string, next: string): () => void {
     writeErr(`${verb} requires ${sub}\nNext: ${next}`);
     process.exitCode = 1;
   };
+}
+
+function resolveHelpCommand(root: Command, path: string): Command | undefined {
+  let current: Command | undefined = root;
+  for (const part of path.trim().split(/\s+/)) {
+    if (!part) continue;
+    current = current?.commands.find((entry) => entry.name() === part);
+    if (!current) return undefined;
+  }
+  return current;
 }
 
 const builtinHelp = new Help();
@@ -153,6 +163,8 @@ export function createProgram(): Command {
     .option("--http-model <id>", "model id when --adapter http")
     .option("--http-api-key-env <ENV>", "env var holding the API key when --adapter http")
     .option("--http-allow-loopback", "allow 127.0.0.1/localhost baseUrl when --adapter http")
+    .option("--acp-command <bin>", "ACP agent command when --adapter acp (experimental opt-in)")
+    .option("--acp-args <args...>", "args for the explicitly enabled ACP command")
     .action(async (opts, cmd: Command) => {
       const flags = opts as {
         name?: string;
@@ -164,6 +176,8 @@ export function createProgram(): Command {
         httpModel?: string;
         httpApiKeyEnv?: string;
         httpAllowLoopback?: boolean;
+        acpCommand?: string;
+        acpArgs?: string[];
       };
       const code = await runInit(resolveOpts(cmd), flags);
       process.exitCode = code;
@@ -210,9 +224,11 @@ export function createProgram(): Command {
     .argument("<query>", "keyword query")
     .option("--include-untrusted", "search untrusted bodies")
     .option("--mentions", "pages that wikilink to this page")
+    .option("--limit <n>", "maximum results (omit for all)")
     .action(async (query: string, opts, cmd: Command) => {
-      const flags = opts as { includeUntrusted?: boolean; mentions?: boolean };
-      const code = await runSearch(resolveOpts(cmd), query, flags);
+      const flags = opts as { includeUntrusted?: boolean; mentions?: boolean; limit?: string };
+      const limit = flags.limit === undefined ? undefined : Number(flags.limit);
+      const code = await runSearch(resolveOpts(cmd), query, { ...flags, limit });
       process.exitCode = code;
     });
 
@@ -233,10 +249,11 @@ export function createProgram(): Command {
   addGlobalOptions(program.command("chat").description("REPL that routes into engine verbs"))
     .option("--once <utterance>", "one turn, then exit")
     .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--profile <name>", "named adapter profile")
     .option("--fork <turnId>", "fork conversation at specified turn id")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { once?: string; adapter?: string; fork?: string };
+      const flags = opts as { once?: string; adapter?: string; profile?: string; fork?: string };
       const code = await runChat(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
@@ -314,10 +331,11 @@ export function createProgram(): Command {
     .option("--restyle", "frozen spec: CSS only")
     .option("--spawn", "optional SkillId wireframe rewrite of inner markup")
     .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--profile <name>", "named adapter profile")
     .option("--skip-palette-check", "refused: palettePresent stays hard")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { restyle?: boolean; spawn?: boolean; adapter?: string; skipPaletteCheck?: boolean };
+      const flags = opts as { restyle?: boolean; spawn?: boolean; adapter?: string; profile?: string; skipPaletteCheck?: boolean };
       if (flags.skipPaletteCheck) {
         refuse("palettePresent stays hard until --restyle with an active package", HINT.wireframe);
       }
@@ -327,9 +345,10 @@ export function createProgram(): Command {
 
   addGlobalOptions(program.command("plan").description("Break into tasks I can see on the board"))
     .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--profile <name>", "named adapter profile")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { adapter?: string };
+      const flags = opts as { adapter?: string; profile?: string };
       const code = await runPlan(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
@@ -343,18 +362,24 @@ export function createProgram(): Command {
 
   addGlobalOptions(program.command("execute").description("Do the next ready task"))
     .argument("[id]", "task id")
+    .option("--resume <runId>", "resume a compatible interrupted HTTP run")
     .option("--until-blocked", "loop until no ready task remains or one blocks")
+    .option("--jobs <n>", "parallel workers for automatic --until-blocked execution (1-4)")
     .option("--fix", "fix-run prompt (keep reproducing tests)")
     .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--profile <name>", "named adapter profile")
     .option("--allow-no-sandbox", "TTY gate to run execute on a copy jail")
     .allowExcessArguments(false)
     .action(async (id: string | undefined, opts, cmd: Command) => {
-      const flags = opts as { untilBlocked?: boolean; fix?: boolean; adapter?: string; allowNoSandbox?: boolean };
+      const flags = opts as { resume?: string; untilBlocked?: boolean; jobs?: string; fix?: boolean; adapter?: string; profile?: string; allowNoSandbox?: boolean };
       const code = await runExecute(resolveOpts(cmd), {
         id,
+        resume: flags.resume,
         untilBlocked: Boolean(flags.untilBlocked),
+        jobs: flags.jobs,
         fix: Boolean(flags.fix),
         adapter: flags.adapter,
+        profile: flags.profile,
         allowNoSandbox: Boolean(flags.allowNoSandbox),
       });
       process.exitCode = code;
@@ -364,10 +389,11 @@ export function createProgram(): Command {
   addGlobalOptions(program.command("verify").description("Optional walkthrough notes (not a ship gate)"))
     .argument("[id]", "task id")
     .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--profile <name>", "named adapter profile")
     .allowExcessArguments(false)
     .action(async (id: string | undefined, opts, cmd: Command) => {
-      const flags = opts as { adapter?: string };
-      const code = await runVerify(resolveOpts(cmd), { id, adapter: flags.adapter });
+      const flags = opts as { adapter?: string; profile?: string };
+      const code = await runVerify(resolveOpts(cmd), { id, adapter: flags.adapter, profile: flags.profile });
       process.exitCode = code;
     });
 
@@ -375,9 +401,10 @@ export function createProgram(): Command {
     program.command("review").description("Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review"),
   )
     .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--profile <name>", "named adapter profile")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { adapter?: string };
+      const flags = opts as { adapter?: string; profile?: string };
       const code = await runReview(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
@@ -403,10 +430,11 @@ export function createProgram(): Command {
   addGlobalOptions(program.command("fix").description("Test first (must stay RED), then fix"))
     .argument("<bug...>", "bug to reproduce then fix")
     .option("--adapter <id>", ADAPTER_ID_HELP)
+    .option("--profile <name>", "named adapter profile")
     .option("--allow-no-sandbox", "TTY gate to run execute on a copy jail")
     .allowExcessArguments(false)
     .action(async (bug: string[], opts, cmd: Command) => {
-      const flags = opts as { adapter?: string; allowNoSandbox?: boolean };
+      const flags = opts as { adapter?: string; profile?: string; allowNoSandbox?: boolean };
       const code = await runFix(resolveOpts(cmd), bug.join(" "), flags);
       process.exitCode = code;
     });
@@ -533,6 +561,7 @@ export function createProgram(): Command {
     .option("--priority <priority>", "P0 | P1 | P2")
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .option("--route <name>", "named adapter route (expanded at write)")
+    .option("--profile <name>", "named adapter profile")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
       const flags = opts as {
@@ -543,6 +572,7 @@ export function createProgram(): Command {
         priority?: string;
         adapter?: string;
         route?: string;
+        profile?: string;
       };
       const code = await runTicketCreate(resolveOpts(cmd), flags);
       process.exitCode = code;
@@ -560,7 +590,9 @@ export function createProgram(): Command {
     .option("--allow-deps", "allow changing blockedBy/blocks")
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .option("--route <name>", "named adapter route (expanded at write)")
+    .option("--profile <name>", "named adapter profile")
     .option("--clear-adapter", "omit Task.adapter")
+    .option("--clear-profile", "omit Task.profile")
     .option("--unblock", "blocked -> ready/todo")
     .option("--recover", "verifying -> blocked when the serial window is dead")
     .allowExcessArguments(false)
@@ -574,7 +606,9 @@ export function createProgram(): Command {
         allowDeps?: boolean;
         adapter?: string;
         route?: string;
+        profile?: string;
         clearAdapter?: boolean;
+        clearProfile?: boolean;
         unblock?: boolean;
         recover?: boolean;
       };
@@ -792,7 +826,7 @@ export function createProgram(): Command {
   const skills = addGlobalOptions(program.command("skills").description("Pinned skill overlays"));
   skills
     .allowExcessArguments(false)
-    .action(requireSub("skills", "list, install, or show", "legion-cli skills list"));
+    .action(requireSub("skills", "list, install, show, or run", "legion-cli skills list"));
   addGlobalOptions(skills.command("list").description("List packaged and overlay skills"))
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
@@ -810,16 +844,26 @@ export function createProgram(): Command {
     .argument("<source>", "local directory or github:owner/repo@tag")
     .option("--unsigned", "allow a local overlay with no minisign signature (TTY warn)")
     .option("--skill <id>", "skill id when the bundle contains more than one")
+    .option("--extension <id>", "extension id when installing an extension bundle")
     .option("--integrity <sha256>", "sha256:<hex> expected tree digest")
     .allowExcessArguments(false)
     .action(async (source: string, opts, cmd: Command) => {
-      const flags = opts as { unsigned?: boolean; skill?: string; integrity?: string };
+      const flags = opts as { unsigned?: boolean; skill?: string; extension?: string; integrity?: string };
       const code = await runSkillsInstall(resolveOpts(cmd), source, {
         unsigned: Boolean(flags.unsigned),
         skill: flags.skill,
+        extension: flags.extension,
         integrity: flags.integrity,
       });
       process.exitCode = code;
+    });
+  addGlobalOptions(skills.command("run").description("Run a governed extension evidence job"))
+    .argument("<extension-ref>", "extension:<id>")
+    .option("--profile <name>", "named adapter profile")
+    .allowExcessArguments(false)
+    .action(async (ref: string, opts, cmd: Command) => {
+      const flags = opts as { profile?: string };
+      process.exitCode = await runSkillsRun(resolveOpts(cmd), ref, flags);
     });
 
   const context = addGlobalOptions(program.command("context").description("Session context"));
@@ -879,7 +923,7 @@ export function createProgram(): Command {
         return;
       }
       if (command) {
-        const sub = program.commands.find((entry) => entry.name() === command);
+        const sub = resolveHelpCommand(program, command);
         if (!sub) {
           printUnknownCommand(command);
           process.exitCode = 1;

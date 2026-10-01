@@ -25,7 +25,7 @@ import {
 import {
   ASSUMED_EXTRA_BINARIES,
   EXTRA_ADAPTER_IDS,
-  QAScoreSchema,
+  AnyQAScoreSchema,
   SCHEMA_VERSION,
   SkillIdSchema,
   type AdapterId,
@@ -135,6 +135,11 @@ function isConfiguredSpawnable(config: LegionConfig, id: AdapterId): boolean {
     return argsIncludePointer(genericArgsOrDefault(spec.args ?? [])) && isSpawnableBinary(spec.binary);
   }
   if (id === "http") return isHttpAdapterReady(config.adapter.http);
+  if (id === "acp") {
+    const spec = config.adapter.acp;
+    if (!spec?.enabled) return false;
+    return isSpawnableBinary(spec.command);
+  }
   return extraOnPath(id, config) && extraArgvOk(id, config);
 }
 
@@ -266,7 +271,9 @@ async function qaScoresFallback(projectRoot: string): Promise<{ runs: number; pa
   for (const name of names) {
     if (!name.toLowerCase().endsWith(".json")) continue;
     try {
-      const parsed = QAScoreSchema.safeParse(JSON.parse(await readFile(join(dir, name), "utf8")));
+      // Metrics are historical accounting. Read both v1 and v2 scores even
+      // though only fresh v2 evidence can authorize a new ship.
+      const parsed = AnyQAScoreSchema.safeParse(JSON.parse(await readFile(join(dir, name), "utf8")));
       if (!parsed.success) continue;
       runs += 1;
       if (parsed.data.pass) passes += 1;
@@ -335,6 +342,16 @@ function formatMetricsLines(metrics: LocalMetrics, phase: Phase | null, qaSource
   lines.push(`  QA pass rate            ${formatPassRate(metrics.qa)}`);
   lines.push(`  Mean execute duration   ${formatMeanDuration(metrics.execute)}`);
   lines.push(`  Timeouts                ${metrics.timeouts}`);
+  lines.push(`  Agent runs              ${metrics.agents.runs}`);
+  for (const [label, values] of [
+    ["adapter", metrics.agents.byAdapter],
+    ["profile", metrics.agents.byProfile],
+    ["skill", metrics.agents.bySkill],
+    ["outcome", metrics.agents.byOutcome],
+  ] as const) {
+    const summary = Object.entries(values).sort(([a], [b]) => a.localeCompare(b)).map(([key, count]) => `${key}=${count}`).join(", ");
+    lines.push(`    by ${label}: ${summary || "none"}`);
+  }
   return lines;
 }
 

@@ -14,6 +14,7 @@ import {
   SessionBriefSchema,
   type Assumption,
   type FileContract,
+  type FingerprintFile,
   type QAScore,
   type SessionBrief,
 } from "@9thlevelsoftware/legion-cli-schema";
@@ -21,6 +22,7 @@ import { hubs, loadWikiLinks, loadWikiPages, type WikiPageRow } from "./graph.js
 import { twoLineSummary } from "./parser.js";
 
 export const SESSION_BRIEF_CHAR_CAP = 24_000;
+export const MAP_SLICE_CHAR_CAP = 6_000;
 
 async function listMarkdown(dir: string): Promise<string[]> {
   let names: string[];
@@ -120,6 +122,12 @@ export function renderSessionBrief(brief: SessionBrief): string {
   if (brief.mapRootHash) {
     lines.push(`Map rootHash: ${brief.mapRootHash}`);
   }
+  if (brief.mapFreshness) {
+    lines.push(`Map freshness: ${brief.mapFreshness}`);
+  }
+  if (brief.contextSelection && brief.contextSelection.length > 0) {
+    lines.push(`Context selection: ${brief.contextSelection.join("; ")}`);
+  }
   lines.push("");
   lines.push("Blocking assumptions:");
   if (brief.blockers.length === 0) {
@@ -171,6 +179,11 @@ export function renderSessionBrief(brief: SessionBrief): string {
     lines.push(`  filesAllowed: ${brief.contract.filesAllowed.join(", ")}`);
     lines.push(`  verificationCommands: ${brief.contract.verificationCommands.join(", ")}`);
   }
+  if (brief.mapSlice) {
+    lines.push("");
+    lines.push("Repository map slice:");
+    lines.push(brief.mapSlice);
+  }
   if (brief.lastQa) {
     lines.push("");
     lines.push(`Last QA: total ${brief.lastQa.total} pass=${brief.lastQa.pass}`);
@@ -195,6 +208,9 @@ export function assembleSessionBrief(input: {
   lastQa?: SessionBrief["lastQa"];
   skills?: SessionBrief["skills"];
   mapRootHash?: string;
+  mapSlice?: string;
+  mapFreshness?: string;
+  contextSelection?: string[];
 }): SessionBrief {
   const base = {
     schemaVersion: SCHEMA_VERSION.brief,
@@ -206,6 +222,11 @@ export function assembleSessionBrief(input: {
     contract: input.contract ?? null,
     lastQa: input.lastQa ?? null,
     ...(input.mapRootHash ? { mapRootHash: input.mapRootHash } : {}),
+    ...(input.mapSlice ? { mapSlice: input.mapSlice } : {}),
+    ...(input.mapFreshness ? { mapFreshness: input.mapFreshness } : {}),
+    ...(input.contextSelection && input.contextSelection.length > 0
+      ? { contextSelection: input.contextSelection }
+      : {}),
   };
   let wiki = input.wiki;
   let skills = input.skills;
@@ -261,20 +282,82 @@ export async function ensureWikiIndex(
   await writable.rebuild();
 }
 
-async function readMapRootHash(store: LegionReader): Promise<string | undefined> {
+function sameModulePath(left: string, right: string): boolean {
+  const a = left.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]sx?|py|rs|go)$/i, "");
+  const b = right.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]sx?|py|rs|go)$/i, "");
+  return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+}
+
+function isOwnedModule(path: string, allowed: readonly string[]): boolean {
+  return allowed.some((entry) => !entry.includes("*") && sameModulePath(path, entry));
+}
+
+function mapLine(module: FingerprintFile["modules"][number]): string {
+  const exports = module.exports.slice(0, 8).join(", ");
+  return `- ${module.path} (${module.language})${exports ? `: ${exports}` : ""}`;
+}
+
+function mapSlice(
+  fingerprints: FingerprintFile,
+  contract: FileContract | null,
+): { slice: string; selection: string[] } | undefined {
+  if (!contract || fingerprints.modules.length === 0) return undefined;
+  const modules = [...fingerprints.modules].sort((a, b) => a.path.localeCompare(b.path));
+  const owned = modules.filter((module) => isOwnedModule(module.path, contract.filesAllowed));
+  const direct = modules.filter((module) =>
+    !owned.some((candidate) => candidate.path === module.path) &&
+    (module.imports.some((imp) => owned.some((candidate) => sameModulePath(imp, candidate.path))) ||
+      owned.some((candidate) => candidate.imports.some((imp) => sameModulePath(imp, module.path)))),
+  );
+  const inbound = new Map(modules.map((module) => [module.path, 0]));
+  for (const module of modules) {
+    for (const imp of module.imports) {
+      const target = modules.find((candidate) => sameModulePath(imp, candidate.path));
+      if (target) inbound.set(target.path, (inbound.get(target.path) ?? 0) + 1);
+    }
+  }
+  const central = modules
+    .filter((module) => !owned.some((candidate) => candidate.path === module.path) && !direct.some((candidate) => candidate.path === module.path))
+    .sort((a, b) => (inbound.get(b.path) ?? 0) - (inbound.get(a.path) ?? 0) || a.path.localeCompare(b.path));
+  const selected = [
+    ...owned.map((module) => ({ module, reason: "task-owned" })),
+    ...direct.map((module) => ({ module, reason: "direct dependency" })),
+    ...central.map((module) => ({ module, reason: "central module" })),
+  ];
+  const lines = ["Map selection is deterministic: task-owned files, direct dependencies, then central modules."];
+  const selection: string[] = [];
+  for (const entry of selected) {
+    const line = `${entry.reason}: ${mapLine(entry.module)}`;
+    if (`${lines.join("\n")}\n${line}`.length > MAP_SLICE_CHAR_CAP) break;
+    lines.push(line);
+    selection.push(`${entry.reason}: ${entry.module.path}`);
+  }
+  return { slice: lines.join("\n"), selection };
+}
+
+async function readMapContext(
+  store: LegionReader,
+  contract: FileContract | null,
+): Promise<{ rootHash?: string; freshness?: string; slice?: string; selection?: string[] }> {
   try {
     const dirSt = await lstat(store.paths.mapDir);
-    if (dirSt.isSymbolicLink() || !dirSt.isDirectory()) return undefined;
+    if (dirSt.isSymbolicLink() || !dirSt.isDirectory()) return {};
   } catch {
-    return undefined;
+    return {};
   }
   try {
     const parsed = FingerprintFileSchema.safeParse(
       JSON.parse(await readFile(join(store.paths.mapDir, "fingerprints.json"), "utf8")),
     );
-    return parsed.success ? parsed.data.rootHash : undefined;
+    if (!parsed.success) return {};
+    const selected = mapSlice(parsed.data, contract);
+    return {
+      rootHash: parsed.data.rootHash,
+      freshness: `generated ${parsed.data.generatedAt} (${parsed.data.backend})`,
+      ...(selected ? { slice: selected.slice, selection: selected.selection } : {}),
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -323,6 +406,7 @@ export async function buildSessionBrief(
   const wiki = ranked.map(wikiEntry);
   const lastQa = await loadLastQa(store, state.lastQaId);
 
+  const map = await readMapContext(store, contract);
   return assembleSessionBrief({
     project: {
       name: project.name,
@@ -337,6 +421,9 @@ export async function buildSessionBrief(
     contract,
     lastQa,
     skills: opts?.skills,
-    mapRootHash: opts?.mapRootHash ?? (await readMapRootHash(store)),
+    mapRootHash: opts?.mapRootHash ?? map.rootHash,
+    mapSlice: map.slice,
+    mapFreshness: map.freshness,
+    contextSelection: map.selection,
   });
 }

@@ -55,5 +55,8 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/yauzl": "^3.4.0"
+  },
+  "optionalDependencies": {
+    "sqlite-vec": "^0.1.9"
   }
 }

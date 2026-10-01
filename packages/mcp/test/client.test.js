@@ -7,9 +7,11 @@ import test from "node:test";
 import {
   buildMcpSpawnEnv,
   closeMcpTransports,
+  createMcpClientTransport,
   LegionMcpClientPool,
   MCP_ENV_ALLOWLIST,
   MCP_POOL_MAX,
+  validateMcpRemoteUrl,
 } from "../dist/index.js";
 
 const PROBE_KEY = "LEGION_MCP_PROBE_SECRET";
@@ -99,4 +101,121 @@ test("closeMcpTransports does not swallow close errors", async () => {
     },
   };
   await assert.rejects(() => closeMcpTransports([closer]), /close-failed/);
+});
+
+test("remote MCP URL policy and transport factory enforce loopback and env-referenced auth", async () => {
+  const loopbackLookup = async () => [{ address: "127.0.0.1", family: 4 }];
+  await assert.rejects(
+    () => validateMcpRemoteUrl("http://127.0.0.1:7420/mcp", false, loopbackLookup),
+    /https.*loopback/i,
+  );
+  const allowed = await validateMcpRemoteUrl("http://127.0.0.1:7420/mcp", true, loopbackLookup);
+  assert.equal(allowed.hostname, "127.0.0.1");
+  await assert.rejects(
+    () => validateMcpRemoteUrl("https://127.0.0.1/mcp", false, loopbackLookup),
+    /private address/i,
+  );
+  await assert.rejects(
+    () => createMcpClientTransport({
+      transport: "streamable-http",
+      url: "http://127.0.0.1:7420/mcp",
+      allowLoopback: true,
+      authTokenEnv: "MISSING_MCP_TOKEN",
+    }, {}, loopbackLookup),
+    /MISSING_MCP_TOKEN/,
+  );
+  const transport = await createMcpClientTransport({
+    transport: "streamable-http",
+    url: "http://127.0.0.1:7420/mcp",
+    allowLoopback: true,
+  }, {}, loopbackLookup);
+  assert.equal(transport.constructor.name, "StreamableHTTPClientTransport");
+  await transport.close();
+});
+
+test("remote MCP URL policy rejects IPv6 unspecified, multicast, and embedded private addresses", async () => {
+  for (const address of ["::", "ff02::1", "::a00:1", "::ffff:10.0.0.1", "2001:db8::1"]) {
+    await assert.rejects(
+      () => validateMcpRemoteUrl("https://example.test/mcp", false, async () => [{ address, family: 6 }]),
+      /private address/i,
+      address,
+    );
+  }
+  const mappedLoopback = async () => [{ address: "::ffff:127.0.0.1", family: 6 }];
+  await assert.rejects(
+    () => validateMcpRemoteUrl("http://loopback.test/mcp", false, mappedLoopback),
+    /loopback/i,
+  );
+  assert.equal(
+    (await validateMcpRemoteUrl("http://loopback.test/mcp", true, mappedLoopback)).protocol,
+    "http:",
+  );
+});
+
+test("closeAll waits for and closes a connection that completes during shutdown", async () => {
+  let releaseStart;
+  let closed = 0;
+  const transport = {
+    onclose: undefined,
+    onerror: undefined,
+    onmessage: undefined,
+    async start() {
+      await new Promise((resolve) => { releaseStart = resolve; });
+    },
+    async send(message) {
+      if ("id" in message && message.id !== undefined) {
+        queueMicrotask(() => transport.onmessage?.({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: { protocolVersion: message.params?.protocolVersion, capabilities: {}, serverInfo: { name: "fixture", version: "1" } },
+        }));
+      }
+    },
+    async close() { closed += 1; },
+  };
+  const pool = new LegionMcpClientPool(
+    { fixture: { command: "unused" } },
+    { transportFactory: async () => transport },
+  );
+  const connecting = pool.getClient("fixture");
+  const rejected = assert.rejects(connecting, /closed during connect/);
+  await new Promise((resolve) => setImmediate(resolve));
+  const closing = pool.closeAll();
+  releaseStart();
+  await closing;
+  await rejected;
+  assert.equal(closed >= 1, true);
+  await assert.rejects(() => pool.getClient("fixture"), /pool is closed/);
+});
+
+test("listAllTools bounds an unresponsive tools/list request", async () => {
+  const transport = {
+    onclose: undefined,
+    onerror: undefined,
+    onmessage: undefined,
+    async start() {},
+    async send(message) {
+      if (message.method === "initialize" && message.id !== undefined) {
+        queueMicrotask(() => transport.onmessage?.({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: message.params.protocolVersion,
+            capabilities: {},
+            serverInfo: { name: "fixture", version: "1" },
+          },
+        }));
+      }
+      // Intentionally never answer tools/list.
+    },
+    async close() {},
+  };
+  const pool = new LegionMcpClientPool(
+    { fixture: { command: "unused" } },
+    { transportFactory: async () => transport, toolTimeoutMs: 25 },
+  );
+  const started = Date.now();
+  assert.deepEqual(await pool.listAllTools(), []);
+  assert.equal(Date.now() - started < 1_000, true);
+  await pool.closeAll();
 });

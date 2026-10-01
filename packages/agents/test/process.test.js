@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DOCKER_HOST_EXEC_REFUSAL, DOCKER_WORKDIR } from "@9thlevelsoftware/legion-cli-sandbox";
 import { GenericAdapter } from "../dist/index.js";
+import { spawnInteractiveAgentProcess } from "../dist/process.js";
+import { acpStopExitCode } from "../dist/adapters/acp.js";
 import { pkgRoot, setupRun, withTempDir } from "./helpers.js";
 
 const repoRoot = join(pkgRoot, "..", "..");
@@ -34,6 +37,29 @@ async function waitUntil(predicate, timeoutMs, message) {
 test("wrapper-extension branch matches .cmd .bat and .ps1", async () => {
   const src = await readFile(join(pkgRoot, "src", "process.ts"), "utf8");
   assert.match(src, /\/\\\.\(cmd\|bat\|ps1\)\$\/i/);
+});
+
+test("interactive ACP stdio spawn places the configured command behind the sandbox wrapper", async () => {
+  await withTempDir(async (dir) => {
+    const recorder = join(dir, "record-interactive-wrapper.cjs");
+    const capture = join(dir, "interactive-wrapper-argv.json");
+    await writeFile(recorder, 'require("fs").writeFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)));\n', "utf8");
+    const { job } = await setupRun(dir);
+    job.wrapper = { bin: process.execPath, argvPrefix: [recorder, capture] };
+    const child = spawnInteractiveAgentProcess(process.execPath, ["fixture-arg"], job);
+    await once(child, "exit");
+    const argv = JSON.parse(await readFile(capture, "utf8"));
+    assert.equal(argv.at(-1), "fixture-arg");
+    assert.match(String(argv.at(-2)), /node(?:\.exe)?$/i);
+  });
+});
+
+test("ACP accepts only end_turn as a completed lifecycle result", () => {
+  assert.equal(acpStopExitCode("end_turn"), 0);
+  assert.equal(acpStopExitCode("cancelled"), null);
+  for (const reason of ["max_tokens", "max_turn_requests", "refusal"]) {
+    assert.equal(acpStopExitCode(reason), 1, reason);
+  }
 });
 
 test("Windows .ps1 spawn runs through the wrapper-extension branch", { skip: process.platform !== "win32" }, async () => {
@@ -213,12 +239,12 @@ test("root test script, quarantine register, and publish guard", async () => {
   assert.match(agentsMd, /"private": true/);
 });
 
-test("CI linux-docker is required and macos is droppable", async () => {
+test("CI linux-docker and macOS sandbox legs are required", async () => {
   const ci = await readFile(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
   const linux = yamlJob(ci, "linux-docker");
   const macos = yamlJob(ci, "macos");
   assert.doesNotMatch(linux, /continue-on-error/);
-  assert.match(macos, /continue-on-error:\s*true/);
+  assert.doesNotMatch(macos, /continue-on-error/);
   assert.match(linux, /docker info/);
   assert.match(linux, /detectSandbox/);
   assert.match(linux, /backend !== "docker"/);

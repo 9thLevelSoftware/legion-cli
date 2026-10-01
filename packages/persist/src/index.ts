@@ -215,6 +215,19 @@ export {
 } from "./minisign.js";
 export { hasSecretPattern, redactSecrets } from "./redact.js";
 export { indexDbUsable, openIndexDb, queryIndex, rebuildIndex, REBUILD_SQL } from "./sqlite.js";
+export {
+  experimentalVectorIndexAvailability,
+  queryExperimentalVectorIndex,
+  rebuildExperimentalVectorIndex,
+} from "./experimental-vector-index.js";
+export type {
+  ExperimentalVector,
+  ExperimentalVectorAvailability,
+  ExperimentalVectorQueryResult,
+  ExperimentalVectorRebuildResult,
+  ExperimentalVectorResult,
+  ExperimentalVectorUnavailable,
+} from "./experimental-vector-index.js";
 export { createLegionStore, LegionStore } from "./store.js";
 export type { LegionReader, LegionStoreOptions, LockClock } from "./store.js";
 export {

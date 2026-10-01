@@ -12,8 +12,25 @@ export type HttpHostOpts = {
   allowedWrites: readonly string[];
   filesForbidden?: readonly string[];
   hardened: boolean;
+  /** Exact argv[0] basenames granted by a governed job. Undefined retains the lifecycle policy. */
+  commandAllowlist?: readonly string[];
+  /** Exact argv prefixes granted by a governed job. Checked before the shared command policy. */
+  commandPrefixes?: readonly (readonly string[])[];
   spawnOpts: { cwd: string; env: NodeJS.ProcessEnv; wrapper?: { bin: string; argvPrefix: string[] } };
+  externalTools?: HttpToolHost["externalTools"];
+  callExternalTool?: HttpToolHost["callExternalTool"];
 };
+
+function commandBasename(bin: string): string {
+  return bin.replaceAll("\\", "/").split("/").pop()?.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() ?? "";
+}
+
+function matchesCommandPrefix(argv: readonly string[], prefix: readonly string[]): boolean {
+  if (prefix.length === 0 || argv.length < prefix.length) return false;
+  return prefix.every((expected, index) =>
+    index === 0 ? commandBasename(argv[index] ?? "") === commandBasename(expected) : argv[index] === expected,
+  );
+}
 
 function matchesAllowed(posix: string, allowed: readonly string[]): boolean {
   return allowed.some((entry) => posix === entry || posix.startsWith(`${entry}/`));
@@ -73,6 +90,8 @@ async function assertNoSymlink(abs: string, jailRoot: string): Promise<void> {
 export function createHttpToolHost(opts: HttpHostOpts): HttpToolHost {
   const host: HttpToolHost = {
     jailRoot: opts.jailRoot,
+    ...(opts.externalTools ? { externalTools: opts.externalTools } : {}),
+    ...(opts.callExternalTool ? { callExternalTool: opts.callExternalTool } : {}),
     async readFile(posix) {
       const rel = assertJailPosix(posix);
       if (isImplicitForbidden(rel)) {
@@ -123,6 +142,15 @@ function runJailedCommand(
   opts: HttpHostOpts,
   wrapper: { bin: string; argvPrefix: string[] },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  if (opts.commandPrefixes !== undefined && !opts.commandPrefixes.some((prefix) => matchesCommandPrefix(argv, prefix))) {
+    return Promise.resolve({ exitCode: 1, stdout: "", stderr: "run_command argv is not in the job command prefix allowlist" });
+  }
+  if (opts.commandAllowlist !== undefined) {
+    const granted = new Set(opts.commandAllowlist.map(commandBasename));
+    if (!granted.has(commandBasename(argv[0] ?? ""))) {
+      return Promise.resolve({ exitCode: 1, stdout: "", stderr: "run_command argv[0] is not in the job command allowlist" });
+    }
+  }
   if (!isRunCommandAllowed(argv)) {
     return Promise.resolve({ exitCode: 1, stdout: "", stderr: "run_command argv is not allowlisted" });
   }

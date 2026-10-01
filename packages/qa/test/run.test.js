@@ -47,7 +47,10 @@ test("an unstartable unit command says why and scores P0 failed", async () => {
     assert.match(result.warnings[0], /^unit command did not start: legion-no-such-binary-xyz: not found on PATH/);
     assert.equal(result.score.pass, false);
     assert.ok(result.score.buckets.p0.failed >= 1);
-    assert.match(await readFile(join(dir, ".legion-cli", "qa", "unit.json"), "utf8"), /not found on PATH/);
+    assert.match(
+      await readFile(join(dir, ".legion-cli", "qa", "runs", "qa-nostart", "unit.json"), "utf8"),
+      /not found on PATH/,
+    );
   });
 });
 
@@ -91,7 +94,7 @@ test("QA's unit command gets the scrubbed environment, DATABASE_URL kept", async
         "const names = Object.keys(process.env).map((key) => key.toUpperCase());",
         "const leaked = ['FOO_TOKEN','SENDGRID_APIKEY','GH_PAT','NPM_CONFIG__AUTHTOKEN','LEGION_TEST_PROVIDER_VAR'].filter((n) => names.includes(n));",
         "const ok = leaked.length === 0 && process.env.DATABASE_URL === 'postgres://fixture';",
-        "process.stdout.write(JSON.stringify({ tests: [{ title: 'health @p0', status: ok ? 'passed' : 'failed' }], leaked }));",
+        "process.stdout.write(JSON.stringify({ tests: [{ title: 'health @p0 @ac(AC-01)', status: ok ? 'passed' : 'failed' }], leaked }));",
       ].join("\n"),
       "utf8",
     );
@@ -116,7 +119,9 @@ test("QA's unit command gets the scrubbed environment, DATABASE_URL kept", async
         createdAt: "2026-09-01T12:00:00Z",
       });
       assert.deepEqual(result.warnings, []);
-      const unit = JSON.parse(await readFile(join(dir, ".legion-cli", "qa", "unit.json"), "utf8"));
+      const unit = JSON.parse(
+        await readFile(join(dir, ".legion-cli", "qa", "runs", "qa-scrub", "unit.json"), "utf8"),
+      );
       assert.deepEqual(unit.leaked, []);
       assert.equal(unit.tests[0].status, "passed");
       assert.equal(result.score.buckets.p0.failed, 0);
@@ -126,5 +131,144 @@ test("QA's unit command gets the scrubbed environment, DATABASE_URL kept", async
         else process.env[key] = value;
       }
     }
+  });
+});
+
+test("nonzero unit exit blocks an all-passing JSON report", async () => {
+  await withTempDir(async (dir) => {
+    const script = join(dir, "unit-nonzero.js");
+    await writeFile(
+      script,
+      `process.stdout.write(JSON.stringify({tests:[{title:'health @ac(AC-01)',status:'passed'}]}));process.exitCode=7;`,
+      "utf8",
+    );
+    const result = await runProjectQa({
+      projectRoot: dir,
+      spec,
+      mode: "full",
+      unitCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`,
+      id: "qa-unit-nonzero",
+    });
+    assert.equal(result.score.criteria[0].outcome, "passed");
+    assert.ok(result.score.reportFailures > 0);
+    assert.equal(result.score.pass, false);
+  });
+});
+
+test("timed-out unit command blocks partial passing JSON", async () => {
+  await withTempDir(async (dir) => {
+    const script = join(dir, "unit-timeout.js");
+    await writeFile(
+      script,
+      `process.stdout.write(JSON.stringify({tests:[{title:'health @ac(AC-01)',status:'passed'}]}));setInterval(()=>{},1000);`,
+      "utf8",
+    );
+    const result = await runProjectQa({
+      projectRoot: dir,
+      spec,
+      mode: "full",
+      unitCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`,
+      commandTimeoutMs: 300,
+      id: "qa-unit-timeout-json",
+    });
+    assert.ok(result.score.reportFailures > 0);
+    assert.equal(result.score.pass, false);
+  });
+});
+
+test("nonzero Playwright exit blocks all-passing JSON", async () => {
+  await withTempDir(async (dir) => {
+    const unit = join(dir, "unit-pass.js");
+    const playwright = join(dir, "playwright-nonzero.js");
+    const payload = `JSON.stringify({tests:[{title:'health @ac(AC-01)',status:'passed'}]})`;
+    await writeFile(unit, `process.stdout.write(${payload});`, "utf8");
+    await writeFile(playwright, `process.stdout.write(${payload});process.exitCode=9;`, "utf8");
+    const result = await runProjectQa({
+      projectRoot: dir,
+      spec: { ...spec, wireframesIndex: "wireframes/INDEX.html" },
+      mode: "full",
+      unitCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(unit)}`,
+      playwrightCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(playwright)}`,
+      id: "qa-playwright-nonzero",
+    });
+    assert.ok(result.score.reportFailures > 0);
+    assert.equal(result.score.pass, false);
+  });
+});
+
+test("timed-out Playwright command blocks partial passing JSON", async () => {
+  await withTempDir(async (dir) => {
+    const unit = join(dir, "unit-pass.js");
+    const playwright = join(dir, "playwright-timeout.js");
+    const payload = `JSON.stringify({tests:[{title:'health @ac(AC-01)',status:'passed'}]})`;
+    await writeFile(unit, `process.stdout.write(${payload});`, "utf8");
+    await writeFile(playwright, `process.stdout.write(${payload});setInterval(()=>{},1000);`, "utf8");
+    const result = await runProjectQa({
+      projectRoot: dir,
+      spec: { ...spec, wireframesIndex: "wireframes/INDEX.html" },
+      mode: "full",
+      unitCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(unit)}`,
+      playwrightCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(playwright)}`,
+      commandTimeoutMs: 300,
+      id: "qa-playwright-timeout",
+    });
+    assert.ok(result.score.reportFailures > 0);
+    assert.equal(result.score.pass, false);
+  });
+});
+
+test("each QA run keeps its own evidence instead of overwriting a shared report", async () => {
+  await withTempDir(async (dir) => {
+    const script = join(dir, "emit.js");
+    await writeFile(
+      script,
+      `process.stdout.write(JSON.stringify({tests:[{title:'health @ac(AC-01)',status:'passed'}]}))`,
+      "utf8",
+    );
+    const base = {
+      projectRoot: dir,
+      spec,
+      mode: "full",
+      unitCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`,
+      createdAt: "2026-09-30T12:00:00Z",
+      specHash: "a".repeat(64),
+      sourceHash: "b".repeat(64),
+    };
+    const first = await runProjectQa({ ...base, id: "qa-first" });
+    const second = await runProjectQa({ ...base, id: "qa-second" });
+    assert.deepEqual(first.evidencePaths, [
+      ".legion-cli/qa/runs/qa-first/unit.json",
+      ".legion-cli/qa/runs/qa-first/unit.meta.json",
+    ]);
+    assert.deepEqual(second.evidencePaths, [
+      ".legion-cli/qa/runs/qa-second/unit.json",
+      ".legion-cli/qa/runs/qa-second/unit.meta.json",
+    ]);
+    assert.equal(JSON.parse(await readFile(join(dir, first.evidencePaths[0]), "utf8")).tests.length, 1);
+    assert.equal(JSON.parse(await readFile(join(dir, second.evidencePaths[0]), "utf8")).tests.length, 1);
+  });
+});
+
+test("rapid QA runs allocate distinct UUID-bearing evidence directories", async () => {
+  await withTempDir(async (dir) => {
+    const script = join(dir, "emit.js");
+    await writeFile(
+      script,
+      `process.stdout.write(JSON.stringify({tests:[{title:'health @ac(AC-01)',status:'passed'}]}))`,
+      "utf8",
+    );
+    const opts = {
+      projectRoot: dir,
+      spec,
+      mode: "full",
+      unitCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`,
+    };
+    const [first, second] = await Promise.all([runProjectQa(opts), runProjectQa(opts)]);
+    assert.notEqual(first.score.id, second.score.id);
+    assert.match(first.score.id, /^qa-[a-z0-9]+-[a-f0-9]{8}$/);
+    assert.match(second.score.id, /^qa-[a-z0-9]+-[a-f0-9]{8}$/);
+    assert.notEqual(first.evidencePaths[0], second.evidencePaths[0]);
+    await readFile(join(dir, first.evidencePaths[0]), "utf8");
+    await readFile(join(dir, second.evidencePaths[0]), "utf8");
   });
 });

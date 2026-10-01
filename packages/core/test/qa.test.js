@@ -11,6 +11,7 @@ import {
   regressionTestPath,
 } from "../dist/index.js";
 import {
+  commitAll,
   initGitRepo,
   initProject,
   makeQaScore,
@@ -52,9 +53,7 @@ test("in-process scorer writes QAScore and can pass to ready_to_ship", async () 
         ...config.qa,
         unitCommand: unitCommand({
           tests: [
-            { title: "health @p0", status: "passed" },
-            { title: "lists @p1", status: "passed" },
-            { title: "optional @p2", status: "passed" },
+            { title: "health @p0 @ac(AC-01)", status: "passed" },
           ],
         }),
       },
@@ -67,6 +66,72 @@ test("in-process scorer writes QAScore and can pass to ready_to_ship", async () 
     const jsonl = await readFile(join(store.paths.auditDir, "events.jsonl"), "utf8");
     assert.match(jsonl, /"type":"qa"/);
     assert.match(jsonl, /"pass":true/);
+  });
+});
+
+test("ship requires fresh QA after a clean commit changes tested source", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedQaReady(store, {
+      spec: {
+        acceptance: [{ id: "AC-01", statement: "API returns 200 for health", kind: "test", priority: "P0" }],
+        wireframesIndex: null,
+      },
+    });
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const version = 1;\n", "utf8");
+    initGitRepo(dir);
+    const config = await store.readConfig();
+    await store.writeConfig({
+      ...config,
+      qa: {
+        ...config.qa,
+        unitCommand: unitCommand({ tests: [{ title: "health @ac(AC-01)", status: "passed" }] }),
+      },
+    });
+    const score = await engine.qa();
+    assert.equal(score.pass, true);
+    await writeFile(join(dir, "src", "main.ts"), "export const version = 2;\n", "utf8");
+    commitAll(dir, "change tested source");
+    await assert.rejects(
+      () => engine.ship(),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /QA must PASS/);
+        return true;
+      },
+    );
+  });
+});
+
+test("ship requires fresh QA after approved SPEC prose changes", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedQaReady(store, {
+      spec: {
+        acceptance: [{ id: "AC-01", statement: "API returns 200 for health", kind: "test", priority: "P0" }],
+        wireframesIndex: null,
+      },
+    });
+    const config = await store.readConfig();
+    await store.writeConfig({
+      ...config,
+      qa: {
+        ...config.qa,
+        unitCommand: unitCommand({ tests: [{ title: "health @ac(AC-01)", status: "passed" }] }),
+      },
+    });
+    assert.equal((await engine.qa()).pass, true);
+    const spec = await store.readSpec("spec-checkin");
+    await store.writeSpec(spec.data, `${spec.body}\nApproved clarification.\n`);
+    await assert.rejects(
+      () => engine.ship(),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /QA must PASS/);
+        return true;
+      },
+    );
   });
 });
 
@@ -88,6 +153,39 @@ test("visual regression is a ship blocker even at 85 functional points", async (
     assert.equal(recorded.pass, false);
     assert.equal(recorded.buckets.visual.points, 0);
     assert.equal((await engine.getState()).phase, "executing");
+  });
+});
+
+test("production engines refuse injected QA scores", async () => {
+  await withEngine(async ({ dir, engine, store }) => {
+    await initProject(engine);
+    await seedQaReady(store);
+    const production = new (engine.constructor)(dir);
+    await assert.rejects(
+      () => production.qa({ score: makeQaScore() }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /test-only/);
+        return true;
+      },
+    );
+  });
+});
+
+test("test score injection cannot substitute criteria outside the active SPEC", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedQaReady(store);
+    await assert.rejects(
+      () => engine.qa({
+        score: makeQaScore({ criteria: [{ id: "AC-OTHER", priority: "P0", outcome: "passed" }] }),
+      }),
+      (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, /criteria do not match/);
+        return true;
+      },
+    );
   });
 });
 
@@ -116,11 +214,12 @@ test("no-browser qa requires checklist and cannot pass", async () => {
       qa: {
         ...config.qa,
         mode: "no-browser",
-        unitCommand: unitCommand({ tests: [{ title: "health @p0", status: "passed" }] }),
+        unitCommand: unitCommand({ tests: [{ title: "unlinked smoke", status: "passed" }] }),
       },
     });
     const score = await engine.qa({ mode: "no-browser" });
     assert.equal(score.mode, "no-browser");
+    assert.equal(score.criteria[0].outcome, "passed");
     assert.ok(score.total <= 70);
     assert.equal(score.pass, false);
     assert.equal((await engine.getState()).phase, "executing");

@@ -20,7 +20,8 @@
             "codex",
             "mimo",
             "minimax",
-            "http"
+            "http",
+            "acp"
           ]
         },
         "claude": {
@@ -180,6 +181,39 @@
           ],
           "additionalProperties": false
         },
+        "acp": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "env": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "enabled": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "additionalProperties": false
+        },
         "routes": {
           "type": "object",
           "properties": {
@@ -194,7 +228,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             },
             "discuss": {
@@ -208,7 +243,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             },
             "spec": {
@@ -222,7 +258,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             },
             "ingest": {
@@ -236,7 +273,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             },
             "plan": {
@@ -250,7 +288,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             },
             "execute": {
@@ -264,7 +303,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             },
             "verify": {
@@ -278,7 +318,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             },
             "review": {
@@ -292,7 +333,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             },
             "qa": {
@@ -306,7 +348,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             },
             "map": {
@@ -320,7 +363,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             },
             "wireframe": {
@@ -334,7 +378,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             },
             "chat": {
@@ -348,7 +393,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             }
           },
@@ -369,7 +415,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             }
           },
@@ -384,8 +431,119 @@
               "codex",
               "mimo",
               "minimax",
-              "http"
+              "http",
+              "acp"
             ]
+          }
+        },
+        "profiles": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "adapter": {
+                "type": "string",
+                "enum": [
+                  "claude",
+                  "generic",
+                  "fake",
+                  "grok",
+                  "openai",
+                  "codex",
+                  "mimo",
+                  "minimax",
+                  "http",
+                  "acp"
+                ]
+              },
+              "modelArgs": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "outputLimit": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "pricing": {
+                "type": "object",
+                "properties": {
+                  "inputPerMillionUsd": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "outputPerMillionUsd": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "requestUsd": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
+              },
+              "limits": {
+                "type": "object",
+                "properties": {
+                  "maxRequests": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "maxToolRounds": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "maxReportedTokens": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "maxEstimatedCostUsd": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "adapter"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "skillProfiles": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "enum": [
+              "interview",
+              "discuss",
+              "spec",
+              "ingest",
+              "plan",
+              "execute",
+              "verify",
+              "review",
+              "qa",
+              "map",
+              "wireframe",
+              "chat"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$"
           }
         }
       },
@@ -578,6 +736,57 @@
       },
       "additionalProperties": false
     },
+    "search": {
+      "default": {
+        "mode": "lexical"
+      },
+      "type": "object",
+      "properties": {
+        "mode": {
+          "default": "lexical",
+          "type": "string",
+          "enum": [
+            "lexical",
+            "hybrid"
+          ]
+        },
+        "vectorsPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "embeddingCommand": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "execution": {
+      "default": {
+        "maxWorkers": 1
+      },
+      "type": "object",
+      "properties": {
+        "maxWorkers": {
+          "default": 1,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        }
+      },
+      "additionalProperties": false
+    },
+    "telemetry": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "otlpEndpoint": {
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false
+    },
     "mcpServers": {
       "type": "object",
       "propertyNames": {
@@ -585,42 +794,79 @@
         "minLength": 1
       },
       "additionalProperties": {
-        "type": "object",
-        "properties": {
-          "command": {
-            "type": "string",
-            "minLength": 1
-          },
-          "args": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "env": {
+        "anyOf": [
+          {
             "type": "object",
-            "propertyNames": {
-              "type": "string"
+            "properties": {
+              "transport": {
+                "default": "stdio",
+                "type": "string",
+                "const": "stdio"
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "args": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
             },
-            "additionalProperties": {
-              "type": "string"
-            }
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
           },
-          "url": {
-            "type": "string",
-            "format": "uri"
-          },
-          "transport": {
-            "default": "stdio",
-            "type": "string",
-            "enum": [
-              "stdio",
-              "sse"
-            ]
+          {
+            "type": "object",
+            "properties": {
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "sse",
+                  "streamable-http"
+                ]
+              },
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "authTokenEnv": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]{1,63}$"
+              },
+              "allowLoopback": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "transport",
+              "url"
+            ],
+            "additionalProperties": false
           }
-        },
-        "additionalProperties": false
+        ]
+      }
+    },
+    "mcpHttpToolAllowlist": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$"
       }
     },
     "git": {

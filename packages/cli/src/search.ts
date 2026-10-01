@@ -1,10 +1,11 @@
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import type { CliOpts } from "./io.js";
-import { writeJson, writeOut } from "./io.js";
+import { writeJson, writeJsonLine, writeOut } from "./io.js";
 
 export type SearchFlags = {
   includeUntrusted?: boolean;
   mentions?: boolean;
+  limit?: number;
 };
 
 export async function runSearch(
@@ -12,14 +13,23 @@ export async function runSearch(
   query: string,
   flags: SearchFlags,
   jsonExtra?: Record<string, unknown>,
+  output?: { jsonLines?: boolean },
 ): Promise<number> {
   const engine = createLegionEngine(opts.project);
-  const hits = await engine.search(query, {
+  const allHits = await engine.search(query, {
     includeUntrusted: flags.includeUntrusted,
     mentions: flags.mentions,
   });
+  const limit = flags.limit;
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+    throw new Error("search --limit must be a positive integer");
+  }
+  const hits = limit === undefined ? allHits : allHits.slice(0, limit);
+  const truncated = hits.length < allHits.length;
   if (opts.json) {
-    writeJson({ query, hits, ...jsonExtra });
+    const payload = { query, hits, truncated, total: allHits.length, ...jsonExtra };
+    if (output?.jsonLines) writeJsonLine(payload);
+    else writeJson(payload);
     return 0;
   }
   if (hits.length === 0) {
@@ -37,6 +47,7 @@ export async function runSearch(
       }
     }
   }
+  if (truncated) lines.push(`(showing ${hits.length} of ${allHits.length}; rerun without --limit for all matches)`);
   writeOut(lines.join("\n"));
   return 0;
 }

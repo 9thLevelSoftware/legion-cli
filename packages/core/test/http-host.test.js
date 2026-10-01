@@ -7,6 +7,7 @@ import test from "node:test";
 import { dispatchToolCall, MAX_RUN_COMMAND_BYTES, RUN_COMMAND_DENIED_BINS, toolsForJob } from "@9thlevelsoftware/legion-cli-http";
 import { materializeJail } from "@9thlevelsoftware/legion-cli-sandbox";
 import { createHttpToolHost, engineSotRefuseReason, httpAllowedWrites } from "../dist/http-host.js";
+import { governedMcpConfigIdentity, governedMcpToolContractIdentity } from "../dist/index.js";
 
 async function withTemp(fn) {
   const dir = await mkdtemp(join(tmpdir(), "legion-http-host-"));
@@ -32,9 +33,47 @@ function hostFor(jailRoot, extra = {}) {
     allowedWrites: extra.allowedWrites ?? ["src/x"],
     filesForbidden: extra.filesForbidden,
     hardened: extra.hardened ?? false,
+    commandAllowlist: extra.commandAllowlist,
+    commandPrefixes: extra.commandPrefixes,
     spawnOpts: extra.spawnOpts ?? { cwd: jailRoot, env: process.env },
   });
 }
+
+test("governed MCP resume identities bind transport and exact tool schema without credential values", () => {
+  const stdio = (token, args = ["serve"]) => ({
+    mcpHttpToolAllowlist: ["fixture:read"],
+    mcpServers: {
+      fixture: { transport: "stdio", command: "fixture-mcp", args, env: { FIXTURE_TOKEN: token } },
+    },
+  });
+  assert.equal(
+    governedMcpConfigIdentity(stdio("secret-one")),
+    governedMcpConfigIdentity(stdio("secret-two")),
+    "credential values are excluded",
+  );
+  assert.notEqual(governedMcpConfigIdentity(stdio("secret", ["serve"])), governedMcpConfigIdentity(stdio("secret", ["other"])));
+
+  const remote = (url) => ({
+    mcpHttpToolAllowlist: ["fixture:read"],
+    mcpServers: {
+      fixture: { transport: "streamable-http", url, authTokenEnv: "FIXTURE_TOKEN", allowLoopback: false },
+    },
+  });
+  assert.notEqual(
+    governedMcpConfigIdentity(remote("https://one.example/mcp")),
+    governedMcpConfigIdentity(remote("https://two.example/mcp")),
+  );
+
+  const tool = { name: "fixture:read", inputSchema: { type: "object", required: ["path"] }, readOnly: true };
+  assert.notEqual(
+    governedMcpToolContractIdentity([tool]),
+    governedMcpToolContractIdentity([{ ...tool, inputSchema: { type: "object", required: ["key"] } }]),
+  );
+  assert.notEqual(
+    governedMcpToolContractIdentity([tool]),
+    governedMcpToolContractIdentity([{ ...tool, readOnly: false }]),
+  );
+});
 
 test("read_file and write_file refuse .env and .ENV", async () => {
   await withTemp(async (dir) => {
@@ -45,6 +84,39 @@ test("read_file and write_file refuse .env and .ENV", async () => {
     await assert.rejects(() => host.writeFile(".ENV", "SECRET=1\n"), /implicit forbidden/);
     await host.writeFile("src/ok.ts", "ok\n");
     assert.equal(await readFile(join(dir, "src", "ok.ts"), "utf8"), "ok\n");
+  });
+});
+
+test("governed host command allowlist is exact and defaults to the existing policy when omitted", async () => {
+  await withTemp(async (dir) => {
+    const scoped = hostFor(dir, {
+      hardened: true,
+      commandAllowlist: ["pnpm"],
+      spawnOpts: { cwd: dir, env: process.env, wrapper: { bin: process.execPath, argvPrefix: [] } },
+    });
+    const denied = await scoped.runCommand([process.execPath, "script.js"]);
+    assert.equal(denied.exitCode, 1);
+    assert.match(denied.stderr, /job command allowlist/);
+
+    const existing = hostFor(dir, {
+      hardened: true,
+      spawnOpts: { cwd: dir, env: process.env, wrapper: { bin: process.execPath, argvPrefix: [] } },
+    });
+    const policyDenied = await existing.runCommand(["git", "status"]);
+    assert.match(policyDenied.stderr, /not allowlisted/);
+  });
+});
+
+test("governed host requires the complete granted command prefix", async () => {
+  await withTemp(async (dir) => {
+    const host = hostFor(dir, {
+      hardened: true,
+      commandPrefixes: [["npx", "axe"]],
+      spawnOpts: { cwd: dir, env: process.env, wrapper: { bin: process.execPath, argvPrefix: [] } },
+    });
+    const denied = await host.runCommand(["npx", "unrelated"]);
+    assert.equal(denied.exitCode, 1);
+    assert.match(denied.stderr, /command prefix allowlist/);
   });
 });
 

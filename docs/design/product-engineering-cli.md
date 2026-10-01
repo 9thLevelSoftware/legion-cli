@@ -5,7 +5,7 @@
 | **Title** | Legion CLI: a CLI-owned product development lifecycle engine |
 | **Author** | Systems Architecture (founding draft) |
 | **Date** | 2026-09-03 |
-| **Status** | Draft (rev 14 — twelve previously deferred surfaces shipped; Later / Not-in-this-product dropped) |
+| **Status** | Draft (rev 15 — recovery, acceptance evidence, governed extensions and opt-in integration enhancements) |
 | **Product** | **Legion CLI** (binary: `legion-cli`, npm: `@9thlevelsoftware/legion-cli`) |
 | **Audience** | Senior engineers implementing v0/v1; product leads reviewing scope |
 | **Workspace** | `D:\legion-cli` |
@@ -14,13 +14,29 @@
 
 ## Overview
 
+### Rev 15 implementation contract
+
+The approved enhancements supersede older deferred rows for bounded concurrent execution, ACP, and embeddings. The engine remains local-first with the same ten lifecycle verbs, explicit adapter selection, guarded approvals, and private workspace root. ACP and hybrid retrieval are opt-in experiments; deterministic fixtures do not certify real agents or retrieval quality. Autonomous control and eight-agent QA remain deferred.
+
+QA v2 links normalized reports to declared SPEC criteria using `@ac(AC-01)` title tags (multiple tags are supported). Criterion priority comes from the SPEC. Outcomes are passed, failed, skipped, or missing; untagged successes do not supply acceptance coverage. Missing or skipped P0 evidence blocks the gate, and missing P1/P2 criteria reduce their rates. Report failures remain blocking. Scores bind the SPEC and tested source hashes and retain run-local reports. Legacy v1 scores remain historical evidence and require recalculation before a new ship.
+
+Recovery metadata records process-start identities and atomic starting, running, agent-complete, integrating, verifying, and terminal stages. HTTP jobs checkpoint conversations and tool outcomes around dispatch, retain their original jail, and resume only when prompt, configuration, contracts, source, and jail identities match. Completed calls are not replayed; uncertain command or external-call outcomes block recovery. Status and the viewer expose stage, ownership, logs, interruption and recovery guidance.
+
+Named adapter profiles retain existing adapter routing and add task/skill profile selection, supported model arguments, output limits, usage and operator-supplied pricing. Budgets are unset by default; cost values are estimates. Request/round limits bound HTTP work, while token and cost thresholds depend on reported usage. Optional OTLP export targets a loopback collector and includes metadata only, excluding source, prompts, credentials and paths.
+
+Extensions use separate `extension:<id>` references rather than opening the lifecycle skill enum. Pinned manifests describe compatibility, resources, tools and permissions. `skills run` executes governed evidence jobs; product recommendations become tickets. Accessibility, performance, migration/rollback and release-readiness packs record unavailable checks explicitly.
+
+Automatic `execute --until-blocked` can opt into one to four workers with `execution.maxWorkers` or `--jobs`. Explicit task execution remains single-task. Dependency-independent, disjoint contracts run in separate existing jails; inspection precedes deterministic serialized application with HEAD and owned-path baselines. Successful siblings remain preserved when another task blocks. Brownfield worktrees remain exclusively `.legion-cli/worktrees/<run>/pr-N/`; lifecycle concurrency does not create worktrees.
+
+Release validation includes packed-package consumer installation without workspace links and a deterministic complete lifecycle. Linux/native, Linux/Docker, Windows/native and macOS sandbox CI are required. Windows/Docker stays deferred under `Q-WIN-DOCKER` until the opt-in workflow passes on a suitable runner. Publishing and real-provider certification remain separate actions.
+
 **Legion CLI** is a local-first **CLI** that turns product knowledge into shipped, verified software. It is aimed at product-knowledgeable people who may barely have used AI and may never have coded, with a smaller secondary audience of engineers who operate and extend the engine. It is the Product Engineering engine in the Legion brand. It is **not** the `@9thlevelsoftware/legion` plugin installer (`npx @9thlevelsoftware/legion --claude`, bin `legion-plugins`). PATH bins: `legion-cli` and `legion` (same `dist/bin.js`; installer first-args refuse).
 
 The CLI is the engine of record and the default product surface. The **small set** is the **10-verb lifecycle core**: `init`, `intent`, `discuss`, `spec`, `plan`, `execute`, `verify`, `review`, `qa`, `ship`. Bare `legion-cli` prints status plus the single next command. A local HTTP dashboard is a **viewer** of path, timeline, current task, and audit trail (optional token-gated POSTs: `ticket | wikiTrust | qaChecklist` — Goal 13 shipped) so people who are scared of pure terminal output still have something they can see. It does not replace the CLI and it does not own state.
 
 The engine consumes reference material once, interviews the user two questions at a time, freezes a short human-approved SPEC, captures product and implementation decisions *before* any plan, then executes only unblocked, file-contract-bounded tasks **until every task of the active spec is `done` or `blocked`**. It refuses to ship until in-process `verificationCommands` have passed on those tasks, a spec-level review PASSes, a numeric QA gate passes, and a human reviews the result. There is no v0 command to choose a subset of the DAG.
 
-v0 is a laptop (git, Node 22, pnpm, and one spawnable adapter the user sets in `config.yaml`). There is **no product-default adapter**. Extra adapters (`grok`, `openai`, `codex`, `mimo`, `minimax`) are **spawnable** with **verified vendor argv** (KD5 / KD-7): `grok -p`, `codex exec`, `mimo run`, `mcode exec`; `{{pointer}}` required. They are not detect-only. AdapterId `http` is an in-process OpenAI-compat completions client (`apiKeyEnv`, SSRF-bounded `baseUrl`); spawn CLIs remain the default. `init` requires `--adapter` (or a TTY prompt) and is **not** greenfield-only (`--mode brownfield` ships). **Shipped extras** (off the 10-verb core and off the default window): review packets (`packet new` / `packet respond` — spawn tickets, not execute), closed-work compaction (`context compact`), brownfield worktrees (effort 1–5), MCP stdio (read-only), `serve` (dashboard + MCP HTTP + optional WebMCP), wiki garden, design-system packages (local + `github:`), dashboard tiny POSTs, `map` / `wireframe` / `skills list|install`, OS sandbox around execute. **Always-on shipped CLI:** `legion-cli control-mode` (show/set `guarded|advisory`; refuse `autonomous`; old `surgical` configs fail with a migrate-to-`guarded` hint); `legion-cli chat` (REPL that routes into engine verbs). Rev 14 **supersedes** every “Later, not this series” / “Not in this product” row that named those twelve. Layer 1 stays the 10-verb core. Remaining later: embeddings; 8-agent QA (`qa.loop: full`); `control_mode: autonomous`; concurrent execute workers. v0 still injects shipped brand-agnostic `craft/` rules and will use a hand-dropped `.legion-cli/design/DESIGN.md` when present. v0 bar is **workspace correctness** (`0.0.0` until the first `v*` tag). Publish workflow is tag-triggered + provenance; do **not** claim already on npm. The workspace root stays private (historical name `product-engineer-helper`; do not rename); published packages are public.
+v0 is a laptop (git, Node 22, pnpm, and one spawnable adapter the user sets in `config.yaml`). There is **no product-default adapter**. Extra adapters (`grok`, `openai`, `codex`, `mimo`, `minimax`) are **spawnable** with **verified vendor argv** (KD5 / KD-7): `grok -p`, `codex exec`, `mimo run`, `mcode exec`; `{{pointer}}` required. They are not detect-only. AdapterId `http` is an in-process OpenAI-compat completions client (`apiKeyEnv`, SSRF-bounded `baseUrl`); spawn CLIs remain the default. `init` requires `--adapter` (or a TTY prompt) and is **not** greenfield-only (`--mode brownfield` ships). **Shipped extras** (off the 10-verb core and off the default window): review packets (`packet new` / `packet respond` — spawn tickets, not execute), closed-work compaction (`context compact`), brownfield worktrees (effort 1–5), MCP stdio (read-only), `serve` (dashboard + MCP HTTP + optional WebMCP), wiki garden, design-system packages (local + `github:`), dashboard tiny POSTs, `map` / `wireframe` / `skills list|install`, OS sandbox around execute. **Always-on shipped CLI:** `legion-cli control-mode` (show/set `guarded|advisory`; refuse `autonomous`; old `surgical` configs fail with a migrate-to-`guarded` hint); `legion-cli chat` (REPL that routes into engine verbs). Rev 14 **supersedes** every “Later, not this series” / “Not in this product” row that named those twelve. Layer 1 stays the 10-verb core. Remaining later: 8-agent QA (`qa.loop: full`); `control_mode: autonomous`. Bounded workers and opt-in hybrid retrieval follow the rev 15 contract. v0 still injects shipped brand-agnostic `craft/` rules and will use a hand-dropped `.legion-cli/design/DESIGN.md` when present. v0 bar is **workspace correctness** (`0.0.0` until the first `v*` tag). Publish workflow is tag-triggered + provenance; do **not** claim already on npm. The workspace root stays private (historical name `product-engineer-helper`; do not rename); published packages are public.
 
 This is a mashup of proven *mechanisms* from open-source tools (BMAD, GSD Core, ajaywadhara/shipyard, 9thLevelSoftware/legion, OpenAI Symphony, beads, CodeAlmanac, and others). No inspected source combines them into one product. That combination is invented here and is an unproven product bet; mitigations are progressive disclosure, inspectable artifacts, a two-question interview, and a visual **viewer**.
 
@@ -47,9 +63,9 @@ These are the defaults this document commits to. Former open questions are recor
 | KD13 | **v0 runtime** | Windows or Unix laptop with git, Node 22, pnpm, and one spawnable adapter set in config. No cloud. `init` requires `--adapter`. **Two brownfield surfaces** (do not merge): (1) `init --mode brownfield` sets `project.mode` (10-verb `execute` stays in-place); (2) `legion-cli brownfield` is the effort 1–5 audit extra (`--execute` is the only worktree path). Publish bar is workspace correctness; `0.0.0` until first `v*` (tag-triggered, provenance; not already on npm). | User sets `adapter.default`. The two brownfield surfaces are not one implementation. |
 | KD14 | **Control mode** | Legion CLI-owned boolean matrix (below). Default `guarded`. Every spawn is surgical against that skill’s `SkillContract`; execute also intersects `FileContract`. `advisory` blocks execute. `autonomous` rejected in v0. CLI verb `legion-cli control-mode` shows/sets `guarded\|advisory` under the lock. The former `surgical` member is deleted (equivalent to `guarded`); old configs fail closed with a named migrate-to-`guarded` hint. | Not “see Legion.” Modes are flags the core evaluates. |
 | KD15 | **Wiki vs run artifacts** | Durable knowledge: `.legion-cli/wiki/` + `.legion-cli/decisions/`. Brownfield runs (shipped extra) write `.legion-cli/runs/<id>/` and are not the wiki. | grok-brownfield run-scoped docs vs CodeAlmanac durable wiki (run artifacts taken from the research report, not re-read in this revision). |
-| KD16 | **QA bar** | Legion CLI scores Playwright/unit JSON itself. P0/P1/P2 from `@p0`/`@p1`/`@p2` tags (from `AC.priority`). Pass = `mode==full` AND `total≥85` AND `p0.failed==0` AND `visual.regressions==0`. Visual-bucket zero on a UI spec is a ship blocker. | Shipyard buckets, with the 85-with-visual-fail hole closed. No 8-agent loop in v0. |
+| KD16 | **QA bar** | QA v2 links normalized reports with `@ac(<id>)`; functional priority and coverage come from declared SPEC criteria. Missing/skipped P0 and genuine report failures block shipping. Pass retains full mode, 85 points and visual requirements. Scores bind full SPEC and tested source identity; legacy scores require recalculation. | Degraded no-browser waives browser availability only, retaining functional evidence and manual checklist requirements. |
 | KD17 | **Monorepo layout** | pnpm workspaces under `packages/*`. Lifecycle packages: `legion-cli-{schema,core,persist,wiki,graph,agents,qa,dashboard}` plus `cli` (`@9thlevelsoftware/legion-cli`). `mcp`, `design-system`, `sandbox`, `http`, and `map` are **shipped extras**, off the 10-verb core. Root private; packages public. | User decision. Not a single package. Prefix avoids colliding with `@9thlevelsoftware/legion`. |
-| KD18 | **v0 cut / small set** | **Small set** = the 10-verb lifecycle core (`init`, `intent`, `discuss`, `spec`, `plan`, `execute`, `verify`, `review`, `qa`, `ship`) + wiki + DAG + QA + ship + dashboard viewer + one configured adapter. Workspace correctness (`0.0.0` until first `v*`); do not claim already on npm. Extra adapters spawn with **verified vendor argv** (KD5). AdapterId `http` is in-product. **Shipped extras** (off the default window): packets, compaction, brownfield worktrees (effort 1–5), MCP, `serve` + WebMCP, garden, design-system (local + `github:`), dashboard tiny POSTs, `map` / fingerprints, `wireframe`, `skills list\|install`, OS sandbox. **Shipped CLI** (founding table): `assume list` / `assume answer` / `index rebuild` / `control-mode` / `chat`. PATH `legion` is an alias of `legion-cli`. **Still later (not the twelve):** embeddings; 8-agent QA; `control_mode: autonomous`; concurrent execute workers. | Twenty PRs that secretly ship a second product is not a v0. Docs follow shipped code when the code matches the product bet. Rev 14 supersedes every parked row that named the twelve. |
+| KD18 | **v0 cut / small set** | **Small set** = the 10-verb lifecycle core (`init`, `intent`, `discuss`, `spec`, `plan`, `execute`, `verify`, `review`, `qa`, `ship`) + wiki + DAG + QA + ship + dashboard viewer + one configured adapter. Workspace correctness (`0.0.0` until first `v*`); do not claim already on npm. Extra adapters spawn with **verified vendor argv** (KD5). AdapterId `http` is in-product. **Shipped extras** (off the default window): packets, compaction, brownfield worktrees (effort 1–5), MCP, `serve` + WebMCP, garden, design-system (local + `github:`), dashboard tiny POSTs, `map` / fingerprints, `wireframe`, `skills list\|install`, OS sandbox. **Shipped CLI** (founding table): `assume list` / `assume answer` / `index rebuild` / `control-mode` / `chat`. PATH `legion` is an alias of `legion-cli`. **Still later:** 8-agent QA; `control_mode: autonomous`. Bounded workers and opt-in hybrid retrieval follow rev 15. | Twenty PRs that secretly ship a second product is not a v0. Docs follow shipped code when the code matches the product bet. Rev 14 supersedes every parked row that named the twelve. |
 | KD19 | **Brownfield execute (shipped extra)** | Two surfaces (KD13): `init --mode brownfield` sets `project.mode`; 10-verb `execute` after that is **in-place**. Engineer-operated `legion-cli brownfield --execute` is the only **git worktree** path. Do not merge. | User decision. Isolation for the audit extra; 10-verb execute after init-brownfield is not that path. |
 
 **Control-mode matrix (KD14)** — evaluated by `@9thlevelsoftware/legion-cli-core`, not by the model:
@@ -151,7 +167,7 @@ The result is scope creep, untested “done,” and a terminal wall that scares 
 - **Not a brand.** No default look shipped as “a product aesthetic” for user products.
 - **Not a W3C WebMCP polyfill.**
 - **Not a wrap of `@9thlevelsoftware/legion`.** That package remains the multi-runtime plugin installer (`npx @9thlevelsoftware/legion --claude`, bin `legion-plugins`). Legion CLI publishes PATH `legion-cli` **and** `legion` (same `dist/bin.js`); installer first-args refuse. We borrow Legion *mechanisms*; we do not wrap or republish that installer. See A7.
-- **Not concurrent execute workers.** OS sandbox around execute is **shipped**; FileContract revert stays. `flags.parallelExecute` stays unread. The §5.4 door is still not built.
+- **Bounded concurrent execute workers (rev 15).** Explicit `execution.maxWorkers` or `--jobs` applies only to automatic `--until-blocked`; separate jails and serialized application retain FileContract enforcement. `flags.parallelExecute` stays unread and cannot enable workers.
 - **Not an exploit/malware toolkit.**
 
 ---
@@ -563,7 +579,7 @@ flowchart LR
   T3 --> T4
 ```
 
-Parallel execute is a **later door**, not this series (`flags.parallelExecute` stays false and unread by execute). See §5.4.
+Bounded parallel execute is opt-in through `execution.maxWorkers` or `execute --jobs`; `flags.parallelExecute` stays false and unread. See §5.4.
 
 #### 4.2 File contract
 
@@ -791,9 +807,9 @@ PR-11 goldens:
 - Extra: `fake` adapter `git add` + `git commit` of `src/secret.ts` **not** in `filesAllowed` → path absent from the worktree after revert; task `blocked`; no `reset --hard`.
 - In-contract: `fake` adapter commits **only** `filesAllowed` → `verificationCommands` run; task `done`; HEAD may still be the agent commit.
 
-This is **after-the-fact policy**. Execute also runs inside an OS sandbox (`@9thlevelsoftware/legion-cli-sandbox`; jail-as-project-root; copy-out only `allowedWrites`; revert still runs). Backends (detection order): `bwrap` (Linux), `seatbelt` (macOS), `docker` (anywhere with a Docker daemon and `process.execPath` reachable inside the sandbox), `copy` (fallback; not hardened). `--allow-no-sandbox` is a TTY confirmation to accept the copy backend; piped stdin is refused. On a sandbox-less machine the copy backend is the host default and doctor reports it as advisory. Vendor CLIs can still use the network. Concurrent workers stay later (§5.4).
+This is **after-the-fact policy**. Execute also runs inside an OS sandbox (`@9thlevelsoftware/legion-cli-sandbox`; jail-as-project-root; copy-out only `allowedWrites`; revert still runs). Backends (detection order): `bwrap` (Linux), `seatbelt` (macOS), `docker` (anywhere with a Docker daemon and `process.execPath` reachable inside the sandbox), `copy` (fallback; not hardened). `--allow-no-sandbox` is a TTY confirmation to accept the copy backend; piped stdin is refused. On a sandbox-less machine the copy backend is the host default and doctor reports it as advisory. Vendor CLIs can still use the network. Concurrent workers follow the opt-in jail protocol in §5.4.
 
-`resume.json` (also used if timeout):
+Historical `resume.json` v1 example (readable for conservative recovery; new runs write v2 with atomic stages, owner start identities, logs and recovery commands):
 
 ```json
 {
@@ -811,22 +827,15 @@ This is **after-the-fact policy**. Execute also runs inside an OS sandbox (`@9th
 
 Copy (not symlink) the skill directory into `.legion-cli/cache/skills/<run-id>/`. v0 also copies `craft/*.md` into that tree. Optional `.legion-cli/design/DESIGN.md` is appended to `prompt.md` if present. Design-system *packages* are a shipped extra.
 
-#### 5.4 Later isolation door (concurrent workers — not the OS sandbox)
+#### 5.4 Bounded concurrent execution
 
-OS sandbox around execute is **shipped** (item 7 of the twelve). This door is **concurrent workers**, still not built: SkillContract ∩ FileContract, extra-file revert after `wait()`, serial `in_progress` (`isTaskReady` refuses a second), brownfield `--execute` worktrees. `flags.parallelExecute` stays **false** and **unread** by execute. Do **not** implement concurrent workers in this series.
+`execution.maxWorkers` defaults to 1 and accepts 1–4. `execute --jobs` explicitly overrides it for automatic `--until-blocked` execution. An explicit task ID remains single-task. The legacy `flags.parallelExecute` field does not activate workers.
 
-If concurrent workers are ever allowed, the door is:
+Workers select dependency-ready tasks in stable order with disjoint file contracts. Each uses an existing sandbox jail; lifecycle workers create no git worktrees. Brownfield worktrees remain exclusively under `.legion-cli/worktrees/<run>/pr-N/`.
 
-1. **Opt-in flag** `flags.parallelExecute: true` plus an explicit `legion-cli execute --parallel` that still refuses unless the flag is on (no silent parallelism).
-2. **One git worktree per in_progress task** under `.legion-cli/worktrees/<taskId>/` on branch `worker/<taskId>`, created with `gitWorktreeAdd` (reuse brownfield helper; do not `-B` reset). Greenfield default remains in-place serial.
-3. **File-ownership / task-boundary contracts** as git-reviewed markdown `.legion-cli/coord/OWNERSHIP.md` listing `taskId → filesAllowed`. Overlapping `filesAllowed` remains a refuse — worktrees isolate dirty trees, they do **not** make overlapping contracts legal.
-4. **Revert still runs** in each worktree after `wait()` against that worker’s `preSpawnRef`.
-5. **Merge is a human/ship problem**, not an agent problem. Do not auto-merge worker branches. `legion-cli ship` stays the commit gate on the operator’s tree.
-6. **No second orchestration UI.** No dashboard worker board, no chat dispatcher, no MCP write tool to launch workers. Status continues to show one `currentTaskId` or, if parallel ever lands, a list on `status --blockers` / `next` only.
-7. **Worktrees do not replace the worker CLI’s own permissions.** Execute already has an OS sandbox; this door does not unlock parallelism.
-8. Open Dynamic Workflows’ throwaway `git worktree add --detach` + unified diff + remove is acceptable as an implementation note for **throwaway** workers; Legion’s durable extra-file revert still applies inside the worktree.
+The engine inspects worker output before serialized application, checks HEAD and owned-path baselines, and verifies each integrated task once. A conflicting sibling preserves successful results and unrelated operator edits. Dependents become eligible only after the batch settles; a blocked batch stops further dispatch.
 
-This door is documented so a future PR cannot invent a dashboard-first orchestrator. **Do not implement it** except comments on `flags.parallelExecute`.
+State records active task IDs and run ownership while preserving legacy single-task fields. Interruption aborts children with a bounded wait and retains artifacts, process identities, and explicit recovery commands. Ship remains the approval and commit gate. The dashboard observes engine state and does not become a separate orchestrator.
 
 ---
 
@@ -906,11 +915,11 @@ v0 does **not** spawn eight agents. `@9thlevelsoftware/legion-cli-qa` runs:
 1. `pnpm test -- --reporter=json` (or `config.yaml qa.unitCommand`)
 2. `pnpm exec playwright test --reporter=json` if UI ACs exist and `qa.mode=full`
 
-Tags: test titles or Playwright grep must include `@p0` / `@p1` / `@p2`. The execute skill is required to copy `AC.priority` into the test name. **Untagged tests count as P1.** Visual tests: `@visual` or Playwright screenshot-diff failures.
+Tags: test titles must include canonical `@ac(<criterion-id>)` links; multiple links are supported. Functional priority comes from the declared SPEC criterion, regardless of title priority tags. Untagged passing tests supply no acceptance coverage. Visual tests retain `@visual` and Playwright screenshot-diff failure recognition. See the rev 15 contract for score/source migration and missing-evidence rules.
 
 | Bucket | Points | Formula |
 | --- | --- | --- |
-| P0 | 40 | `failed > 0` → 0; else 40 |
+| P0 | 40 | Any failed, skipped, or missing P0 criterion → 0; else 40 |
 | P1 | 30 | `round(30 * passRate)` |
 | P2 | 15 | `round(15 * passRate)` |
 | Visual | 15 | `regressions > 0` → 0; else 15. If spec has **no UI ACs and no wireframes**, N/A: award 15 and `regressions=0` without running Playwright. If spec **has** UI ACs and Playwright did not run in `full` mode → visual 0. |
@@ -1209,7 +1218,7 @@ Off the default window. Packets spawn tickets, not execute. Compaction is manual
 
 Repo map PageRank (`packages/map`) and fingerprint/LSP files (`packages/schema/json/fingerprint-file.json`, `lsp-diagnostics-file.json`) are generated by `legion-cli map`. Serve state: `packages/schema/json/serve-file.json`.
 
-`autonomous` remains a hidden refused value. `assume` / `index rebuild` / `control-mode` / `chat` are shipped CLI (founding table). There is no “Later, not this series” or “Not in this product” command section. **Still later (not the twelve):** embeddings; 8-agent QA (`qa.loop: full`); concurrent execute workers (§5.4).
+`autonomous` remains a hidden refused value. `assume` / `index rebuild` / `control-mode` / `chat` are shipped CLI (founding table). There is no “Later, not this series” or “Not in this product” command section. **Still later:** 8-agent QA (`qa.loop: full`). Bounded workers and opt-in retrieval follow rev 15.
 
 ### v0 gap; follow-up PRs in this series
 
@@ -1462,7 +1471,8 @@ export interface LegionConfig {  // config.yaml
   control_mode: ControlMode;
   qa: { mode: "full" | "no-browser"; passScore: 85; unitCommand?: string };
   dashboard: { port: number; bind: "127.0.0.1" };
-  flags: { mcpApps: false; webmcp: false; parallelExecute: false }; // parallelExecute later door; unread by execute
+  execution: { maxWorkers: number }; // default 1, range 1–4
+  flags: { mcpApps: false; webmcp: false; parallelExecute: false }; // legacy parallelExecute remains unread
 }
 
 export interface Spec {
@@ -1788,7 +1798,7 @@ See `LegionConfig`. `mcpApps`, `webmcp`, `parallelExecute` stay false. `adapter.
 1. Internal dogfood after PR-04 (lifecycle) exists — engineers still use CLI.
 2. Design-partner product people — greenfield, configured adapter, HTTP **viewer**.
 3. v0 tag — doctor path, fixtures, degraded QA, lockfile.
-4. Shipped extras already in tree — brownfield (effort 1–5), MCP, `serve` + WebMCP, packets, compaction, garden, design-system (local + `github:`), dashboard tiny POSTs, `map` / fingerprints, `wireframe`, `skills list|install`, OS sandbox. Always-on shipped CLI: `control-mode`, `chat`. AdapterId `http` and PATH `legion` have **landed**. Verified vendor extra-adapter argv is **shipped**. **Still later (not the twelve):** embeddings; 8-agent QA; `control_mode: autonomous`; concurrent execute workers.
+4. Shipped extras already in tree — brownfield (effort 1–5), MCP, `serve` + WebMCP, packets, compaction, garden, design-system (local + `github:`), dashboard tiny POSTs, `map` / fingerprints, `wireframe`, `skills list|install`, OS sandbox. Always-on shipped CLI: `control-mode`, `chat`. AdapterId `http` and PATH `legion` have **landed**. Verified vendor extra-adapter argv is **shipped**. **Still later:** 8-agent QA; `control_mode: autonomous`. Bounded workers and opt-in hybrid retrieval follow rev 15.
 
 ### Rollback
 
@@ -2009,4 +2019,4 @@ Historical founding series from an empty repo. **PR-01–PR-16 were v0.** Packet
 - **Depends on:** PR-10, PR-14
 - **Description:** Still not a second source of truth. MCP remains read-only.
 
-**Still later (not the twelve):** embeddings; 8-agent QA behind `qa.loop: full`; `control_mode: autonomous` (off); concurrent execute workers (§5.4, specified, not built). Brownfield `--execute` worktrees, packets, compaction, MCP, `serve` + WebMCP, garden, design-system (local + `github:`), dashboard tiny POSTs, `map` / fingerprints / LSP, `wireframe`, `skills list|install`, OS sandbox, `chat`, AdapterId `http`, and PATH `legion` have landed. `legion-cli control-mode` is Always-on shipped CLI. Verified vendor extra-adapter argv has landed. There is no “Later, not this series” / “Not in this product” help section.
+**Still later:** 8-agent QA behind `qa.loop: full`; `control_mode: autonomous` (off). Bounded workers and opt-in retrieval follow rev 15. Brownfield `--execute` worktrees, packets, compaction, MCP, `serve` + WebMCP, garden, design-system (local + `github:`), dashboard tiny POSTs, `map` / fingerprints / LSP, `wireframe`, `skills list|install`, OS sandbox, `chat`, AdapterId `http`, and PATH `legion` have landed. `legion-cli control-mode` is Always-on shipped CLI. Verified vendor extra-adapter argv has landed. There is no “Later, not this series” / “Not in this product” help section.

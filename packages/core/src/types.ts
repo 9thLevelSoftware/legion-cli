@@ -4,6 +4,7 @@ import type { GardenReport, SearchHit } from "@9thlevelsoftware/legion-cli-wiki"
 import type {
   AdapterId,
   AdapterResolutionSource,
+  AgentUsage,
   Assumption,
   BrownfieldDagNode,
   BrownfieldRoster,
@@ -38,6 +39,10 @@ export type LegionEngineOptions = {
   fakeTimedOut?: boolean;
   fakeHoldWait?: FakeHoldWait;
   fakeOnWait?: () => Promise<void>;
+  /** Test-only: runs immediately before each serialized parallel output application. */
+  fakeBeforeParallelApply?: (taskId: string, index: number) => Promise<void>;
+  /** Test-only: can hold one parallel member before its child starts. */
+  fakeBeforeParallelStart?: (taskId: string, index: number) => Promise<void>;
   fakeHandlePid?: number;
   /** Test-only, like the other fake* seams: verification throws this message. */
   fakeVerificationError?: string;
@@ -45,6 +50,8 @@ export type LegionEngineOptions = {
   fakeOnVerify?: () => Promise<void>;
   /** Test-only: runs during qa (lock-free after F-026). Injected-clock advance lives here. */
   fakeOnQa?: () => Promise<void>;
+  /** Test-only: permits QaOptions.score; production engines must execute configured reports. */
+  fakeQaScoreInjection?: boolean;
   verificationTimeoutMs?: number;
 };
 
@@ -70,6 +77,7 @@ export type InitOptions = {
   adapter: AdapterId;
   generic?: { binary: string; args: string[] };
   http?: { baseUrl: string; model: string; apiKeyEnv: string; allowLoopback?: boolean };
+  acp?: { command: string; args: string[]; enabled: true };
   mode?: "greenfield" | "brownfield";
   controlMode?: ControlMode | "autonomous" | string;
   allowCopyJail?: boolean;
@@ -289,6 +297,11 @@ export type ShipPreview = {
   unrelatedUnchanged: boolean;
   unrelated: string[];
   productFingerprint: string;
+  qaCoverage: {
+    missing: string[];
+    failed: string[];
+    skipped: string[];
+  };
 };
 
 export type ShipOptions = {
@@ -302,10 +315,24 @@ export type ShipOptions = {
 };
 
 export type ExecuteOptions = {
+  /** Resume a compatible interrupted engine-owned HTTP run. */
+  resume?: string;
   untilBlocked?: boolean;
   fix?: boolean;
   adapter?: AdapterId;
+  /** Parallel workers for automatic --until-blocked execution (1-4). */
+  jobs?: number;
+  /** Named adapter profile; mutually exclusive with adapter. */
+  profile?: string;
   allowNoSandbox?: boolean;
+  onProgress?: (progress: ExecuteProgress) => void;
+};
+
+export type ExecuteProgress = {
+  taskId: string;
+  stage: "starting" | "running" | "agent-complete" | "integrating" | "verifying" | "done" | "blocked";
+  elapsedMs: number;
+  logPath?: string;
 };
 
 export type ExecuteTaskResult = {
@@ -323,6 +350,9 @@ export type ExecuteTaskResult = {
   trustTierNote?: string;
   adapterId?: AdapterId;
   resolutionSource?: AdapterResolutionSource;
+  profile?: string;
+  usage?: AgentUsage;
+  limitReason?: string;
 };
 
 export type ExecuteResult = {
@@ -386,6 +416,7 @@ export type NewTicket = {
   notes?: string;
   contract?: Partial<FileContract>;
   adapter?: AdapterId;
+  profile?: string;
 };
 
 export type NewPacket = {
@@ -413,8 +444,10 @@ export type AmendTaskOptions = {
   blockedBy?: string[];
   blocks?: string[];
   adapter?: AdapterId;
+  profile?: string;
   /** Mutually exclusive with `adapter`. */
   clearAdapter?: boolean;
+  clearProfile?: boolean;
 };
 
 export type CompactedTask = {
@@ -441,6 +474,7 @@ export type WireframeOptions = {
   restyle?: boolean;
   spawn?: boolean;
   adapter?: AdapterId;
+  profile?: string;
 };
 
 export type WireframeResult = {

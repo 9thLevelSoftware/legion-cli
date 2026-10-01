@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, projectSourceIdentity, qaSpecHash } from "@9thlevelsoftware/legion-cli-core";
 import { normalize, runCli, withTempDir } from "./helpers.js";
 
 function git(cwd, args) {
@@ -92,41 +92,91 @@ async function seedReadyToShip(dir, extra = {}) {
     },
     "Task body stays.\n",
   );
+  await mkdir(join(dir, "src"), { recursive: true });
+  await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
+  const specDoc = await engine.store.readSpec("spec-checkin");
   await mkdir(join(engine.store.paths.qaDir, "scores"), { recursive: true });
   await writeFile(
     join(engine.store.paths.qaDir, "scores", "qa-1.json"),
     `${JSON.stringify(
       extra.score ?? {
-        schemaVersion: "legion-cli-qa/v1",
+        schemaVersion: "legion-cli-qa/v2",
         id: "qa-1",
         specId: "spec-checkin",
         mode: "full",
         buckets: {
           p0: { points: 40, max: 40, failed: 0 },
-          p1: { points: 27, max: 30, passRate: 0.9 },
-          p2: { points: 12, max: 15, passRate: 0.8 },
+          p1: { points: 30, max: 30, passRate: 1 },
+          p2: { points: 15, max: 15, passRate: 1 },
           visual: { points: 15, max: 15, regressions: 0 },
         },
-        total: 94,
+        total: 100,
         pass: true,
-        evidencePaths: [".legion-cli/qa/scores/qa-1.json"],
+        evidencePaths: [
+          ".legion-cli/qa/runs/qa-1/unit.json",
+          ".legion-cli/qa/runs/qa-1/unit.meta.json",
+          ".legion-cli/qa/runs/qa-1/playwright.json",
+          ".legion-cli/qa/runs/qa-1/playwright.meta.json",
+        ],
         createdAt: "2026-09-01T12:00:00Z",
+        criteria: [{ id: "AC-01", priority: "P0", outcome: "passed" }],
+        missingCriterionIds: [],
+        failedCriterionIds: [],
+        skippedCriterionIds: [],
+        reportFailures: 0,
+        specHash: qaSpecHash(specDoc.data, specDoc.body),
+        sourceHash: await projectSourceIdentity(dir),
       },
       null,
       2,
     )}\n`,
     "utf8",
   );
-  await mkdir(join(dir, "src"), { recursive: true });
-  await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
+  await mkdir(join(engine.store.paths.qaDir, "runs", "qa-1"), { recursive: true });
+  await writeFile(
+    join(engine.store.paths.qaDir, "runs", "qa-1", "unit.json"),
+    `${JSON.stringify({ tests: [{ title: "health @ac(AC-01)", status: "passed" }] }, null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    join(engine.store.paths.qaDir, "runs", "qa-1", "unit.meta.json"),
+    `${JSON.stringify({ version: 1, kind: "unit", capture: { started: true, status: 0, timedOut: false } }, null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    join(engine.store.paths.qaDir, "runs", "qa-1", "playwright.json"),
+    `${JSON.stringify({ tests: [{ title: "health @ac(AC-01)", status: "passed" }] }, null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    join(engine.store.paths.qaDir, "runs", "qa-1", "playwright.meta.json"),
+    `${JSON.stringify({ version: 1, kind: "playwright", capture: { started: true, status: 0, timedOut: false } }, null, 2)}\n`,
+    "utf8",
+  );
   return engine;
+}
+
+async function refreshQaIdentity(engine) {
+  const path = join(engine.store.paths.qaDir, "scores", "qa-1.json");
+  const score = JSON.parse(await readFile(path, "utf8"));
+  const specDoc = await engine.store.readSpec("spec-checkin");
+  await writeFile(
+    path,
+    `${JSON.stringify({
+      ...score,
+      specHash: qaSpecHash(specDoc.data, specDoc.body),
+      sourceHash: await projectSourceIdentity(engine.projectRoot),
+    }, null, 2)}\n`,
+    "utf8",
+  );
 }
 
 test("ship stages, asks Y/n, writes receipt, and does not compact tasks", async () => {
   await withTempDir(async (dir) => {
-    await seedReadyToShip(dir);
+    const engine = await seedReadyToShip(dir);
     initGitRepo(dir);
     await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    await refreshQaIdentity(engine);
     const result = runCli(["ship", "--project", dir], { input: "y\n" });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const out = normalize(result.stdout);
@@ -136,7 +186,7 @@ test("ship stages, asks Y/n, writes receipt, and does not compact tasks", async 
     assert.match(out, /Ship receipt written/);
     const receipt = await readFile(join(dir, ".legion-cli", "audit", "ship-spec-checkin.md"), "utf8");
     assert.match(receipt, /qa\.mode: full/);
-    assert.match(receipt, /qa\.total: 94/);
+    assert.match(receipt, /qa\.total: 100/);
     const events = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
     assert.match(events, /"type":"ship"/);
     const task = await readFile(join(dir, ".legion-cli", "tasks", "TSK-0001.md"), "utf8");
@@ -190,9 +240,10 @@ test("ship --yes still requires Y/n", async () => {
 
 test("ship --commit after Y creates a commit", async () => {
   await withTempDir(async (dir) => {
-    await seedReadyToShip(dir);
+    const engine = await seedReadyToShip(dir);
     initGitRepo(dir);
     await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    await refreshQaIdentity(engine);
     const result = runCli(["ship", "--project", dir, "--commit"], { input: "Y\n" });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const msg = git(dir, ["log", "-1", "--pretty=%s"]);
@@ -219,7 +270,7 @@ test("ship without flags does not advertise a second legion-cli ship", async () 
     await seedReadyToShip(dir);
     const result = runCli(["ship", "--project", dir, "--json"], { input: "y\n" });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.match(result.stdout, /"next": "legion-cli spec new"/);
+    assert.match(result.stdout, /"next": "legion-cli spec new --project/);
     assert.doesNotMatch(result.stdout, /legion-cli ship --pr --commit/);
   });
 });

@@ -38,6 +38,7 @@ export function ticketFromInput(id: string, specId: string, input: NewTicket): T
     priority: input.priority ?? "P2",
     specId,
     adapter: input.adapter,
+    profile: input.profile,
     parentId: input.parentId,
     blockedBy: input.parentId ? [input.parentId] : [],
     blocks: [],
@@ -64,6 +65,10 @@ export function parseExtraJson(raw: unknown): NewTicket[] {
       adapter:
         typeof rec.adapter === "string" && AdapterIdSchema.safeParse(rec.adapter).success
           ? (rec.adapter as AdapterId)
+          : undefined,
+      profile:
+        typeof rec.profile === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(rec.profile)
+          ? rec.profile
           : undefined,
       contract: {
         filesAllowed: Array.isArray(rec.filesAllowed)

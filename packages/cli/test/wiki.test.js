@@ -87,6 +87,39 @@ test("help --all lists ingest search show brief wiki trust as always-on operatio
   assert.doesNotMatch(alwaysOn, /assume list/);
 });
 
+test("nested help resolves full command paths", () => {
+  const result = runCli(["help", "spec approve"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(normalize(result.stdout), /Freeze the spec/);
+  assert.match(normalize(result.stdout), /--message/);
+});
+
+test("init reports local adapter and sandbox preflight without provider activity", async () => {
+  await withTempDir(async (dir) => {
+    const result = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake", "--json"]);
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.preflight.adapter.ready, true);
+    assert.equal(typeof payload.preflight.sandbox.backend, "string");
+    assert.equal(typeof payload.preflight.ready, "boolean");
+  });
+});
+
+test("search --limit returns parseable truncation metadata", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await writeFile(join(dir, "one.md"), "# Alpha one\n\nAlpha result.\n", "utf8");
+    await writeFile(join(dir, "two.md"), "# Alpha two\n\nAlpha result.\n", "utf8");
+    runCli(["ingest", "--project", dir, "--no-commit", "one.md", "two.md"]);
+    const result = runCli(["search", "--project", dir, "--json", "--limit", "1", "Alpha"]);
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.hits.length, 1);
+    assert.equal(payload.truncated, true);
+    assert.ok(payload.total > payload.hits.length);
+  });
+});
+
 test("ingest --help lists --distill", () => {
   const result = runCli(["ingest", "--help"]);
   assert.equal(result.status, 0, result.stderr);

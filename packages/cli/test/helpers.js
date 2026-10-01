@@ -30,6 +30,7 @@ export function readGolden(name) {
 
 export function sanitizeDoctor(text) {
   return normalize(text)
+    .replace(/--project '[^']*'/g, "--project <project>")
     .replace(/^(ok  |FAIL)  Node >= 22 \(.+\)$/m, "$1  Node >= 22 (<version>)")
     .replace(/^(ok  |FAIL)  pnpm \(.+\)$/m, "$1  pnpm (<version>)")
     .replace(/^(ok  |FAIL)  git \(.+\)$/m, "$1  git (<version>)")

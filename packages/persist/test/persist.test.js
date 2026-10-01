@@ -677,7 +677,7 @@ test("writer vs reader: no torn reads and no failed writes", async () => {
     const complete = (raw) => raw === initial || (raw.includes(body) && /x\n\d+\n$/.test(raw));
     let done = false;
     let tornReads = 0;
-    let failedReads = 0;
+    const failedReads = [];
     let reads = 0;
     const reader = (async () => {
       while (!done) {
@@ -690,26 +690,30 @@ test("writer vs reader: no torn reads and no failed writes", async () => {
         }
         try {
           await store.readState();
-        } catch {
-          failedReads += 1;
+        } catch (err) {
+          failedReads.push(err);
         }
+        // Keep the read pressure concurrent without immediately reopening the target from the
+        // same microtask chain. On Windows that can starve rename retries until their bounded
+        // sharing-violation deadline expires.
+        await new Promise((resume) => setImmediate(resume));
       }
     })();
-    let failedWrites = 0;
+    const failedWrites = [];
     for (let i = 0; i < 200; i += 1) {
       const data = { ...base.data, currentTaskId: `TSK-${String(i).padStart(4, "0")}` };
       try {
         await store.writeState(data, `${body}\n${i}\n`);
-      } catch {
-        failedWrites += 1;
+      } catch (err) {
+        failedWrites.push(err);
       }
     }
     done = true;
     await reader;
     assert.ok(reads > 0);
     assert.equal(tornReads, 0);
-    assert.equal(failedReads, 0);
-    assert.equal(failedWrites, 0);
+    assert.deepEqual(failedReads, []);
+    assert.deepEqual(failedWrites, []);
   });
 });
 
@@ -1552,7 +1556,7 @@ test("summarizeAuditMetrics counts refuses, QA, execute duration, timeouts", () 
       type: "execute",
       phase: "executing",
       actor: "agent",
-      data: { durationMs: 10, timedOut: false },
+      data: { durationMs: 10, timedOut: false, adapterId: "codex", profile: "fast", status: "done" },
     },
     {
       schemaVersion: "legion-cli-audit/v1",
@@ -1560,7 +1564,7 @@ test("summarizeAuditMetrics counts refuses, QA, execute duration, timeouts", () 
       type: "execute",
       phase: "executing",
       actor: "agent",
-      data: { durationMs: 30, timedOut: true },
+      data: { durationMs: 30, timedOut: true, adapterId: "http", status: "blocked" },
     },
     {
       schemaVersion: "legion-cli-audit/v1",
@@ -1578,6 +1582,10 @@ test("summarizeAuditMetrics counts refuses, QA, execute duration, timeouts", () 
   assert.equal(metrics.execute.runs, 2);
   assert.equal(metrics.execute.meanDurationMs, 20);
   assert.equal(metrics.timeouts, 1);
+  assert.deepEqual(metrics.agents.byAdapter, { codex: 1, http: 1 });
+  assert.deepEqual(metrics.agents.byProfile, { fast: 1, "(none)": 1 });
+  assert.deepEqual(metrics.agents.bySkill, { execute: 2 });
+  assert.deepEqual(metrics.agents.byOutcome, { done: 1, blocked: 1 });
   assert.equal(
     summarizeAuditMetrics([
       {
@@ -1591,6 +1599,20 @@ test("summarizeAuditMetrics counts refuses, QA, execute duration, timeouts", () 
     ]).timeouts,
     0,
   );
+});
+
+test("summarizeAuditMetrics normalizes all agent skills and de-duplicates execute events", () => {
+  const base = { schemaVersion: "legion-cli-audit/v1", phase: "executing", actor: "agent" };
+  const metrics = summarizeAuditMetrics([
+    { ...base, ts: "2026-09-01T12:00:00.000Z", type: "agent_run", data: { runId: "run-exec", skillId: "execute", adapterId: "http", profile: "fast", outcome: "complete" } },
+    { ...base, ts: "2026-09-01T12:00:01.000Z", type: "execute", data: { runId: "run-exec", durationMs: 10, adapterId: "http", profile: "fast", status: "done" } },
+    { ...base, ts: "2026-09-01T12:00:02.000Z", type: "agent_run", data: { runId: "run-plan", skillId: "plan", adapterId: "codex", profile: null, outcome: "failed" } },
+    { ...base, ts: "2026-09-01T12:00:03.000Z", type: "agent_run", data: { runId: "run-chat", skillId: "chat", adapterId: "claude", profile: null, outcome: "complete" } },
+  ]);
+  assert.equal(metrics.execute.runs, 1);
+  assert.equal(metrics.agents.runs, 3);
+  assert.deepEqual(metrics.agents.bySkill, { execute: 1, plan: 1, chat: 1 });
+  assert.deepEqual(metrics.agents.byOutcome, { complete: 2, failed: 1 });
 });
 
 test("git add stages listed paths and not gitignored index/cache", async () => {

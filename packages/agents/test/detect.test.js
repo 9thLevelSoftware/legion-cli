@@ -221,6 +221,36 @@ test("resolveAdapterId precedence is cli > task > route > default", () => {
   });
 });
 
+test("resolveAdapterId adds named profile precedence without changing task adapter compatibility", () => {
+  const config = {
+    adapter: {
+      default: "claude",
+      routes: { execute: "codex", review: "mimo" },
+      profiles: {
+        fast: { adapter: "grok", modelArgs: ["--model", "fast"] },
+        careful: { adapter: "minimax" },
+      },
+      skillProfiles: { review: "careful" },
+    },
+  };
+  assert.deepEqual(resolveAdapterId({ config, skillId: "execute", cliProfile: "fast" }), {
+    id: "grok",
+    source: "profile",
+    profile: "fast",
+    profileConfig: config.adapter.profiles.fast,
+  });
+  assert.deepEqual(resolveAdapterId({ config, skillId: "execute", taskAdapter: "openai" }), {
+    id: "openai",
+    source: "task",
+  });
+  assert.deepEqual(resolveAdapterId({ config, skillId: "review" }), {
+    id: "minimax",
+    source: "skill-profile",
+    profile: "careful",
+    profileConfig: config.adapter.profiles.careful,
+  });
+});
+
 test("resolveAdapterId ignores Task.adapter unless skill is execute or verify", () => {
   const config = {
     adapter: { default: "claude", routes: { plan: "grok", review: "codex" } },

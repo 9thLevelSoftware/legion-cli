@@ -16,6 +16,7 @@ a { color:var(--accent); }
 .muted { color:var(--muted); }
 header { padding:1rem 1.5rem; border-bottom:1px solid var(--muted); }
 header nav a { margin-right:1rem; }
+a:focus-visible, button:focus-visible, .card:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
 main { padding:1.5rem; }
 .banner { background:var(--accent); color:var(--bg); padding:0.75rem 1.5rem; }
 .readonly { font-size:0.9rem; }
@@ -26,11 +27,13 @@ main { padding:1.5rem; }
 .col { background:var(--card); border:1px solid var(--muted); min-height:8rem; padding:0.75rem; }
 .col h2 { font-size:1rem; margin:0 0 0.5rem; }
 .card { border:1px solid var(--ink); padding:0.5rem; margin:0 0 0.5rem; }
-.card.current { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+.card.current, .card.selected { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
 .card h3 { margin:0 0 0.25rem; font-size:1rem; }
 pre { white-space:pre-wrap; overflow:auto; }
 iframe.wireframes { width:100%; min-height:24rem; border:1px solid var(--ink); background:var(--card); }
 .edges { list-style:none; padding:0; }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.live-controls { display:flex; gap:0.5rem; align-items:center; }
 `.trim();
 
 export const VIEWER_COPY =
@@ -39,6 +42,8 @@ export const VIEWER_COPY =
 export type DashboardHtmlOpts = {
   alert?: string;
   webmcp?: boolean;
+  /** The HTTP dashboard has an /events endpoint; embedded MCP Apps do not. */
+  live?: boolean;
 };
 
 /** Empty sandbox applies every restriction. Never pair allow-same-origin with allow-scripts. */
@@ -48,7 +53,7 @@ function sandboxedWireframeIframe(src: string): string {
 
 function layout(title: string, body: string, opts: DashboardHtmlOpts): string {
   const banner = opts.alert ? `<div class="banner">${escapeHtml(opts.alert)}</div>` : "";
-  const script = opts.webmcp ? `  <script src="/webmcp.js" defer></script>\n` : "";
+  const script = opts.live ? `  <script src="/dashboard.js" defer></script>\n${opts.webmcp ? `  <script src="/webmcp.js" defer></script>\n` : ""}` : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -62,7 +67,7 @@ ${CSS}
 <body>
   <header>
     <p class="muted">Legion CLI viewer</p>
-    <nav>
+    <nav aria-label="Dashboard pages">
       <a href="/">Board</a>
       <a href="/spec">Spec</a>
       <a href="/graph">Graph</a>
@@ -73,6 +78,7 @@ ${CSS}
   </header>
   ${banner}
   <main>
+    ${opts.live ? '<p id="dashboard-live" class="sr-only" aria-live="polite"></p>' : ""}
 ${body}
   </main>
 ${script}</body>
@@ -106,7 +112,7 @@ function taskCard(task: DashboardTask, currentId: string | null): string {
     : "";
   const adapterAttr = task.adapter ? ` data-adapter="${escapeHtml(task.adapter)}"` : "";
   const meta = `${escapeHtml(task.priority)} · ${escapeHtml(task.status)}${task.adapter ? ` · ${escapeHtml(task.adapter)}` : ""}`;
-  return `<article class="card${current}" data-task="${escapeHtml(task.id)}" data-status="${escapeHtml(task.status)}"${adapterAttr}>
+  return `<article class="card${current}" tabindex="0" aria-selected="false" data-task="${escapeHtml(task.id)}" data-status="${escapeHtml(task.status)}"${adapterAttr}>
         <h3>${escapeHtml(task.id)}</h3>
         <p>${escapeHtml(task.title)}</p>
         <p class="muted">${meta}</p>
@@ -123,7 +129,7 @@ function alertFor(snapshot: DashboardSnapshot): string | undefined {
   return undefined;
 }
 
-export function renderKanban(snapshot: DashboardSnapshot, webmcp = false): string {
+export function renderKanban(snapshot: DashboardSnapshot, webmcp = false, live = true): string {
   const name = snapshot.project?.name ?? "(uninitialized)";
   const current = snapshot.currentTask
     ? `${snapshot.currentTask.id} ${snapshot.currentTask.title}`
@@ -155,21 +161,42 @@ export function renderKanban(snapshot: DashboardSnapshot, webmcp = false): strin
             `<li><span class="muted">${escapeHtml(event.ts)}</span> ${escapeHtml(event.type)} · ${escapeHtml(event.phase)}${event.taskId ? ` · ${escapeHtml(event.taskId)}` : ""}</li>`,
         )
         .join("")}</ol>`;
+  const activeRun = snapshot.runs.find((run) => run.taskId === snapshot.currentTaskId) ?? snapshot.runs[0];
+  const runPanel = activeRun
+    ? `<p><strong>${escapeHtml(activeRun.runId)}</strong> · ${escapeHtml(activeRun.stage)} · owner ${escapeHtml(activeRun.ownerStatus)}</p>
+      <p class="muted">Logs: ${escapeHtml(activeRun.logs.stdout)}; ${escapeHtml(activeRun.logs.stderr)}</p>
+      ${activeRun.interruptionReason ? `<p>Interrupted: ${escapeHtml(activeRun.interruptionReason)}</p>` : ""}
+      ${activeRun.recoveryCommand ? `<p>Recovery: <code>${escapeHtml(activeRun.recoveryCommand)}</code></p>` : ""}`
+    : `<p class="muted">No execution run recorded.</p>`;
+  const qaPanel = snapshot.qaEvidence
+    ? `<p>Score ${snapshot.qaEvidence.total} · ${snapshot.qaEvidence.pass ? "PASS" : "FAIL"} · ${snapshot.qaEvidence.current ? "current" : "STALE"}</p>
+      ${snapshot.qaEvidence.staleReason ? `<p class="muted">Stale: ${escapeHtml(snapshot.qaEvidence.staleReason)}</p>` : ""}
+      <p class="muted">Criteria: ${snapshot.qaEvidence.criteria.passed}/${snapshot.qaEvidence.criteria.total} passed · Missing: ${escapeHtml(snapshot.qaEvidence.missing.join(", ") || "none")} · Failed: ${escapeHtml(snapshot.qaEvidence.failed.join(", ") || "none")} · Skipped: ${escapeHtml(snapshot.qaEvidence.skipped.join(", ") || "none")}</p>`
+    : `<p class="muted">No QA evidence recorded.</p>`;
+  const controls = live
+    ? `<div class="live-controls"><button type="button" data-manual-refresh>Refresh</button><button type="button" data-copy-command="${escapeHtml(snapshot.nextCommand)}">Copy next command</button><code id="dashboard-next">${escapeHtml(snapshot.nextCommand)}</code><span id="dashboard-freshness" class="muted">Live updates connecting…</span></div>`
+    : `<p class="muted">Snapshot (read-only): <code id="dashboard-next">${escapeHtml(snapshot.nextCommand)}</code></p>`;
   const body = `
     <h1>${escapeHtml(name)}</h1>
-    <p>phase: <strong>${escapeHtml(snapshot.stateError ?? snapshot.phase)}</strong> · current task: <strong>${escapeHtml(current)}</strong></p>
+    <p id="dashboard-summary">phase: <strong>${escapeHtml(snapshot.stateError ?? snapshot.phase)}</strong> · current task: <strong>${escapeHtml(current)}</strong></p>
+    <p id="dashboard-evidence" class="muted">Evidence: ${escapeHtml(snapshot.evidenceCoverage)}</p>
+    ${controls}
     <h2>Path</h2>
-${pathList(snapshot)}
+    <div id="dashboard-path">${pathList(snapshot)}</div>
     <h2>Kanban</h2>
-    <div class="board">
+    <div id="dashboard-board" class="board">
 ${cols}
     </div>
     <h2 id="blockers">Blockers</h2>
-    ${blockers}
+    <div id="dashboard-blockers">${blockers}</div>
+    <h2>Execution recovery</h2>
+    ${runPanel}
+    <h2>QA evidence</h2>
+    ${qaPanel}
     <h2 id="timeline">Timeline</h2>
     ${timeline}
 `;
-  return layout(`${name} · board`, body, { alert: alertFor(snapshot), webmcp });
+  return layout(`${name} · board`, body, { alert: alertFor(snapshot), webmcp, live });
 }
 
 export function renderSpec(snapshot: DashboardSnapshot, webmcp = false): string {
@@ -278,4 +305,14 @@ export function renderWikiPage(page: ShownPage, backlinks: string[], webmcp = fa
 
 export function renderNotFound(message: string, webmcp = false): string {
   return layout("Not found", `<h1>Not found</h1><p>${escapeHtml(message)}</p>`, { webmcp });
+}
+
+function quoteProjectForShell(projectRoot: string): string {
+  if (process.platform === "win32") return `'${projectRoot.replaceAll("'", "''")}'`;
+  return `'${projectRoot.replaceAll("'", "'\\''")}'`;
+}
+
+export function renderServerError(message: string, webmcp = false, projectRoot?: string): string {
+  const command = projectRoot ? `legion-cli status --project ${quoteProjectForShell(projectRoot)}` : "legion-cli status";
+  return layout("Dashboard error", `<h1>Dashboard error</h1><p>${escapeHtml(message)}</p><p><button type="button" data-manual-refresh>Retry</button> <a href="/">Return to board</a> <button type="button" data-copy-command="${escapeHtml(command)}">Copy status command</button></p>`, { webmcp });
 }

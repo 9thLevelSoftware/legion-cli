@@ -37,7 +37,7 @@ Implicit forbidden still applies: `.git/**`, `.env*`, `.legion-cli/config.yaml`,
 
 Read the FileContract and spec in prompt.md.
 
-Write only listed files. Copy each acceptance criterion's `priority` into new test titles as `@p0` / `@p1` / `@p2` (untagged tests count as P1). Visual tests: `@visual`.
+Write only listed files. Link every acceptance test to its criterion with the canonical title tag `@ac(AC-ID)`; repeat the tag when one test covers multiple criteria. Also copy each linked criterion's `priority` into the title as `@p0` / `@p1` / `@p2`. Untagged passing tests do not supply acceptance coverage. Visual tests also use `@visual`.
 
 If you discover extra work, stop expanding `filesAllowed` and write `.legion-cli/cache/runs/<id>/extra.json`. Extra work is a linked ticket, never an in-place expansion.
 

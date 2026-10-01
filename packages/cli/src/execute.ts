@@ -1,7 +1,7 @@
 import { createLegionEngine, findSkillsDir, HINT, isSliceTerminal, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
-import { writeJson, writeOut } from "./io.js";
+import { writeErr, writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 import { closePrompt, isNo, isYes, readLine, slurpStdin } from "./prompt.js";
 
@@ -19,7 +19,7 @@ export async function confirmAllowNoSandbox(verb: "execute" | "fix"): Promise<vo
   if (!process.stdin.isTTY) {
     refuse(`${verb} --allow-no-sandbox requires a TTY`, HINT.allowNoSandbox);
   }
-  writeOut("Copy jail is not OS isolation. Continue without a hardened sandbox? [Y/n]");
+  writeErr("Copy jail is not OS isolation. Continue without a hardened sandbox? [Y/n]");
   const answer = await readLine("> ");
   if (isNo(answer)) {
     refuse(`${verb} --allow-no-sandbox declined`, HINT.allowNoSandbox);
@@ -31,9 +31,22 @@ export async function confirmAllowNoSandbox(verb: "execute" | "fix"): Promise<vo
 
 export async function runExecute(
   opts: CliOpts,
-  flags: { id?: string; untilBlocked?: boolean; fix?: boolean; adapter?: string; allowNoSandbox?: boolean },
+  flags: { id?: string; resume?: string; untilBlocked?: boolean; jobs?: string; fix?: boolean; adapter?: string; profile?: string; allowNoSandbox?: boolean },
 ): Promise<number> {
+  if (flags.adapter && flags.profile) {
+    refuse("execute --adapter and --profile are mutually exclusive", "legion-cli execute --profile <name>");
+  }
   const adapter = parseAdapterFlag(flags.adapter);
+  const jobs = flags.jobs === undefined ? undefined : Number(flags.jobs);
+  if (jobs !== undefined && (!Number.isInteger(jobs) || jobs < 1 || jobs > 4)) {
+    refuse("execute --jobs must be an integer from 1 to 4", "legion-cli execute --until-blocked --jobs 1");
+  }
+  if (jobs !== undefined && !flags.untilBlocked) {
+    refuse("execute --jobs requires --until-blocked", "legion-cli execute --until-blocked --jobs 1");
+  }
+  if (jobs !== undefined && flags.id) {
+    refuse("execute --jobs is only for automatic execution", "legion-cli execute --until-blocked --jobs 1");
+  }
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
   try {
     if (flags.allowNoSandbox) {
@@ -41,10 +54,18 @@ export async function runExecute(
       await confirmAllowNoSandbox("execute");
     }
   const result = await engine.execute(flags.id ?? "auto", {
+    ...(flags.resume ? { resume: flags.resume } : {}),
     untilBlocked: Boolean(flags.untilBlocked),
+    ...(jobs !== undefined ? { jobs } : {}),
+    onProgress: (progress) => {
+      const elapsed = (progress.elapsedMs / 1000).toFixed(1);
+      const log = progress.logPath ? ` log=${progress.logPath}` : "";
+      writeErr(`[${progress.taskId}] ${progress.stage} elapsed=${elapsed}s${log}`);
+    },
     fix: Boolean(flags.fix),
     allowNoSandbox: Boolean(flags.allowNoSandbox),
     ...(adapter ? { adapter } : {}),
+    ...(flags.profile ? { profile: flags.profile } : {}),
   });
   const state = await engine.getState();
   const slice = await engine.listSliceTasks();
@@ -74,6 +95,13 @@ export async function runExecute(
   for (const outcome of result.tasks) {
     const task = slice.find((item) => item.id === outcome.taskId);
     writeOut(startingTaskLine(outcome.taskId, task?.title, outcome.adapterId));
+    if (outcome.profile) writeOut(`Profile: ${outcome.profile}`);
+    if (outcome.usage) {
+      const cost = outcome.usage.estimatedCostUsd === undefined
+        ? ""
+        : ` estimatedCostUsd=${outcome.usage.estimatedCostUsd}${outcome.usage.costEstimated ? " (estimate)" : ""}`;
+      writeOut(`Usage: requests=${outcome.usage.requests ?? "unknown"} toolCalls=${outcome.usage.toolCalls ?? "unknown"} tokens=${outcome.usage.totalTokens ?? "unknown"}${cost}`);
+    }
     if (outcome.incident) {
       writeOut("inspect .git");
     }

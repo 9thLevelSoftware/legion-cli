@@ -1,9 +1,11 @@
 import type { HttpToolHost } from "@9thlevelsoftware/legion-cli-http";
+import type { AgentProfileConfig, AgentUsage } from "./profiles.js";
 import {
   ADAPTER_IDS,
   EXTRA_ADAPTER_IDS,
   type AdapterId,
   type AdapterResolutionSource,
+  type AcpAdapterConfig,
   type ExtraAdapterId,
   type HttpAdapterConfig,
   type SkillId,
@@ -17,6 +19,8 @@ export type SpawnableAdapterId = AgentAdapterId;
 export type AdapterResolution = {
   id: AgentAdapterId;
   source: AdapterResolutionSource;
+  profile?: string;
+  profileConfig?: AgentProfileConfig;
 };
 
 export const DETECT_ADAPTER_IDS = ADAPTER_IDS;
@@ -53,7 +57,7 @@ export type FakeArtifact = {
 
 export interface AgentJob {
   runId: string;
-  skillId: SkillId;
+  skillId: SkillId | `extension:${string}`;
   promptPath: string;
   pointerPrompt: string;
   cwd: string;
@@ -63,6 +67,25 @@ export interface AgentJob {
   wrapper?: { bin: string; argvPrefix: string[] };
   /** Engine-owned jail FS for the in-process HTTP tool-loop. Spawn CLIs ignore this. */
   httpHost?: HttpToolHost;
+  /** Resume a compatible engine-owned HTTP checkpoint. Spawn CLIs ignore this. */
+  resume?: boolean;
+  sourceIdentity?: string;
+  contractIdentity?: string;
+  externalConfigIdentity?: string;
+  jailIdentity?: string;
+  checkpointRoot?: string;
+  /** Selected named profile and engine-enforced request/tool budgets. */
+  profile?: string;
+  outputLimit?: number;
+  maxRequests?: number;
+  maxToolRounds?: number;
+  maxReportedTokens?: number;
+  maxEstimatedCostUsd?: number;
+  pricing?: {
+    inputPerMillionUsd?: number;
+    outputPerMillionUsd?: number;
+    requestUsd?: number;
+  };
   /** Fixture paths the fake adapter writes. Real adapters ignore this. */
   expectedArtifacts?: Array<string | FakeArtifact>;
 }
@@ -80,6 +103,9 @@ export interface AgentResult {
   stdoutPath: string;
   stderrPath: string;
   summaryPath?: string;
+  checkpointPath?: string;
+  usage?: AgentUsage;
+  recovery?: "resume" | "manual" | "none";
 }
 
 export type GenericAdapterConfig = {
@@ -108,6 +134,7 @@ export type AdapterCreateOptions = {
   mimo?: ExtraAdapterConfig;
   minimax?: ExtraAdapterConfig;
   http?: HttpAdapterConfig;
+  acp?: AcpAdapterConfig;
   artifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
   timedOut?: boolean;

@@ -13,6 +13,7 @@ import {
   HINT,
   LegionEngine,
   LegionRefuseError,
+  listRunRecoveryStatuses,
   optionalSkillSpawn,
   regressionTestPath,
   revertExtras,
@@ -86,9 +87,10 @@ test("execute writes local duration audit events", async () => {
       await seedExecute(store);
       initGitRepo(dir);
       const result = await engine.execute("auto");
-      assert.equal(result.status, "done");
+      assert.equal(result.status, "done", JSON.stringify(result.tasks));
       const jsonl = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
       assert.match(jsonl, /"type":"execute"/);
+      assert.match(jsonl, /"type":"agent_run"/);
       assert.match(jsonl, /"durationMs":/);
       assert.match(jsonl, /"adapterId":"fake"/);
       assert.match(jsonl, /"resolutionSource":"default"/);
@@ -538,6 +540,14 @@ test("in-contract commit still runs verificationCommands and can mark done", asy
         assert.equal(resume.binary, "(in-process)");
         assert.equal(resume.resolutionSource, "default");
         assert.equal(resume.argvSummary, "");
+        assert.equal(resume.schemaVersion, "legion-cli-resume/v2");
+        assert.equal(resume.stage, "completed");
+        assert.equal(typeof resume.enginePidStartedAt, "number");
+        assert.deepEqual(resume.logs, {
+          stdout: `.legion-cli/cache/runs/${result.tasks[0].runId}/stdout.log`,
+          stderr: `.legion-cli/cache/runs/${result.tasks[0].runId}/stderr.log`,
+          verification: [`.legion-cli/cache/runs/${result.tasks[0].runId}/verify-1.log`],
+        });
       },
       {
         fakeArtifacts: [{ path: "src/main.ts", content: "export const ok = true;\n", gitAdd: true }],
@@ -1291,5 +1301,465 @@ test("sandboxed plan copy-out includes SkillContract plans", async () => {
       assert.equal(await readFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "utf8"), "plan body\n");
       assert.equal(spawned.revert?.extrasReverted.includes(".legion-cli/plans/spec-checkin.md"), false);
     });
+  });
+});
+
+test("execute opts.profile selects the named profile and reports it", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      const config = await store.readConfig();
+      await store.writeConfig({
+        ...config,
+        adapter: {
+          ...config.adapter,
+          profiles: { fixture: { adapter: "fake", modelArgs: [] } },
+        },
+      });
+      await seedExecute(store);
+      initGitRepo(dir);
+      const result = await engine.execute("auto", { profile: "fixture" });
+      assert.equal(result.status, "done", JSON.stringify(result.tasks));
+      assert.equal(result.tasks[0].adapterId, "fake");
+      assert.equal(result.tasks[0].resolutionSource, "profile");
+      assert.equal(result.tasks[0].profile, "fixture");
+    });
+  });
+});
+
+test("execute --until-blocked runs a configured disjoint batch concurrently", async () => {
+  await withFakeAdapter(async () => {
+    let arrivals = 0;
+    let release;
+    const rendezvous = new Promise((resolve) => {
+      release = resolve;
+    });
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        const config = await store.readConfig();
+        await store.writeConfig({ ...config, execution: { maxWorkers: 2 } });
+        await seedExecute(store, {
+          extraTasks: [
+            makeTask({
+              id: "TSK-0002",
+              title: "board",
+              contract: {
+                filesAllowed: ["src/board.ts"],
+                expectedArtifacts: ["src/board.ts"],
+                verificationCommands: [passingVerificationCommand()],
+              },
+            }),
+          ],
+        });
+        initGitRepo(dir);
+
+        const result = await engine.execute("auto", { untilBlocked: true });
+        assert.equal(arrivals, 2, "both agents reached wait before either was released");
+        assert.deepEqual(result.tasks.map((task) => [task.taskId, task.status]), [
+          ["TSK-0001", "done"],
+          ["TSK-0002", "done"],
+        ]);
+      },
+      {
+        skillsDir,
+        fakeOnWait: async () => {
+          arrivals += 1;
+          if (arrivals === 2) release();
+          await Promise.race([
+            rendezvous,
+            new Promise((_, reject) => setTimeout(() => reject(new Error("parallel rendezvous timed out")), 2_000)),
+          ]);
+        },
+      },
+    );
+  });
+});
+
+test("parallel integration preserves a successful sibling when another path conflicts", async () => {
+  await withFakeAdapter(async () => {
+    let arrivals = 0;
+    let release;
+    const rendezvous = new Promise((resolve) => {
+      release = resolve;
+    });
+    let projectDir;
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        projectDir = dir;
+        await initProject(engine);
+        const config = await store.readConfig();
+        await store.writeConfig({ ...config, execution: { maxWorkers: 2 } });
+        await seedExecute(store, {
+          extraTasks: [
+            makeTask({
+              id: "TSK-0002",
+              title: "board",
+              contract: {
+                filesAllowed: ["src/board.ts"],
+                expectedArtifacts: ["src/board.ts"],
+                verificationCommands: [passingVerificationCommand()],
+              },
+            }),
+          ],
+        });
+        initGitRepo(dir);
+
+        const result = await engine.execute("auto", { untilBlocked: true, jobs: 2 });
+        assert.deepEqual(result.tasks.map((task) => [task.taskId, task.status]), [
+          ["TSK-0001", "blocked"],
+          ["TSK-0002", "done"],
+        ]);
+        assert.match(result.tasks[0].reason, /integration conflict.*src\/main\.ts/);
+        assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "operator edit\n");
+        assert.equal(await readFile(join(dir, "src", "board.ts"), "utf8"), "agent board\n");
+      },
+      {
+        skillsDir,
+        fakeOnWait: async () => {
+          arrivals += 1;
+          if (arrivals === 2) {
+            const jailDir = join(projectDir, ".legion-cli", "sandbox");
+            const runIds = (await readdir(jailDir)).sort();
+            for (const runId of runIds) {
+              const root = join(jailDir, runId);
+              const prompt = await readFile(join(root, ".legion-cli", "cache", "runs", runId, "prompt.md"), "utf8");
+              const rel = prompt.includes("Task: TSK-0002") ? "board.ts" : "main.ts";
+              await mkdir(join(root, "src"), { recursive: true });
+              await writeFile(join(root, "src", rel), rel === "board.ts" ? "agent board\n" : "agent main\n", "utf8");
+            }
+            await mkdir(join(projectDir, "src"), { recursive: true });
+            await writeFile(join(projectDir, "src", "main.ts"), "operator edit\n", "utf8");
+            release();
+          }
+          await rendezvous;
+        },
+      },
+    );
+  });
+});
+
+test("parallel integration blocks remaining siblings when HEAD moves between applications", async () => {
+  await withFakeAdapter(async () => {
+    let arrivals = 0;
+    let projectDir;
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        projectDir = dir;
+        await initProject(engine);
+        const config = await store.readConfig();
+        await store.writeConfig({ ...config, execution: { maxWorkers: 2 } });
+        await seedExecute(store, {
+          extraTasks: [
+            makeTask({
+              id: "TSK-0002",
+              contract: {
+                filesAllowed: ["src/board.ts"],
+                expectedArtifacts: ["src/board.ts"],
+                verificationCommands: [passingVerificationCommand()],
+              },
+            }),
+          ],
+        });
+        initGitRepo(dir);
+
+        const result = await engine.execute("auto", { untilBlocked: true, jobs: 2 });
+        assert.deepEqual(result.tasks.map((task) => [task.taskId, task.status]), [
+          ["TSK-0001", "done"],
+          ["TSK-0002", "blocked"],
+        ]);
+        assert.match(result.tasks[1].reason, /HEAD changed/);
+        assert.equal(await readFile(join(dir, "src", "main.ts"), "utf8"), "agent main\n");
+        await assert.rejects(() => readFile(join(dir, "src", "board.ts"), "utf8"), { code: "ENOENT" });
+        assert.equal(await readFile(join(dir, "operator.txt"), "utf8"), "operator commit\n");
+      },
+      {
+        skillsDir,
+        fakeOnWait: async () => {
+          arrivals += 1;
+          if (arrivals !== 2) return;
+          const jailDir = join(projectDir, ".legion-cli", "sandbox");
+          for (const runId of (await readdir(jailDir)).sort()) {
+            const root = join(jailDir, runId);
+            const prompt = await readFile(join(root, ".legion-cli", "cache", "runs", runId, "prompt.md"), "utf8");
+            const rel = prompt.includes("Task: TSK-0002") ? "board.ts" : "main.ts";
+            await mkdir(join(root, "src"), { recursive: true });
+            await writeFile(join(root, "src", rel), `agent ${rel.replace(".ts", "")}\n`, "utf8");
+          }
+        },
+        fakeBeforeParallelApply: async (_taskId, index) => {
+          if (index !== 1) return;
+          await writeFile(join(projectDir, "operator.txt"), "operator commit\n", "utf8");
+          git(projectDir, ["add", "operator.txt"]);
+          git(projectDir, ["commit", "-m", "operator between parallel applies"]);
+        },
+      },
+    );
+  });
+});
+
+test("parallel integration rejects an unborn repository that gains its first commit", async () => {
+  await withFakeAdapter(async () => {
+    let arrivals = 0;
+    let projectDir;
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        projectDir = dir;
+        await initProject(engine);
+        const config = await store.readConfig();
+        await store.writeConfig({ ...config, execution: { maxWorkers: 2 } });
+        await seedExecute(store, {
+          extraTasks: [
+            makeTask({
+              id: "TSK-0002",
+              contract: {
+                filesAllowed: ["src/board.ts"],
+                expectedArtifacts: ["src/board.ts"],
+                verificationCommands: [passingVerificationCommand()],
+              },
+            }),
+          ],
+        });
+        git(dir, ["init"]);
+        git(dir, ["config", "user.name", "9thLevelSoftware"]);
+        git(dir, ["config", "user.email", "engineering@9thlevelsoftware.com"]);
+
+        const result = await engine.execute("auto", { untilBlocked: true, jobs: 2 });
+        assert.deepEqual(result.tasks.map((task) => task.status), ["blocked", "blocked"]);
+        assert.ok(result.tasks.every((task) => /HEAD changed/.test(task.reason)));
+      },
+      {
+        skillsDir,
+        fakeOnWait: async () => {
+          arrivals += 1;
+          if (arrivals === 2) {
+            await writeFile(join(projectDir, "operator.txt"), "first commit\n", "utf8");
+            git(projectDir, ["add", "operator.txt"]);
+            git(projectDir, ["commit", "-m", "operator first commit"]);
+          }
+        },
+      },
+    );
+  });
+});
+
+test("parallel interruption aborts children and preserves their jails for recovery", async () => {
+  await withFakeAdapter(async () => {
+    let arrivals = 0;
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        const config = await store.readConfig();
+        await store.writeConfig({ ...config, execution: { maxWorkers: 2 } });
+        await seedExecute(store, {
+          extraTasks: [
+            makeTask({
+              id: "TSK-0002",
+              contract: {
+                filesAllowed: ["src/board.ts"],
+                expectedArtifacts: ["src/board.ts"],
+                verificationCommands: [passingVerificationCommand()],
+              },
+            }),
+          ],
+        });
+        initGitRepo(dir);
+
+        await assert.rejects(() => engine.execute("auto", { untilBlocked: true, jobs: 2 }), /interrupted/i);
+        const state = await engine.getState();
+        assert.deepEqual(state.activeTaskIds, ["TSK-0001", "TSK-0002"]);
+        assert.equal((await readdir(join(dir, ".legion-cli", "sandbox"))).length, 2);
+        const recoveries = await listRunRecoveryStatuses(dir);
+        assert.deepEqual(recoveries.map((run) => [run.taskId, run.ownerStatus, run.recoveryCommand]).sort(), [
+          ["TSK-0001", "stale", "legion-cli task amend TSK-0001 --unblock"],
+          ["TSK-0002", "stale", "legion-cli task amend TSK-0002 --unblock"],
+        ]);
+        assert.deepEqual(await readdir(join(dir, ".legion-cli", "cache", "live-spawns")), []);
+      },
+      {
+        skillsDir,
+        fakeOnWait: async () => {
+          arrivals += 1;
+          if (arrivals === 2) process.emit("SIGINT");
+        },
+      },
+    );
+  });
+});
+
+test("parallel interruption during partial startup aborts the child that already started", async () => {
+  await withFakeAdapter(async () => {
+    let releaseSecond;
+    const holdSecond = new Promise((resolve) => {
+      releaseSecond = resolve;
+    });
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        const config = await store.readConfig();
+        await store.writeConfig({ ...config, execution: { maxWorkers: 2 } });
+        await seedExecute(store, {
+          extraTasks: [
+            makeTask({
+              id: "TSK-0002",
+              contract: {
+                filesAllowed: ["src/board.ts"],
+                expectedArtifacts: ["src/board.ts"],
+                verificationCommands: [passingVerificationCommand()],
+              },
+            }),
+          ],
+        });
+        initGitRepo(dir);
+
+        const execution = engine.execute("auto", { untilBlocked: true, jobs: 2 });
+        const liveDir = join(dir, ".legion-cli", "cache", "live-spawns");
+        let live = [];
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          try {
+            live = await readdir(liveDir);
+          } catch {
+            live = [];
+          }
+          if (live.length === 1) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        if (live.length !== 1) {
+          releaseSecond();
+          await execution.catch(() => undefined);
+        }
+        assert.equal(live.length, 1, "the first child started while the second remained gated");
+        process.emit("SIGINT");
+        releaseSecond();
+        await assert.rejects(
+          execution,
+          /interrupted during batch startup.*legion-cli task amend TSK-0002 --unblock/i,
+        );
+
+        assert.equal((await readdir(join(dir, ".legion-cli", "sandbox"))).length, 1);
+        assert.deepEqual((await engine.getState()).activeTaskIds, ["TSK-0001"]);
+        assert.equal((await store.readTask("TSK-0001")).data.status, "in_progress");
+        assert.equal((await store.readTask("TSK-0002")).data.status, "blocked");
+        const recoveries = await listRunRecoveryStatuses(dir);
+        assert.deepEqual(recoveries.map((run) => [run.taskId, run.ownerStatus, run.recoveryCommand]), [
+          ["TSK-0001", "stale", "legion-cli task amend TSK-0001 --unblock"],
+        ]);
+        assert.deepEqual(await readdir(liveDir), []);
+
+        await assert.rejects(() => engine.execute("auto"), /no ready task/i);
+        assert.deepEqual((await engine.getState()).activeTaskIds, []);
+        assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+        assert.equal((await store.readTask("TSK-0002")).data.status, "blocked");
+      },
+      {
+        skillsDir,
+        fakeBeforeParallelStart: async (_taskId, index) => {
+          if (index === 1) await holdSecond;
+        },
+      },
+    );
+  });
+});
+
+test("parallel start failure blocks the whole selected batch and clears active ownership", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      const config = await store.readConfig();
+      await store.writeConfig({ ...config, execution: { maxWorkers: 2 } });
+      await seedExecute(store, {
+        extraTasks: [
+          makeTask({
+            id: "TSK-0002",
+            contract: {
+              filesAllowed: ["node_modules/generated.ts"],
+              expectedArtifacts: ["node_modules/generated.ts"],
+              verificationCommands: [passingVerificationCommand()],
+            },
+          }),
+        ],
+      });
+      initGitRepo(dir);
+
+      await assert.rejects(() => engine.execute("auto", { untilBlocked: true, jobs: 2 }), /node_modules|path/i);
+      assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+      assert.equal((await store.readTask("TSK-0002")).data.status, "blocked");
+      assert.deepEqual((await engine.getState()).activeTaskIds, []);
+      const recoveries = await listRunRecoveryStatuses(dir);
+      assert.deepEqual(recoveries.map((run) => [run.taskId, run.ownerStatus, run.recoveryCommand]).sort(), [
+        ["TSK-0001", "stale", "legion-cli task amend TSK-0001 --unblock"],
+        ["TSK-0002", "stale", "legion-cli task amend TSK-0002 --unblock"],
+      ]);
+      assert.deepEqual(await readdir(join(dir, ".legion-cli", "cache", "live-spawns")), []);
+    }, { skillsDir });
+  });
+});
+
+test("legacy parallelExecute flag does not silently enable workers", async () => {
+  await withFakeAdapter(async () => {
+    let active = 0;
+    let maxActive = 0;
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        const config = await store.readConfig();
+        await store.writeConfig({
+          ...config,
+          flags: { ...config.flags, parallelExecute: true },
+          execution: { maxWorkers: 1 },
+        });
+        await seedExecute(store, {
+          extraTasks: [
+            makeTask({
+              id: "TSK-0002",
+              contract: {
+                filesAllowed: ["src/board.ts"],
+                expectedArtifacts: ["src/board.ts"],
+                verificationCommands: [passingVerificationCommand()],
+              },
+            }),
+          ],
+        });
+        initGitRepo(dir);
+        const result = await engine.execute("auto", { untilBlocked: true });
+        assert.equal(maxActive, 1);
+        assert.equal(result.tasks.length, 2);
+      },
+      {
+        skillsDir,
+        fakeOnWait: async () => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          active -= 1;
+        },
+      },
+    );
+  });
+});
+
+test("an explicit task id remains single-task when maxWorkers is greater than one", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      const config = await store.readConfig();
+      await store.writeConfig({ ...config, execution: { maxWorkers: 4 } });
+      await seedExecute(store, {
+        extraTasks: [
+          makeTask({
+            id: "TSK-0002",
+            contract: {
+              filesAllowed: ["src/board.ts"],
+              expectedArtifacts: ["src/board.ts"],
+              verificationCommands: [passingVerificationCommand()],
+            },
+          }),
+        ],
+      });
+      initGitRepo(dir);
+      const result = await engine.execute("TSK-0001", { untilBlocked: true });
+      assert.deepEqual(result.tasks.map((task) => task.taskId), ["TSK-0001"]);
+      assert.equal((await store.readTask("TSK-0002")).data.status, "ready");
+    }, { skillsDir });
   });
 });

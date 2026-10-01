@@ -345,7 +345,7 @@ test("status Viewer is a live serve URL only while pid is alive", async () => {
       const viewer = await url;
       const live = runCli(["status", "--project", dir]);
       assert.equal(live.status, 0, live.stderr);
-      assert.match(normalize(live.stdout), new RegExp(`Viewer: ${viewer.replaceAll(".", "\\.")}  \\(legion-cli serve\\)`));
+      assert.match(normalize(live.stdout), new RegExp(`Viewer: ${viewer.replaceAll(".", "\\.")}  \\(legion-cli serve --project [^)]*\\)`));
     } finally {
       await stop(child);
     }

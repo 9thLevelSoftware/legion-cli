@@ -44,6 +44,10 @@
     "openai"
   ],
   "dependencies": {
-    "@9thlevelsoftware/legion-cli-schema": "workspace:*"
+    "@9thlevelsoftware/legion-cli-schema": "workspace:*",
+    "@agentclientprotocol/sdk": "^1.5.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ajv": "^8.17.1",
+    "undici": "^7.16.0"
   }
 }

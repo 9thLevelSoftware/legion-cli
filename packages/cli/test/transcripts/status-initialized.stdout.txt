@@ -1,4 +1,4 @@
 Checkin  ·  greenfield  ·  phase: initialized
 Next up: interview me about the product.
-Run:  legion-cli intent
-Viewer: legion-cli serve
+Run:  legion-cli intent --project <project>
+Viewer: legion-cli serve --project <project>

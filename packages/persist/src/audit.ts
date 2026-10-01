@@ -249,6 +249,13 @@ export type LocalMetrics = {
   qa: { runs: number; passes: number; passRate: number | null };
   execute: { runs: number; meanDurationMs: number | null };
   timeouts: number;
+  agents: {
+    runs: number;
+    byAdapter: Record<string, number>;
+    byProfile: Record<string, number>;
+    bySkill: Record<string, number>;
+    byOutcome: Record<string, number>;
+  };
 };
 
 function asFiniteNumber(value: unknown): number | null {
@@ -263,6 +270,21 @@ export function summarizeAuditMetrics(events: readonly AuditEvent[]): LocalMetri
   let executeDurationSum = 0;
   let executeDurationCount = 0;
   let timeouts = 0;
+  const agents = {
+    runs: 0,
+    byAdapter: {} as Record<string, number>,
+    byProfile: {} as Record<string, number>,
+    bySkill: {} as Record<string, number>,
+    byOutcome: {} as Record<string, number>,
+  };
+  const normalizedRunIds = new Set(
+    events
+      .filter((event) => event.type === "agent_run" && typeof event.data.runId === "string")
+      .map((event) => String(event.data.runId)),
+  );
+  const bump = (group: Record<string, number>, key: string): void => {
+    group[key] = (group[key] ?? 0) + 1;
+  };
 
   for (const event of events) {
     if (event.type === "refuse") {
@@ -283,6 +305,29 @@ export function summarizeAuditMetrics(events: readonly AuditEvent[]): LocalMetri
         executeDurationSum += ms;
         executeDurationCount += 1;
       }
+      if (typeof event.data.runId !== "string" || !normalizedRunIds.has(event.data.runId)) {
+        agents.runs += 1;
+        bump(agents.byAdapter, typeof event.data.adapterId === "string" ? event.data.adapterId : "(unknown)");
+        bump(agents.byProfile, typeof event.data.profile === "string" ? event.data.profile : "(none)");
+        bump(agents.bySkill, typeof event.data.skillId === "string" ? event.data.skillId : "execute");
+        bump(agents.byOutcome, typeof event.data.status === "string" ? event.data.status : "(unknown)");
+      }
+      continue;
+    }
+    if (event.type === "agent_run") {
+      agents.runs += 1;
+      bump(agents.byAdapter, typeof event.data.adapterId === "string" ? event.data.adapterId : "(unknown)");
+      bump(agents.byProfile, typeof event.data.profile === "string" ? event.data.profile : "(none)");
+      bump(agents.bySkill, typeof event.data.skillId === "string" ? event.data.skillId : "(unknown)");
+      bump(agents.byOutcome, typeof event.data.outcome === "string" ? event.data.outcome : "(unknown)");
+      continue;
+    }
+    if (event.type === "extension_run") {
+      agents.runs += 1;
+      bump(agents.byAdapter, typeof event.data.adapterId === "string" ? event.data.adapterId : "(unknown)");
+      bump(agents.byProfile, typeof event.data.profile === "string" ? event.data.profile : "(none)");
+      bump(agents.bySkill, typeof event.data.extension === "string" ? event.data.extension : "extension:(unknown)");
+      bump(agents.byOutcome, typeof event.data.outcome === "string" ? event.data.outcome : "(unknown)");
       continue;
     }
     if (event.type === "timeout") timeouts += 1;
@@ -300,6 +345,7 @@ export function summarizeAuditMetrics(events: readonly AuditEvent[]): LocalMetri
       meanDurationMs: executeDurationCount === 0 ? null : executeDurationSum / executeDurationCount,
     },
     timeouts,
+    agents,
   };
 }
 

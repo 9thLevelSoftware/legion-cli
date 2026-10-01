@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createWriteStream, realpathSync, type WriteStream } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -34,6 +34,11 @@ function terminate(pid: number, force: boolean): void {
   if (pid <= 0) return;
   if (process.platform === "win32") terminateWindows(pid, force);
   else terminateUnix(pid, force);
+}
+
+/** Terminates the complete adapter process tree/group. */
+export function terminateAgentProcessTree(pid: number, force = false): void {
+  terminate(pid, force);
 }
 
 function powershellExePath(): string {
@@ -113,6 +118,34 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
     stdio: ["ignore", stdout, stderr],
     detached: process.platform !== "win32",
   });
+}
+
+/** Spawn an interactive stdio adapter through the same wrapper and process-group policy as CLI adapters. */
+export function spawnInteractiveAgentProcess(
+  binary: string,
+  args: string[],
+  job: AgentJob,
+): ChildProcessWithoutNullStreams {
+  const resolved = resolveBinary(binary) ?? binary;
+  const common = {
+    cwd: job.cwd,
+    env: spawnEnv(job),
+    windowsHide: true,
+    shell: false,
+    detached: process.platform !== "win32",
+    stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
+  };
+  if (job.wrapper) {
+    let invoke = resolved;
+    try {
+      invoke = realpathSync(resolved);
+    } catch {
+      invoke = resolved;
+    }
+    invoke = translateWrapperInvoke(job.wrapper, invoke, job.cwd);
+    return spawn(job.wrapper.bin, [...job.wrapper.argvPrefix, invoke, ...args], common);
+  }
+  return spawn(resolved, args, common);
 }
 
 class ChildAgentHandle implements AgentHandle {

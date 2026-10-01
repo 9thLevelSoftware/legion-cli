@@ -1,9 +1,13 @@
-import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
+import {
+  createLegionEngine,
+  listRunRecoveryStatuses,
+  type RunRecoveryStatus,
+} from "@9thlevelsoftware/legion-cli-core";
 import { EXPOSE_BIND, LOOPBACK_BIND, readLiveServe } from "@9thlevelsoftware/legion-cli-dashboard";
 import { listTaskSummaries, PersistValidationError } from "@9thlevelsoftware/legion-cli-persist";
 import type { AdapterId, LegionConfig, ProjectFile, StateFile } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
-import { writeJson, writeOut } from "./io.js";
+import { writeJson, writeJsonLine, writeOut } from "./io.js";
 import { collectBlockers, nextCommand, statusExitCode, type StatusSliceTask } from "./next.js";
 
 async function readOptionalProject(engine: ReturnType<typeof createLegionEngine>): Promise<ProjectFile | null> {
@@ -43,8 +47,9 @@ function formatHuman(input: {
   blockersOnly: boolean;
   currentTaskAdapter: AdapterId | null;
   compactHint: boolean;
+  run: RunRecoveryStatus | null;
 }): string {
-  const { project, state, next, blockers, viewer, viewerLive, blockersOnly, currentTaskAdapter, compactHint } = input;
+  const { project, state, next, blockers, viewer, viewerLive, blockersOnly, currentTaskAdapter, compactHint, run } = input;
   if (blockersOnly) {
     if (blockers.length === 0) return "No blockers.";
     return ["Blockers:", ...blockers.map((item) => `  ${item.detail}`)].join("\n");
@@ -66,6 +71,12 @@ function formatHuman(input: {
   }
   if (state.lastReadiness) lines.push(`Readiness: ${state.lastReadiness}`);
   if (state.lastReview) lines.push(`Review: ${state.lastReview}`);
+  if (run) {
+    lines.push(`Execution run: ${run.runId}  ·  ${run.stage}  ·  owner ${run.ownerStatus}`);
+    lines.push(`Logs: ${run.logs.stdout}${run.logs.stderr ? `; ${run.logs.stderr}` : ""}`);
+    if (run.interruptionReason) lines.push(`Interrupted: ${run.interruptionReason}`);
+    if (run.recoveryCommand) lines.push(`Recover: ${run.recoveryCommand}`);
+  }
   lines.push(`Next up: ${next.hint}`);
   lines.push(`Run:  ${next.run}`);
   if (compactHint) lines.push("Hint: legion-cli context compact");
@@ -83,6 +94,7 @@ function formatPlain(input: {
   next: { run: string };
   blockers: { detail: string }[];
   currentTaskAdapter: AdapterId | null;
+  run: RunRecoveryStatus | null;
 }): string {
   const name = input.project?.name ?? "";
   const mode = input.project?.mode ?? "";
@@ -94,6 +106,12 @@ function formatPlain(input: {
   ];
   if (input.state.currentTaskId) lines.push(`currentTask\t${input.state.currentTaskId}`);
   if (input.currentTaskAdapter) lines.push(`currentTaskAdapter\t${input.currentTaskAdapter}`);
+  if (input.run) {
+    lines.push(`runId\t${input.run.runId}`);
+    lines.push(`runStage\t${input.run.stage}`);
+    lines.push(`runOwner\t${input.run.ownerStatus}`);
+    if (input.run.recoveryCommand) lines.push(`recovery\t${input.run.recoveryCommand}`);
+  }
   if (input.state.lastReadiness) lines.push(`readiness\t${input.state.lastReadiness}`);
   if (input.blockers.length > 0) {
     for (const item of input.blockers) lines.push(`blocker\t${item.detail}`);
@@ -101,7 +119,11 @@ function formatPlain(input: {
   return lines.join("\n");
 }
 
-export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknown>): Promise<number> {
+export async function runStatus(
+  opts: CliOpts,
+  jsonExtra?: Record<string, unknown>,
+  output?: { jsonLines?: boolean },
+): Promise<number> {
   const engine = createLegionEngine(opts.project);
   const state = await engine.getState();
   const project = state.phase === "uninitialized" ? null : await readOptionalProject(engine);
@@ -118,9 +140,11 @@ export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknow
   const code = statusExitCode(state.lastReadiness, slice);
   const current = summaries.find((row) => row.id === state.currentTaskId);
   const currentTaskAdapter = (current?.adapter as AdapterId | null | undefined) ?? null;
+  const runs = state.phase === "uninitialized" ? [] : await listRunRecoveryStatuses(opts.project);
+  const run = runs.find((item) => item.taskId === state.currentTaskId) ?? runs[0] ?? null;
 
   if (opts.json) {
-    writeJson({
+    const payload = {
       name: project?.name ?? null,
       mode: project?.mode ?? null,
       phase: state.phase,
@@ -133,13 +157,16 @@ export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknow
       blockers,
       viewer,
       viewerLive,
+      runs,
       ...jsonExtra,
-    });
+    };
+    if (output?.jsonLines) writeJsonLine(payload);
+    else writeJson(payload);
     return code;
   }
 
   if (opts.plain) {
-    writeOut(formatPlain({ project, state, next, blockers, currentTaskAdapter }));
+    writeOut(formatPlain({ project, state, next, blockers, currentTaskAdapter, run }));
     return code;
   }
 
@@ -154,6 +181,7 @@ export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknow
       blockersOnly: opts.blockers,
       currentTaskAdapter,
       compactHint: shouldHintCompact(slice),
+      run,
     }),
   );
   return code;

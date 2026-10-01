@@ -17,6 +17,7 @@ import {
   withFakeAdapter,
   writeSpec,
   writeTask,
+  writeQaFile,
 } from "./helpers.js";
 
 test("init writes initialized greenfield project", async () => {
@@ -259,11 +260,7 @@ test("spec new from shipped", async () => {
       lastQaId: "qa-1",
       task: { status: "done" },
     });
-    await writeFile(
-      join(store.paths.qaDir, "scores", "qa-1.json"),
-      `${JSON.stringify(makeQaScore(), null, 2)}\n`,
-      "utf8",
-    );
+    await writeQaFile(store, makeQaScore());
     const receipt = await engine.ship();
     assert.equal(receipt.phase, "shipped");
     assert.equal((await engine.getState()).phase, "shipped");

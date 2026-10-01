@@ -12,11 +12,11 @@ export const SCHEMA_VERSION = {
   discuss: "legion-cli-discuss/v1",
   ingest: "legion-cli-ingest/v1",
   audit: "legion-cli-audit/v1",
-  resume: "legion-cli-resume/v1",
+  resume: "legion-cli-resume/v2",
   run: "legion-cli-run/v1",
   dag: "legion-cli-dag/v1",
   brownfieldPatterns: "legion-cli-brownfield-patterns/v1",
-  qa: "legion-cli-qa/v1",
+  qa: "legion-cli-qa/v2",
   brief: "legion-cli-brief/v1",
   skillCatalog: "legion-cli-skill-catalog/v1",
   topics: "legion-cli-topics/v1",
@@ -115,6 +115,7 @@ export const ADAPTER_IDS = [
   "mimo",
   "minimax",
   "http",
+  "acp",
 ] as const;
 export const AdapterIdSchema = z.enum(ADAPTER_IDS);
 export type AdapterId = z.infer<typeof AdapterIdSchema>;

@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { appendAuditEvent } from "@9thlevelsoftware/legion-cli-persist";
+import { projectSourceIdentity, qaSpecHash } from "@9thlevelsoftware/legion-cli-core";
+import { scoreQa } from "@9thlevelsoftware/legion-cli-qa";
 import { ServeFileSchema } from "@9thlevelsoftware/legion-cli-schema";
 import {
   ENGINE_WRITE_METHODS,
@@ -18,6 +20,46 @@ import {
 import { otherSpecTask, todoTask, withStore, withTempDir } from "./helpers.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+test("dashboard rejects a passing QA score contradicted by its persisted command receipt", async () => {
+  await withStore(async ({ dir, store }) => {
+    const stateDoc = await store.readState();
+    const specDoc = await store.readSpec(stateDoc.data.activeSpecId);
+    const spec = { ...specDoc.data, wireframesIndex: null,
+      acceptance: [{ id: "AC-01", statement: "Produced result equals approved", kind: "behavior", priority: "P0" }] };
+    await store.writeSpec(spec, specDoc.body);
+    const persistedSpec = await store.readSpec(spec.id);
+    const id = "qa-dashboard-receipt";
+    const prefix = `.legion-cli/qa/runs/${id}`;
+    const evidenceDir = join(dir, ...prefix.split("/"));
+    await mkdir(evidenceDir, { recursive: true });
+    const report = { tests: spec.acceptance.map(({ id }) => ({ title: `@ac(${id})`, status: "passed" })) };
+    const metaPath = join(evidenceDir, "unit.meta.json");
+    await writeFile(join(evidenceDir, "unit.json"), JSON.stringify(report));
+    await writeFile(metaPath, JSON.stringify({ version: 1, kind: "unit", capture: { started: true, status: 0, timedOut: false } }));
+    const score = scoreQa({
+      id, specId: spec.id, mode: "full", specHasUi: false, playwrightRan: false,
+      acceptance: spec.acceptance, unitReport: report,
+      evidencePaths: [`${prefix}/unit.json`, `${prefix}/unit.meta.json`],
+      specHash: qaSpecHash(persistedSpec.data, persistedSpec.body), sourceHash: await projectSourceIdentity(dir),
+    });
+    await mkdir(join(store.paths.qaDir, "scores"), { recursive: true });
+    await writeFile(join(store.paths.qaDir, "scores", `${id}.json`), JSON.stringify(score));
+    await store.writeState({ ...stateDoc.data, lastQaId: id }, stateDoc.body);
+    const initialEvidence = (await loadSnapshot(dir)).qaEvidence;
+    assert.equal(initialEvidence.current, true, JSON.stringify(initialEvidence));
+
+    // A green reporter payload cannot erase the command's genuine nonzero exit.
+    await writeFile(metaPath, JSON.stringify({ version: 1, kind: "unit", capture: { started: true, status: 1, timedOut: false } }));
+    const evidence = (await loadSnapshot(dir)).qaEvidence;
+    assert.equal(evidence.current, false);
+    assert.equal(evidence.pass, false);
+    assert.equal(evidence.total, 0);
+    assert.match(evidence.staleReason, /persisted evidence/);
+    assert.deepEqual(evidence.criteria, { total: 0, passed: 0, failed: 0, missing: 0, skipped: 0 });
+    assert.deepEqual([evidence.missing, evidence.failed, evidence.skipped], [[], [], []]);
+  });
+});
 
 async function withServer(dir, fn, extra = {}) {
   const opened = [];
@@ -65,7 +107,7 @@ function assertWebmcpHeaders(headers) {
 
 function assertWebmcpOffHeaders(headers) {
   const csp = headers.get("content-security-policy") ?? "";
-  assert.doesNotMatch(csp, /script-src 'self'/);
+  assert.match(csp, /script-src 'self'/);
   assert.equal(headers.get("cross-origin-opener-policy"), null);
   assert.equal(headers.get("cross-origin-embedder-policy"), null);
 }
@@ -657,7 +699,7 @@ test("board shows raw Task.adapter when set and omits it when unset", async () =
 
 test("snapshot imports core sliceTasks and never falls back to all tasks", async () => {
   const src = await readFile(join(pkgRoot, "src", "snapshot.ts"), "utf8");
-  assert.match(src, /import \{ sliceTasks \} from "@9thlevelsoftware\/legion-cli-core"/);
+  assert.match(src, /import \{[\s\S]*\bsliceTasks\b[\s\S]*\} from "@9thlevelsoftware\/legion-cli-core"/);
   assert.doesNotMatch(src, /function sliceTasks/);
   assert.doesNotMatch(src, /if \(!activeSpecId\) return \[\.\.\.tasks\]/);
   assert.doesNotMatch(src, /slice\.length > 0 \? slice : \[\.\.\.tasks\]/);
@@ -1054,13 +1096,36 @@ test("flags.webmcp default false: /webmcp.js is 404 and HTML has no script", asy
       assert.equal(board.status, 200);
       const html = await board.text();
       assert.doesNotMatch(html, /webmcp\.js/);
-      assert.doesNotMatch(html, /<script/);
+      assert.match(html, /<script src="\/dashboard\.js" defer><\/script>/);
       assertHtmlOmitsToken(html, handle.token);
       assertWebmcpOffHeaders(board.headers);
 
       const script = await fetch(`${handle.url}${WEBMCP_SCRIPT_PATH}`);
       assert.equal(script.status, 404);
       assertWebmcpOffHeaders(script.headers);
+    });
+  });
+});
+
+test("dashboard serves the live SSE client with accessible refresh controls", async () => {
+  await withStore(async ({ dir }) => {
+    await withServer(dir, async ({ handle }) => {
+      const board = await fetch(handle.url);
+      const html = await board.text();
+      assert.match(html, /id="dashboard-live"[^>]*aria-live="polite"/);
+      assert.match(html, /data-manual-refresh/);
+      assert.match(html, /id="dashboard-evidence"/);
+      assert.match(html, /id="dashboard-next"/);
+      assert.match(html, /data-copy-command="legion-cli execute --project /);
+      assert.match(html, /tabindex="0"/);
+      const script = await fetch(`${handle.url}/dashboard.js`);
+      assert.equal(script.status, 200);
+      const body = await script.text();
+      assert.match(body, /new EventSource\("\/events"\)/);
+      assert.match(body, /audit-delta/);
+      assert.match(body, /dashboard-freshness/);
+      assert.match(body, /evidenceCoverage/);
+      assert.match(body, /nextCommand/);
     });
   });
 });

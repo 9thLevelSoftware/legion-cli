@@ -1,3 +1,6 @@
+import { Ajv } from "ajv";
+import { HttpAdapterError } from "./errors.js";
+import { parseToolArguments } from "./protocol.js";
 import type { HttpToolHost } from "./types.js";
 
 export const MAX_TOOL_ROUNDS = 32;
@@ -20,6 +23,8 @@ export const RUN_COMMAND_DENIED_BINS = [
   "cscript",
 ] as const;
 const RUN_COMMAND_DENYLIST = new Set<string>(RUN_COMMAND_DENIED_BINS);
+const MAX_EXTERNAL_TOOL_SCHEMA_BYTES = 64 * 1024;
+const ajv = new Ajv({ strict: false, allErrors: false, validateFormats: false });
 
 /** node -e / --eval (and -p) is arbitrary code; argv[0] allowlist is not enough. */
 const NODE_EVAL_FLAGS = new Set(["-e", "--eval", "-p", "--print", "--eval-module"]);
@@ -148,21 +153,63 @@ export function toolsForJob(skillId: string, host: HttpToolHost | undefined): Op
   if (!host || skillId === "chat") return [];
   const tools: OpenAiTool[] = [READ_FILE, WRITE_FILE, LIST_DIR];
   if (host.runCommand) tools.push(RUN_COMMAND);
+  for (const tool of host.externalTools ?? []) {
+    tools.push({
+      type: "function",
+      function: {
+        name: tool.callName,
+        description: tool.description ?? `Read-only MCP tool ${tool.namespacedName}`,
+        parameters: tool.inputSchema,
+      },
+    });
+  }
   return tools;
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+function hasRemoteRef(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasRemoteRef);
+  if (!value || typeof value !== "object") return false;
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "$ref" && typeof nested === "string" && !nested.startsWith("#")) return true;
+    if (hasRemoteRef(nested)) return true;
+  }
+  return false;
 }
 
-function parseArgs(raw: string): Record<string, unknown> {
+/** Validate the full advertised tool surface before a call is checkpointed or dispatched. */
+export function validateToolCallArguments(
+  call: OpenAiToolCall,
+  host: HttpToolHost | undefined,
+  skillId: string,
+): Record<string, unknown> {
+  const name = call.function?.name ?? "";
+  const allowed = new Set(toolsForJob(skillId, host).map((tool) => tool.function.name));
+  if (!allowed.has(name)) throw new HttpAdapterError(`adapter.http unknown tool ${name || "(empty)"}`);
+  const args = parseToolArguments(call);
+  const external = host?.externalTools?.find((tool) => tool.callName === name);
+  if (!external) return args;
+  let encoded: string;
   try {
-    return asRecord(JSON.parse(raw || "{}"));
-  } catch {
-    throw new Error("tool arguments are not JSON");
+    encoded = JSON.stringify(external.inputSchema);
+  } catch (err) {
+    throw new HttpAdapterError(`adapter.http invalid schema for external tool ${name}`, { cause: err });
   }
+  if (encoded.length > MAX_EXTERNAL_TOOL_SCHEMA_BYTES || hasRemoteRef(external.inputSchema)) {
+    throw new HttpAdapterError(`adapter.http invalid schema for external tool ${name}: schema is unbounded or has a remote ref`);
+  }
+  try {
+    const validate = ajv.compile(external.inputSchema);
+    if (!validate(args)) {
+      const detail = validate.errors?.[0];
+      throw new HttpAdapterError(
+        `adapter.http invalid tool arguments for ${name}: ${detail?.instancePath || "/"} ${detail?.message ?? "schema mismatch"}`,
+      );
+    }
+  } catch (err) {
+    if (err instanceof HttpAdapterError) throw err;
+    throw new HttpAdapterError(`adapter.http invalid schema for external tool ${name}`, { cause: err });
+  }
+  return args;
 }
 
 export function capToolResult(text: string): string {
@@ -176,14 +223,10 @@ export async function dispatchToolCall(
   skillId: string,
 ): Promise<string> {
   const name = call.function?.name ?? "";
-  const allowed = new Set(toolsForJob(skillId, host).map((tool) => tool.function.name));
-  if (!allowed.has(name)) {
-    return `error: unknown tool ${name || "(empty)"}`;
-  }
   if (!host) return "error: tool host is not available";
   let args: Record<string, unknown>;
   try {
-    args = parseArgs(call.function.arguments ?? "");
+    args = validateToolCallArguments(call, host, skillId);
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -205,6 +248,9 @@ export async function dispatchToolCall(
       }
       if (!host.runCommand) return "error: run_command requires a hardened sandbox";
       return capToolResult(JSON.stringify(await host.runCommand(argv)));
+    }
+    if (host.callExternalTool && host.externalTools?.some((tool) => tool.callName === name)) {
+      return capToolResult(await host.callExternalTool(name, args));
     }
   } catch (err) {
     return capToolResult(`error: ${err instanceof Error ? err.message : String(err)}`);

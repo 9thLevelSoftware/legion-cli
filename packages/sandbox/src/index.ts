@@ -5,6 +5,8 @@ export {
   assertExecuteSandbox,
   detectSandbox,
   materializeJail,
+  retainedJailIdentity,
+  reopenJail,
   prepareVerificationWrapper,
   resolveVerificationTrustTier,
   verificationSeatbeltProfile,
@@ -21,7 +23,10 @@ export {
 } from "./docker.js";
 export type {
   SandboxBackend,
+  SandboxApplyResult,
   SandboxHandle,
+  SandboxOutput,
+  SandboxOutputChange,
   SandboxPolicy,
   VerificationTrustFlags,
   VerificationTrustPosture,
