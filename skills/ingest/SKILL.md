@@ -24,7 +24,6 @@ The engine, not this spawn, clamps spawn-written wiki pages to `trust: untrusted
 Allowed roots:
 
 - `.legion-cli/wiki/**`
-- `.legion-cli/audit/**`
 - `.legion-cli/cache/runs/<id>/**`
 
 Do not write anything else. Do not `git add` or `git commit`.

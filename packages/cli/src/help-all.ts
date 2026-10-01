@@ -11,8 +11,8 @@ const LAYER_1 = [
   ["spec", "Write the short contract + wireframes"],
   ["plan", "Break into tasks I can see on the board"],
   ["execute", "Do the next ready task"],
-  ["verify", "Optional walkthrough notes (not a ship gate)"],
-  ["review", "Spec-level review; fix tasks or in-place rewrites mean FAIL"],
+  ["verify", "Optional agent walkthrough (not a ship gate; notes not retained yet)"],
+  ["review", "Spec-level review; fix tasks or in-place rewrites mean FAIL; PASS needs exit 0 and notes"],
   ["qa", "Score the product"],
   ["ship", "Final human review; stage the diff"],
   ["help --all", "Full command surface"],
@@ -22,7 +22,7 @@ const LIFECYCLE_CORE = [
   [
     "init",
     "Start a product in this folder",
-    `--name, --adapter ${ADAPTER_ID_HELP}, --mode greenfield|brownfield, --http-base-url, --http-model, --http-api-key-env`,
+    `--name, --adapter ${ADAPTER_ID_HELP}, --mode greenfield|brownfield, --http-base-url, --http-model, --http-api-key-env, --http-allow-loopback`,
   ],
   ["intent", "Interview me about the product", "--done"],
   ["discuss", "Capture decisions before planning", ""],
@@ -32,8 +32,8 @@ const LIFECYCLE_CORE = [
   ["spec new", "Start the next increment after ship", ""],
   ["plan", "Break into tasks I can see on the board", "--adapter, --profile"],
   ["execute [id]", "Do the next ready task", "--resume <runId>, --fix, --until-blocked, --jobs 1-4, --adapter, --profile, --allow-no-sandbox (TTY confirmation)"],
-  ["verify [id]", "Optional walkthrough notes (not a ship gate)", "--adapter, --profile"],
-  ["review", "Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review", "--adapter, --profile"],
+  ["verify [id]", "Optional agent walkthrough (not a ship gate; notes not retained yet)", "--adapter, --profile"],
+  ["review", "Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review; PASS needs exit 0 and notes", "--adapter, --profile"],
   ["qa", "Score the product (when the slice is done)", "--mode full|no-browser"],
   ["qa checklist", "Tick AC items when no browser", "--tick"],
   ["ship", "Final human review; stage diff", "--allow-degraded-qa, --pr (needs --commit), --commit"],
@@ -41,11 +41,11 @@ const LIFECYCLE_CORE = [
 
 const ALWAYS_ON = [
   ["status (default)", "Where am I? What next?", "--blockers, --plain"],
-  ["doctor", "Is my laptop ready?", "--metrics"],
+  ["doctor", "Is my laptop ready?", "--metrics, --rebaseline-audit"],
   ["control-mode [mode]", "Show or set guarded|advisory", ""],
   ["ingest <src…>", "Teach Legion CLI from these files/links", "--transcript, --diff, --no-commit, --distill"],
   ["wiki trust <page>", "I have read this ingested page; treat it as real", ""],
-  ["search <q>", "Search the wiki", "--mentions, --include-untrusted"],
+  ["search <q>", "Search the wiki", "--mentions, --include-untrusted, --limit <n>"],
   ["show <page>", "Open one wiki/spec/task/map page", ""],
   ["brief", "Print what the next agent will see", ""],
   ["chat", "REPL that routes into engine verbs", "--once, --adapter, --profile, --fork"],
@@ -68,8 +68,8 @@ const BOARD_EXTRAS = [
 ] as const;
 
 const SHIPPED_ADJACENT = [
-  ["serve", "Dashboard plus read-only MCP HTTP (MCP HTTP is loopback-only)", "--port, --expose, --no-open, --mcp-http/--no-mcp-http, --webmcp, --token-stdout"],
-  ["dashboard", "Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist); not the source of truth)", "--no-open, --port, --expose"],
+  ["serve", "Dashboard plus read-only MCP HTTP (MCP HTTP is loopback-only)", "--port, --expose (needs --no-mcp-http: MCP HTTP is loopback-only), --no-open, --mcp-http/--no-mcp-http, --webmcp, --token-stdout"],
+  ["dashboard", "Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist); not the source of truth)", "--no-open, --port, --expose, --webmcp, --token-stdout"],
   ["packet new", "PM/designer request without the DAG", "--title, --request, --requester"],
   ["packet respond", "Spawn tickets from a packet (does not execute)", "--message, --title, --type, --priority"],
   ["context compact", "Manual compaction of done tasks", ""],

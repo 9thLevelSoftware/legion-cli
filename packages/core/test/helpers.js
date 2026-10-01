@@ -309,3 +309,14 @@ export async function seedPlanReady(store, opts = {}) {
   });
   return { spec, task };
 }
+
+/** Positive review evidence: what a reviewer that really ran leaves behind (the engine then copies it to qa/review.md). */
+export const REVIEW_NOTES_ARTIFACT = {
+  path: ".legion-cli/cache/runs/<id>/review.md",
+  content: "# Review\n\nRead the spec and every task; the slice meets the acceptance criteria.\n",
+};
+
+/** Engine options for a reviewer that wrote notes. Do not share with execute: an artifact outside its contract blocks the task. */
+export function withReviewNotes(options = {}) {
+  return { ...options, fakeArtifacts: [...(options.fakeArtifacts ?? []), REVIEW_NOTES_ARTIFACT] };
+}

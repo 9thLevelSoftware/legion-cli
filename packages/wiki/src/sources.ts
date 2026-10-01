@@ -1,10 +1,10 @@
-import { spawnSync } from "node:child_process";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import {
   assertInsideProject,
   MAX_INGEST_FILE_BYTES,
   resolveProjectPath,
+  runGit,
   toStorePath,
   type IngestDocument,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -67,13 +67,13 @@ export async function materializeIngestSources(opts: {
   }
 
   if (opts.diff) {
-    const result = spawnSync("git", ["diff", opts.diff], {
-      cwd: opts.projectRoot,
-      encoding: "utf8",
-      windowsHide: true,
-      shell: false,
-    });
-    const body = result.status === 0 ? result.stdout : "";
+    // Capped like every other ingest source: an oversize diff gets an empty body (recorded as skipped).
+    const result = runGit(opts.projectRoot, ["diff", "--end-of-options", opts.diff], { maxBuffer: MAX_INGEST_FILE_BYTES });
+    const oversize = result.error?.includes("(ENOBUFS)") ?? false;
+    if (result.status !== 0 && !oversize) {
+      throw new Error(`git diff ${opts.diff} failed: ${result.error ?? (result.stderr.trim() || "no output")}`);
+    }
+    const body = oversize ? "" : result.stdout;
     documents.push({
       source: `diff:${opts.diff}`,
       title: `git diff ${opts.diff}`,

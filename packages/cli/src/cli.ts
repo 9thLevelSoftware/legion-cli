@@ -185,9 +185,13 @@ export function createProgram(): Command {
 
   addGlobalOptions(program.command("doctor").description("Is my laptop ready?"))
     .option("--metrics", "local-only audit metrics (never phones home)")
+    .option("--rebaseline-audit", "accept the current audit log as the new chain baseline (after review)")
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { metrics?: boolean };
-      const code = await runDoctor(resolveOpts(cmd), { metrics: Boolean(flags.metrics) });
+      const flags = opts as { metrics?: boolean; rebaselineAudit?: boolean };
+      const code = await runDoctor(resolveOpts(cmd), {
+        metrics: Boolean(flags.metrics),
+        rebaselineAudit: Boolean(flags.rebaselineAudit),
+      });
       process.exitCode = code;
     });
 
@@ -386,7 +390,7 @@ export function createProgram(): Command {
     });
 
 
-  addGlobalOptions(program.command("verify").description("Optional walkthrough notes (not a ship gate)"))
+  addGlobalOptions(program.command("verify").description("Optional agent walkthrough (not a ship gate; notes not retained yet)"))
     .argument("[id]", "task id")
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .option("--profile <name>", "named adapter profile")
@@ -398,7 +402,7 @@ export function createProgram(): Command {
     });
 
   addGlobalOptions(
-    program.command("review").description("Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review"),
+    program.command("review").description("Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review; PASS needs exit 0 and notes"),
   )
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .option("--profile <name>", "named adapter profile")
@@ -442,7 +446,7 @@ export function createProgram(): Command {
   addGlobalOptions(program.command("ship").description("Final human review; stage diff"))
     .option("--allow-degraded-qa", "ship after no-browser QA")
     .option("--pr", "create a GitHub PR with gh (requires --commit)")
-    .option("--commit", "create the git commit after Y/n")
+    .option("--commit", "create the git commit after an explicit y")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
       const flags = opts as { allowDegradedQa?: boolean; pr?: boolean; commit?: boolean };
@@ -484,7 +488,7 @@ export function createProgram(): Command {
   )
     .option("--no-open", "do not open a browser")
     .option("--port <port>", "port (default 7420)")
-    .option("--expose", "bind 0.0.0.0 (warning)")
+    .option("--expose", "bind 0.0.0.0 (warning); refused unless --no-mcp-http (MCP HTTP is loopback-only)")
     .option("--mcp-http", "read-only MCP HTTP at /mcp (default on)")
     .option("--no-mcp-http", "disable MCP HTTP at /mcp")
     .option("--webmcp", "process-level flags.webmcp for this process")

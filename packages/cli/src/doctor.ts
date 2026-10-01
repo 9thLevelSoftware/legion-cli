@@ -14,11 +14,13 @@ import {
   hashSkillTree,
   listResolvedSkillCatalog,
 } from "@9thlevelsoftware/legion-cli-agents";
-import { argvSummarySafe, createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { argvSummarySafe, createLegionEngine, findSkillsDir, refuseIfLiveRun } from "@9thlevelsoftware/legion-cli-core";
 import { httpAdapterNotReadyReason, isHttpAdapterReady } from "@9thlevelsoftware/legion-cli-http";
 import { assertExecuteSandbox, detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
+  liveRuns,
   readAuditEvents,
+  rebaselineAuditChain,
   summarizeAuditMetrics,
   type LocalMetrics,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -35,6 +37,7 @@ import {
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
+import { auditChainProblem } from "./status.js";
 import { writeJson, writeOut } from "./io.js";
 import { scanWikiSecrets, type SecretHit } from "./secrets.js";
 import { isSpawnableBinary, listOnPath, pathLegionIsLegionCli, runBounded, runTool } from "./which.js";
@@ -256,6 +259,8 @@ function formatCheck(check: DoctorCheck): string {
 
 export type DoctorMetricsFlags = {
   metrics?: boolean;
+  /** Re-chain the current audit log after review and record an audit_rebaselined event. */
+  rebaselineAudit?: boolean;
 };
 
 async function qaScoresFallback(projectRoot: string): Promise<{ runs: number; passes: number }> {
@@ -360,6 +365,23 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
   const checks: DoctorCheck[] = [];
   const warnings: string[] = [];
 
+  if (flags.rebaselineAudit) {
+    const state = await engine.getState();
+    const result = await rebaselineAuditChain(opts.project, {
+      phase: state.phase,
+      ts: new Date().toISOString(),
+      // Same guard as every other mutating verb: hands off while an agent run is live.
+      guard: async () => refuseIfLiveRun((await liveRuns(opts.project, { clearDead: true })).live),
+    });
+    if (!opts.json) {
+      writeOut(
+        `Audit chain re-baselined over ${result.lines} line(s)` +
+          `${result.previous ? ` (replaced chain: length ${result.previous.length}, digest ${result.previous.lastDigest.slice(0, 12)})` : " (no previous chain)"}` +
+          `${result.unparseable > 0 ? ` (${result.unparseable} not valid JSON)` : ""}; recorded as an audit_rebaselined event.`,
+      );
+    }
+  }
+
   const nodeVersion = process.versions.node;
   checks.push({
     ok: nodeMajor(nodeVersion) >= 22,
@@ -397,6 +419,13 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     playwright.status === 0 ? playwright.stdout.trim().split(/\r?\n/)[0] || "ok" : "not installed";
 
   const lockPresent = await engine.store.pathExists(".legion-cli/index/engine.lock");
+  // A run marker whose engine and agent are both gone is cleared here; the next legion command
+  // restores that run's engine state. A live one is only reported (never touched).
+  const runMarkers = await liveRuns(engine.projectRoot, { clearDead: true });
+  // A live run with no marker (older binary): named by its resume.json, which doctor never clears.
+  const resumeOnly = await engine.peekLiveSpawn();
+  const resumeOnlyRun =
+    resumeOnly && !runMarkers.live.some((m) => m.runId === resumeOnly.runId) ? resumeOnly : null;
   const { config, error: configError } = await loadConfig(engine);
 
   const adapterDefault = config?.adapter.default ?? null;
@@ -516,6 +545,13 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     ...(sandboxAdvisory ? { advisory: true } : {}),
     label: "sandbox",
     detail: sandboxDetail,
+  });
+
+  const auditProblem = await auditChainProblem(opts.project);
+  checks.push({
+    ok: auditProblem === null,
+    label: "audit chain",
+    detail: auditProblem ?? "ok",
   });
 
   const skillsDir = findSkillsDir();
@@ -641,6 +677,10 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
     path: Object.fromEntries(pathListing.map((group) => [group.name, group.paths])),
     playwright: playwrightDetail,
     lock: lockPresent ? "present" : "absent",
+    liveRuns: {
+      live: runMarkers.live.map((m) => ({ runId: m.runId, skillId: m.skillId, taskId: m.taskId })),
+      clearedDead: runMarkers.dead.map((m) => m.runId),
+    },
     schemaVersions,
     adapter: {
       default: adapterDefault,
@@ -693,6 +733,19 @@ export async function runDoctor(opts: CliOpts, flags: DoctorMetricsFlags = {}): 
           "            delete .legion-cli/index/engine.lock.",
         ]
       : []),
+    ...runMarkers.live.map(
+      (m) =>
+        `Live run    ${m.skillId} ${m.runId}${m.taskId ? ` (${m.taskId})` : ""}: other legion commands are refused until it ends (hands off the tree). Marker: .legion-cli/cache/live-spawn/${m.runId}.json`,
+    ),
+    ...(resumeOnlyRun
+      ? [
+          `Live run    ${resumeOnlyRun.runId} (${resumeOnlyRun.taskId}): no marker; evidence .legion-cli/cache/runs/${resumeOnlyRun.runId}/resume.json. Other legion commands are refused until its pids exit`,
+        ]
+      : []),
+    ...runMarkers.dead.map(
+      (m) =>
+        `Cleared     dead run marker ${m.runId}. Its engine state is restored by the next legion command; check with legion-cli status`,
+    ),
     "schemaVersions",
     ...schemaVersions.map((version) => `  ${version}`),
     "",

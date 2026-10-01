@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { gitPathTracked, isGitRepo, toFsPath, toPosixPath } from "@9thlevelsoftware/legion-cli-persist";
+import { gitIndexEntries, gitPathTracked, isGitRepo, toFsPath, toPosixPath } from "@9thlevelsoftware/legion-cli-persist";
 import type { Task } from "@9thlevelsoftware/legion-cli-schema";
 
 const LEGION_PREFIX = ".legion-cli";
@@ -13,18 +13,7 @@ export const SHIP_STAGED_CHANGED = "ship staged files changed between preview an
 
 /** SHA-256 of staged blob lines excluding `.legion-cli/**` (receipt/STATE land after preview). */
 export function shipProductIndexFingerprint(cwd: string): string {
-  const result = spawnSync("git", ["ls-files", "-s", "--cached", "--full-name"], {
-    cwd,
-    encoding: "utf8",
-    windowsHide: true,
-    shell: false,
-  });
-  if ((result.status ?? 1) !== 0) {
-    throw new Error(result.stderr?.trim() || "git ls-files --cached failed");
-  }
-  const lines = (result.stdout ?? "")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/\r$/, ""))
+  const lines = gitIndexEntries(cwd)
     .filter((line) => {
       const tab = line.indexOf("\t");
       if (tab < 0) return false;

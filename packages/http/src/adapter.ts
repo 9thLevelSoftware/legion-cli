@@ -468,6 +468,14 @@ export class HttpAdapter {
         const reachedLimit = usageLimitFailure();
         if (reachedLimit) return fail(reachedLimit, { usage: resultUsage() });
         for (const call of toolCalls) {
+          if (signal.aborted) {
+            return fail("adapter.http aborted", {
+              aborted: true,
+              exitCode: null,
+              usage: resultUsage(),
+              recovery: checkpointRecovery(),
+            });
+          }
           const signature = toolCallSignature(call);
           const prior = checkpoint.toolOutcomes.find((item) => item.id === call.id);
           if (prior && prior.signature !== signature) {
@@ -482,7 +490,7 @@ export class HttpAdapter {
           } else {
             if (!prior) throw new HttpAdapterError(`adapter.http missing pending tool call ${call.id}`);
             outcome = prior;
-            const output = await dispatchToolCall(call, job.httpHost, job.skillId);
+            const output = await dispatchToolCall(call, job.httpHost, job.skillId, signal);
             outcome.status = "completed";
             outcome.result = output;
           }

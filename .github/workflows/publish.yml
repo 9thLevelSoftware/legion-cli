@@ -39,5 +39,10 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Check publish allowlist
+        run: node scripts/check-publish-allowlist.mjs
+
       - name: Publish
+        # pnpm runs each package's prepack, which bundles skills/ into @9thlevelsoftware/legion-cli-agents.
+        # --no-git-checks: the tag checkout is detached, so pnpm's branch check would refuse.
         run: pnpm publish -r --access public --provenance --no-git-checks

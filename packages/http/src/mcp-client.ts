@@ -96,6 +96,29 @@ function asMcpError(err: unknown, fallback: McpFailReason): McpClientError {
   return new McpClientError(isParseError(err) ? "parse-error" : fallback, message, { cause: err });
 }
 
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted", "AbortError");
+}
+
+async function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) throw abortReason(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
 export async function closeMcpTransports(
   transports: Iterable<{ close(): Promise<void> }>,
 ): Promise<void> {
@@ -342,8 +365,9 @@ export class LegionMcpClientPool {
     this.#toolTimeoutMs = options.toolTimeoutMs ?? MCP_TOOL_TIMEOUT_MS;
   }
 
-  async getClient(serverName: string): Promise<Client | null> {
+  async getClient(serverName: string, signal?: AbortSignal): Promise<Client | null> {
     if (this.#closed) throw new McpClientError("spawn-failed", "MCP client pool is closed");
+    if (signal?.aborted) throw abortReason(signal);
     const existing = this.#clients.get(serverName);
     if (existing) return existing;
 
@@ -354,18 +378,23 @@ export class LegionMcpClientPool {
     if (failed) throw failed;
 
     const inflight = this.#inflight.get(serverName);
-    if (inflight) return inflight;
+    if (inflight) return waitWithSignal(inflight, signal);
 
-    const pending = this.#connect(serverName, config, this.#generation);
+    const pending = this.#connect(serverName, config, this.#generation, signal);
     this.#inflight.set(serverName, pending);
     try {
-      return await pending;
+      return await waitWithSignal(pending, signal);
     } finally {
       this.#inflight.delete(serverName);
     }
   }
 
-  async #connect(serverName: string, config: McpServerConfig, generation: number): Promise<Client> {
+  async #connect(
+    serverName: string,
+    config: McpServerConfig,
+    generation: number,
+    signal?: AbortSignal,
+  ): Promise<Client> {
     if (this.#clients.size + this.#reservations >= MCP_POOL_MAX) {
       throw new McpClientError("pool-full", `MCP pool is full (${MCP_POOL_MAX})`);
     }
@@ -376,6 +405,11 @@ export class LegionMcpClientPool {
     } catch (err) {
       this.#reservations = Math.max(0, this.#reservations - 1);
       throw err;
+    }
+    if (signal?.aborted) {
+      this.#reservations = Math.max(0, this.#reservations - 1);
+      await transport.close().catch(() => undefined);
+      throw abortReason(signal);
     }
 
     const client = new Client({ name: "legion-cli", version: "0.0.0" }, { capabilities: {} });
@@ -390,7 +424,7 @@ export class LegionMcpClientPool {
           clearTimeout(timer);
           reject(new McpClientError("spawn-failed", "MCP server exited during connect"));
         };
-        client.connect(transport, { timeout: MCP_CONNECT_TIMEOUT_MS }).then(
+        client.connect(transport, { timeout: MCP_CONNECT_TIMEOUT_MS, signal }).then(
           () => {
             clearTimeout(timer);
             resolve();
@@ -418,6 +452,7 @@ export class LegionMcpClientPool {
       } catch {
         // connect never finished
       }
+      if (signal?.aborted) throw abortReason(signal);
       const wrapped = asMcpError(err, "spawn-failed");
       this.#failures.set(serverName, wrapped);
       throw wrapped;
@@ -426,13 +461,13 @@ export class LegionMcpClientPool {
     }
   }
 
-  async listAllTools(): Promise<ExternalMcpTool[]> {
+  async listAllTools(signal?: AbortSignal): Promise<ExternalMcpTool[]> {
     const tools: ExternalMcpTool[] = [];
     for (const serverName of Object.keys(this.#configs)) {
       try {
-        const client = await this.getClient(serverName);
+        const client = await this.getClient(serverName, signal);
         if (!client) continue;
-        const res = await client.listTools(undefined, { timeout: this.#toolTimeoutMs });
+        const res = await client.listTools(undefined, { timeout: this.#toolTimeoutMs, signal });
         for (const t of res.tools) {
           tools.push({
             serverName,
@@ -453,6 +488,7 @@ export class LegionMcpClientPool {
   async callTool(
     namespacedToolName: string,
     args: Record<string, unknown> = {},
+    signal?: AbortSignal,
   ): Promise<ToolCallResult | null> {
     const colonIdx = namespacedToolName.indexOf(":");
     if (colonIdx < 0) return errorResult("unknown-server", "MCP tool name must be server:tool");
@@ -460,12 +496,12 @@ export class LegionMcpClientPool {
     const toolName = namespacedToolName.slice(colonIdx + 1);
 
     try {
-      const client = await this.getClient(serverName);
+      const client = await this.getClient(serverName, signal);
       if (!client) return errorResult("unknown-server", `unknown MCP server ${serverName}`);
       const result = await client.callTool({
         name: toolName,
         arguments: args,
-      }, undefined, { timeout: this.#toolTimeoutMs });
+      }, undefined, { timeout: this.#toolTimeoutMs, signal });
       if (JSON.stringify(result).length > MCP_REMOTE_MAX_RESPONSE_BYTES) {
         return errorResult("response-too-large", "MCP tool result exceeded size cap");
       }
@@ -479,6 +515,7 @@ export class LegionMcpClientPool {
   async callGovernedHttpTool(
     namespacedToolName: string,
     args: Record<string, unknown> = {},
+    signal?: AbortSignal,
   ): Promise<ToolCallResult | null> {
     if (!this.#governedHttpToolAllowlist.has(namespacedToolName)) {
       return errorResult("policy-denied", `MCP tool ${namespacedToolName} is not in the governed HTTP allowlist`);
@@ -488,14 +525,14 @@ export class LegionMcpClientPool {
     const serverName = namespacedToolName.slice(0, colonIdx);
     const toolName = namespacedToolName.slice(colonIdx + 1);
     try {
-      const client = await this.getClient(serverName);
+      const client = await this.getClient(serverName, signal);
       if (!client) return errorResult("unknown-server", `unknown MCP server ${serverName}`);
-      const listed = await client.listTools(undefined, { timeout: this.#toolTimeoutMs });
+      const listed = await client.listTools(undefined, { timeout: this.#toolTimeoutMs, signal });
       const declared = listed.tools.find((tool) => tool.name === toolName);
       if (!declared || declared.annotations?.readOnlyHint !== true) {
         return errorResult("policy-denied", `MCP tool ${namespacedToolName} is not declared read-only`);
       }
-      return this.callTool(namespacedToolName, args);
+      return this.callTool(namespacedToolName, args, signal);
     } catch (err) {
       const wrapped = asMcpError(err, "tool-error");
       return errorResult(wrapped.reason, wrapped.message);

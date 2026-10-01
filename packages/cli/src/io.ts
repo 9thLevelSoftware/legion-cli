@@ -114,3 +114,13 @@ export function printRefuse(err: Pick<LegionRefuseError, "message" | "nextHint">
   }
   writeErr(`${err.message}\nNext: ${err.nextHint}`);
 }
+
+/** One printed line per agent-filed ticket: what it will run, where the commands came from, what it may touch. */
+export function ticketVerificationLine(filed: {
+  id: string;
+  verificationCommands: readonly string[];
+  filesAllowed: readonly string[];
+  verificationSource: string;
+}): string {
+  return `${filed.id} verification (from ${filed.verificationSource}): ${filed.verificationCommands.join(" ; ")} [filesAllowed: ${filed.filesAllowed.join(", ")}]`;
+}

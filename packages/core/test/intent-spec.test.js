@@ -19,6 +19,9 @@ import { initProject, withEngine, writeUnspawnableGrok } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
 
+// intent, discuss and spec stop without a spawnable agent; this file drives them with the in-process fake.
+process.env.LEGION_CLI_ADAPTER = "fake";
+
 async function fillThroughRound2(engine) {
   await engine.beginIntent();
   await engine.intentTurn([
@@ -301,31 +304,67 @@ test("optional spec spawn cannot freeze the spec", async () => {
   }
 });
 
-test("discuss skips spawn when the routed extra is not spawnable", async () => {
+test("discuss refuses (and writes nothing) when the routed extra is not spawnable", async () => {
   await withEngine(
     async ({ engine, store, dir }) => {
       await initProject(engine);
       await fillFullIntent(engine);
       await writeUnspawnableGrok(store, { routes: { discuss: "grok" } });
-      const previous = process.env.LEGION_CLI_ADAPTER;
-      process.env.LEGION_CLI_ADAPTER = "fake";
-      try {
-        const proposed = await engine.startDiscuss();
-        assert.ok(proposed.length > 0);
-        assert.equal((await engine.getState()).phase, "discussing");
-        const runsDir = join(dir, ".legion-cli", "cache", "runs");
-        const runs = existsSync(runsDir) ? await readdir(runsDir) : [];
-        assert.equal(
-          runs.some((name) => name.startsWith("discuss-")),
-          false,
-        );
-      } finally {
-        if (previous === undefined) delete process.env.LEGION_CLI_ADAPTER;
-        else process.env.LEGION_CLI_ADAPTER = previous;
-      }
+      await assert.rejects(
+        () => engine.startDiscuss(),
+        (err) => {
+          assert.equal(err instanceof LegionRefuseError, true);
+          assert.match(err.message, /no agent available for discuss \(grok, via route\)/);
+          assert.match(err.message, /legion-cli doctor/);
+          assert.match(err.nextHint, /doctor/);
+          return true;
+        },
+      );
+      assert.equal((await engine.getState()).phase, "intent_ready");
+      const runsDir = join(dir, ".legion-cli", "cache", "runs");
+      const runs = existsSync(runsDir) ? await readdir(runsDir) : [];
+      assert.equal(
+        runs.some((name) => name.startsWith("discuss-")),
+        false,
+      );
     },
     { skillsDir },
   );
+});
+
+test("intent confirm, discuss and spec refuse without a spawnable agent instead of writing canned output", async () => {
+  const previous = process.env.LEGION_CLI_ADAPTER;
+  try {
+    await withEngine(async ({ engine }) => {
+      await initProject(engine);
+      await fillThroughRound2(engine);
+      delete process.env.LEGION_CLI_ADAPTER;
+      const refused = (skill) => (err) => {
+        assert.equal(err instanceof LegionRefuseError, true);
+        assert.match(err.message, new RegExp(`no agent available for ${skill}`));
+        assert.match(err.nextHint, /legion-cli doctor/);
+        return true;
+      };
+      await assert.rejects(() => engine.confirmIntent({ id: "tester" }, { done: true }), refused("interview"));
+      assert.equal((await engine.getState()).phase, "intent_draft");
+
+      process.env.LEGION_CLI_ADAPTER = "fake";
+      await engine.confirmIntent({ id: "tester" }, { done: true });
+      delete process.env.LEGION_CLI_ADAPTER;
+      await assert.rejects(() => engine.startDiscuss(), refused("discuss"));
+      assert.equal((await engine.getState()).phase, "intent_ready");
+
+      process.env.LEGION_CLI_ADAPTER = "fake";
+      const proposed = await engine.startDiscuss();
+      await engine.discuss(proposed.map((item) => ({ id: item.id, status: "accepted" })));
+      delete process.env.LEGION_CLI_ADAPTER;
+      await assert.rejects(() => engine.draftSpec(), refused("spec"));
+      assert.equal((await engine.getState()).phase, "discussing");
+    });
+  } finally {
+    if (previous === undefined) delete process.env.LEGION_CLI_ADAPTER;
+    else process.env.LEGION_CLI_ADAPTER = previous;
+  }
 });
 
 test("optional discuss spawn cannot auto-accept decisions", async () => {

@@ -2,6 +2,25 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve, win32 } from "node:path";
 
+/**
+ * Windows searches the current directory before PATH unless told not to. Every child Legion
+ * starts (and `where.exe` itself) gets this, so a `git.exe` planted in the audited repo is not
+ * picked up implicitly.
+ */
+export function withNoCwdExeSearch<T extends NodeJS.ProcessEnv>(env: T): T {
+  if (process.platform !== "win32") return env;
+  return { ...env, NoDefaultCurrentDirectoryInExePath: "1" };
+}
+
+/** A directory that is never a project, so `where.exe` cannot see a decoy in the caller's cwd. */
+function neutralCwd(): string {
+  return win32.join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32");
+}
+
+function sameDir(a: string, b: string): boolean {
+  return win32.resolve(a).toLowerCase() === win32.resolve(b).toLowerCase();
+}
+
 function uniquePaths(paths: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -17,6 +36,8 @@ function uniquePaths(paths: string[]): string[] {
 export function whichAll(name: string): string[] {
   if (process.platform === "win32") {
     const result = spawnSync("where.exe", [name], {
+      cwd: neutralCwd(),
+      env: withNoCwdExeSearch(process.env),
       encoding: "utf8",
       windowsHide: true,
       shell: false,
@@ -26,7 +47,9 @@ export function whichAll(name: string): string[] {
       result.stdout
         .split(/\r?\n/)
         .map((line) => line.trim())
-        .filter(Boolean),
+        .filter(Boolean)
+        // Reject a hit directly in the project root: PATH containing "." or the root itself.
+        .filter((abs) => !sameDir(win32.dirname(abs), process.cwd())),
     );
   }
 
@@ -88,6 +111,7 @@ function spawnDirect(command: string, args: string[], cwd?: string): SpawnText {
   return asText(
     spawnSync(command, args, {
       cwd,
+      env: withNoCwdExeSearch(process.env),
       encoding: "utf8",
       windowsHide: true,
       shell: false,
@@ -136,6 +160,7 @@ function spawnCmdFile(command: string, args: string[], cwd?: string): SpawnText 
   return asText(
     spawnSync(launch.command, launch.args, {
       cwd,
+      env: withNoCwdExeSearch(process.env),
       encoding: "utf8",
       windowsHide: true,
       shell: false,

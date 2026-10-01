@@ -108,7 +108,7 @@ test("F-018: concurrent dashboard+CLI writers never interleave", async () => {
   });
 });
 
-test("F-026/F-040: verify cannot hold engine.lock past the acquire timeout (injected clock)", async () => {
+test("F-026/F-040/F-089: execute drops engine.lock while its verification commands run (injected clock)", async () => {
   await withFakeAdapter(async () => {
     const clock = createInjectedClock();
     await withEngine(async ({ dir }) => {
@@ -351,6 +351,66 @@ test("F-054: dead-in-progress recovery scans cache/runs once per lock, not per t
   });
 });
 
+test("F-031: recovery skips the cache/runs scan with no current task and no in-flight task", async () => {
+  await withEngine(async ({ dir, store, engine }) => {
+    await initProject(engine);
+    await writeTask(store, makeTask({ id: "TSK-0001", status: "done" }));
+    const state = await store.readState();
+    await store.writeState({ ...state.data, phase: "executing", currentTaskId: null }, state.body);
+    const runsDir = join(dir, ".legion-cli", "cache", "runs");
+    await mkdir(runsDir, { recursive: true });
+    for (let i = 0; i < 50; i += 1) await mkdir(join(runsDir, `old-${i}`), { recursive: true });
+    resetListCacheResumesCalls();
+    await engine.recoverStaleInProgress();
+    assert.equal(listCacheResumesCalls, 0, "no scan when nothing can be in flight");
+
+    // A dead in_progress task with no current task is still found and recovered.
+    await writeTask(store, makeTask({ id: "TSK-0002", status: "in_progress" }));
+    await mkdir(join(runsDir, "dead-1"), { recursive: true });
+    await writeFile(
+      join(runsDir, "dead-1", "resume.json"),
+      `${JSON.stringify({
+        schemaVersion: "legion-cli-resume/v1",
+        runId: "dead-1",
+        taskId: "TSK-0002",
+        skillId: "execute",
+        preSpawnRef: "UNBORN",
+        startedAt: new Date(Date.now() - 5000).toISOString(),
+        pid: 2_000_000_000,
+        adapterId: "fake",
+        binary: "(in-process)",
+        argvSummary: "{{pointer}}",
+        resolutionSource: "default",
+      })}
+`,
+      "utf8",
+    );
+    resetListCacheResumesCalls();
+    await engine.recoverStaleInProgress();
+    assert.equal(listCacheResumesCalls, 1);
+    assert.equal((await store.readTask("TSK-0002")).data.status, "blocked");
+  });
+});
+
+test("F-031: recovery still scans when a task is current or a task is verifying", async () => {
+  for (const scenario of ["current", "verifying"]) {
+    await withEngine(async ({ dir, store, engine }) => {
+      await initProject(engine);
+      const status = scenario === "current" ? "in_progress" : "verifying";
+      await writeTask(store, makeTask({ id: "TSK-0001", status }));
+      const state = await store.readState();
+      await store.writeState(
+        { ...state.data, phase: "executing", currentTaskId: scenario === "current" ? "TSK-0001" : null },
+        state.body,
+      );
+      await mkdir(join(dir, ".legion-cli", "cache", "runs"), { recursive: true });
+      resetListCacheResumesCalls();
+      await engine.recoverStaleInProgress();
+      assert.equal(listCacheResumesCalls, 1, `scenario ${scenario} must scan`);
+    });
+  }
+});
+
 test("second execute is refused while a task is verifying", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ dir, store }) => {
@@ -393,7 +453,7 @@ test("second execute is refused while a task is verifying", async () => {
       const first = await engine.execute("auto");
       assert.equal(first.status, "done");
       assert.equal(secondErr instanceof LegionRefuseError, true, String(secondErr));
-      assert.match(secondErr.message, /TSK-0001 is verifying/);
+      assert.match(secondErr.message, /execute run execute-.* is live/);
       assert.equal((await store.readTask("TSK-0002")).data.status, "ready");
     });
   });
@@ -434,6 +494,40 @@ test("post-verify STATE.md does not clobber a newer currentTaskId", async () => 
       initGitRepo(dir);
       await engine.execute("auto");
       assert.equal((await store.readState()).data.currentTaskId, "TSK-0002");
+    });
+  });
+});
+
+test("F-048/F-061 documented exception: intent --confirm holds engine.lock across its agent run", async () => {
+  // Unlike execute/review (start, drop the lock, wait, relock), these verbs run the agent inside
+  // one lock hold: verify, intent --confirm, spec and ingest --distill. Other verbs wait for the
+  // lock (and time out with "engine locked") for the length of the run; the run marker is still
+  // written so a second process sees a live run.
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ dir, store }) => {
+      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "confirm-ready");
+      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "confirm-release");
+      const filler = new LegionEngine(dir, undefined, { skillsDir });
+      await initProject(filler);
+      await filler.beginIntent();
+      await filler.intentTurn(["Teammates who miss who is in.", "Five chat apps every morning."]);
+      await filler.intentTurn(["Tap in or out in under five seconds.", "No payroll in v0."]);
+      await filler.intentTurn(["existing auth"]);
+      await filler.intentTurn(["Open the board, tap In, see yourself.", "Empty board, network error."]);
+      await filler.intentTurn(["board", "phone"]);
+      await filler.intentTurn(["none", "none"]);
+      const held = new LegionEngine(dir, undefined, {
+        skillsDir,
+        fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
+      });
+      const pending = held.confirmIntent({ id: "tester" });
+      const start = Date.now();
+      while (!existsSync(readyPath) && Date.now() - start < 10_000) await delay(20);
+      assert.equal(existsSync(readyPath), true, "agent hold never started");
+      assert.equal(existsSync(store.paths.lock), true, "confirm holds engine.lock while its agent runs");
+      await writeFile(releasePath, "go" + String.fromCharCode(10));
+      await pending;
+      assert.equal(existsSync(store.paths.lock), false);
     });
   });
 });

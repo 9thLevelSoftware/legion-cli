@@ -94,3 +94,41 @@ single integrated run, `failures.json` its deduplicated failure ledger,
 `typecheck.log` and `typecheck-repaired.log` the cumulative typecheck evidence,
 and `consumer-final.log` the final consumer result. Worker handoffs retain the
 targeted repair results. The scratchpad is intentionally gitignored.
+
+## Main-branch integration (2026-10-01)
+
+The PR branch incorporates main at `7f2aa154`, retaining the brownfield stack's
+chained audit log, live-run mutation guard, hardened verification, path handling,
+map degradation, and consumer packaging guard alongside the enhancement contracts.
+Upstream `AGENTS.md` is retained verbatim so this PR does not change that file.
+Its historical best-effort macOS wording is superseded for this implementation by
+the approved plan and the required macOS sandbox workflow documented in README.
+
+Merge verification:
+
+- Frozen lockfile install passed; affected package builds and the full 14-package
+  typecheck passed. Later runtime repairs received fresh package builds.
+- Each affected package suite ran once. Across those initial suites: 1,533 tests,
+  1,492 passed, 21 failed and 20 skipped. All 21 failures were repaired and passed
+  targeted reruns; no complete green suite was repeated. A graph invocation error
+  was corrected before its 12 tests ran.
+- The core suite had 573 tests: 551 passed, 15 failed and 7 skipped. Repairs cover
+  active-SPEC QA v2 fixtures, governed review notes, canonical run IDs, source-bound
+  ship fixtures, large Git indexes and deterministic live-run coordination.
+- Additional regressions passed for cancellation without replay and exclusive,
+  fail-closed legacy marker migration. Parallel failed-exit/sibling preservation
+  and exactly-once resource cleanup passed in the core suite and changed-path check.
+- Clean-consumer smoke passed for all 14 packed allowlisted packages, including
+  installed CLI, skill/extension/craft resources and brownfield compatibility.
+- Independent Sol source review accepted the final runtime repairs. Whitespace
+  checks passed; no merge conflicts remain locally.
+
+Consequential integration repairs: parallel workers reject unsuccessful agent
+exits before applying output and close their MCP resources once; cancellation
+reaches command process trees and MCP requests while uncertain outcomes remain
+pending; source identity uses the shared bounded Git wrapper; legacy marker
+migration cannot overwrite current identities or discard a guard on publication
+failure; undo force-stages only its closed set of restored audit paths.
+
+Logs for this integration use the `scratchpad/verification/merge-` prefix.
+External provider, real-agent and platform validation limits above still apply.

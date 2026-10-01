@@ -78,6 +78,20 @@ export async function runCommand(cwd: string, command: string, opts?: QaCommandO
   };
 }
 
+/**
+ * A runner that timed out, was killed by a signal, or exited non-zero is not evidence of a pass,
+ * even when its report lists only passes. A plain non-zero exit is tolerated only when the report
+ * itself shows failed tests, because then the failures are already counted.
+ */
+function runnerFailClosedReason(capture: CommandCapture, report: unknown, label: string): string | undefined {
+  if (!capture.started || capture.timedOut) return undefined; // reported by the caller's own warning
+  if (capture.status === null) return `${label} command was killed by a signal; treated as failed`;
+  if (capture.status === 0) return undefined;
+  const failedCounted = report != null && parseTestReport(report).some((test) => !test.ok && !test.skipped);
+  if (failedCounted) return undefined;
+  return `${label} command exited with code ${capture.status} without a report of failed tests; treated as failed`;
+}
+
 export type RunProjectQaOptions = {
   projectRoot: string;
   spec: Pick<Spec, "id" | "acceptance" | "wireframesIndex">;
@@ -154,8 +168,6 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
     warnings.push(`unit command did not start: ${unitCapture.error ?? "unknown error"}`);
   } else if (unitCapture.timedOut) {
     warnings.push(`unit command timed out after ${timeoutMs} ms and was stopped`);
-  } else if (unitCapture.status !== 0) {
-    warnings.push(`unit command exited ${unitCapture.status ?? "without a code"}`);
   }
   const unitAbs = join(qaDir, "unit.json");
   const unitReport = await writeEvidence(opts.projectRoot, unitAbs, unitCapture);
@@ -181,6 +193,7 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
   const needsPlaywright = opts.mode === "full" && specHasUi(opts.spec);
   let playwrightReport: unknown;
   let playwrightRan = false;
+  let playwrightCapture: CommandCapture | undefined;
   if (needsPlaywright) {
     const pwCapture = await runCommand(
       opts.projectRoot,
@@ -191,9 +204,8 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
       warnings.push(`playwright command did not start: ${pwCapture.error ?? "unknown error"}`);
     } else if (pwCapture.timedOut) {
       warnings.push(`playwright command timed out after ${timeoutMs} ms and was stopped`);
-    } else if (pwCapture.status !== 0) {
-      warnings.push(`playwright command exited ${pwCapture.status ?? "without a code"}`);
     }
+    playwrightCapture = pwCapture;
     const pwAbs = join(qaDir, "playwright.json");
     playwrightReport = await writeEvidence(opts.projectRoot, pwAbs, pwCapture);
     evidencePaths.push(`.legion-cli/qa/runs/${id}/playwright.json`);
@@ -211,6 +223,17 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
     : false;
   const reportFailures = Number(unitReportFailed) + Number(playwrightReportFailed);
   const failClosed = reportFailures > 0;
+
+  const unitReason = runnerFailClosedReason(unitCapture, unitReport, "unit");
+  if (unitReason) {
+    warnings.push(unitReason);
+  }
+  if (playwrightCapture) {
+    const pwReason = runnerFailClosedReason(playwrightCapture, playwrightReport, "playwright");
+    if (pwReason) {
+      warnings.push(pwReason);
+    }
+  }
   const scoreOpts = {
     spec: opts.spec,
     mode: opts.mode,

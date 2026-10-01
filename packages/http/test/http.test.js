@@ -1194,6 +1194,87 @@ test("an uncertain external MCP tool call is never replayed during recovery", as
   assert.equal(calls, 0);
 });
 
+test("aborting an in-flight external tool keeps its checkpoint pending and resume does not replay it", async () => {
+  let posts = 0;
+  const { server, baseUrl } = await startMock(async (req, res) => {
+    posts += 1;
+    await jsonBody(req);
+    sendJson(res, 200, assistant(null, [toolCall("external-abort", "mcp_fixture_read", { key: "value" })]));
+  });
+  try {
+    await withTemp(async (dir) => {
+      const promptPath = join(dir, "prompt.md");
+      await writeFile(promptPath, "cancel external tool\n", "utf8");
+      let calls = 0;
+      let seenSignal;
+      let markStarted;
+      const started = new Promise((resolve) => { markStarted = resolve; });
+      const host = {
+        jailRoot: dir,
+        async readFile() { return ""; },
+        async writeFile() {},
+        async listDir() { return []; },
+        externalTools: [{
+          callName: "mcp_fixture_read",
+          namespacedName: "fixture:read",
+          inputSchema: {
+            type: "object",
+            properties: { key: { type: "string" } },
+            required: ["key"],
+            additionalProperties: false,
+          },
+        }],
+        async callExternalTool(_name, _args, signal) {
+          calls += 1;
+          seenSignal = signal;
+          markStarted();
+          return new Promise((resolve, reject) => {
+            const onAbort = () => reject(signal.reason ?? new Error("aborted"));
+            if (signal.aborted) onAbort();
+            else signal.addEventListener("abort", onAbort, { once: true });
+          });
+        },
+      };
+      const adapter = new HttpAdapter({ baseUrl, model: "fixture-model", apiKeyEnv: "KEY", allowLoopback: true });
+      const job = {
+        runId: "run-abort-external",
+        skillId: "execute",
+        promptPath,
+        pointerPrompt: "pointer",
+        cwd: dir,
+        checkpointRoot: dir,
+        timeoutMs: 10_000,
+        env: { KEY: "fixture-secret" },
+        sourceIdentity: "source-abort",
+        contractIdentity: "contract-abort",
+        externalConfigIdentity: "external-abort",
+        jailIdentity: "jail-abort",
+        httpHost: host,
+      };
+      const handle = await adapter.spawn(job);
+      const resultPromise = handle.wait();
+      await started;
+      await handle.abort();
+      const interrupted = await resultPromise;
+      assert.equal(interrupted.aborted, true);
+      assert.equal(interrupted.recovery, "manual");
+      assert.equal(seenSignal?.aborted, true);
+      assert.equal(calls, 1);
+      const pending = await readHttpCheckpoint(interrupted.checkpointPath);
+      assert.deepEqual(pending.toolOutcomes.map((outcome) => outcome.status), ["pending"]);
+
+      const resumed = await (await adapter.spawn({ ...job, resume: true })).wait();
+      assert.equal(resumed.exitCode, 1);
+      assert.equal(resumed.recovery, "manual");
+      assert.equal(calls, 1, "uncertain external outcome is not replayed");
+      assert.equal(posts, 1, "resume fails before another provider request");
+    });
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("resume repairs a multi-call crash in call order and retries only the safe unread call", async () => {
   let posts = 0;
   const { server, baseUrl } = await startMock(async (req, res) => {
@@ -1284,7 +1365,7 @@ test("resume repairs a multi-call crash in call order and retries only the safe 
   }
 });
 
-function copyHost() {
+  function copyHost() {
   return {
     jailRoot: "/tmp/jail",
     readFile: async () => "",
@@ -1443,6 +1524,146 @@ test("adapter tool round-trip writes an allowed path through dispatchToolCall", 
       assert.deepEqual(toolResults, ["ok"]);
       const summary = await readFile(result.summaryPath, "utf8");
       assert.match(summary, /wrote src\/ok\.ts/);
+    });
+  } finally {
+    delete process.env.LEGION_HTTP_TEST_KEY;
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+test("an empty final reply after a tool round remains an incomplete terminal response", async () => {
+  const { server, baseUrl } = await startMock(async (req, res) => {
+    const body = await jsonBody(req);
+    const round = (body.messages ?? []).filter((msg) => msg.role === "tool").length;
+    if (round === 0) {
+      sendJson(res, 200, assistant(null, [toolCall("c1", "write_file", { path: "src/ok.ts", contents: "ok\n" })]));
+      return;
+    }
+    sendJson(res, 200, assistant(""));
+  });
+  try {
+    await withTemp(async (dir) => {
+      const writes = [];
+      const promptPath = join(dir, "prompt.md");
+      await writeFile(promptPath, "write ok\n", "utf8");
+      const host = {
+        jailRoot: dir,
+        readFile: async () => "",
+        async writeFile(posix, contents) {
+          writes.push({ posix, contents });
+        },
+        listDir: async () => [],
+      };
+      const adapter = new HttpAdapter({ baseUrl, model: "local", apiKeyEnv: "LEGION_HTTP_TEST_KEY", allowLoopback: true });
+      const result = await (
+        await adapter.spawn({
+          runId: "run-empty-final",
+          skillId: "review",
+          promptPath,
+          pointerPrompt: "pointer",
+          cwd: dir,
+          timeoutMs: 10_000,
+          env: { LEGION_HTTP_TEST_KEY: "sk-test" },
+          httpHost: host,
+        })
+      ).wait();
+      assert.equal(result.exitCode, 1);
+      assert.deepEqual(writes, [{ posix: "src/ok.ts", contents: "ok\n" }]);
+    });
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+for (const [label, body] of [
+  ["a 200 with an error body and no choices", { error: { message: "quota exceeded" } }],
+  ["a 200 with an empty choices array", { choices: [] }],
+  ["a 200 whose message has neither content nor tool calls", assistant("")],
+]) {
+  test(`${label} is a failed run (exit 1), not an empty success`, async () => {
+    const { server, baseUrl } = await startMock(async (req, res) => {
+      await jsonBody(req);
+      sendJson(res, 200, body);
+    });
+    try {
+      await withTemp(async (dir) => {
+        const promptPath = join(dir, "prompt.md");
+        await writeFile(promptPath, "hello\n", "utf8");
+        const adapter = new HttpAdapter({
+          baseUrl,
+          model: "local",
+          apiKeyEnv: "LEGION_HTTP_TEST_KEY",
+          allowLoopback: true,
+        });
+        const result = await (
+          await adapter.spawn({
+            runId: "run-empty",
+            skillId: "plan",
+            promptPath,
+            pointerPrompt: "pointer",
+            cwd: dir,
+            timeoutMs: 10_000,
+            env: { LEGION_HTTP_TEST_KEY: "sk-test" },
+          })
+        ).wait();
+        assert.equal(result.exitCode, 1);
+        assert.equal(result.summaryPath, undefined);
+      });
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+}
+
+test("an abort during a tool-call batch stops the remaining calls", async () => {
+  const { server, baseUrl } = await startMock(async (req, res) => {
+    await jsonBody(req);
+    sendJson(
+      res,
+      200,
+      assistant(null, [
+        toolCall("c1", "write_file", { path: "src/a.ts", contents: "a\n" }),
+        toolCall("c2", "write_file", { path: "src/b.ts", contents: "b\n" }),
+      ]),
+    );
+  });
+  process.env.LEGION_HTTP_TEST_KEY = "sk-test";
+  try {
+    await withTemp(async (dir) => {
+      const promptPath = join(dir, "prompt.md");
+      await writeFile(promptPath, "write two\n", "utf8");
+      const writes = [];
+      let handle;
+      const host = {
+        jailRoot: dir,
+        readFile: async () => "",
+        async writeFile(posix) {
+          writes.push(posix);
+          void handle.abort();
+        },
+        listDir: async () => [],
+      };
+      const adapter = new HttpAdapter({
+        baseUrl,
+        model: "local",
+        apiKeyEnv: "LEGION_HTTP_TEST_KEY",
+        allowLoopback: true,
+      });
+      handle = await adapter.spawn({
+        runId: "run-abort-batch",
+        skillId: "execute",
+        promptPath,
+        pointerPrompt: "pointer",
+        cwd: dir,
+        timeoutMs: 10_000,
+        env: { LEGION_HTTP_TEST_KEY: "sk-test" },
+        httpHost: host,
+      });
+      const result = await handle.wait();
+      assert.deepEqual(writes, ["src/a.ts"]);
+      assert.equal(result.aborted, true);
     });
   } finally {
     delete process.env.LEGION_HTTP_TEST_KEY;

@@ -6,7 +6,7 @@ import { EngineLockedError } from "./errors.js";
 import { abandonReceiptPath, auditDayPath, auditEventsPath, legionPaths, shipReceiptPath } from "./layout.js";
 import { persistWork } from "./markdown.js";
 import { toFsPath } from "./paths.js";
-import { appendAuditChainLine } from "./pre-image.js";
+import { appendChainedAuditLine, baselineAuditChain } from "./pre-image.js";
 import { createLegionStore } from "./store.js";
 
 const dayWriteTails = new Map<string, Promise<void>>();
@@ -42,23 +42,66 @@ export async function appendAuditEvent(
   const store = createLegionStore(projectRoot);
   if (store.holdsLock()) return appendAuditEventLocked(projectRoot, parsed);
   try {
-    // timeout 0: re-enter if we hold it; never wait out a refusal that already hit EngineLockedError
-    return await store.withLock(() => appendAuditEventLocked(projectRoot, parsed), { timeoutMs: 0 });
+    // Never write without the lock: wait briefly, then drop the event (it is informational).
+    return await store.withLock(() => appendAuditEventLocked(projectRoot, parsed), {
+      timeoutMs: AUDIT_LOCK_WAIT_MS,
+    });
   } catch (err) {
-    if (err instanceof EngineLockedError) return appendAuditEventLocked(projectRoot, parsed);
+    if (err instanceof EngineLockedError) {
+      process.stderr.write(
+        `legion-cli: audit event dropped (${parsed.type}): another legion-cli holds the engine lock
+`,
+      );
+      return parsed;
+    }
     throw err;
   }
 }
 
+/** How long a lock-less caller waits for the engine lock before dropping its audit event. */
+export const AUDIT_LOCK_WAIT_MS = 1000;
+
 async function appendAuditEventLocked(projectRoot: string, parsed: AuditEvent): Promise<AuditEvent> {
   const paths = legionPaths(projectRoot);
   await mkdir(paths.auditDir, { recursive: true });
-  const jsonl = toFsPath(projectRoot, auditEventsPath());
-  const line = JSON.stringify(parsed);
-  await appendFile(jsonl, `${line}\n`, "utf8");
-  await appendAuditChainLine(projectRoot, line);
+  await appendChainedAuditLine(projectRoot, JSON.stringify(parsed));
   await appendAuditDay(projectRoot, parsed);
   return parsed;
+}
+
+export type AuditRebaselineResult = {
+  lines: number;
+  unparseable: number;
+  previous: { length: number; lastDigest: string } | null;
+};
+
+/**
+ * The one recorded remediation for an unreadable, reset or mismatched chain: under the engine
+ * lock, re-chain the current log and append an `audit_rebaselined` event describing what was
+ * replaced. Nothing here vouches that the log is authentic; the operator reviews it first.
+ */
+export async function rebaselineAuditChain(
+  projectRoot: string,
+  ctx: { phase: Phase; ts: string; actor?: string; /** runs under the lock, before anything is rewritten; throw to refuse */ guard?: () => Promise<void> },
+): Promise<AuditRebaselineResult> {
+  const store = createLegionStore(projectRoot);
+  return store.withLock(async () => {
+    if (ctx.guard) await ctx.guard();
+    const result = await baselineAuditChain(projectRoot);
+    await appendAuditEventLocked(
+      projectRoot,
+      AuditEventSchema.parse({
+        schemaVersion: SCHEMA_VERSION.audit,
+        ts: ctx.ts,
+        type: "audit_rebaselined",
+        phase: ctx.phase,
+        taskId: null,
+        actor: ctx.actor ?? "user",
+        data: { lines: result.lines, unparseable: result.unparseable, previous: result.previous },
+      }),
+    );
+    return result;
+  });
 }
 
 export function auditDayFromTs(ts: string): string {

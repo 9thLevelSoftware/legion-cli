@@ -3,14 +3,14 @@ export type HttpToolHost = {
   readFile(posix: string): Promise<string>;
   writeFile(posix: string, contents: string): Promise<void>;
   listDir(posix: string): Promise<string[]>;
-  runCommand?(argv: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  runCommand?(argv: string[], signal?: AbortSignal): Promise<{ exitCode: number; stdout: string; stderr: string }>;
   externalTools?: Array<{
     callName: string;
     namespacedName: string;
     description?: string;
     inputSchema: Record<string, unknown>;
   }>;
-  callExternalTool?(callName: string, args: Record<string, unknown>): Promise<string>;
+  callExternalTool?(callName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
 };
 
 export type HttpAgentJob = {

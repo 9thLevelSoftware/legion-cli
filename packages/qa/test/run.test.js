@@ -152,6 +152,50 @@ test("nonzero unit exit blocks an all-passing JSON report", async () => {
     assert.equal(result.score.criteria[0].outcome, "passed");
     assert.ok(result.score.reportFailures > 0);
     assert.equal(result.score.pass, false);
+    assert.ok(
+      result.warnings.some((line) => /unit command exited with code 7 without a report of failed tests/.test(line)),
+      result.warnings.join("\n"),
+    );
+  });
+});
+
+test("nonzero unit exit with a reported failure adds no redundant runner warning", async () => {
+  await withTempDir(async (dir) => {
+    const script = join(dir, "unit-failed.js");
+    await writeFile(
+      script,
+      `process.stdout.write(JSON.stringify({tests:[{title:'health @ac(AC-01)',status:'failed'}]}));process.exitCode=1;`,
+      "utf8",
+    );
+    const result = await runProjectQa({
+      projectRoot: dir,
+      spec,
+      mode: "full",
+      unitCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`,
+      id: "qa-unit-failed",
+    });
+    assert.equal(result.score.pass, false);
+    assert.deepEqual(result.warnings, []);
+  });
+});
+
+test("unit command killed by a signal fails closed", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const script = join(dir, "unit-signal.js");
+    await writeFile(
+      script,
+      `process.stdout.write(JSON.stringify({tests:[{title:'health @ac(AC-01)',status:'passed'}]}));process.kill(process.pid,'SIGKILL');`,
+      "utf8",
+    );
+    const result = await runProjectQa({
+      projectRoot: dir,
+      spec,
+      mode: "full",
+      unitCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`,
+      id: "qa-unit-signal",
+    });
+    assert.equal(result.score.pass, false);
+    assert.ok(result.warnings.some((line) => /killed by a signal/.test(line)), result.warnings.join("\n"));
   });
 });
 
@@ -173,6 +217,7 @@ test("timed-out unit command blocks partial passing JSON", async () => {
     });
     assert.ok(result.score.reportFailures > 0);
     assert.equal(result.score.pass, false);
+    assert.deepEqual(result.warnings, ["unit command timed out after 300 ms and was stopped"]);
   });
 });
 
@@ -193,6 +238,10 @@ test("nonzero Playwright exit blocks all-passing JSON", async () => {
     });
     assert.ok(result.score.reportFailures > 0);
     assert.equal(result.score.pass, false);
+    assert.ok(
+      result.warnings.some((line) => /playwright command exited with code 9 without a report of failed tests/.test(line)),
+      result.warnings.join("\n"),
+    );
   });
 });
 

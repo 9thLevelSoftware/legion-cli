@@ -37,14 +37,20 @@ import {
   AuditTamperError,
   appendAuditEvent,
   createLegionStore,
-  isPidAlive,
-  openEngineCommand,
   ownProcessStartedAt,
   processIdentity,
-  RestoreRefusedError,
   sameProcessStart,
   writeTextFile,
+  clearLiveRun,
+  createLiveRun,
+  isPidAlive,
+  liveRunFromResume,
+  liveRunState,
+  openEngineCommand,
+  recordLiveRunAgent,
+  RestoreRefusedError,
   type LegionReader,
+  type LiveRunMarker,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   assertExecuteSandbox,
@@ -104,6 +110,15 @@ export async function resolveSkillDir(opts: {
   packagedSkillsDir?: string;
 }): Promise<ResolvedSkillDir> {
   return resolveOverlaySkillDir(opts);
+}
+
+/**
+ * Refuse while any listed run is live (its engine or agent still holds the recorded identity).
+ * `ownRunId` is the run this call is finishing: the owning engine's own relock is exempt.
+ * `live` comes from `liveRuns()`, which also clears provably dead markers and migrates the legacy file.
+ */
+function liveRunMarkerRel(runId: string): string {
+  return `.legion-cli/cache/live-spawn/${runId}.json`;
 }
 
 type LiveSpawnMarker = { enginePid: number; skillId: SkillId; runId: string };
@@ -215,6 +230,30 @@ export async function refuseIfLiveSkillSpawn(projectRoot: string, action: string
   }
 }
 
+export function refuseIfLiveRun(
+  live: readonly LiveRunMarker[],
+  opts?: { ownRunId?: string; ownRunIds?: readonly string[] },
+): void {
+  const own = new Set([...(opts?.ownRunIds ?? []), ...(opts?.ownRunId ? [opts.ownRunId] : [])]);
+  const other = live.find((marker) => !(own.has(marker.runId) && marker.enginePid === process.pid));
+  if (!other) return;
+  const task = other.taskId ? ` (task ${other.taskId})` : "";
+  const where = other.evidence
+    ? `This run has no marker; the evidence is ${other.evidence} (check that its pids are a legion agent)`
+    : `if a process there is not a legion agent, delete ${liveRunMarkerRel(other.runId)}`;
+  refuse(
+    `refused while another legion command is running: ${other.skillId} run ${other.runId} is live${task}. ` +
+      `Hands off the tree until it finishes. Check with legion-cli status; if it died, legion-cli doctor clears its marker (${where})`,
+    HINT.status,
+  );
+}
+
+/** Treat a resume.json as a run marker: same identity check, keyed on the run's recorded start. */
+export async function resumeAsLiveRun(resume: ResumeFile): Promise<LiveRunMarker | null> {
+  const marker = liveRunFromResume(resume);
+  return (await liveRunState(marker)).live ? marker : null;
+}
+
 function skillMissingHint(skillId: SkillId): string {
   if (skillId === "execute") return HINT.execute;
   if (skillId === "review") return HINT.review;
@@ -246,6 +285,8 @@ export type OptionalSpawnResult = {
   revert: RevertResult | null;
   error?: unknown;
   timedOut?: boolean;
+  exitCode?: number | null;
+  agentErrorMessage?: string;
   durationMs?: number;
   resolution?: AdapterResolution;
   binary?: string;
@@ -266,6 +307,8 @@ export type SkillSpawnOpts = {
   fakeArtifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
   timedOut?: boolean;
+  exitCode?: number;
+  omitSummary?: boolean;
   required?: boolean;
   cliAdapter?: AdapterId;
   taskAdapter?: AdapterId;
@@ -276,6 +319,8 @@ export type SkillSpawnOpts = {
   onWait?: () => Promise<void>;
   handlePid?: number;
   allowNoSandbox?: boolean;
+  /** Test-only resource owned by this spawn; governed MCP uses the same lifecycle slot. */
+  resourceCleanup?: () => Promise<void>;
 };
 
 type SpawnRevertCtx = {
@@ -312,6 +357,16 @@ export type StartedSkillSpawn =
       resourceCleanup?: () => Promise<void>;
     };
 
+/** Release adapter-owned resources once even when several recovery/finalization paths converge. */
+export async function cleanupStartedSpawnResources(
+  started: Extract<StartedSkillSpawn, { spawned: true }>,
+): Promise<void> {
+  const cleanup = started.resourceCleanup;
+  if (!cleanup) return;
+  started.resourceCleanup = undefined;
+  await cleanup().catch(() => undefined);
+}
+
 export type WaitedSkillSpawn = {
   error?: unknown;
   timedOut: boolean;
@@ -319,6 +374,11 @@ export type WaitedSkillSpawn = {
   usage?: AgentUsage;
   limitReason?: string;
   recovery?: "resume" | "manual" | "none";
+  /** Agent exit code; null when killed or never started. */
+  exitCode?: number | null;
+  /** Spawn failure message (for example ENOENT) when the process never ran. */
+  agentErrorMessage?: string;
+  aborted?: boolean;
 };
 
 export function governedMcpConfigIdentity(config: LegionConfig): string | null {
@@ -401,10 +461,10 @@ async function governedMcpBridge(config: LegionConfig): Promise<{
     externalTools,
     configIdentity,
     toolContractIdentity,
-    async callExternalTool(callName, args) {
+    async callExternalTool(callName, args, signal) {
       const namespaced = byCallName.get(callName);
       if (!namespaced) return `error: unknown governed MCP tool ${callName}`;
-      const result = await pool.callGovernedHttpTool(namespaced, args);
+      const result = await pool.callGovernedHttpTool(namespaced, args, signal);
       return JSON.stringify(result ?? { isError: true, reason: "unknown-server" });
     },
     close: () => pool.closeAll(),
@@ -506,6 +566,21 @@ export async function inspectResumeOwner(
   return unknown ? "unknown" : "stale";
 }
 
+/** Describes a run that did not end with exit code 0, or undefined when it did. A timeout is reported separately. */
+export function agentExitProblem(waited: {
+  exitCode?: number | null;
+  timedOut?: boolean;
+  agentErrorMessage?: string;
+}): string | undefined {
+  if (waited.timedOut || waited.exitCode === undefined || waited.exitCode === 0) return undefined;
+  if (waited.exitCode === null) {
+    return waited.agentErrorMessage
+      ? `agent did not run to completion (${waited.agentErrorMessage})`
+      : "agent was killed or did not start (no exit code)";
+  }
+  return `agent exited with code ${waited.exitCode}`;
+}
+
 const CONFIG_READ_SET = [
   "package.json",
   "pnpm-lock.yaml",
@@ -522,9 +597,24 @@ const CONFIG_READ_SET = [
   "scripts",
 ] as const;
 
-function sandboxReadSet(opts: {
+/**
+ * execute, configured skills and the http adapter run jailed. ingest --distill feeds untrusted
+ * content to the agent (F-042): engine.ts refuses it without a hardened backend, and it always
+ * runs jailed here. The fake test adapter runs no agent, so it is exempt.
+ */
+export function isJailedSpawn(skillId: SkillId, configuredSkills: readonly string[], adapterId: string): boolean {
+  return (
+    skillId === "execute" ||
+    configuredSkills.includes(skillId) ||
+    adapterId === "http" ||
+    (skillId === "ingest" && adapterId !== "fake")
+  );
+}
+
+export function sandboxReadSet(opts: {
   projectRoot: string;
   runId: string;
+  skillId?: SkillId;
   specId?: string;
   taskId?: string;
 }): string[] {
@@ -534,6 +624,10 @@ function sandboxReadSet(opts: {
     // Generated map artifacts are engine-owned context and remain read-only in the jail.
     ".legion-cli/map",
   ];
+  // Distill links existing catalog titles, so the jailed ingest agent reads the wiki.
+  if (opts.skillId === "ingest" && existsSync(join(opts.projectRoot, ".legion-cli", "wiki"))) {
+    out.push(".legion-cli/wiki");
+  }
   if (opts.specId) out.push(`.legion-cli/specs/${opts.specId}`);
   if (opts.taskId) out.push(`.legion-cli/tasks/${opts.taskId}.md`);
   for (const name of CONFIG_READ_SET) {
@@ -733,6 +827,8 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     artifacts: opts.fakeArtifacts ?? [],
     throwAfterWrite: opts.throwAfterWrite,
     timedOut: opts.timedOut,
+    exitCode: opts.exitCode,
+    omitSummary: opts.omitSummary,
     holdWait: opts.holdWait,
     onWait: opts.onWait,
     handlePid: opts.handlePid,
@@ -764,7 +860,8 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     skillId: opts.skillId,
     skillDir,
     skillsDir,
-    promptBody: opts.promptBody,
+    // the run id is only known here; prompts name run-cache paths with a literal <id>
+    promptBody: opts.promptBody.replaceAll("<id>", runId),
     allowedRoots,
     fileContract: opts.fileContract,
     store: opts.store,
@@ -824,10 +921,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   let sandbox: SandboxHandle | undefined;
   let allowedWrites: string[] = [];
   let mcpBridge: Awaited<ReturnType<typeof governedMcpBridge>>;
-  const jailed =
-    opts.skillId === "execute" ||
-    opts.config.sandbox.skills.includes(opts.skillId) ||
-    resolution.id === "http";
+  const jailed = isJailedSpawn(opts.skillId, opts.config.sandbox.skills, resolution.id);
   if (jailed) {
     try {
       try {
@@ -894,6 +988,19 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     }
   }
 
+  // The marker exists before the agent does, so an engine crash right after spawn still leaves a
+  // record; the agent pid is added once known. `wx`: never overwrites another run's marker.
+  let liveMarker: LiveRunMarker;
+  try {
+    liveMarker = await createLiveRun(opts.projectRoot, {
+      runId,
+      skillId: opts.skillId,
+      taskId: opts.taskId ?? null,
+    });
+  } catch (err) {
+    await sandbox?.destroy().catch(() => undefined);
+    throw err;
+  }
   let handle: AgentHandle;
   try {
     const spawnOpts = sandbox?.spawnOpts();
@@ -960,17 +1067,36 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       interruptionReason: `spawn start failed: ${err instanceof Error ? err.message : String(err)}`,
       ...(opts.taskId ? { recoveryCommand: `legion-cli task amend ${opts.taskId} --unblock` } : {}),
     });
+    await clearLiveRun(opts.projectRoot, runId).catch(() => undefined);
     throw err;
   }
-  resume = {
-    ...resume,
-    pid: handle.pid,
-    pidStartedAt: handle.pid ? await processIdentity(handle.pid) : null,
-    stage: "running",
-    stageUpdatedAt: new Date().toISOString(),
-  };
-  await writeResumeRecord(opts.projectRoot, resume);
-  await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, runId);
+  try {
+    resume = {
+      ...resume,
+      pid: handle.pid,
+      pidStartedAt: handle.pid ? await processIdentity(handle.pid) : null,
+      stage: "running",
+      stageUpdatedAt: new Date().toISOString(),
+    };
+    await writeResumeRecord(opts.projectRoot, resume);
+    if (handle.pid && handle.pid > 0) await recordLiveRunAgent(opts.projectRoot, liveMarker, handle.pid);
+    await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, runId);
+  } catch (err) {
+    // Never leave a running agent no one owns: stop it, drop the jail and the marker, rethrow.
+    await handle.abort().catch(() => undefined);
+    await sandbox?.destroy().catch(() => undefined);
+    await clearLiveRun(opts.projectRoot, runId).catch(() => undefined);
+    await clearLiveSpawnMarker(opts.projectRoot, runId).catch(() => undefined);
+    await updateResumeStage(opts.projectRoot, runId, "interrupted", {
+      pid: null,
+      pidStartedAt: null,
+      engineOwnershipReleasedAt: new Date().toISOString(),
+      childTerminationUncertain: false,
+      interruptionReason: `spawn ownership recording failed: ${err instanceof Error ? err.message : String(err)}`,
+      ...(opts.taskId ? { recoveryCommand: `legion-cli task amend ${opts.taskId} --unblock` } : {}),
+    }).catch(() => undefined);
+    throw err;
+  }
   return {
     spawned: true,
     runId,
@@ -993,7 +1119,16 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     binary: tmpl.binary,
     argvSummary,
     sandbox,
-    ...(mcpBridge ? { resourceCleanup: mcpBridge.close } : {}),
+    ...(mcpBridge || opts.resourceCleanup
+      ? {
+          resourceCleanup: async () => {
+            await Promise.all([
+              ...(mcpBridge ? [mcpBridge.close()] : []),
+              ...(opts.resourceCleanup ? [opts.resourceCleanup()] : []),
+            ]);
+          },
+        }
+      : {}),
   };
 }
 
@@ -1014,8 +1149,9 @@ export async function preserveStartedHttpSpawnForRecovery(
     engineOwnershipReleasedAt: new Date().toISOString(),
     childTerminationUncertain: false,
   });
-  await started.resourceCleanup?.().catch(() => undefined);
+  await cleanupStartedSpawnResources(started);
   await clearLiveSpawnMarker(started.revertCtx.projectRoot, started.runId);
+  await clearLiveRun(started.revertCtx.projectRoot, started.runId).catch(() => undefined);
 }
 
 /** Reopen the retained jail and continue an engine-owned HTTP checkpoint without replaying completed tools. */
@@ -1113,6 +1249,7 @@ export async function resumeHttpSkillSpawn(
   const chatSessions = await snapshotChatSessions(opts.projectRoot);
   let handle: AgentHandle;
   let mcpBridge: Awaited<ReturnType<typeof governedMcpBridge>>;
+  let liveMarker: LiveRunMarker | undefined;
   try {
     mcpBridge = await governedMcpBridge(effectiveConfig);
     const contractIdentity = stableHash({
@@ -1126,6 +1263,11 @@ export async function resumeHttpSkillSpawn(
     if (contractIdentity !== resume.contractIdentity) {
       refuse(`execute resume ${opts.runId} refused because the task or governed MCP contract changed`, HINT.status);
     }
+    liveMarker = await createLiveRun(opts.projectRoot, {
+      runId: opts.runId,
+      skillId: opts.skillId,
+      taskId: opts.taskId ?? null,
+    });
     handle = await adapter.spawn({
       runId: opts.runId,
       skillId: opts.skillId,
@@ -1162,6 +1304,7 @@ export async function resumeHttpSkillSpawn(
     });
   } catch (err) {
     await mcpBridge?.close().catch(() => undefined);
+    if (liveMarker) await clearLiveRun(opts.projectRoot, opts.runId).catch(() => undefined);
     // The retained jail remains available after a failed resume attempt.
     throw err;
   }
@@ -1178,8 +1321,26 @@ export async function resumeHttpSkillSpawn(
     interruptionReason: undefined,
     recoveryCommand: `legion-cli execute --resume ${opts.runId}`,
   };
-  await writeResumeRecord(opts.projectRoot, nextResume);
-  await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, opts.runId);
+  try {
+    await writeResumeRecord(opts.projectRoot, nextResume);
+    if (liveMarker && handle.pid && handle.pid > 0) {
+      await recordLiveRunAgent(opts.projectRoot, liveMarker, handle.pid);
+    }
+    await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, opts.runId);
+  } catch (err) {
+    await handle.abort().catch(() => undefined);
+    await clearLiveRun(opts.projectRoot, opts.runId).catch(() => undefined);
+    await clearLiveSpawnMarker(opts.projectRoot, opts.runId).catch(() => undefined);
+    await updateResumeStage(opts.projectRoot, opts.runId, "interrupted", {
+      pid: null,
+      pidStartedAt: null,
+      engineOwnershipReleasedAt: new Date().toISOString(),
+      childTerminationUncertain: false,
+      interruptionReason: `resume ownership recording failed: ${err instanceof Error ? err.message : String(err)}`,
+      recoveryCommand: `legion-cli execute --resume ${opts.runId}`,
+    }).catch(() => undefined);
+    throw err;
+  }
   return {
     spawned: true,
     runId: opts.runId,
@@ -1212,9 +1373,15 @@ export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spa
   let usage: AgentUsage | undefined;
   let limitReason: string | undefined;
   let recovery: WaitedSkillSpawn["recovery"];
+  let exitCode: number | null | undefined;
+  let agentErrorMessage: string | undefined;
+  let aborted = false;
   try {
     const agentResult = await started.handle.wait();
     timedOut = Boolean(agentResult.timedOut);
+    exitCode = agentResult.exitCode;
+    agentErrorMessage = agentResult.errorMessage;
+    aborted = Boolean(agentResult.aborted);
     recovery = agentResult.recovery;
     usage = agentResult.usage
       ? applyUsagePricing(
@@ -1225,7 +1392,6 @@ export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spa
     limitReason = usageLimitReason(usage ?? {}, started.resolution.profileConfig?.limits) ?? undefined;
     if (timedOut) error = new AgentError("spawn timed out");
     else if (agentResult.aborted) error = new AgentError("spawn aborted");
-    else if (agentResult.exitCode !== 0) error = new AgentError(`spawn exited ${agentResult.exitCode ?? "without a code"}`);
     else if (limitReason) error = new AgentError(limitReason);
   } catch (err) {
     error = err;
@@ -1257,15 +1423,20 @@ export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spa
     ...(usage ? { usage } : {}),
     ...(limitReason ? { limitReason } : {}),
     ...(recovery ? { recovery } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(agentErrorMessage ? { agentErrorMessage } : {}),
+    ...(aborted ? { aborted } : {}),
   };
 }
 
 export async function finishStartedSpawn(
   started: Extract<StartedSkillSpawn, { spawned: true }>,
+  opts?: { keepMarker?: boolean },
 ): Promise<RevertResult> {
   await updateResumeStage(started.revertCtx.projectRoot, started.runId, "integrating");
   let copied: string[] = [];
   let dropped: string[] = [];
+  let agentStillAlive = false;
   const resumePath = join(
     started.revertCtx.projectRoot,
     ".legion-cli",
@@ -1297,6 +1468,7 @@ export async function finishStartedSpawn(
     }
     const childPid = started.handle.pid;
     const agentAlive = Boolean(childPid && childPid !== process.pid && isPidAlive(childPid));
+    agentStillAlive = agentAlive;
     let revert;
     try {
       revert = await revertExtras({
@@ -1345,7 +1517,7 @@ export async function finishStartedSpawn(
       },
     );
     await started.sandbox?.destroy().catch(() => undefined);
-    await started.resourceCleanup?.().catch(() => undefined);
+    await cleanupStartedSpawnResources(started);
     if (!executeContinues) {
       await clearLiveSpawnMarker(started.revertCtx.projectRoot, started.runId);
     }
@@ -1372,6 +1544,8 @@ export async function finishStartedSpawn(
         // Completion remains authoritative; metrics are best-effort metadata.
       }
     }
+    // A surviving agent keeps its marker: the guard must hold while anything can still write.
+    if (!agentStillAlive && !opts?.keepMarker) await clearLiveRun(started.revertCtx.projectRoot, started.runId);
   }
 }
 
@@ -1388,6 +1562,8 @@ export async function optionalSkillSpawn(opts: SkillSpawnOpts): Promise<Optional
     revert,
     error: waited.error,
     timedOut: waited.timedOut,
+    exitCode: waited.exitCode,
+    agentErrorMessage: waited.agentErrorMessage,
     durationMs: waited.durationMs,
     resolution: started.resolution,
     binary: started.binary,

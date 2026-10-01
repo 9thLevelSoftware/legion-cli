@@ -102,7 +102,6 @@ test("closeMcpTransports does not swallow close errors", async () => {
   };
   await assert.rejects(() => closeMcpTransports([closer]), /close-failed/);
 });
-
 test("remote MCP URL policy and transport factory enforce loopback and env-referenced auth", async () => {
   const loopbackLookup = async () => [{ address: "127.0.0.1", family: 4 }];
   await assert.rejects(

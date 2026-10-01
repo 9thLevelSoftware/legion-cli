@@ -17,12 +17,13 @@ async function confirmShip(preview: ShipPreview, json: boolean): Promise<boolean
     writeOut(`QA failed: ${preview.qaCoverage.failed.join(", ") || "none"}`);
     writeOut(`QA skipped: ${preview.qaCoverage.skipped.join(", ") || "none"}`);
     if (preview.diff.trim()) writeOut(preview.diff.trimEnd());
-    writeOut("Acceptance criteria met?  [Y/n]");
+    writeOut("Acceptance criteria met?  [y/n] (an explicit y is required)");
   }
   const answer = await readLine("> ");
   if (isNo(answer)) return false;
-  if (answer === "" || isYes(answer)) return true;
-  refuse("ship needs Y or n", HINT.ship);
+  if (isYes(answer)) return true;
+  if (answer === "") refuse("ship needs an explicit y (empty or closed input is not approval)", HINT.ship);
+  refuse("ship needs y or n", HINT.ship);
 }
 
 export async function runShip(opts: CliOpts, flags: ShipFlags): Promise<number> {
@@ -34,6 +35,7 @@ export async function runShip(opts: CliOpts, flags: ShipFlags): Promise<number> 
       commit: Boolean(flags.commit),
       pr: Boolean(flags.pr),
       actor: "user",
+      confirmSource: process.stdin.isTTY && process.stdout.isTTY ? "tty" : "piped",
       confirm: (preview) => confirmShip(preview, opts.json),
     });
     if (opts.json) {
@@ -45,6 +47,7 @@ export async function runShip(opts: CliOpts, flags: ShipFlags): Promise<number> 
       return 0;
     }
     writeOut("Ship receipt written. Next: legion-cli spec new");
+    if (!flags.commit && receipt.staged.length > 0) writeOut("Changes are staged (not committed).");
     if (!flags.commit && !flags.pr) {
       writeOut("Optional: legion-cli ship --pr --commit");
     }

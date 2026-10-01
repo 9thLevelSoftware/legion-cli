@@ -27,6 +27,28 @@ async function trySymlink(target, path, type) {
   }
 }
 
+async function waitForJson(path) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      return JSON.parse(await readFile(path, "utf8"));
+    } catch (err) {
+      if (err.code !== "ENOENT" && !(err instanceof SyntaxError)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  throw new Error(`timed out waiting for ${path}`);
+}
+
+function pidIsLive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err.code === "ESRCH") return false;
+    throw err;
+  }
+}
+
 function hostFor(jailRoot, extra = {}) {
   return createHttpToolHost({
     jailRoot,
@@ -298,5 +320,40 @@ test("run_command kills and truncates when stdout exceeds the cap", async () => 
     assert.equal(result.exitCode, 1);
     assert.ok(result.stdout.length <= MAX_RUN_COMMAND_BYTES);
     assert.match(result.stderr, /exceeded/);
+  });
+});
+
+test("run_command cancellation kills the wrapper process tree and rejects as aborted", { timeout: 10_000 }, async () => {
+  await withTemp(async (dir) => {
+    const pidsPath = join(dir, "command-pids.json");
+    const grandchildScript = 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)';
+    const wrapperScript = [
+      'const { spawn } = require("node:child_process")',
+      'const { writeFileSync } = require("node:fs")',
+      `const child = spawn(process.execPath, ["-e", ${JSON.stringify(grandchildScript)}], { stdio: "ignore" })`,
+      `writeFileSync(${JSON.stringify(pidsPath)}, JSON.stringify({ parent: process.pid, child: child.pid }))`,
+      "setInterval(() => {}, 1000)",
+    ].join(";");
+    const host = hostFor(dir, {
+      hardened: true,
+      spawnOpts: {
+        cwd: dir,
+        env: process.env,
+        wrapper: { bin: process.execPath, argvPrefix: ["-e", wrapperScript] },
+      },
+    });
+    const controller = new AbortController();
+    const running = host.runCommand([process.execPath], controller.signal);
+    const pids = await waitForJson(pidsPath);
+    assert.equal(pidIsLive(pids.parent), true);
+    assert.equal(pidIsLive(pids.child), true);
+
+    controller.abort();
+    await assert.rejects(running, { name: "AbortError" });
+    for (let attempt = 0; attempt < 100 && (pidIsLive(pids.parent) || pidIsLive(pids.child)); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(pidIsLive(pids.parent), false);
+    assert.equal(pidIsLive(pids.child), false);
   });
 });

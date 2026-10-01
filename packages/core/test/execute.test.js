@@ -490,7 +490,7 @@ test(".git hooks incident blocks and does not rm .git", async () => {
   });
 });
 
-test(".git/config change is an incident and does not delete .git", async () => {
+test(".git/config change is an incident, is restored, and does not delete .git", async () => {
   await withEngine(async ({ dir }) => {
     await writeFile(join(dir, "README.md"), "seed\n", "utf8");
     initGitRepo(dir);
@@ -509,7 +509,7 @@ test(".git/config change is an incident and does not delete .git", async () => {
     assert.equal(existsSync(join(dir, ".git")), true);
     assert.equal(existsSync(join(dir, ".git", "HEAD")), true);
     assert.equal(existsSync(configPath), true);
-    assert.match(await readFile(configPath, "utf8"), /pwn = status/);
+    assert.equal(await readFile(configPath, "utf8"), before, "pre-spawn .git/config is restored");
     assert.equal(git(dir, ["rev-parse", "--is-inside-work-tree"]), "true");
   });
 });
@@ -1370,6 +1370,65 @@ test("execute --until-blocked runs a configured disjoint batch concurrently", as
             rendezvous,
             new Promise((_, reject) => setTimeout(() => reject(new Error("parallel rendezvous timed out")), 2_000)),
           ]);
+        },
+      },
+    );
+  });
+});
+
+test("parallel execution discards a nonzero member, retains its sibling, and cleans each resource once", async () => {
+  await withFakeAdapter(async () => {
+    let arrivals = 0;
+    let projectDir;
+    const cleaned = [];
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        projectDir = dir;
+        await initProject(engine);
+        const config = await store.readConfig();
+        await store.writeConfig({ ...config, execution: { maxWorkers: 2 } });
+        await seedExecute(store, {
+          extraTasks: [
+            makeTask({
+              id: "TSK-0002",
+              title: "board",
+              contract: {
+                filesAllowed: ["src/board.ts"],
+                expectedArtifacts: ["src/board.ts"],
+                verificationCommands: [passingVerificationCommand()],
+              },
+            }),
+          ],
+        });
+        initGitRepo(dir);
+
+        const result = await engine.execute("auto", { untilBlocked: true, jobs: 2 });
+        assert.deepEqual(result.tasks.map((task) => [task.taskId, task.status]), [
+          ["TSK-0001", "blocked"],
+          ["TSK-0002", "done"],
+        ]);
+        assert.equal(result.tasks[0].reason, "agent exited with code 7");
+        await assert.rejects(() => readFile(join(dir, "src", "main.ts"), "utf8"), { code: "ENOENT" });
+        assert.equal(await readFile(join(dir, "src", "board.ts"), "utf8"), "agent board\n");
+        assert.deepEqual(cleaned.sort(), ["TSK-0001", "TSK-0002"]);
+      },
+      {
+        skillsDir,
+        fakeExitCodeForTask: (taskId) => taskId === "TSK-0001" ? 7 : 0,
+        fakeResourceCleanupForTask: async (taskId) => {
+          cleaned.push(taskId);
+        },
+        fakeOnWait: async () => {
+          arrivals += 1;
+          if (arrivals !== 2) return;
+          const jailDir = join(projectDir, ".legion-cli", "sandbox");
+          for (const runId of (await readdir(jailDir)).sort()) {
+            const root = join(jailDir, runId);
+            const prompt = await readFile(join(root, ".legion-cli", "cache", "runs", runId, "prompt.md"), "utf8");
+            const rel = prompt.includes("Task: TSK-0002") ? "board.ts" : "main.ts";
+            await mkdir(join(root, "src"), { recursive: true });
+            await writeFile(join(root, "src", rel), `agent ${rel.replace(".ts", "")}\n`, "utf8");
+          }
         },
       },
     );

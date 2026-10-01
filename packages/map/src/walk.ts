@@ -34,6 +34,8 @@ export type WalkedFile = {
   text: string;
 };
 
+type Candidate = Omit<WalkedFile, "text"> & { size: number };
+
 /** Minimatch-lite for ignore globs (`**`, `*`, `?`). */
 export function globToRegExp(glob: string): RegExp {
   const pattern = glob.replaceAll("\\", "/");
@@ -118,14 +120,39 @@ async function posixInside(projectRoot: string, absPath: string): Promise<string
   }
 }
 
+export type WalkReport = {
+  files: WalkedFile[];
+  /** Modules found beyond the cap and left out (the smallest ones). */
+  omitted: number;
+  /** Candidate modules found before degrading. */
+  total: number;
+  /** Files whose contents were read (at most the kept count plus unreadable/binary ones). */
+  filesRead: number;
+};
+
 export async function walkSources(opts: {
   projectRoot: string;
   roots: readonly string[] | null;
   ignore: readonly string[];
+  maxModules?: number;
 }): Promise<WalkedFile[]> {
+  return (await walkSourcesReport(opts)).files;
+}
+
+/**
+ * Walk sources; above maxModules keep the largest modules (ties by path) and report how many were left out.
+ */
+export async function walkSourcesReport(opts: {
+  projectRoot: string;
+  roots: readonly string[] | null;
+  ignore: readonly string[];
+  maxModules?: number;
+}): Promise<WalkReport> {
+  const maxModules = opts.maxModules ?? MAX_MODULES;
   const projectRoot = resolve(opts.projectRoot);
   const rules = compileIgnore(opts.ignore);
-  const out: WalkedFile[] = [];
+  // The walk keeps metadata only; contents are read after selection, for the kept files alone.
+  const out: Candidate[] = [];
   const seenDirs = new Set<string>();
   const seenFiles = new Set<string>();
   const starts =
@@ -194,18 +221,8 @@ export async function walkSources(opts: {
       }
       const size = targetSize ?? meta.size;
       if (size > MAX_FILE_BYTES) continue;
-      let buf: Buffer;
-      try {
-        buf = await readFile(abs);
-      } catch {
-        continue;
-      }
-      if (buf.byteLength > MAX_FILE_BYTES || looksBinary(buf)) continue;
-      if (out.length >= MAX_MODULES) {
-        refuse("map exceeds 10000 modules", MAP_HINT.noLsp);
-      }
       seenFiles.add(posix);
-      out.push({ path: posix, absPath: abs, language, text: buf.toString("utf8") });
+      out.push({ path: posix, absPath: abs, language, size });
     }
   }
 
@@ -222,6 +239,27 @@ export async function walkSources(opts: {
     await walkDir(start);
   }
 
-  out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return out;
+  const total = out.length;
+  let kept = out;
+  if (total > maxModules) {
+    kept = [...out]
+      .sort((x, y) => y.size - x.size || (x.path < y.path ? -1 : x.path > y.path ? 1 : 0))
+      .slice(0, maxModules);
+  }
+  kept.sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
+  const files: WalkedFile[] = [];
+  let filesRead = 0;
+  for (const candidate of kept) {
+    let buf: Buffer;
+    filesRead += 1;
+    try {
+      buf = await readFile(candidate.absPath);
+    } catch {
+      continue;
+    }
+    if (buf.byteLength > MAX_FILE_BYTES || looksBinary(buf)) continue;
+    const { size: _size, ...rest } = candidate;
+    files.push({ ...rest, text: buf.toString("utf8") });
+  }
+  return { files, omitted: total - kept.length, total, filesRead };
 }

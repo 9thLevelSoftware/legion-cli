@@ -13,7 +13,8 @@ import { pkgRoot, setupRun, withTempDir } from "./helpers.js";
 
 const repoRoot = join(pkgRoot, "..", "..");
 const EXPECTED_PACKAGE_LEGS = 14;
-const EXPECTED_QUARANTINE_COUNT = 5;
+// Only the named Windows-Docker deferral remains: the four Q-INT-* rows named suites that do not exist (F-090).
+const EXPECTED_QUARANTINE_COUNT = 1;
 
 function pidAlive(pid) {
   try {
@@ -216,8 +217,9 @@ test("root test script, quarantine register, and publish guard", async () => {
   const agentsMd = await readFile(join(repoRoot, "AGENTS.md"), "utf8");
   assert.equal(root.scripts.test, "pnpm -r --no-bail run test");
   assert.doesNotMatch(root.scripts.test, /--filter/);
-  assert.ok(Array.isArray(root.legionQuarantine));
-  assert.equal(root.legionQuarantine.length, EXPECTED_QUARANTINE_COUNT);
+    assert.ok(Array.isArray(root.legionQuarantine));
+    assert.equal(root.legionQuarantine.length, EXPECTED_QUARANTINE_COUNT);
+    assert.deepEqual(root.legionQuarantine.map((entry) => entry.id), ["Q-WIN-DOCKER"]);
   for (const entry of root.legionQuarantine) {
     assert.equal(typeof entry.id, "string");
     assert.ok(entry.id.length > 0);

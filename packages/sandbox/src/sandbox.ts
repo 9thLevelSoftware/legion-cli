@@ -237,16 +237,20 @@ export function detectSandbox(): { backend: SandboxBackend; hardened: boolean } 
   return { backend: "copy", hardened: false };
 }
 
+/** True when the configured backend resolves to a real OS sandbox (bwrap, seatbelt or Docker), not the copy jail. */
+export function hardenedSandboxAvailable(sandbox: Pick<SandboxConfig, "backend">): boolean {
+  const detected = detectSandbox();
+  const requested = sandbox.backend;
+  return requested === "copy"
+    ? false
+    : requested === "auto"
+      ? detected.hardened
+      : detected.backend === requested && detected.hardened;
+}
+
 export function assertExecuteSandbox(config: LegionConfig, flags: { allowNoSandbox?: boolean }): void {
   if (flags.allowNoSandbox) return;
-  const detected = detectSandbox();
-  const requested = config.sandbox.backend;
-  const hardened =
-    requested === "copy"
-      ? false
-      : requested === "auto"
-        ? detected.hardened
-        : detected.backend === requested && detected.hardened;
+  const hardened = hardenedSandboxAvailable(config.sandbox);
   if (config.sandbox.requireHardened && !hardened && !config.sandbox.allowCopyJail) {
     throw new SandboxError(HARDENED_REQUIRED);
   }
@@ -391,7 +395,19 @@ export function resolveVerificationTrustTier(
   return allowlistPosture(platform);
 }
 
-function verificationBwrapArgvPrefix(projectRoot: string): string[] {
+/**
+ * Project-relative paths a verification command must not write: git hooks/config and the engine's
+ * own state run later with the user's privileges (F-039). Read-only in the bwrap/seatbelt profiles.
+ */
+const VERIFY_READONLY_RELS = [".git", ".legion-cli", ".husky", ".githooks"] as const;
+
+/** The subset of VERIFY_READONLY_RELS present in the project (bwrap/docker fail on a missing mount source). */
+export function verificationReadOnlyRels(projectRoot: string): string[] {
+  const root = resolve(projectRoot);
+  return VERIFY_READONLY_RELS.filter((rel) => existsSync(join(root, rel)));
+}
+
+export function verificationBwrapArgvPrefix(projectRoot: string): string[] {
   const root = resolve(projectRoot);
   const args = [
     "--die-with-parent",
@@ -412,7 +428,14 @@ function verificationBwrapArgvPrefix(projectRoot: string): string[] {
     const dir = dirname(execReal);
     if (!isUnsafeDirname(dir, root)) args.push("--ro-bind", dir, dir);
   }
-  args.push("--bind", root, root, "--chdir", root, "--");
+  args.push("--bind", root, root);
+  // Later mounts win: re-bind the sensitive subtrees read-only over the writable project bind.
+  // bwrap fails on a missing source, so only bind what exists.
+  for (const rel of verificationReadOnlyRels(root)) {
+    const path = join(root, rel);
+    args.push("--ro-bind", path, path);
+  }
+  args.push("--chdir", root, "--");
   return args;
 }
 
@@ -443,6 +466,8 @@ export function verificationSeatbeltProfile(projectRoot: string): string {
     "(allow network*)",
     `(allow file-read* ${reads.map((path) => `(subpath ${path})`).join(" ")})`,
     `(allow file-write* (subpath ${rootJson}))`,
+    // Last match wins: deny writes to git internals and engine state (F-039).
+    `(deny file-write* ${VERIFY_READONLY_RELS.map((rel) => `(subpath ${JSON.stringify(join(root, rel))})`).join(" ")})`,
     `(allow file-ioctl (subpath ${rootJson}))`,
     "",
   ].join("\n");
@@ -466,7 +491,7 @@ export async function prepareVerificationWrapper(
     if (!bin) return undefined;
     return {
       bin,
-      argvPrefix: dockerArgvPrefix({ jailRoot: root }),
+      argvPrefix: dockerArgvPrefix({ jailRoot: root, readOnlyRels: verificationReadOnlyRels(root) }),
       translateInvoke: (invoke: string) => translateHostPathToDocker(invoke, root),
     };
   }

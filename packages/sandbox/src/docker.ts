@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { userInfo } from "node:os";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { SandboxError } from "./errors.js";
 import { findOnPath } from "./sandbox.js";
 
@@ -101,6 +101,8 @@ export function dockerArgvPrefix(opts: {
   jailRoot: string;
   image?: string;
   env?: Record<string, string>;
+  /** Project-relative paths mounted read-only over the writable project mount (must exist). */
+  readOnlyRels?: readonly string[];
 }): string[] {
   const image = pinImage(opts.image);
   return [
@@ -120,6 +122,7 @@ export function dockerArgvPrefix(opts: {
     "/tmp:rw,noexec,nosuid,size=64m",
     "-v",
     `${opts.jailRoot}:${DOCKER_WORKDIR}:rw`,
+    ...(opts.readOnlyRels ?? []).flatMap((rel) => ["-v", `${join(opts.jailRoot, rel)}:${DOCKER_WORKDIR}/${rel}:ro`]),
     "-w",
     DOCKER_WORKDIR,
     ...dockerRunUser(),

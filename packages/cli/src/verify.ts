@@ -1,7 +1,7 @@
 import { createLegionEngine, findSkillsDir, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
-import { writeJson, writeOut } from "./io.js";
+import { ticketVerificationLine, writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 
 export async function runVerify(opts: CliOpts, flags: { id?: string; adapter?: string; profile?: string }): Promise<number> {
@@ -23,6 +23,7 @@ export async function runVerify(opts: CliOpts, flags: { id?: string; adapter?: s
       notesPath: result.notesPath ?? null,
       createdTaskIds: result.createdTaskIds,
       extrasReverted: result.extrasReverted,
+      warnings: result.warnings,
       lastReview: state.lastReview ?? null,
       next: next.run,
       viewer,
@@ -35,8 +36,14 @@ export async function runVerify(opts: CliOpts, flags: { id?: string; adapter?: s
   } else {
     writeOut("Verify complete (optional notes; not a ship gate).");
   }
+  for (const line of result.warnings) {
+    writeOut(`Warning: ${line}`);
+  }
   for (const id of result.createdTaskIds) {
     writeOut(`Filed ${id} (type: fix).`);
+  }
+  for (const filed of result.createdTickets) {
+    writeOut(ticketVerificationLine(filed));
   }
   writeOut(`Next: ${next.run}`);
   writeOut(`Dashboard: ${viewer}`);

@@ -53,7 +53,7 @@ export async function runSpecShow(opts: CliOpts): Promise<number> {
 }
 
 export async function runSpecApprove(opts: CliOpts, flags: SpecFlags): Promise<number> {
-  if (flags.skipWireframes || process.argv.includes("--skip-wireframes")) {
+  if (flags.skipWireframes) {
     refuse("--skip-wireframes is pre-approve only", HINT.skipWireframes);
   }
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
@@ -62,11 +62,7 @@ export async function runSpecApprove(opts: CliOpts, flags: SpecFlags): Promise<n
   if (!specId) {
     refuse("no active spec to approve", HINT.spec);
   }
-  await engine.approveSpec(specId, { id: "user" });
-  if (flags.message) {
-    const doc = await engine.store.readSpec(specId);
-    await engine.store.writeSpec(doc.data, `${doc.body.trim()}\n\nApproved: ${flags.message}\n`);
-  }
+  await engine.approveSpec(specId, { id: "user" }, { message: flags.message });
   if (opts.json) {
     writeJson({ ok: true, specId, phase: "spec_frozen", next: "legion-cli plan" });
     return 0;

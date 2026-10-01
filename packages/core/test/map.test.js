@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -287,14 +287,23 @@ test("map spawn restore replaces a symlink ARCHITECTURE.md without reading the t
   });
 });
 
-test("map refuses while execute is in_progress; live-spawn.json unchanged", async () => {
+test("map refuses while execute is in_progress; its live-run marker is unchanged", async () => {
   await withFakeAdapter(async () => {
     await withEngine(async ({ store, dir }) => {
-      const readyPath = join(dir, ".legion-cli", "cache", "fake-wait", "map-ready");
-      const releasePath = join(dir, ".legion-cli", "cache", "fake-wait", "map-release");
+      let signalReady;
+      let releaseWait;
+      const ready = new Promise((resolve) => {
+        signalReady = resolve;
+      });
+      const released = new Promise((resolve) => {
+        releaseWait = resolve;
+      });
       const engine = new LegionEngine(dir, undefined, {
         skillsDir,
-        fakeHoldWait: { readyPath, releasePath, timeoutMs: 15_000 },
+        fakeOnWait: async () => {
+          signalReady();
+          await released;
+        },
       });
       await initProject(engine);
       await seedPlanReady(store, {
@@ -309,27 +318,64 @@ test("map refuses while execute is in_progress; live-spawn.json unchanged", asyn
       initGitRepo(dir);
       await seedSources(dir);
       const pending = engine.execute("auto");
-      const start = Date.now();
-      while (!existsSync(readyPath)) {
-        if (Date.now() - start > 10_000) throw new Error("fake wait never became ready");
-        await new Promise((resolve) => setTimeout(resolve, 20));
+      try {
+        let readyTimer;
+        try {
+          await Promise.race([
+            ready,
+            pending.then(
+              () => { throw new Error("execute finished before fake wait"); },
+              (err) => { throw err; },
+            ),
+            new Promise((_, reject) => {
+              readyTimer = setTimeout(() => reject(new Error("fake wait never became ready")), 45_000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(readyTimer);
+        }
+        const liveDir = join(dir, ".legion-cli", "cache", "live-spawn");
+        const [liveName] = readdirSync(liveDir);
+        const livePath = join(liveDir, liveName);
+        const liveBefore = await readFile(livePath, "utf8");
+        await assert.rejects(
+          () => engine.map({ lsp: "off" }),
+          (err) => {
+            assert.equal(err instanceof LegionRefuseError, true);
+            assert.match(err.message, /refused while/);
+            assert.equal(err.nextHint, HINT.status);
+            return true;
+          },
+        );
+        assert.equal(await readFile(livePath, "utf8"), liveBefore);
+        assert.equal(existsSync(join(dir, ".legion-cli", "map", "fingerprints.json")), false);
+      } finally {
+        releaseWait();
+        // Drain the engine before the fixture removes its cache, including assertion failures.
+        await pending.catch(() => undefined);
       }
-      const livePath = join(dir, ".legion-cli", "cache", "live-spawn.json");
-      const liveBefore = await readFile(livePath, "utf8");
-      await assert.rejects(
-        () => engine.map({ lsp: "off" }),
-        (err) => {
-          assert.equal(err instanceof LegionRefuseError, true);
-          assert.match(err.message, /refused while/);
-          assert.equal(err.nextHint, HINT.status);
-          return true;
-        },
-      );
-      assert.equal(await readFile(livePath, "utf8"), liveBefore);
-      assert.equal(existsSync(join(dir, ".legion-cli", "map", "fingerprints.json")), false);
-      await writeFile(releasePath, "go\n");
-      const result = await pending;
-      assert.equal(result.status, "done");
+      assert.equal((await pending).status, "done");
+    });
+  });
+});
+
+test("F-028 the degraded-map note survives the engine map path with a spawned map skill", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, dir }) => {
+      await initProject(engine);
+      await mkdir(join(dir, "src"), { recursive: true });
+      for (const name of ["a", "b", "c", "d", "e"]) {
+        await writeFile(join(dir, "src", `${name}.ts`), `export const ${name} = 1;\n`.repeat(name === "e" ? 5 : 1), "utf8");
+      }
+      initGitRepo(dir);
+      const spawning = new LegionEngine(dir, undefined, { fakeArtifacts: [] });
+      const result = await spawning.map({ lsp: "off", maxModules: 3 });
+      assert.equal(result.modules, 3);
+      const runNames = await readdir(join(dir, ".legion-cli", "cache", "runs"));
+      assert.ok(runNames.some((name) => name.startsWith("map-")), "map skill spawn must have run");
+      const arch = await readFile(join(dir, ".legion-cli", "map", "ARCHITECTURE.md"), "utf8");
+      assert.match(arch, /Degraded map: 3 modules are listed/);
+      assert.match(arch, /2 smaller modules were left out/);
     });
   });
 });

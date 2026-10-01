@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { LegionEngine } from "../dist/index.js";
-import { initGitRepo, makeTask, quoteArg, withEngine, withFakeAdapter } from "./helpers.js";
+import { initGitRepo, makeTask, quoteArg, withEngine, withFakeAdapter, withReviewNotes } from "./helpers.js";
 
 test("complete governed lifecycle binds AC-linked QA to the executed source before ship", async () => {
   await withFakeAdapter(() => withEngine(async ({ dir, engine, store }) => {
@@ -68,7 +68,8 @@ test("complete governed lifecycle binds AC-linked QA to the executed source befo
     const execution = await executor.execute("auto", { untilBlocked: true });
     assert.equal(execution.status, "done");
     assert.equal(await readFile(join(dir, "src", "result.txt"), "utf8"), "approved\n");
-    assert.equal((await engine.review()).verdict, "PASS");
+    const reviewer = new LegionEngine(dir, undefined, withReviewNotes());
+    assert.equal((await reviewer.review()).verdict, "PASS");
     const score = await engine.qa();
     assert.equal(score.schemaVersion, "legion-cli-qa/v2");
     assert.equal(score.pass, true);

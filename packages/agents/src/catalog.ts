@@ -267,15 +267,26 @@ export function renderSkillCatalog(
   return `${lines.join("\n")}\n`;
 }
 
+/**
+ * Where the packaged skills live. Order: `LEGION_CLI_SKILLS_DIR` (explicit override), then a `skills/`
+ * folder walking up from this module, then walking up from `from` (the cwd). The module walk comes
+ * first so an unrelated `skills/` folder in the project or an ancestor of the cwd cannot shadow the
+ * skills that ship with the installed package: `prepack` copies the repo's `skills/` to
+ * `<agents package>/skills` (`scripts/copy-skills.mjs`), one level above this file's `dist/`. In a
+ * checkout the module walk finds the repo-root `skills/`. The cwd walk remains as a fallback for
+ * layouts where neither exists. Per-project customisation is the `.legion-cli/skills/<id>` overlay,
+ * not this function.
+ */
 export function findSkillsDir(from = process.cwd()): string | undefined {
   const env = process.env.LEGION_CLI_SKILLS_DIR?.trim();
   if (env) return env;
-  const starts = [from];
+  const starts: string[] = [];
   try {
     starts.push(dirname(fileURLToPath(import.meta.url)));
   } catch {
     // ignore
   }
+  starts.push(from);
   for (const start of starts) {
     let dir = start;
     for (let i = 0; i < 10; i++) {

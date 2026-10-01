@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { stableHash } from "@9thlevelsoftware/legion-cli-http";
-import { isGitRepo, toFsPath, toPosixPath } from "@9thlevelsoftware/legion-cli-persist";
+import { isGitRepo, runGit, toFsPath, toPosixPath } from "@9thlevelsoftware/legion-cli-persist";
 import { reportFailClosed, scorePersistedReports, specHasUi } from "@9thlevelsoftware/legion-cli-qa";
 import { SCHEMA_VERSION, type AnyQAScore, type QAScore, type Spec, type Task } from "@9thlevelsoftware/legion-cli-schema";
 
@@ -107,24 +106,9 @@ async function repositorySource(projectRoot: string): Promise<RepositorySource> 
   if (!isGitRepo(projectRoot)) {
     return { paths: await filesystemSourcePaths(projectRoot), indexEntries: new Map(), headEntries: new Map() };
   }
-  const index = spawnSync("git", ["ls-files", "-s", "-z"], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    windowsHide: true,
-    shell: false,
-  });
-  const others = spawnSync("git", ["ls-files", "-z", "--others", "--exclude-standard"], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    windowsHide: true,
-    shell: false,
-  });
-  const head = spawnSync("git", ["ls-tree", "-r", "-z", "HEAD"], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    windowsHide: true,
-    shell: false,
-  });
+  const index = runGit(projectRoot, ["ls-files", "-s", "-z"]);
+  const others = runGit(projectRoot, ["ls-files", "-z", "--others", "--exclude-standard"]);
+  const head = runGit(projectRoot, ["ls-tree", "-r", "-z", "HEAD"]);
   if (index.status !== 0 || others.status !== 0) {
     throw new Error(index.stderr?.trim() || others.stderr?.trim() || "git ls-files failed while computing source identity");
   }
@@ -166,18 +150,8 @@ async function submoduleSourceDigest(projectRoot: string, path: string, index: r
   let head;
   let top;
   try {
-    head = spawnSync("git", ["rev-parse", "HEAD"], {
-      cwd: root,
-      encoding: "utf8",
-      windowsHide: true,
-      shell: false,
-    });
-    top = spawnSync("git", ["rev-parse", "--show-toplevel"], {
-      cwd: root,
-      encoding: "utf8",
-      windowsHide: true,
-      shell: false,
-    });
+    head = runGit(root, ["rev-parse", "HEAD"]);
+    top = runGit(root, ["rev-parse", "--show-toplevel"]);
   } catch {
     return stableHash({ index, state: "unavailable" });
   }

@@ -109,8 +109,13 @@ test("init --name --adapter fake writes templates (golden)", async () => {
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /adapter readiness: ready/);
     assert.match(result.stdout, /sandbox readiness: (?:ready|needs attention)/);
+    if (result.stdout.includes("sandbox readiness: needs attention")) {
+      assert.match(result.stdout, /Remediation: none; install a supported hardened sandbox, then run legion-cli doctor/);
+    }
     await assertScopedTranscript(
-      result.stdout.replace(/^sandbox readiness: .+\n/m, "sandbox readiness: <sandbox preflight>\n"),
+      result.stdout
+        .replace(/^sandbox readiness: .+\n/m, "sandbox readiness: <sandbox preflight>\n")
+        .replace(/^Remediation: .+\n/m, ""),
       "init.stdout.txt",
       dir,
     );
@@ -758,7 +763,15 @@ test("Checkin session key lines match the design-doc walkthrough (golden)", asyn
     const execute = runCli(["execute", "--until-blocked", "--project", dir], fake);
     assert.equal(execute.status, 0, `${execute.stdout}\n${execute.stderr}`);
 
-    const review = runCli(["review", "--project", dir], fake);
+    // a fake reviewer that leaves notes (existing artifact seam); without them review is refused, not PASS
+    const review = runCli(["review", "--project", dir], {
+      env: {
+        ...fake.env,
+        LEGION_CLI_FAKE_ARTIFACTS: JSON.stringify([
+          { path: ".legion-cli/cache/runs/<id>/review.md", content: "Fake review: the slice meets the spec." },
+        ]),
+      },
+    });
     assert.equal(review.status, 0, `${review.stdout}\n${review.stderr}`);
 
     const specDoc = await engine.store.readSpec("spec-checkin");

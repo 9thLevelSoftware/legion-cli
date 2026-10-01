@@ -217,10 +217,17 @@ export function capToolResult(text: string): string {
   return `${text.slice(0, MAX_TOOL_RESULT_CHARS)}\n...truncated`;
 }
 
+function throwIfToolAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new HttpAdapterError("adapter.http tool dispatch aborted", { cause: signal.reason });
+  }
+}
+
 export async function dispatchToolCall(
   call: OpenAiToolCall,
   host: HttpToolHost | undefined,
   skillId: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const name = call.function?.name ?? "";
   if (!host) return "error: tool host is not available";
@@ -230,16 +237,22 @@ export async function dispatchToolCall(
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;
   }
+  throwIfToolAborted(signal);
   try {
     if (name === "read_file") {
-      return capToolResult(await host.readFile(String(args.path ?? "")));
+      const output = await host.readFile(String(args.path ?? ""));
+      throwIfToolAborted(signal);
+      return capToolResult(output);
     }
     if (name === "write_file") {
       await host.writeFile(String(args.path ?? ""), String(args.contents ?? ""));
+      throwIfToolAborted(signal);
       return "ok";
     }
     if (name === "list_dir") {
-      return capToolResult((await host.listDir(String(args.path ?? ""))).join("\n"));
+      const entries = await host.listDir(String(args.path ?? ""));
+      throwIfToolAborted(signal);
+      return capToolResult(entries.join("\n"));
     }
     if (name === "run_command") {
       const argv = Array.isArray(args.argv) ? args.argv.map((item) => String(item)) : [];
@@ -247,12 +260,17 @@ export async function dispatchToolCall(
         return "error: run_command argv is not allowlisted";
       }
       if (!host.runCommand) return "error: run_command requires a hardened sandbox";
-      return capToolResult(JSON.stringify(await host.runCommand(argv)));
+      const result = await host.runCommand(argv, signal);
+      throwIfToolAborted(signal);
+      return capToolResult(JSON.stringify(result));
     }
     if (host.callExternalTool && host.externalTools?.some((tool) => tool.callName === name)) {
-      return capToolResult(await host.callExternalTool(name, args));
+      const result = await host.callExternalTool(name, args, signal);
+      throwIfToolAborted(signal);
+      return capToolResult(result);
     }
   } catch (err) {
+    throwIfToolAborted(signal);
     return capToolResult(`error: ${err instanceof Error ? err.message : String(err)}`);
   }
   return `error: unknown tool ${name}`;

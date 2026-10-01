@@ -37,6 +37,14 @@ export type LegionEngineOptions = {
   fakeArtifacts?: FakeArtifact[];
   fakeThrowAfterWrite?: boolean;
   fakeTimedOut?: boolean;
+  /** Test-only: exit code the fake agent reports. */
+  fakeExitCode?: number;
+  /** Test-only: per-task exit codes for parallel fake-agent coverage. */
+  fakeExitCodeForTask?: (taskId: string) => number | undefined;
+  /** Test-only: adapter resource cleanup hook for each parallel task. */
+  fakeResourceCleanupForTask?: (taskId: string) => Promise<void>;
+  /** Test-only: fake agent writes no summary. */
+  fakeOmitSummary?: boolean;
   fakeHoldWait?: FakeHoldWait;
   fakeOnWait?: () => Promise<void>;
   /** Test-only: runs immediately before each serialized parallel output application. */
@@ -53,6 +61,8 @@ export type LegionEngineOptions = {
   /** Test-only: permits QaOptions.score; production engines must execute configured reports. */
   fakeQaScoreInjection?: boolean;
   verificationTimeoutMs?: number;
+  /** Test-only: overrides hardened-backend detection for the `ingest --distill` refusal. */
+  fakeDistillSandboxHardened?: boolean;
 };
 
 export type IntentState = {
@@ -310,6 +320,8 @@ export type ShipOptions = {
   pr?: boolean;
   actor?: string;
   confirm?: (preview: ShipPreview) => Promise<boolean>;
+  /** Where the confirm answer came from; recorded in the ship audit event. */
+  confirmSource?: "tty" | "piped";
   /** Test seam for `gh pr create`. */
   prCreate?: (input: { cwd: string; title: string; body: string }) => { url?: string; error?: string };
 };
@@ -335,6 +347,22 @@ export type ExecuteProgress = {
   logPath?: string;
 };
 
+export type TicketSource = {
+  id: string;
+  label: "running task" | "verified task" | "parent";
+  filesAllowed: readonly string[];
+  verificationCommands: readonly string[];
+};
+
+/** A ticket filed from agent output, with what it will run and where the commands came from (F-039). */
+export type FiledTicketSummary = {
+  id: string;
+  verificationCommands: string[];
+  filesAllowed: string[];
+  /** "parent" | "running task" | "verified task" | "engine default (pnpm test)". */
+  verificationSource: string;
+};
+
 export type ExecuteTaskResult = {
   taskId: string;
   status: "done" | "blocked";
@@ -343,6 +371,8 @@ export type ExecuteTaskResult = {
   incident: boolean;
   headMoved: boolean;
   ticketId?: string;
+  /** Every ticket filed from this task's agent output, with the commands each will run. */
+  filedTickets?: FiledTicketSummary[];
   verificationPass?: boolean;
   /** Why the task was blocked by verification, e.g. "verification command did not start: …". */
   reason?: string;
@@ -353,6 +383,10 @@ export type ExecuteTaskResult = {
   profile?: string;
   usage?: AgentUsage;
   limitReason?: string;
+  /** Set when the agent exited non-zero; shown as a warning (verification commands remain the evidence). */
+  agentExitWarning?: string;
+  /** Set when the tree was dirty inside the task filesAllowed at start (F-007 residual). */
+  dirtyWarning?: string;
 };
 
 export type ExecuteResult = {
@@ -368,14 +402,21 @@ export type VerifyResult = {
   spawned: boolean;
   notesPath?: string;
   createdTaskIds: string[];
+  /** The commands each created ticket will run (inherited, never agent-authored). */
+  createdTickets: FiledTicketSummary[];
   extrasReverted: string[];
+  /** One line per skipped or non-zero agent run; verify is optional, so these warn instead of failing. */
+  warnings: string[];
 };
 
 export type ReviewResult = {
   verdict: ReviewVerdict;
   createdTaskIds: string[];
+  createdTickets: FiledTicketSummary[];
   extrasReverted: string[];
   rewrittenExistingTaskIds: string[];
+  /** Non-zero agent exit on a review that still ended FAIL (filed tasks). */
+  warnings: string[];
 };
 
 export type ShipReceipt = {
@@ -417,6 +458,16 @@ export type NewTicket = {
   contract?: Partial<FileContract>;
   adapter?: AdapterId;
   profile?: string;
+  /**
+   * Engine-supplied source for an agent-filed ticket (the running or verified task). Takes
+   * precedence over an agent-chosen parentId for the inherited commands and the filesAllowed cap.
+   */
+  inheritFrom?: TicketSource;
+  /**
+   * Set by the engine for agent spawns with no engine-supplied source (review, verify without a
+   * task): the agent's own parentId and filesAllowed are ignored (default commands, notes/<id>.md).
+   */
+  agentSourceless?: boolean;
 };
 
 export type NewPacket = {

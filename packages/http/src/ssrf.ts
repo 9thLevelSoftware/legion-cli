@@ -1,10 +1,9 @@
 import dns from "node:dns/promises";
-import type { HttpAdapterConfig } from "@9thlevelsoftware/legion-cli-schema";
+import { isPrivateOrLocalHost, type HttpAdapterConfig } from "@9thlevelsoftware/legion-cli-schema";
 import { HttpAdapterError } from "./errors.js";
 import type { SsrfLookup } from "./types.js";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
-const PRIVATE_HOSTS = new Set(["localhost", "metadata.google.internal"]);
 
 async function defaultLookup(hostname: string): Promise<{ address: string; family: number }> {
   return dns.lookup(hostname, { all: false });
@@ -18,24 +17,6 @@ function ipv4Octets(host: string): number[] | null {
   return nums;
 }
 
-function isPrivateIPv4(octets: number[]): boolean {
-  const [a, b] = octets;
-  if (a === 10) return true;
-  if (a === 127) return true;
-  if (a === 0) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b !== undefined && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 100 && b !== undefined && b >= 64 && b <= 127) return true;
-  if (a === 192 && b === 0) return true;
-  if (a === 192 && b === 88) return true;
-  if (a === 198 && (b === 18 || b === 19)) return true;
-  if (a === 198 && b === 51 && octets[2] === 100) return true;
-  if (a === 203 && b === 0 && octets[2] === 113) return true;
-  if (a >= 224) return true;
-  return false;
-}
-
 function hextetsToIpv4(hiHex: string, loHex: string): number[] {
   const hi = Number.parseInt(hiHex, 16);
   const lo = Number.parseInt(loHex, 16);
@@ -43,7 +24,7 @@ function hextetsToIpv4(hiHex: string, loHex: string): number[] {
 }
 
 function normalizeHost(hostname: string): string {
-  return hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return hostname.replace(/^\[|\]$/g, "").replace(/%.*$/, "").toLowerCase();
 }
 
 function embeddedIpv4(host: string): number[] | null {
@@ -59,46 +40,7 @@ function embeddedIpv4(host: string): number[] | null {
   return null;
 }
 
-function firstHextet(host: string): number | null {
-  const h = normalizeHost(host);
-  if (h === "::1" || h === "0:0:0:0:0:0:0:1") return 0;
-  const head = h.split(":")[0] ?? "";
-  if (head === "") return 0;
-  if (!/^[0-9a-f]{1,4}$/i.test(head)) return null;
-  return Number.parseInt(head, 16);
-}
-
-function isUnspecifiedIPv6(host: string): boolean {
-  const h = normalizeHost(host);
-  if (h === "::" || h === "::0") return true;
-  return /^(0+:){7}0+$/.test(h);
-}
-
-function isPrivateIPv6(host: string): boolean {
-  const h = normalizeHost(host);
-  if (h === "::1" || h === "0:0:0:0:0:0:0:1") return true;
-  if (isUnspecifiedIPv6(h)) return true;
-  const first = firstHextet(h);
-  if (first === null) return false;
-  if ((first & 0xffc0) === 0xfe80) return true;
-  if ((first & 0xfe00) === 0xfc00) return true;
-  if ((first & 0xffc0) === 0xfec0) return true;
-  if ((first & 0xff00) === 0xff00) return true;
-  if (/^2001:0*db8(?::|$)/.test(h)) return true;
-  return false;
-}
-
-export function isPrivateOrLocalHost(hostname: string): boolean {
-  const host = normalizeHost(hostname);
-  if (PRIVATE_HOSTS.has(host)) return true;
-  if (host.endsWith(".localhost") || host.endsWith(".local")) return true;
-  const mapped = embeddedIpv4(host);
-  if (mapped) return isPrivateIPv4(mapped);
-  const ipv4 = ipv4Octets(host);
-  if (ipv4) return isPrivateIPv4(ipv4);
-  if (host.includes(":")) return isPrivateIPv6(host);
-  return false;
-}
+export { isPrivateOrLocalHost };
 
 export function isLoopbackHttpHost(hostname: string): boolean {
   const host = normalizeHost(hostname);

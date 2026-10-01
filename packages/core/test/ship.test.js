@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { SymlinkRefusedError } from "@9thlevelsoftware/legion-cli-persist";
+import { SymlinkRefusedError, appendAuditEvent } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionRefuseError } from "../dist/index.js";
+import { appendFile } from "node:fs/promises";
 import {
   git,
   gitHead,
@@ -499,6 +501,56 @@ test("ship refuses a staged file modified between preview and commit", async () 
   });
 });
 
+test("ship does not refuse when only .legion-cli/STATE.md changes between preview and commit", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
+    initGitRepo(dir);
+    await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    await writeQaFile(store, makeQaScore());
+    const receipt = await engine.ship({
+      commit: true,
+      confirm: async () => {
+        const statePath = join(dir, ".legion-cli", "STATE.md");
+        await writeFile(statePath, `${await readFile(statePath, "utf8")}\n`, "utf8");
+        git(dir, ["add", "--", ".legion-cli/STATE.md"]);
+        return true;
+      },
+    });
+    assert.equal(receipt.committed, true);
+  });
+});
+
+test("ship preview and confirm complete when the index listing exceeds 1 MiB", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
+    // Long names keep the file count (and runtime) low while the index listing passes 1 MiB.
+    const pad = "p".repeat(75);
+    for (let d = 0; d < 40; d++) {
+      const sub = join(dir, "bulk", `dir-${d}`);
+      await mkdir(sub, { recursive: true });
+      for (let i = 0; i < 200; i++) await writeFile(join(sub, `${pad}-${i}.txt`), "");
+    }
+    initGitRepo(dir);
+    const listing = spawnSync("git", ["ls-files", "-s", "-z", "--cached", "--full-name"], {
+      cwd: dir,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.ok(listing.stdout.length > 1024 * 1024, "index listing must exceed the default 1 MiB buffer");
+    await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    await writeQaFile(store, makeQaScore());
+    const receipt = await engine.ship({ commit: true });
+    assert.equal(receipt.committed, true);
+    assert.equal(receipt.phase, "shipped");
+  });
+});
+
 test("spec new appends an audit event and does not compact tasks", async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
@@ -512,5 +564,153 @@ test("spec new appends an audit event and does not compact tasks", async () => {
     const taskAfter = await store.readTask("TSK-0001");
     assert.equal(taskAfter.data.status, "done");
     assert.equal(taskAfter.body, taskBefore.body);
+  });
+});
+
+test("ship --pr failure rolls back receipt, audit, phase and staged set consistently", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    const before = initGitRepo(dir);
+    await assert.rejects(() =>
+      engine.ship({ pr: true, commit: true, prCreate: () => ({ error: "gh failed" }) }),
+    );
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+    assert.equal(gitHead(dir), before);
+    assert.equal(existsSync(join(dir, ".legion-cli", "audit", "ship-spec-checkin.md")), false);
+    const events = (await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const types = events.map((e) => e.type);
+    const shipIdx = types.lastIndexOf("ship");
+    assert.equal(types[shipIdx + 1], "ship_rolled_back");
+    assert.equal(events[shipIdx + 1].phase, "ready_to_ship");
+    assert.equal(git(dir, ["diff", "--cached", "--name-only"]).trim(), "");
+  });
+});
+
+test("ship --pr failure still restores STATE when the receipt cannot be removed", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    initGitRepo(dir);
+    const receiptPath = join(dir, ".legion-cli", "audit", "ship-spec-checkin.md");
+    await assert.rejects(() =>
+      engine.ship({
+        pr: true,
+        commit: true,
+        prCreate: () => {
+          // Stand in for a locked file: a non-empty directory that rm(force) cannot remove.
+          rmSync(receiptPath, { force: true });
+          mkdirSync(receiptPath);
+          writeFileSync(join(receiptPath, "held"), "x", "utf8");
+          return { error: "gh failed" };
+        },
+      }),
+      /gh pr create failed/,
+    );
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+    const events = (await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const rolledBack = events.findLast((e) => e.type === "ship_rolled_back");
+    assert.ok(rolledBack?.data?.receiptKept, "the kept receipt is recorded");
+  });
+});
+
+test("ship --pr failure with no url (no error text) rolls back the same way", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    const before = initGitRepo(dir);
+    await assert.rejects(() => engine.ship({ pr: true, commit: true, prCreate: () => ({}) }), /no pull request url/);
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+    assert.equal(gitHead(dir), before);
+    assert.equal(existsSync(join(dir, ".legion-cli", "audit", "ship-spec-checkin.md")), false);
+    assert.equal(git(dir, ["diff", "--cached", "--name-only"]).trim(), "");
+  });
+});
+
+test("ship --pr failure in a repo with no prior commit keeps the root commit and records it", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    git(dir, ["init"]);
+    git(dir, ["config", "user.name", "9thLevelSoftware"]);
+    git(dir, ["config", "user.email", "engineering@9thlevelsoftware.com"]);
+    await assert.rejects(() => engine.ship({ pr: true, commit: true, prCreate: () => ({ error: "gh failed" }) }));
+    const head = gitHead(dir);
+    assert.ok(head);
+    assert.equal((await engine.getState()).phase, "ready_to_ship");
+    const events = (await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const rolled = events.find((e) => e.type === "ship_rolled_back");
+    assert.equal(rolled.data.commitKept, head);
+    assert.equal(existsSync(join(dir, ".legion-cli", "audit", "ship-spec-checkin.md")), true);
+  });
+});
+
+test("ship replays the whole audit chain: a middle-line edit refuses", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    for (let i = 0; i < 4; i++) {
+      await appendAuditEvent(dir, {
+        ts: `2026-01-01T00:00:0${i}.000Z`,
+        type: "note",
+        phase: "ready_to_ship",
+        actor: "user",
+        data: { marker: `line-${i}` },
+      });
+    }
+    const jsonl = join(store.paths.auditDir, "events.jsonl");
+    const lines = (await readFile(jsonl, "utf8")).split(/\r?\n/);
+    const at = lines.findIndex((line) => line.includes("line-1"));
+    assert.ok(at > 0 && at < lines.length - 2, "edited line is in the middle of the log");
+    lines[at] = lines[at].replace("line-1", "line-X");
+    await writeFile(jsonl, lines.join("\n"), "utf8");
+    await assert.rejects(() => engine.ship(), (err) => err instanceof LegionRefuseError && /audit chain/.test(err.message));
+    assert.notEqual((await engine.getState()).phase, "shipped");
+  });
+});
+
+test("ship heals a crash gap in the audit chain (an event line without its chain write) and ships", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    const jsonl = join(store.paths.auditDir, "events.jsonl");
+    const event = { schemaVersion: "legion-cli-audit/v1", ts: "2026-01-01T00:00:00.000Z", type: "note", phase: "ready_to_ship", actor: "user", data: {} };
+    await appendFile(jsonl, JSON.stringify(event) + String.fromCharCode(10), "utf8");
+    const receipt = await engine.ship();
+    assert.equal(receipt.phase, "shipped");
+  });
+});
+
+test("ship and other mutating verbs refuse before changing state when chain.json is corrupt, naming the remedy", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    await writeFile(join(store.paths.auditDir, "chain.json"), "{not json", "utf8");
+    await assert.rejects(
+      () => engine.ship(),
+      (err) => err instanceof LegionRefuseError && /chain\.json/.test(err.message) && /rebaseline-audit/.test(err.message),
+    );
+    assert.notEqual((await engine.getState()).phase, "shipped");
+  });
+});
+
+test("a deleted chain.json over a multi-line log refuses ship (no silent re-chain)", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    for (let i = 0; i < 3; i++) {
+      await appendAuditEvent(store.projectRoot, { ts: "2026-01-01T00:00:0" + i + ".000Z", type: "note", phase: "ready_to_ship", actor: "user", data: { i } });
+    }
+    await rm(join(store.paths.auditDir, "chain.json"));
+    await assert.rejects(() => engine.ship(), (err) => err instanceof LegionRefuseError && /rebaseline-audit/.test(err.message));
   });
 });

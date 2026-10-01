@@ -1,7 +1,7 @@
 import { createLegionEngine, findSkillsDir, HINT, isSliceTerminal, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
-import { writeErr, writeJson, writeOut } from "./io.js";
+import { ticketVerificationLine, writeErr, writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 import { closePrompt, isNo, isYes, readLine, slurpStdin } from "./prompt.js";
 
@@ -24,8 +24,8 @@ export async function confirmAllowNoSandbox(verb: "execute" | "fix"): Promise<vo
   if (isNo(answer)) {
     refuse(`${verb} --allow-no-sandbox declined`, HINT.allowNoSandbox);
   }
-  if (!(answer === "" || isYes(answer))) {
-    refuse(`${verb} --allow-no-sandbox needs Y or n`, HINT.allowNoSandbox);
+  if (!isYes(answer)) {
+    refuse(`${verb} --allow-no-sandbox needs an explicit y or n (empty is not approval)`, HINT.allowNoSandbox);
   }
 }
 
@@ -114,6 +114,9 @@ export async function runExecute(
           ? `Filed ${outcome.ticketId} (type: scope).`
           : `Filed ${outcome.ticketId}.`,
       );
+    }
+    for (const filed of outcome.filedTickets ?? []) {
+      writeOut(ticketVerificationLine(filed));
     }
     if (outcome.status === "done") {
       writeOut(`Verification PASS. ${outcome.taskId} done.`);

@@ -5,7 +5,7 @@
 | **Title** | Adapter routing: per-task and per-skill selection of which coding-agent CLI to spawn |
 | **Author** | Systems Architecture |
 | **Date** | 2026-09-03 |
-| **Status** | Implemented (rev 8 — named profiles, usage accounting, and opt-in loopback telemetry) |
+| **Status** | Implemented (rev 9 - named profiles, usage accounting and opt-in loopback telemetry; product-engineering-cli.md is the design of record) |
 | **Product** | Legion CLI (`legion-cli`, npm `@9thlevelsoftware/legion-cli`) |
 | **Audience** | Senior engineers implementing the feature; product leads reviewing scope |
 | **Design of record** | `docs/design/product-engineering-cli.md` (rev 15 — reliability, extensions, profiles, and experiments) |
@@ -99,7 +99,7 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 | Resolve | `packages/agents/src/resolve.ts` | `resolveAdapterId` (cli > task > route > default; task ignored unless execute/verify). `resolveAdapter(config, { id? })` then `createAdapter`. Generic without `binary` throws `AdapterConfigError` when the **resolved** id is generic. `isResolvedAdapterSpawnable(config, id?)`. |
 | Detect-only | `packages/agents/src/types.ts` | `DETECT_ONLY_ADAPTER_IDS = []`. Extras **are spawnable** via `ExtraAdapter` (`packages/agents/src/adapters/extra.ts`) with verified vendor argv. |
 | Frozen argv | `packages/agents/src/argv.ts` `FROZEN_ARGV_TABLE` + `templateArgv` | KD-7 vendor argv: grok `["-p", "{{pointer}}"]`; openai/codex `["exec", "{{pointer}}"]`; mimo `["run", "{{pointer}}"]`; minimax `["exec", "{{pointer}}"]`. Pointer prompt is frozen (`packages/agents/src/pointer.ts`). Adapters build argv **internally**; `AgentHandle` does not expose argv. `templateArgv` leaves `{{pointer}}` unexpanded. Doctor/spawn fail-closed when resolved argv drops the vendor prefix or omits `{{pointer}}`. |
-| Env allowlist | `packages/agents/src/env.ts` `filterSpawnEnv` | Base PATH/HOME/TERM keys always. Provider credentials via `ADAPTER_CREDENTIAL_KEYS` only for the spawned adapter **and** a basename allowlist (`adapter.grok.binary: node` does not inherit `GROK_API_KEY`). Windows also inherits `SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`, `PATHEXT`. `SSH_AUTH_SOCK` inherited when present, never injected. |
+| Env allowlist | `packages/agents/src/env.ts` `filterSpawnEnv` | Base PATH/HOME/TERM keys always. Provider credentials via `ADAPTER_CREDENTIAL_KEYS` only for the spawned adapter **and** a basename allowlist (`adapter.grok.binary: node` does not inherit `GROK_API_KEY`). Windows also inherits `SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`, `PATHEXT`, `PSModulePath`. `SSH_AUTH_SOCK` inherited when present, never injected. |
 | Spawn | `packages/core/src/spawn.ts` `optionalSkillSpawn` | `resolveAdapterId` then `isResolvedAdapterSpawnable`. Required skills refuse if the **resolved** id is not spawnable; optional skills return `{ spawned: false, resolution }`. Resume writes `adapterId` / `binary` / value-free `argvSummary` (see §9) / `resolutionSource` **before** `wait()`. |
 | Engine | `packages/core/src/engine.ts` | Plan/execute/review/verify assert spawnable on the **resolved** id (`isResolvedAdapterSpawnable`). `ExecuteOptions.adapter` and `AmendTaskOptions.adapter` / `clearAdapter` exist (clear + adapter are mutually exclusive). Plan asserts, **then** writes `phase: planning`, **then** spawns. |
 | Doctor | `packages/cli/src/doctor.ts` | Fail-closed if `adapter.default` missing or not spawnable via PATH + argv (`isConfiguredSpawnable` — no `versionOf` / `--version` on repo-configured binaries). Fail-closed on required-skill routes (`routes.plan` / `execute` / `review`). Warns on optional-skill routes, `adapter.named`, and slice `Task.adapter`. Trust-warns per-id args via `argvSummarySafe`. CLI depends on agents. |
@@ -163,7 +163,7 @@ Split so “verified in code” is not a pre-PR-1 schema picture. Schema (PR-1),
 - No argv getter on `AgentAdapter` / `AgentHandle`. Template argv is derived from `FROZEN_ARGV_TABLE` + per-id config.
 - No `--adapter ""`. Clear is `--clear-adapter` only.
 - No intent / discuss / spec `--adapter` flags in v1.
-- Not in this feature: ingest distill spawn (engine.ingest today does not call `optionalSkillSpawn`; routing applies if that spawn is added later). QA scoring stays in-process (`packages/core/src/engine.ts` `qa()`).
+- Not in this feature: routing for the ingest distill spawn. `engine.ingest --distill` does call `optionalSkillSpawn({ skillId: "ingest" })` (skill `skills/ingest`), routed by `routes.ingest` or the default; it additionally refuses without a hardened sandbox (design doc, Trust boundaries). QA scoring stays in-process (`packages/core/src/engine.ts` `qa()`).
 - Not in v1: new audit event types `plan` / `review` / `verify` / `spawn-skip`. Resume covers every spawn; execute/timeout audit is the existing trail.
 
 ---
@@ -360,12 +360,12 @@ adapter:
   claude:
     extraArgs: ["--model", "opus"]    # argv only; doctor trust-warns
   grok:
-    args: ["--model", "grok-4", "{{pointer}}"]
+    args: ["-p", "{{pointer}}", "--model", "grok-4"]   # must start -p {{pointer}}
   codex:
-    args: ["{{pointer}}"]
+    args: ["exec", "{{pointer}}"]                     # must start exec
   minimax:
-    binary: mcode          # override assumed PATH name; already supported
-    args: ["{{pointer}}"]
+    binary: mcode          # the assumed binary anyway, so the prefix rule applies
+    args: ["exec", "{{pointer}}"]
 ingest:
   autoCommit: true
 control_mode: guarded
@@ -447,7 +447,7 @@ Doctor already trust-warns `claude.extraArgs`. Extend that warning to **any** co
 ```text
 Warnings
   claude extraArgs are set (trust warning): --model opus
-  grok args are set (trust warning): --model grok-4 {{pointer}}
+  grok args are set (trust warning): -p {{pointer}} --model grok-4
 ```
 
 Legion does not validate that `--model grok-4` is a real Grok model. The spawned CLI does.
@@ -767,7 +767,7 @@ Add a plan test: fixture task with `adapter: not-a-cli` → unreadable → plan 
 | `fix <bug>` | `--adapter <id>` | Forwards into `engine.execute(task.id, { fix: true, adapter })` |
 | `task amend <id>` | `--adapter <id>`, `--route <name>`, `--clear-adapter` | Persists `Task.adapter`. Does not require a FileContract change. |
 | `ticket create` | `--adapter <id>`, `--route <name>` | Persists on the new ticket |
-| `doctor` | (none) | Required-skill routes fail-closed via `isSpawnable`; trust warnings for extra args |
+| `doctor` | (none) | Required-skill routes fail-closed via `isResolvedAdapterSpawnable` (PATH + argv, `isConfiguredSpawnable`; no `--version` run on repo-configured binaries); trust warnings for extra args |
 | `next` | (none) | Ready-task table; raw `Task.adapter` suffix when set |
 | `status` | (none) | Current-task line suffix + JSON `currentTaskAdapter`; **not** the ready board |
 | `brief` | (none) | `renderSessionBrief`: `Current task: TSK-0100 settings screen (grok)` when raw adapter set |
@@ -907,7 +907,7 @@ Used only by CLI `task amend --route` and `ticket create --route`. Spawn never c
 | Topic | Handling |
 | --- | --- |
 | **Threat: Legion grows an HTTP completions client and harvests keys** | AdapterId `http` is in-product and uses `apiKeyEnv` (never inline `apiKey`). Nested extra spawn blocks `.strict()` reject `apiKey`/`apiBase`/`model`/`provider`. Completions URL is SSRF-bounded. Legion never writes keys into `.legion-cli/config.yaml` or task files. |
-| **Env allowlist (inherit-if-set, never written by Legion)** | Base keys in `packages/agents/src/env.ts`: `PATH`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `ComSpec`, `TERM`. Provider credentials are **per spawned adapter** via `ADAPTER_CREDENTIAL_KEYS` (`filterSpawnEnv(env, adapterId)`): `claude` → `CLAUDE_API_KEY`; `grok` → `GROK_API_KEY`/`XAI_API_KEY`; `openai`/`codex` → `OPENAI_API_KEY`; `minimax` → `MINIMAX_API_KEY`; `fake`/`generic`/`mimo` → none. Never pass every vendor key to every child. Windows inherit: `SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`, `PATHEXT`. `SSH_AUTH_SOCK` inherited when present, never injected. Legion never writes keys into config or tasks. `argvSummary` must **not** persist env. |
+| **Env allowlist (inherit-if-set, never written by Legion)** | Base keys in `packages/agents/src/env.ts`: `PATH`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `ComSpec`, `TERM`. Provider credentials are **per spawned adapter** via `ADAPTER_CREDENTIAL_KEYS` (`filterSpawnEnv(env, adapterId)`): `claude` → `CLAUDE_API_KEY`; `grok` → `GROK_API_KEY`/`XAI_API_KEY`; `openai`/`codex` → `OPENAI_API_KEY`; `minimax` → `MINIMAX_API_KEY`; `fake`/`generic`/`mimo` → none. Never pass every vendor key to every child. Windows inherit: `SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`, `PATHEXT`, `PSModulePath`. `SSH_AUTH_SOCK` inherited when present, never injected. Legion never writes keys into config or tasks. `argvSummary` must **not** persist env. |
 | **Threat: extraArgs smuggle secrets into argv and audit** | Doctor trust-warns extra args through `argvSummarySafe` (value-free). Resume/audit use the same helper, not pattern-only `redactSecrets`. Audit `data` is local jsonl; `DO_NOT_TRACK` still means no phone-home (`doctor --metrics`). |
 | **Threat: spawn writes `.legion-cli/config.yaml` to retarget later tasks** | Still implicit-forbidden; revert after `wait()`. |
 | **Threat: plan spawn sets `adapter: fake` on every task** | Valid enum, so it parses. Execute then refuses unless `LEGION_CLI_ADAPTER=fake`. SKILL.md forbids it. Optional later harden: plan FAIL if `Task.adapter === "fake"` outside tests. Not required for v1 of this feature. |
@@ -998,7 +998,7 @@ If product later wants a request-time picker, that is a dashboard write-surface 
 - Task persist fixture (leave adapter-less): `packages/persist/test/fixtures/project/legion-cli/tasks/TSK-0002.md`.
 - Wiki brief (no agents dep): `packages/wiki/src/brief.ts`.
 - Dashboard writes: `packages/dashboard/src/write.ts` (`ENGINE_WRITE_METHODS`, `parseTicket`).
-- Agents.md: do not register bin `legion`; supported invocation `pnpm exec legion-cli`.
+- Agents.md: `legion` is registered as an alias of `legion-cli` (same `dist/bin.js`; installer first-args refuse); the supported invocation stays `pnpm exec legion-cli`. (The earlier draft said not to register `legion`; that was superseded.)
 
 ---
 

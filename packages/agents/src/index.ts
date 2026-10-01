@@ -82,9 +82,11 @@ export {
   runTool,
   unwrapCmdShim,
   whichAll,
+  withNoCwdExeSearch,
 } from "./which.js";
 export { isSecretEnvName, scrubSecretsEnv, SECRET_ENV_NAME } from "./env-scrub.js";
 export { ARGV_ONLY_MESSAGE, parseCommandLine, runCommand, splitCommand } from "./run-command.js";
+export { terminateAgentProcessTree } from "./process.js";
 export type { RunCommandOptions, RunCommandResult } from "./run-command.js";
 export type { StageSkillOptions } from "./stage.js";
 export type { RunCachePaths } from "./paths.js";
