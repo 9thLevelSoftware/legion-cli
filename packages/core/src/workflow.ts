@@ -242,7 +242,7 @@ export async function workflowProductFingerprint(projectRoot: string, _tasks: re
     }
   };
   // Preserve path order and drain started reads before propagating the first failure.
-  await Promise.all(Array.from({ length: Math.min(4, paths.length) }, hashPaths));
+  await Promise.all(Array.from({ length: Math.min(8, paths.length) }, hashPaths));
   if (failed) throw failure;
   return workflowFingerprint(values);
 }
