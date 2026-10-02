@@ -1,5 +1,17 @@
 # Legion CLI — Product Engineering lifecycle engine
 
+> **Current workflow direction (2026-10-01).** This is the historical
+> architecture record. [`workflow-focus.md`](workflow-focus.md) supersedes its
+> public lifecycle framing: the default journey is `init` → `spec` → `plan` →
+> `execute` → `ship`. Intent capture and decision discussion belong in `spec`;
+> planned checks, independent review, and acceptance evidence belong in
+> `execute`; `ship` remains human approval. `intent`, `discuss`, `verify`,
+> `review`, and numeric `qa` stay available as advanced recovery/inspection
+> surfaces. Greenfield and `init --mode brownfield --brownfield-goal
+> change|audit` converge at `spec`; the `legion-cli brownfield` specialist
+> audit and its worktrees remain separate. Where this historical document
+> conflicts with that focused public workflow, the focused guide governs.
+
 | Field | Value |
 | --- | --- |
 | **Title** | Legion CLI: a CLI-owned product development lifecycle engine |

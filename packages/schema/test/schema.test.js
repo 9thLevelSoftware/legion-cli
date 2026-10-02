@@ -1184,11 +1184,12 @@ test("JSON Schema overlays reject .git paths, no-browser pass, and generic witho
   );
 });
 
-test("SkillId enum has twelve ids including map, wireframe, chat", () => {
+test("SkillId enum includes the internal spec challenge", () => {
   assert.deepEqual([...SkillIdSchema.options], [
     "interview",
     "discuss",
     "spec",
+    "spec-challenge",
     "ingest",
     "plan",
     "execute",
@@ -1199,7 +1200,7 @@ test("SkillId enum has twelve ids including map, wireframe, chat", () => {
     "wireframe",
     "chat",
   ]);
-  assert.equal(SkillIdSchema.options.length, 12);
+  assert.equal(SkillIdSchema.options.length, 13);
 });
 
 test("ADAPTER_IDS includes http and spawn extras stay strict", () => {

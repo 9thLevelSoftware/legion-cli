@@ -1,4 +1,3 @@
 Checkin  ·  greenfield  ·  phase: initialized
-Next up: interview me about the product.
-Run:  legion-cli intent
-Viewer: legion-cli serve
+Next up: capture the problem and write an approvable spec.
+Run:  legion-cli spec

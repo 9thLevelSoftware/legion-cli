@@ -1,8 +1,8 @@
 ---
 name: discuss
 description: >
-  Optional spawn that proposes decisions for the human to accept or reject.
-  Activated only by `legion-cli discuss`. Do not load other skill bodies.
+  Optional decision helper used by `legion-cli spec` (and retained by the
+  advanced `legion-cli discuss` command). Do not load other skill bodies.
 license: UNLICENSED
 compatibility: "Legion CLI staging; not vendor auto-discovery"
 metadata:
@@ -14,7 +14,8 @@ metadata:
 
 # discuss
 
-Optional spawn that proposes decisions for the human to accept or reject.
+Optional decision work for `legion-cli spec`. The advanced `legion-cli discuss`
+command can resume or inspect the same records.
 
 ## Contract
 
@@ -36,6 +37,7 @@ Propose at least:
 2. Out-of-scope restatement from the intent answers
 3. Whether product data is stored locally or not
 
-Do not mark decisions accepted or rejected. The human answers Y/n in the CLI, two at a time.
+Do not mark decisions accepted or rejected. The human decides in the CLI; a
+focused `spec` run presents unresolved consequential choices before approval.
 
 When done, write a short summary to `.legion-cli/cache/runs/<id>/summary.md`.

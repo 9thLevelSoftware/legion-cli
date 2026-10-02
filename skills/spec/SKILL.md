@@ -1,7 +1,7 @@
 ---
 name: spec
 description: >
-  Optional polish of SPEC.md and HTML wireframes after templates.
+  Optional polish of SPEC.md and opt-in HTML wireframes after templates.
   Activated only by `legion-cli spec` when a spawnable adapter exists. Do not load other skill bodies.
 license: UNLICENSED
 compatibility: "Legion CLI staging; not vendor auto-discovery"
@@ -14,7 +14,11 @@ metadata:
 
 # spec
 
-Optional polish of SPEC.md and HTML wireframes. Templates already produced a valid Spec.
+Optional polish of SPEC.md and, only when requested, HTML wireframes. Templates
+already produce a valid Spec. The focused `spec` stage includes intent capture
+and consequential decisions before the human runs `legion-cli spec approve`.
+The engine may separately run its bounded `spec-challenge` skill; do not perform
+or resolve that challenge here.
 
 ## Contract
 
@@ -30,7 +34,9 @@ Do not set spec `status` to `frozen` (the human runs `legion-cli spec approve`).
 
 You may tighten SPEC.md wording from the intent answers.
 
-You may replace inner markup of wireframe HTML files. **Keep this palette until freeze:**
+When wireframe files exist because the approved work needs a UI, you may replace
+their inner markup. Do not create wireframes for a non-UI spec. **Keep this
+palette until freeze:**
 
 - background `#f5f5f0`
 - ink `#222`

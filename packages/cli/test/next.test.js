@@ -41,7 +41,7 @@ function executing(lastReview, slice) {
   );
 }
 
-test("initialized brownfield hints legion-cli brownfield", () => {
+test("initialized brownfield converges on legion-cli spec", () => {
   const next = nextCommand(
     {
       schemaVersion: "legion-cli-state/v1",
@@ -55,7 +55,7 @@ test("initialized brownfield hints legion-cli brownfield", () => {
     [],
     "brownfield",
   );
-  assert.equal(next.run, "legion-cli brownfield");
+  assert.equal(next.run, "legion-cli spec");
 });
 
 test("executing + lastReview FAIL + open work hints execute, not review", () => {
@@ -63,14 +63,14 @@ test("executing + lastReview FAIL + open work hints execute, not review", () => 
   assert.equal(next.run, "legion-cli execute");
 });
 
-test("executing + lastReview FAIL + terminal slice hints review", () => {
+test("executing terminal slice continues workflow execution", () => {
   const next = executing("FAIL", [task("done"), task("blocked", "TSK-0002")]);
-  assert.equal(next.run, "legion-cli review");
+  assert.equal(next.run, "legion-cli execute");
 });
 
-test("executing + lastReview PASS + terminal slice hints qa", () => {
+test("executing terminal slice does not force the legacy QA command", () => {
   const next = executing("PASS", [task("done")]);
-  assert.equal(next.run, "legion-cli qa");
+  assert.equal(next.run, "legion-cli execute");
 });
 
 test("executing + lastReview PASS + open work hints execute", () => {

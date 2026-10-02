@@ -51,6 +51,11 @@ schemaVersions
   legion-cli-serve/v1
   legion-cli-recipe/v1
   legion-cli-recipes-lock/v1
+  legion-cli-plan-approval/v1
+  legion-cli-spec-approval/v1
+  legion-cli-workflow-evidence/v1
+  legion-cli-acceptance-receipt/v1
+  legion-cli-workflow-claim/v1
 
 Adapter
   default      fake

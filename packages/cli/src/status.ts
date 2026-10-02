@@ -1,5 +1,4 @@
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import { EXPOSE_BIND, LOOPBACK_BIND, readLiveServe } from "@9thlevelsoftware/legion-cli-dashboard";
 import { listTaskSummaries, PersistValidationError } from "@9thlevelsoftware/legion-cli-persist";
 import type { AdapterId, LegionConfig, ProjectFile, StateFile } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
@@ -21,33 +20,19 @@ async function readOptionalConfig(engine: ReturnType<typeof createLegionEngine>)
   }
 }
 
-async function liveViewer(projectRoot: string): Promise<{ viewer: string; live: boolean }> {
-  const live = await readLiveServe(projectRoot);
-  if (!live) return { viewer: "legion-cli serve", live: false };
-  const host =
-    live.bind === EXPOSE_BIND || live.bind === "::" || live.bind === "0.0.0.0" ? LOOPBACK_BIND : live.bind;
-  return { viewer: `http://${host}:${live.port}`, live: true };
-}
-
-function shouldHintCompact(slice: readonly { status: string }[]): boolean {
-  return slice.some((task) => task.status === "done") && !slice.some((task) => task.status === "in_progress");
-}
-
 function formatHuman(input: {
   project: ProjectFile | null;
   state: StateFile;
   next: { run: string; hint: string };
   blockers: { detail: string }[];
-  viewer: string;
-  viewerLive: boolean;
   blockersOnly: boolean;
   currentTaskAdapter: AdapterId | null;
-  compactHint: boolean;
 }): string {
-  const { project, state, next, blockers, viewer, viewerLive, blockersOnly, currentTaskAdapter, compactHint } = input;
+  const { project, state, next, blockers, blockersOnly, currentTaskAdapter } = input;
   if (blockersOnly) {
-    if (blockers.length === 0) return "No blockers.";
-    return ["Blockers:", ...blockers.map((item) => `  ${item.detail}`)].join("\n");
+    const details = blockers.map((item) => item.detail);
+    if (details.length === 0) return "No blockers.";
+    return ["Blockers:", ...details.map((detail) => `  ${detail}`)].join("\n");
   }
 
   const lines: string[] = [];
@@ -68,8 +53,6 @@ function formatHuman(input: {
   if (state.lastReview) lines.push(`Review: ${state.lastReview}`);
   lines.push(`Next up: ${next.hint}`);
   lines.push(`Run:  ${next.run}`);
-  if (compactHint) lines.push("Hint: legion-cli context compact");
-  lines.push(viewerLive ? `Viewer: ${viewer}  (legion-cli serve)` : `Viewer: ${viewer}`);
   if (blockers.length > 0) {
     lines.push("Blockers:");
     for (const item of blockers) lines.push(`  ${item.detail}`);
@@ -83,6 +66,7 @@ function formatPlain(input: {
   next: { run: string };
   blockers: { detail: string }[];
   currentTaskAdapter: AdapterId | null;
+  workflow: { blocker: string | null; next: string } | null;
 }): string {
   const name = input.project?.name ?? "";
   const mode = input.project?.mode ?? "";
@@ -90,11 +74,12 @@ function formatPlain(input: {
     `name\t${name}`,
     `mode\t${mode}`,
     `phase\t${input.state.phase}`,
-    `next\t${input.next.run}`,
+    `next\t${input.workflow?.next ?? input.next.run}`,
   ];
   if (input.state.currentTaskId) lines.push(`currentTask\t${input.state.currentTaskId}`);
   if (input.currentTaskAdapter) lines.push(`currentTaskAdapter\t${input.currentTaskAdapter}`);
   if (input.state.lastReadiness) lines.push(`readiness\t${input.state.lastReadiness}`);
+  if (input.workflow?.blocker) lines.push(`blocker\t${input.workflow.blocker}`);
   if (input.blockers.length > 0) {
     for (const item of input.blockers) lines.push(`blocker\t${item.detail}`);
   }
@@ -113,11 +98,34 @@ export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknow
         .map((row) => ({ id: row.id, title: row.title, status: row.status as StatusSliceTask["status"] }))
     : [];
   const next = nextCommand(state, slice, project?.mode, config?.control_mode);
+  let workflow: Awaited<ReturnType<typeof engine.getWorkflowStatus>> | null = null;
+  if (state.phase !== "uninitialized") {
+    try {
+      workflow = await engine.getWorkflowStatus();
+    } catch (err) {
+      // Legacy partial artifacts can still be inspected through status. Focused
+      // projects must surface corrupt workflow receipts instead of hiding them.
+      if (config?.workflow?.profile === "focused") throw err;
+      workflow = null;
+    }
+  }
   const blockers = collectBlockers(state.lastReadiness, state.lastReview, slice);
-  const { viewer, live: viewerLive } = await liveViewer(opts.project);
-  const code = statusExitCode(state.lastReadiness, slice);
+  if (workflow?.blocker) blockers.push({ kind: "workflow", detail: workflow.blocker });
+  const legacyCode = statusExitCode(state.lastReadiness, slice);
+  const code =
+    workflow?.execution === "blocked" || workflow?.execution === "stale" || workflow?.planApproval === "stale"
+      ? 2
+      : workflow?.acceptance.failed.length
+        ? 1
+        : legacyCode;
   const current = summaries.find((row) => row.id === state.currentTaskId);
   const currentTaskAdapter = (current?.adapter as AdapterId | null | undefined) ?? null;
+  const workflowNext = workflow
+    ? {
+        run: workflow.next,
+        hint: workflow.next === "legion-cli spec" && workflow.blocker ? workflow.blocker : next.hint,
+      }
+    : next;
 
   if (opts.json) {
     writeJson({
@@ -129,17 +137,15 @@ export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknow
       activeSpecId: state.activeSpecId ?? null,
       lastReadiness: state.lastReadiness ?? null,
       lastReview: state.lastReview ?? null,
-      next,
+      next: workflowNext,
       blockers,
-      viewer,
-      viewerLive,
       ...jsonExtra,
     });
     return code;
   }
 
   if (opts.plain) {
-    writeOut(formatPlain({ project, state, next, blockers, currentTaskAdapter }));
+    writeOut(formatPlain({ project, state, next, blockers, currentTaskAdapter, workflow }));
     return code;
   }
 
@@ -147,13 +153,10 @@ export async function runStatus(opts: CliOpts, jsonExtra?: Record<string, unknow
     formatHuman({
       project,
       state,
-      next,
+      next: workflowNext,
       blockers,
-      viewer,
-      viewerLive,
       blockersOnly: opts.blockers,
       currentTaskAdapter,
-      compactHint: shouldHintCompact(slice),
     }),
   );
   return code;

@@ -432,9 +432,9 @@ test("plan walks spec_frozen → planning → plan_ready and transition cannot s
       },
     );
     const readiness = await engine.plan("spec-checkin");
-    assert.equal(readiness, "CONCERNS");
+    assert.equal(readiness, "PASS");
     assert.equal((await engine.getState()).phase, "plan_ready");
-    assert.equal((await engine.getState()).lastReadiness, "CONCERNS");
+    assert.equal((await engine.getState()).lastReadiness, "PASS");
 
     await patchState(store, { phase: "planning", lastReadiness: null });
     await assert.rejects(
@@ -446,7 +446,7 @@ test("plan walks spec_frozen → planning → plan_ready and transition cannot s
       },
     );
     const again = await engine.plan("spec-checkin");
-    assert.equal(again, "CONCERNS");
+    assert.equal(again, "PASS");
     assert.equal((await engine.getState()).phase, "plan_ready");
   });
   });

@@ -18,6 +18,18 @@ export async function runFix(
       await slurpStdin();
       await confirmAllowNoSandbox("fix");
     }
+  const config = await engine.store.readConfig();
+  if (config.workflow?.profile === "focused") {
+    const task = await engine.proposeFix(bug);
+    const next = "legion-cli plan approve";
+    if (opts.json) {
+      writeJson({ ok: true, taskId: task.id, status: "proposed", next });
+      return 0;
+    }
+    writeOut(`Filed ${task.id} as a proposed amendment. Review and approve the updated plan before execution.`);
+    writeOut(`Next: ${next}`);
+    return 0;
+  }
   const task = await engine.fix(bug);
   const executed = await engine.execute(task.id, {
     fix: true,
@@ -27,7 +39,6 @@ export async function runFix(
   const state = await engine.getState();
   const slice = await engine.listSliceTasks();
   const next = nextCommand(state, slice);
-  const config = await engine.store.readConfig();
   const viewer = `http://${config.dashboard.bind}:${config.dashboard.port}`;
   const green = executed.status === "done";
   const testPath = task.contract.filesAllowed[0] ?? "";

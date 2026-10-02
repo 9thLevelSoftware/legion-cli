@@ -29,20 +29,20 @@ const NEXT_BY_PHASE: Record<Phase, NextCommand> = {
     hint: "start a product in this folder.",
   },
   initialized: {
-    run: "legion-cli intent",
-    hint: "interview me about the product.",
+    run: "legion-cli spec",
+    hint: "capture the problem and write an approvable spec.",
   },
   intent_draft: {
-    run: "legion-cli intent",
-    hint: "finish the interview (two questions at a time).",
+    run: "legion-cli spec",
+    hint: "continue the product conversation and draft the spec.",
   },
   intent_ready: {
-    run: "legion-cli discuss",
-    hint: "capture decisions before we plan.",
+    run: "legion-cli spec",
+    hint: "record the remaining decisions and draft the spec.",
   },
   discussing: {
     run: "legion-cli spec",
-    hint: "write the short contract + wireframes.",
+    hint: "write the short contract.",
   },
   spec_draft: {
     run: "legion-cli spec approve",
@@ -61,8 +61,8 @@ const NEXT_BY_PHASE: Record<Phase, NextCommand> = {
     hint: "fix the FAIL list, then plan again.",
   },
   plan_ready: {
-    run: "legion-cli execute",
-    hint: "do the next ready task.",
+    run: "legion-cli plan approve",
+    hint: "approve this implementation plan before execution.",
   },
   executing: {
     run: "legion-cli execute",
@@ -90,14 +90,8 @@ export function nextCommand(
   mode?: "greenfield" | "brownfield",
   controlMode?: ControlMode,
 ): NextCommand {
-  if (state.phase === "initialized" && mode === "brownfield") {
-    return { run: "legion-cli brownfield", hint: "audit this running app (code is evidence)." };
-  }
   if (state.phase === "executing" && isSliceTerminal(slice)) {
-    if (state.lastReview === "PASS") {
-      return { run: "legion-cli qa", hint: "score the product (the slice is done)." };
-    }
-    return { run: "legion-cli review", hint: "spec-level review; fix tasks or in-place rewrites mean FAIL and re-review." };
+    return { run: "legion-cli execute", hint: "finish workflow verification and record acceptance evidence." };
   }
   const wouldExecute =
     state.phase === "plan_ready" || (state.phase === "executing" && !isSliceTerminal(slice));
@@ -120,7 +114,7 @@ export function statusExitCode(
 }
 
 export type Blocker = {
-  kind: "task" | "readiness" | "review";
+  kind: "task" | "readiness" | "review" | "workflow";
   id?: string;
   detail: string;
 };

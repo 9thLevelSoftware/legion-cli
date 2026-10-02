@@ -225,6 +225,20 @@
                 "http"
               ]
             },
+            "spec-challenge": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "generic",
+                "fake",
+                "grok",
+                "openai",
+                "codex",
+                "mimo",
+                "minimax",
+                "http"
+              ]
+            },
             "ingest": {
               "type": "string",
               "enum": [
@@ -524,6 +538,7 @@
               "interview",
               "discuss",
               "spec",
+              "spec-challenge",
               "ingest",
               "plan",
               "execute",
@@ -631,6 +646,28 @@
           "type": "boolean"
         }
       }
+    },
+    "workflow": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "default": "focused",
+          "type": "string",
+          "enum": [
+            "focused",
+            "legacy"
+          ]
+        },
+        "verificationCommands": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
     }
   },
   "required": [
@@ -706,6 +743,25 @@
                     },
                     "required": [
                       "spec"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "spec-challenge": {
+                        "const": "generic"
+                      }
+                    },
+                    "required": [
+                      "spec-challenge"
                     ]
                   }
                 },
@@ -989,6 +1045,25 @@
                     },
                     "required": [
                       "spec"
+                    ]
+                  }
+                },
+                "required": [
+                  "routes"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "routes": {
+                    "type": "object",
+                    "properties": {
+                      "spec-challenge": {
+                        "const": "http"
+                      }
+                    },
+                    "required": [
+                      "spec-challenge"
                     ]
                   }
                 },

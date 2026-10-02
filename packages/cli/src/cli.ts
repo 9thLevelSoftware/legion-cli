@@ -50,7 +50,7 @@ import {
 import { runMcp } from "./mcp.js";
 import { runNextTasks } from "./next-tasks.js";
 import { runPacketNew, runPacketRespond } from "./packet.js";
-import { runPlan } from "./plan.js";
+import { runPlan, runPlanAcceptance, runPlanApprove } from "./plan.js";
 import { runPromote } from "./run.js";
 import { runQa, runQaChecklist } from "./qa.js";
 import { runReview } from "./review.js";
@@ -104,7 +104,7 @@ export function createProgram(): Command {
   program
     .name("legion-cli")
     .description(
-      "Product Engineering lifecycle engine.\nSupported commands: pnpm exec legion-cli   |   legion (alias)\nPlugin installer: npx @9thlevelsoftware/legion --claude   (bin legion-plugins)",
+      "Focused project workflow.\nSupported commands: pnpm exec legion-cli   |   legion (alias)\nPlugin installer: npx @9thlevelsoftware/legion --claude   (bin legion-plugins)",
     )
     .version(pkg.version)
     .showSuggestionAfterError(false)
@@ -146,7 +146,8 @@ export function createProgram(): Command {
   addGlobalOptions(program.command("init").description("Start a product in this folder"))
     .option("--name <name>", "product name")
     .option("--adapter <id>", `${ADAPTER_ID_HELP} (required)`)
-    .option("--mode <mode>", "greenfield or brownfield", "greenfield")
+    .option("--mode <mode>", "greenfield or brownfield")
+    .option("--brownfield-goal <goal>", "change or audit when --mode brownfield")
     .option("--generic-binary <bin>", "binary when --adapter generic")
     .option("--generic-args <args...>", "args when --adapter generic")
     .option("--http-base-url <url>", "OpenAI-compat base URL when --adapter http")
@@ -158,6 +159,7 @@ export function createProgram(): Command {
         name?: string;
         adapter?: string;
         mode?: string;
+        brownfieldGoal?: string;
         genericBinary?: string;
         genericArgs?: string[];
         httpBaseUrl?: string;
@@ -273,12 +275,13 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  const spec = addGlobalOptions(program.command("spec").description("Write the short contract + wireframes"))
-    .option("--skip-wireframes", "skip HTML wireframes (pre-approve only)")
+  const spec = addGlobalOptions(program.command("spec").description("Discuss and write the short contract"))
+    .option("--wireframes", "also generate HTML wireframes")
+    .option("--manual-review", "complete explicit fallback after failed challenge automation")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { skipWireframes?: boolean };
-      const code = await runSpecDraft(resolveOpts(cmd), flags);
+      const flags = opts as { wireframes?: boolean; manualReview?: boolean };
+      const code = await runSpecDraft(resolveOpts(cmd), { skipWireframes: !flags.wireframes, manualReview: Boolean(flags.manualReview) });
       process.exitCode = code;
     });
 
@@ -325,13 +328,32 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("plan").description("Break into tasks I can see on the board"))
+  const plan = addGlobalOptions(program.command("plan").description("Break approved work into reviewable tasks"))
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
       const flags = opts as { adapter?: string };
       const code = await runPlan(resolveOpts(cmd), flags);
       process.exitCode = code;
+    });
+
+  addGlobalOptions(plan.command("approve").description("Approve the plan before execution"))
+    .option("--check <command...>", "required integration or verification command")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { check?: string[] };
+      process.exitCode = await runPlanApprove(resolveOpts(cmd), { checks: flags.check });
+    });
+
+  addGlobalOptions(plan.command("acceptance").description("Record manual acceptance evidence"))
+    .option("--pass <ids...>", "acceptance criterion IDs that passed")
+    .option("--fail <ids...>", "acceptance criterion IDs that failed")
+    .option("--not-applicable <ids...>", "acceptance criterion IDs that do not apply")
+    .option("--note <text>", "evidence note")
+    .allowExcessArguments(false)
+    .action(async (opts, cmd: Command) => {
+      const flags = opts as { pass?: string[]; fail?: string[]; notApplicable?: string[]; note?: string };
+      process.exitCode = await runPlanAcceptance(resolveOpts(cmd), flags);
     });
 
   addGlobalOptions(program.command("next").description("What is unblocked?"))
@@ -341,17 +363,21 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("execute").description("Do the next ready task"))
+  addGlobalOptions(program.command("execute").description("Run approved work to completion or a blocker"))
     .argument("[id]", "task id")
     .option("--until-blocked", "loop until no ready task remains or one blocks")
+    .option("--step", "run one task, then return a resumable checkpoint")
+    .option("--retry", "retry one failed workflow stage")
     .option("--fix", "fix-run prompt (keep reproducing tests)")
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .option("--allow-no-sandbox", "TTY gate to run execute on a copy jail")
     .allowExcessArguments(false)
     .action(async (id: string | undefined, opts, cmd: Command) => {
-      const flags = opts as { untilBlocked?: boolean; fix?: boolean; adapter?: string; allowNoSandbox?: boolean };
+      const flags = opts as { step?: boolean; retry?: boolean; untilBlocked?: boolean; fix?: boolean; adapter?: string; allowNoSandbox?: boolean };
       const code = await runExecute(resolveOpts(cmd), {
         id,
+        step: Boolean(flags.step),
+        retry: Boolean(flags.retry),
         untilBlocked: Boolean(flags.untilBlocked),
         fix: Boolean(flags.fix),
         adapter: flags.adapter,

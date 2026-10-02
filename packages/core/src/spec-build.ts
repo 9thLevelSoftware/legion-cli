@@ -16,6 +16,7 @@ export function buildSpecFromIntent(opts: {
   extraAcceptance?: AcceptanceCriterion[];
   skipWireframes: boolean;
   decisions?: readonly DiscussDecision[];
+  failureCases?: string[];
 }): Spec {
   const p0: AcceptanceCriterion[] = opts.mapped.mustBeTrue.map((statement, i) => ({
     id: `AC-P0-${String(i + 1).padStart(2, "0")}`,
@@ -44,6 +45,7 @@ export function buildSpecFromIntent(opts: {
     schemaVersion: SCHEMA_VERSION.spec,
     id: opts.specId,
     title: opts.title,
+    problem: opts.mapped.problem,
     status: "draft",
     mustBeTrue: opts.mapped.mustBeTrue,
     mustNotChange: opts.mapped.mustNotChange,
@@ -51,6 +53,7 @@ export function buildSpecFromIntent(opts: {
     acceptance: merged,
     personas: opts.mapped.personas,
     happyPath: opts.mapped.happyPath,
+    failureCases: opts.failureCases ?? [],
     stories: null,
     wireframesIndex: opts.skipWireframes ? null : "wireframes/INDEX.html",
     frozenAt: null,
@@ -73,7 +76,11 @@ export function specMarkdownBody(spec: Spec): string {
     ``,
     spec.personas[0] ? `${spec.personas[0]}.` : "",
     ``,
-    `## Must be true`,
+    `## Problem`,
+    ``,
+    spec.problem || spec.title,
+    ``,
+    `## Success criteria`,
     ...spec.mustBeTrue.map((line) => `- ${line}`),
     ``,
     `## Must not change`,
@@ -84,6 +91,9 @@ export function specMarkdownBody(spec: Spec): string {
     ``,
     `## Happy path`,
     spec.happyPath || "(unspecified)",
+    ``,
+    `## Failure cases`,
+    ...(spec.failureCases?.length ? spec.failureCases.map((line) => `- ${line}`) : ["- (none identified)"]),
     ``,
     `## Acceptance`,
     ac,

@@ -1,8 +1,9 @@
 ---
 name: review
 description: >
-  Spec-level review of a terminal slice; new task ids or in-place TSK rewrites FAIL the review.
-  Activated only by `legion-cli review`. Do not load other skill bodies.
+  Independent review coordinated by focused `execute`; retained as the
+  advanced `legion-cli review` recovery command. New task ids or in-place TSK
+  rewrites FAIL the review. Do not load other skill bodies.
 license: UNLICENSED
 compatibility: "Legion CLI staging; not vendor auto-discovery"
 metadata:
@@ -14,7 +15,9 @@ metadata:
 
 # review
 
-Spec-level review of a terminal slice (every task `done` or `blocked`). Required: Legion CLI refuses if no spawnable adapter is configured.
+Independent review of a terminal slice (every task `done` or `blocked`). The
+focused `execute` stage coordinates it before ship; `legion-cli review` remains
+available for recovery. Required: Legion CLI refuses if no spawnable adapter is configured.
 
 PASS is decided by the engine: only if this spawn created zero new task ids **and** left every existing `TSK-*.md` byte-identical. Filing any task (`type: fix` or otherwise) or rewriting an existing task file is FAIL and requires another review after those tasks are done (and existing files are restored). Do not write `.legion-cli/packets/**`. Packets are a human verb (`legion-cli packet new`); this spawn files fix tasks or extra.json only. File review comments in `.legion-cli/qa/**`, not in existing task bodies.
 

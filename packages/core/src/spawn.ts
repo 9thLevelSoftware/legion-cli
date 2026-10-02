@@ -52,6 +52,7 @@ import {
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
+import { CHALLENGE_REPOSITORY_READ_ROOTS, challengeReadableFiles } from "./spec-challenge-inputs.js";
 import { createHttpToolHost, httpAllowedWrites } from "./http-host.js";
 import {
   recordPreSpawnRef,
@@ -246,14 +247,26 @@ const CONFIG_READ_SET = [
   "scripts",
 ] as const;
 
-function sandboxReadSet(opts: {
+async function sandboxReadSet(opts: {
   projectRoot: string;
   runId: string;
   specId?: string;
   taskId?: string;
-}): string[] {
+  skillId?: SkillId;
+}): Promise<string[]> {
+  if (opts.skillId === "spec-challenge") {
+    const contextRoots = [".legion-cli/wiki/product", ".legion-cli/discuss", ".legion-cli/decisions", ".legion-cli/map"];
+    if (opts.specId) contextRoots.push(`.legion-cli/specs/${opts.specId}`);
+    return challengeReadableFiles(opts.projectRoot, [
+      `.legion-cli/cache/skills/${opts.runId}`,
+      `.legion-cli/cache/runs/${opts.runId}`,
+      ...CHALLENGE_REPOSITORY_READ_ROOTS,
+      ...contextRoots,
+    ]);
+  }
   const out = [`.legion-cli/cache/skills/${opts.runId}`, `.legion-cli/cache/runs/${opts.runId}`];
   if (opts.specId) out.push(`.legion-cli/specs/${opts.specId}`);
+  if (existsSync(join(opts.projectRoot, ".legion-cli", "map"))) out.push(".legion-cli/map");
   if (opts.taskId) out.push(`.legion-cli/tasks/${opts.taskId}.md`);
   for (const name of CONFIG_READ_SET) {
     if (existsSync(join(opts.projectRoot, name))) out.push(name);
@@ -287,7 +300,7 @@ async function sandboxAllowedWrites(opts: {
       }
     }
   }
-  if (opts.contract) out.push(...opts.contract.filesAllowed, ...opts.contract.expectedArtifacts);
+  if (opts.contract && opts.skillId !== "spec-challenge") out.push(...opts.contract.filesAllowed, ...opts.contract.expectedArtifacts);
   return out;
 }
 
@@ -378,6 +391,10 @@ async function assembleSpawnPrompt(opts: {
 }
 
 export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkillSpawn> {
+  if (opts.skillId === "spec-challenge" &&
+      (opts.extraAllowedRoots?.length || opts.fileContract)) {
+    refuse("spec-challenge permits only its run-cache output", HINT.spec);
+  }
   const runId = `${opts.skillId}-${Date.now().toString(36)}`;
   const resolution = resolveAdapterId({
     config: opts.config,
@@ -523,6 +540,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   let allowedWrites: string[] = [];
   const jailed =
     opts.skillId === "execute" ||
+    opts.skillId === "spec-challenge" ||
     opts.config.sandbox.skills.includes(opts.skillId) ||
     resolution.id === "http";
   if (jailed) {
@@ -544,11 +562,12 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       projectRoot: opts.projectRoot,
       runId,
       allowedWrites,
-      readSet: sandboxReadSet({
+      readSet: await sandboxReadSet({
         projectRoot: opts.projectRoot,
         runId,
         specId: opts.specId,
         taskId: opts.taskId,
+        skillId: opts.skillId,
       }),
       adapterBinary: tmpl.binary.startsWith("(") ? undefined : tmpl.binary,
       backend: opts.config.sandbox.backend,
@@ -624,6 +643,9 @@ export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spa
     const agentResult = await started.handle.wait();
     timedOut = Boolean(agentResult.timedOut);
     if (timedOut) error = new AgentError("spawn timed out");
+    else if (agentResult.aborted || agentResult.exitCode !== 0) {
+      error = new AgentError(agentResult.aborted ? "spawn aborted" : `spawn exited ${String(agentResult.exitCode)}`);
+    }
   } catch (err) {
     error = err;
   }

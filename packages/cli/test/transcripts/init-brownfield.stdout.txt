@@ -1,5 +1,6 @@
 Legion CLI created a project in this folder.
 mode: brownfield
+brownfield goal: audit
 adapter.default: fake
 Supported command: pnpm exec legion-cli
-Next: legion-cli brownfield
+Next: legion-cli spec

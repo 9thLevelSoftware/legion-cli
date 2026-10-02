@@ -21,6 +21,18 @@ compatibility: "Claude Code skill; drives legion-cli brownfield. Not an engine s
 
 # Brownfield
 
+## Focused-workflow boundary
+
+Use this skill for a repository-wide audit or an explicitly requested
+specialist-led remediation program. It is separate from focused brownfield
+onboarding: `legion-cli init --mode brownfield --brownfield-goal change|audit`
+does scoped discovery or, for audit, persists a bounded remediation goal and
+affected paths before interview, then continues to `spec` → `plan` → in-place
+`execute` → `ship`. Do not start this audit merely because a user asks for a
+normal feature or fix in an existing repository.
+
+Only this advanced audit's `--execute` path creates per-PR worktrees.
+
 You are the **orchestrator** of an audit-and-improve run on an existing codebase. The user can
 usually operate the software but can't tell whether its architecture, implementation, tests, or
 security are actually sound. Your job is to get them a trustworthy answer and a concrete,

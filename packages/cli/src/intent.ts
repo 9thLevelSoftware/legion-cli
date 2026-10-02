@@ -11,6 +11,8 @@ import { closePrompt, isYes, readLine, slurpStdin } from "./prompt.js";
 
 export type IntentFlags = {
   done?: boolean;
+  quiet?: boolean;
+  keepPrompt?: boolean;
 };
 
 function printQuestions(state: IntentState, intro: boolean): void {
@@ -73,7 +75,7 @@ export async function runIntent(opts: CliOpts, flags: IntentFlags): Promise<numb
       }
     }
 
-    if (opts.json) {
+    if (opts.json && !flags.quiet) {
       const after = await engine.getIntentState();
       writeJson({
         ok: true,
@@ -83,10 +85,12 @@ export async function runIntent(opts: CliOpts, flags: IntentFlags): Promise<numb
       });
       return 0;
     }
-    writeOut("");
-    writeOut("Next: legion-cli discuss    (or type legion-cli)");
+    if (!flags.quiet) {
+      writeOut("");
+      writeOut("Next: legion-cli discuss    (or type legion-cli)");
+    }
     return 0;
   } finally {
-    closePrompt();
+    if (!flags.keepPrompt) closePrompt();
   }
 }

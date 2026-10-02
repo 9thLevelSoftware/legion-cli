@@ -4,6 +4,7 @@ import type { GardenReport, SearchHit } from "@9thlevelsoftware/legion-cli-wiki"
 import type {
   AdapterId,
   AdapterResolutionSource,
+  AcceptanceReceipt,
   Assumption,
   BrownfieldDagNode,
   BrownfieldRoster,
@@ -17,6 +18,7 @@ import type {
   IntentAnswersFile,
   IntentMapped,
   Packet,
+  PlanApprovalReceipt,
   Phase,
   Priority,
   QAScore,
@@ -25,6 +27,7 @@ import type {
   SessionBrief,
   Spec,
   Task,
+  WorkflowEvidenceReceipt,
 } from "@9thlevelsoftware/legion-cli-schema";
 
 export type Actor = {
@@ -45,6 +48,10 @@ export type LegionEngineOptions = {
   fakeOnVerify?: () => Promise<void>;
   /** Test-only: runs during qa (lock-free after F-026). Injected-clock advance lives here. */
   fakeOnQa?: () => Promise<void>;
+  /** Test-only: runs after validated challenge output is durably checkpointed and before spawn cleanup. */
+  fakeAfterChallengeOutputCheckpoint?: () => Promise<void>;
+  /** Test-only: runs after an engine-authored challenge draft write and before the completion receipt. */
+  fakeAfterChallengeDraftWrite?: () => Promise<void>;
   verificationTimeoutMs?: number;
 };
 
@@ -71,9 +78,71 @@ export type InitOptions = {
   generic?: { binary: string; args: string[] };
   http?: { baseUrl: string; model: string; apiKeyEnv: string; allowLoopback?: boolean };
   mode?: "greenfield" | "brownfield";
+  brownfieldGoal?: "change" | "audit";
+  /** New public CLI initialization uses focused; omitted preserves low-level API compatibility. */
+  workflowProfile?: "focused" | "legacy";
   controlMode?: ControlMode | "autonomous" | string;
   allowCopyJail?: boolean;
 };
+
+export type PlanApprovalOptions = {
+  /** Additional project-level checks, merged with config.workflow.verificationCommands. */
+  verificationCommands?: string[];
+};
+
+export type AcceptanceEvidenceInput = {
+  id: string;
+  status: "passed" | "failed" | "not_applicable";
+  note?: string;
+};
+
+export type ExecuteWorkflowOptions = {
+  taskId?: string;
+  step?: boolean;
+  adapter?: AdapterId;
+  fix?: boolean;
+  allowNoSandbox?: boolean;
+  /** Explicitly retry the failed integration or review stage once. */
+  retry?: boolean;
+};
+
+export type WorkflowAcceptanceStatus = {
+  required: string[];
+  passed: string[];
+  failed: string[];
+  pending: string[];
+  notApplicable: string[];
+};
+
+export type WorkflowStatus = {
+  stage: "spec" | "plan" | "execute" | "ship";
+  planApproval: "missing" | "valid" | "stale";
+  execution: "not_started" | "running" | "blocked" | "complete" | "stale";
+  acceptance: WorkflowAcceptanceStatus;
+  blocker: string | null;
+  next: string;
+};
+
+export type WorkflowExecutionResult = {
+  status: "blocked" | "complete" | "step_complete";
+  taskId?: string;
+  completedTaskIds: string[];
+  blocker: string | null;
+  next: string;
+  tasks?: ExecuteTaskResult[];
+  warnings?: string[];
+};
+
+export type { AcceptanceReceipt, PlanApprovalReceipt, WorkflowEvidenceReceipt };
+
+export type {
+  SpecChallengeDisposition,
+  SpecChallengeManualQuestionKey,
+  SpecChallengeManualReviewInput,
+  SpecChallengeResolutionInput,
+  SpecChallengeResult,
+  SpecChallengeStatus,
+} from "./spec-challenge.js";
 
 export type BrownfieldEffort = 1 | 2 | 3 | 4 | 5;
 
@@ -346,6 +415,11 @@ export type ReviewResult = {
   createdTaskIds: string[];
   extrasReverted: string[];
   rewrittenExistingTaskIds: string[];
+  explicitVerdict?: ReviewVerdict;
+  evidencePath?: string;
+  evidenceFingerprint?: string;
+  /** Captured before spawn cleanup restores engine-owned QA paths. */
+  evidenceBody?: string;
 };
 
 export type ShipReceipt = {

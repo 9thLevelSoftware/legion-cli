@@ -2,4 +2,4 @@ Legion CLI created a project in this folder.
 mode: greenfield
 adapter.default: fake
 Supported command: pnpm exec legion-cli
-Next: legion-cli intent
+Next: legion-cli spec

@@ -13,6 +13,7 @@ export type InitFlags = {
   name?: string;
   adapter?: string;
   mode?: string;
+  brownfieldGoal?: string;
   genericBinary?: string;
   genericArgs?: string[];
   httpBaseUrl?: string;
@@ -35,7 +36,8 @@ async function requireValue(
 }
 
 export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> {
-  const mode = (flags.mode ?? "greenfield").trim();
+  const requestedMode = flags.mode?.trim();
+  const mode = (requestedMode ?? (await promptIfTty("Start greenfield or brownfield? [greenfield] "))) || "greenfield";
   if (mode !== "greenfield" && mode !== "brownfield") {
     refuse("init mode must be greenfield or brownfield", HINT.initMode);
   }
@@ -105,9 +107,26 @@ export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> 
     http = parsedHttp.data;
   }
 
+  let brownfieldGoal: "change" | "audit" | undefined;
+  if (mode === "brownfield") {
+    const goal = flags.brownfieldGoal?.trim() ?? (await promptIfTty("Brownfield goal (change or audit): "));
+    if (goal !== "change" && goal !== "audit") {
+      refuse("init --mode brownfield requires --brownfield-goal change or audit", "legion-cli init --mode brownfield --brownfield-goal change --adapter <id>");
+    }
+    brownfieldGoal = goal;
+  }
+
   const engine = createLegionEngine(opts.project);
-  await engine.init({ name, adapter, generic, http, mode });
-  const next = mode === "brownfield" ? "legion-cli brownfield" : "legion-cli intent";
+  await engine.init({
+    name,
+    adapter,
+    generic,
+    http,
+    mode,
+    workflowProfile: "focused",
+    ...(brownfieldGoal ? { brownfieldGoal } : {}),
+  });
+  const next = "legion-cli spec";
 
   if (opts.json) {
     writeJson({
@@ -115,6 +134,7 @@ export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> 
       name,
       mode,
       adapter,
+      brownfieldGoal: brownfieldGoal ?? null,
       next,
     });
     return 0;
@@ -124,6 +144,7 @@ export async function runInit(opts: CliOpts, flags: InitFlags): Promise<number> 
     [
       "Legion CLI created a project in this folder.",
       `mode: ${mode}`,
+      ...(brownfieldGoal ? [`brownfield goal: ${brownfieldGoal}`] : []),
       `adapter.default: ${adapter}`,
       "Supported command: pnpm exec legion-cli",
       `Next: ${next}`,

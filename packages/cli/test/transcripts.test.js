@@ -11,11 +11,6 @@ function quoteArg(value) {
   return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
 }
 
-function unitCommand(payload) {
-  const script = `process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`;
-  return `${quoteArg(process.execPath)} -e ${quoteArg(script)}`;
-}
-
 function passingVerify() {
   return `${quoteArg(process.execPath)} -e process.exit(0)`;
 }
@@ -67,6 +62,12 @@ async function assertTranscript(actual, name) {
 async function seedExecutingSlice(dir, tasks) {
   const engine = createLegionEngine(dir);
   await engine.init({ name: "Checkin", adapter: "fake" });
+  await engine.store.writeSpec({
+    schemaVersion: "legion-cli-spec/v1", id: "spec-checkin", title: "Checkin", status: "frozen",
+    mustBeTrue: ["works"], mustNotChange: [], outOfScope: [],
+    acceptance: [{ id: "AC-01", statement: "works", kind: "behavior", priority: "P0" }],
+    personas: ["user"], happyPath: "use it", frozenAt: "2026-10-02T00:00:00.000Z", frozenBy: "tester",
+  }, "Spec body.\n");
   for (const task of tasks) {
     await engine.store.writeTask(makeReadyTask(task), `${task.title ?? task.id ?? "task"}.\n`);
   }
@@ -141,6 +142,8 @@ test("init --mode brownfield writes templates (golden)", async () => {
       "fake",
       "--mode",
       "brownfield",
+      "--brownfield-goal",
+      "audit",
     ]);
     assert.equal(result.status, 0, result.stderr);
     await assertTranscript(result.stdout, "init-brownfield.stdout.txt");
@@ -257,7 +260,7 @@ test("status --json after init", async () => {
     assert.equal(body.phase, "initialized");
     assert.equal(body.name, "Checkin");
     assert.equal(body.mode, "greenfield");
-    assert.equal(body.next.run, "legion-cli intent");
+    assert.equal(body.next.run, "legion-cli spec");
   });
 });
 
@@ -322,7 +325,7 @@ test("status exits 1 on FAIL readiness", async () => {
   });
 });
 
-test("status hints context compact below Run when a done task has no in_progress sibling", async () => {
+test("status does not promote compaction or the dashboard", async () => {
   await withTempDir(async (dir) => {
     await seedExecutingSlice(dir, [
       { status: "done" },
@@ -340,12 +343,10 @@ test("status hints context compact below Run when a done task has no in_progress
     const result = runCli(["status", "--project", dir]);
     assert.equal(result.status, 0, result.stderr);
     const out = normalize(result.stdout);
-    assert.match(
-      out,
-      /Run:  legion-cli execute\nHint: legion-cli context compact\nViewer: legion-cli serve/,
-    );
+    assert.match(out, /Run:  legion-cli plan approve/);
+    assert.doesNotMatch(out, /context compact|Viewer:/);
     const json = runCli(["status", "--json", "--project", dir]);
-    assert.equal(JSON.parse(json.stdout).next.run, "legion-cli execute");
+    assert.equal(JSON.parse(json.stdout).next.run, "legion-cli plan approve");
   });
 });
 
@@ -367,7 +368,7 @@ test("status omits compact hint when a done task has an in_progress sibling", as
     const result = runCli(["status", "--project", dir]);
     assert.equal(result.status, 0, result.stderr);
     const out = normalize(result.stdout);
-    assert.match(out, /Run:  legion-cli execute\nViewer: legion-cli serve/);
+    assert.match(out, /Run:  legion-cli plan approve/);
     assert.doesNotMatch(out, /Hint: legion-cli context compact/);
   });
 });
@@ -379,7 +380,7 @@ test("status omits compact hint when slice tasks are compacted rather than done"
     assert.equal(result.status, 0, result.stderr);
     const out = normalize(result.stdout);
     assert.doesNotMatch(out, /Hint: legion-cli context compact/);
-    assert.match(out, /Viewer: legion-cli serve/);
+    assert.doesNotMatch(out, /Viewer:/);
   });
 });
 
@@ -617,7 +618,7 @@ test("doctor --metrics reads local audit and honors DO_NOT_TRACK", async () => {
     assert.match(out, /Local metrics \(on disk only; never phones home\)/);
     assert.match(out, /DO_NOT_TRACK=1 honored/);
     assert.match(out, /Refuses by type/);
-    assert.match(out, /plan\s+1/);
+    assert.match(out, /none/);
     assert.match(out, /QA pass rate/);
     assert.match(out, /Mean execute duration/);
     assert.match(out, /Timeouts/);
@@ -631,7 +632,7 @@ test("doctor --metrics reads local audit and honors DO_NOT_TRACK", async () => {
     assert.equal(body.metrics.telemetry, "off");
     assert.equal(body.metrics.source, ".legion-cli/audit/events.jsonl");
     assert.equal(body.metrics.qaSource, null);
-    assert.equal(body.metrics.refusesByType.plan, 1);
+    assert.equal(body.metrics.refusesByType.plan ?? 0, 0);
     assert.equal(body.metrics.timeouts, 0);
   });
 });
@@ -734,55 +735,21 @@ test("Checkin session key lines match the design-doc walkthrough (golden)", asyn
     const plan = runCli(["plan", "--project", dir], fake);
     assert.equal(plan.status, 0, `${plan.stdout}\n${plan.stderr}`);
 
+    await writeFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "# Checkin plan\n\nImplement the approved tasks.\n", "utf8");
+
+    const planApprove = runCli(["plan", "approve", "--project", dir], fake);
+    assert.equal(planApprove.status, 0, `${planApprove.stdout}\n${planApprove.stderr}`);
+
     const execute = runCli(["execute", "--until-blocked", "--project", dir], fake);
-    assert.equal(execute.status, 0, `${execute.stdout}\n${execute.stderr}`);
-
-    const review = runCli(["review", "--project", dir], fake);
-    assert.equal(review.status, 0, `${review.stdout}\n${review.stderr}`);
-
-    const specDoc = await engine.store.readSpec("spec-checkin");
-    await engine.store.writeSpec(
-      {
-        ...specDoc.data,
-        wireframesIndex: null,
-        acceptance: [
-          {
-            id: "AC-01",
-            statement: "API returns 200 for health",
-            kind: "test",
-            priority: "P0",
-          },
-        ],
-      },
-      specDoc.body,
-    );
-    const config = await engine.store.readConfig();
-    await engine.store.writeConfig({
-      ...config,
-      qa: {
-        ...config.qa,
-        unitCommand: unitCommand({
-          tests: [
-            { title: "p0 @p0", status: "passed" },
-            ...Array.from({ length: 9 }, () => ({ title: "p1 @p1", status: "passed" })),
-            { title: "p1 fail @p1", status: "failed" },
-            ...Array.from({ length: 4 }, () => ({ title: "p2 @p2", status: "passed" })),
-            { title: "p2 fail @p2", status: "failed" },
-          ],
-        }),
-      },
-    });
-
-    const qa = runCli(["qa", "--project", dir]);
-    assert.equal(qa.status, 0, `${qa.stdout}\n${qa.stderr}`);
+    assert.equal(execute.status, 1, `${execute.stdout}\n${execute.stderr}`);
+    assert.match(normalize(execute.stdout), /independent review requires a fresh explicit Verdict: PASS/);
 
     const combined = [
       normalize(intent.stdout),
       normalize(approve.stdout),
       normalize(plan.stdout),
+      normalize(planApprove.stdout),
       normalize(execute.stdout),
-      normalize(review.stdout),
-      normalize(qa.stdout),
     ].join("\n");
     const expected = await readGolden("session-checkin.key-lines.txt");
     for (const line of expected.trim().split("\n")) {

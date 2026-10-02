@@ -55,8 +55,6 @@ export function evaluateReadiness(input: {
   }
 
   if (fails.length === 0) {
-    if (!input.hasStories) concerns.push("no stories.yaml");
-    if (input.skipWireframes) concerns.push("skip-wireframes");
     if (input.openNonBlockingAssumptions) concerns.push("open non-blocking assumption");
     if (input.tasks.some((task) => task.contract.filesAllowed.length > 12)) {
       concerns.push("filesAllowed length > 12");

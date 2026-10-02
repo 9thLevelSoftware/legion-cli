@@ -1,8 +1,7 @@
-import { createLegionEngine, findSkillsDir, HINT, isSliceTerminal, refuse } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, findSkillsDir, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
-import { nextCommand } from "./next.js";
 import { closePrompt, isNo, isYes, readLine, slurpStdin } from "./prompt.js";
 
 export function startingTaskLine(
@@ -31,7 +30,7 @@ export async function confirmAllowNoSandbox(verb: "execute" | "fix"): Promise<vo
 
 export async function runExecute(
   opts: CliOpts,
-  flags: { id?: string; untilBlocked?: boolean; fix?: boolean; adapter?: string; allowNoSandbox?: boolean },
+  flags: { id?: string; step?: boolean; retry?: boolean; untilBlocked?: boolean; fix?: boolean; adapter?: string; allowNoSandbox?: boolean },
 ): Promise<number> {
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
@@ -40,67 +39,41 @@ export async function runExecute(
       await slurpStdin();
       await confirmAllowNoSandbox("execute");
     }
-  const result = await engine.execute(flags.id ?? "auto", {
-    untilBlocked: Boolean(flags.untilBlocked),
+  const result = await engine.executeWorkflow({
+    ...(flags.id ? { taskId: flags.id } : {}),
+    step: Boolean(flags.step || flags.id),
+    retry: Boolean(flags.retry),
     fix: Boolean(flags.fix),
     allowNoSandbox: Boolean(flags.allowNoSandbox),
     ...(adapter ? { adapter } : {}),
   });
-  const state = await engine.getState();
-  const slice = await engine.listSliceTasks();
-  const next = nextCommand(state, slice);
-  const config = await engine.store.readConfig();
-  const viewer = `http://${config.dashboard.bind}:${config.dashboard.port}`;
-  const last = result.tasks.at(-1);
   const blocked = result.status === "blocked";
-  const nextRun = last?.ticketId ? HINT.ticket(last.taskId) : next.run;
 
   if (opts.json) {
     writeJson({
       ok: !blocked,
-      taskId: result.taskId,
-      phase: result.phase,
+      taskId: result.taskId ?? null,
       status: result.status,
-      tasks: result.tasks,
-      warnings: result.warnings,
-      extrasReverted: last?.extrasReverted ?? [],
-      incident: Boolean(last?.incident),
-      next: nextRun,
-      viewer,
+      retry: Boolean(flags.retry),
+      completedTaskIds: result.completedTaskIds,
+      blocker: result.blocker,
+      next: result.next,
+      tasks: result.tasks ?? [],
+      warnings: result.warnings ?? [],
     });
     return blocked ? 1 : 0;
   }
 
-  for (const outcome of result.tasks) {
-    const task = slice.find((item) => item.id === outcome.taskId);
-    writeOut(startingTaskLine(outcome.taskId, task?.title, outcome.adapterId));
-    if (outcome.incident) {
-      writeOut("inspect .git");
-    }
-    if (outcome.extrasReverted.length > 0) {
-      writeOut(`FileContract extras reverted: ${outcome.extrasReverted.join(", ")}`);
-    }
-    if (outcome.ticketId) {
-      writeOut(
-        outcome.extrasReverted.length > 0
-          ? `Filed ${outcome.ticketId} (type: scope).`
-          : `Filed ${outcome.ticketId}.`,
-      );
-    }
-    if (outcome.status === "done") {
-      writeOut(`Verification PASS. ${outcome.taskId} done.`);
-    } else {
-      writeOut(outcome.reason ? `${outcome.taskId} blocked: ${outcome.reason}` : `${outcome.taskId} blocked.`);
-    }
+  for (const outcome of result.tasks ?? []) {
+    if (outcome.incident) writeOut("Sandbox or file-contract incident: inspect .git before continuing.");
+    if (outcome.extrasReverted?.length) writeOut(`FileContract extras reverted: ${outcome.extrasReverted.join(", ")}`);
+    if (outcome.ticketId) writeOut(`Filed ${outcome.ticketId}${outcome.extrasReverted?.length ? " (scope)" : ""}.`);
     if (outcome.trustTierNote) writeOut(outcome.trustTierNote);
   }
-  for (const warning of result.warnings) writeOut(warning);
-  if (flags.untilBlocked && isSliceTerminal(slice) && !blocked) {
-    writeOut(`Slice complete. Next: ${nextRun}`);
-  } else {
-    writeOut(`Next: ${nextRun}`);
-  }
-  writeOut(`Dashboard: ${viewer}`);
+  for (const warning of result.warnings ?? []) writeOut(warning);
+  if (result.completedTaskIds.length > 0) writeOut(`Completed: ${result.completedTaskIds.join(", ")}`);
+  if (result.blocker) writeOut(`Blocked: ${result.blocker}`);
+  writeOut(`Next: ${result.next}`);
   return blocked ? 1 : 0;
   } finally {
     closePrompt();

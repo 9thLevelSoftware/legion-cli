@@ -1,7 +1,7 @@
 ---
 name: qa
 description: >
-  Optional extra QA findings under .legion-cli/qa/**. The scorer is in-process
+  Optional legacy numeric QA findings under .legion-cli/qa/**. The scorer is in-process
   (packages/qa/src/score.ts); this skill adds optional findings only. Activated
   by `legion-cli qa` (in-process; not gated on a spawnable adapter). Do not load
   other skill bodies.
@@ -16,7 +16,9 @@ metadata:
 
 # qa
 
-Optional extra findings under `.legion-cli/qa/**`.
+Optional extra findings under `.legion-cli/qa/**`. Numeric QA remains available
+for reporting and recovery, but the focused ship gate uses approved checks,
+independent review, and requirement-level acceptance evidence.
 
 The scorer is in-process (`packages/qa/src/score.ts`). This skill is optional findings only. It is not the ship gate. `legion-cli qa` scores the product in-process even when this skill does not spawn.
 

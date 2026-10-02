@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import { allowCopyJail, normalize, runCli, withTempDir, withUnspawnableGrok } from "./helpers.js";
@@ -7,6 +10,13 @@ import { allowCopyJail, normalize, runCli, withTempDir, withUnspawnableGrok } fr
 function quoteArg(value) {
   return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
 }
+
+test("execute help exposes explicit retry recovery", () => {
+  const result = runCli(["execute", "--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(normalize(result.stdout), /--retry/);
+  assert.match(normalize(result.stdout), /retry one failed workflow stage/);
+});
 
 function passingVerify() {
   return `${quoteArg(process.execPath)} -e process.exit(0)`;
@@ -40,7 +50,7 @@ function makeTask(overrides = {}) {
 
 async function seedPlanReady(dir, extra = {}) {
   const engine = createLegionEngine(dir);
-  await engine.init({ name: "Checkin", adapter: "fake" });
+  await engine.init({ name: "Checkin", adapter: "fake", ...(extra.focused ? { workflowProfile: "focused" } : {}) });
   await allowCopyJail(engine.store);
   await engine.store.writeSpec(
     {
@@ -79,6 +89,8 @@ async function seedPlanReady(dir, extra = {}) {
       await engine.store.writeTask(task, `${task.title}.\n`);
     }
   }
+  await writeFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "# Checkin plan\n\nImplement the approved tasks.\n", "utf8");
+  await engine.approvePlan();
   return engine;
 }
 
@@ -87,21 +99,43 @@ test("execute refuses before plan_ready", async () => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     const result = runCli(["execute", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     assert.equal(result.status, 1);
-    assert.match(normalize(result.stderr), /plan_ready or executing/);
+    assert.match(normalize(result.stderr), /plan approval is required/);
+  });
+});
+
+test("focused fix files a proposed amendment without spawning execution", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir, { focused: true, task: { status: "done" } });
+    const result = runCli(["fix", "login is denied", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(result.stdout), /proposed amendment/);
+    assert.match(normalize(result.stdout), /Next: legion-cli plan approve/);
+    assert.doesNotMatch(normalize(result.stdout), /Starting TSK-/);
+    const engine = createLegionEngine(dir);
+    const [task] = await engine.listSliceTasks();
+    assert.ok(task, "focused fix should create a proposed task");
+    assert.equal(existsSync(join(dir, task.contract.filesAllowed[0])), false);
+  });
+});
+
+test("focused status surfaces a corrupt workflow receipt", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir, { focused: true });
+    await writeFile(join(dir, ".legion-cli", "workflow", "plan-approval.yaml"), "not: [valid\n", "utf8");
+    const result = runCli(["status", "--project", dir]);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(`${result.stdout}\n${result.stderr}`), /yaml|parse|expected|invalid|Flow sequence|must be sufficiently indented/i);
+    assert.doesNotMatch(normalize(result.stdout), /Run:.*plan approve/);
   });
 });
 
 test("execute one ready task and stay executing", async () => {
   await withTempDir(async (dir) => {
     await seedPlanReady(dir);
-    const result = runCli(["execute", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["execute", "--step", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const out = normalize(result.stdout);
-    assert.match(out, /Starting TSK-0001 \(in\/out button\) via fake\./);
-    assert.match(out, /Verification PASS/);
-    assert.match(out, /trust-tier:/, "human-visible");
-    assert.match(out, /Dashboard: http:\/\/127\.0\.0\.1:7420/);
-    assert.doesNotMatch(out, /OS isolation/i);
+    assert.match(out, /Completed: TSK-0001/);
     const engine = createLegionEngine(dir);
     assert.equal((await engine.getState()).phase, "executing");
     assert.equal((await engine.store.readTask("TSK-0001")).data.status, "done");
@@ -126,11 +160,12 @@ test("execute --until-blocked loops remaining ready tasks", async () => {
     const result = runCli(["execute", "--until-blocked", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
     const out = normalize(result.stdout);
     assert.match(out, /TSK-0001/);
     assert.match(out, /TSK-0002/);
-    assert.match(out, /Slice complete/);
+    assert.match(out, /Completed: TSK-0001, TSK-0002/);
+    assert.match(out, /independent review requires a fresh explicit Verdict: PASS/);
     const engine = createLegionEngine(dir);
     assert.equal((await engine.store.readTask("TSK-0001")).data.status, "done");
     assert.equal((await engine.store.readTask("TSK-0002")).data.status, "done");
@@ -141,7 +176,7 @@ test("execute --until-blocked loops remaining ready tasks", async () => {
 test("execute --fix is accepted", async () => {
   await withTempDir(async (dir) => {
     await seedPlanReady(dir);
-    const result = runCli(["execute", "--fix", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const result = runCli(["execute", "--fix", "--step", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   });
 });
@@ -220,12 +255,13 @@ test("execute other-spec id refuses", async () => {
       }),
       "Other spec task.\n",
     );
+    await engine.approvePlan();
     const result = runCli(["execute", "TSK-9999", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
     assert.equal(result.status, 1);
-    assert.match(normalize(result.stderr), /not in the active spec slice/);
-    assert.match(normalize(result.stderr), /Next: legion-cli status --blockers/);
+    assert.match(normalize(`${result.stdout}\n${result.stderr}`), /not in the active spec slice/);
+    assert.match(normalize(result.stdout), /Next: legion-cli status --blockers/);
   });
 });
 
@@ -233,11 +269,12 @@ test("execute --adapter grok refuses via cli when grok is unspawnable", async ()
   await withTempDir(async (dir) => {
     const engine = await seedPlanReady(dir);
     await engine.store.writeConfig(withUnspawnableGrok(await engine.store.readConfig()));
+    await engine.approvePlan();
     const result = runCli(["execute", "--adapter", "grok", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
     assert.equal(result.status, 1);
-    assert.match(normalize(result.stderr), /spawnable adapter \(grok, via cli\)/);
+    assert.match(normalize(`${result.stdout}\n${result.stderr}`), /spawnable adapter \(grok, via cli\)/);
   });
 });
 
@@ -257,11 +294,12 @@ test("execute --until-blocked --adapter applies the override to the loop", async
       ],
     });
     await engine.store.writeConfig(withUnspawnableGrok(await engine.store.readConfig()));
+    await engine.approvePlan();
     const result = runCli(["execute", "--until-blocked", "--adapter", "grok", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake" },
     });
     assert.equal(result.status, 1);
-    assert.match(normalize(result.stderr), /spawnable adapter \(grok, via cli\)/);
+    assert.match(normalize(`${result.stdout}\n${result.stderr}`), /spawnable adapter \(grok, via cli\)/);
     assert.equal((await engine.store.readTask("TSK-0001")).data.status, "ready");
     assert.equal((await engine.store.readTask("TSK-0002")).data.status, "ready");
   });

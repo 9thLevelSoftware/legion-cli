@@ -120,6 +120,8 @@ function isExcludedRestorePath(posix: string): boolean {
 /** Pinned engine-SoT: restored even when a skill contract lists the same roots. */
 export function isPinnedEngineSot(posixPath: string): boolean {
   const posix = toPosixPath(posixPath);
+  if (posix === ".legion-cli/map/selection.json") return true;
+  if (posix === ".legion-cli/workflow" || posix.startsWith(".legion-cli/workflow/")) return true;
   if (posix === ".legion-cli/STATE.md" || posix === ".legion-cli/config.yaml") return true;
   if (posix === ".legion-cli/tasks" || posix.startsWith(".legion-cli/tasks/")) return true;
   if (posix === ".legion-cli/qa" || posix.startsWith(".legion-cli/qa/")) return true;
@@ -129,6 +131,8 @@ export function isPinnedEngineSot(posixPath: string): boolean {
 /** Pinned restore manifest plus command contract write-paths under `.legion-cli/`. chat/** is out. */
 export function isRestoreManifestPath(posixPath: string, extraRoots: readonly string[] = []): boolean {
   const posix = toPosixPath(posixPath);
+  if (posix === ".legion-cli/map/selection.json") return true;
+  if (posix === ".legion-cli/workflow" || posix.startsWith(".legion-cli/workflow/")) return true;
   if (!posix.startsWith(".legion-cli/")) return false;
   if (isExcludedRestorePath(posix)) return false;
   if (posix === ".legion-cli/STATE.md" || posix === ".legion-cli/config.yaml") return true;

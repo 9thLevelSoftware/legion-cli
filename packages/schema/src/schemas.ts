@@ -68,6 +68,7 @@ export const ProjectFileSchema = z.object({
   name: z.string().min(1),
   mode: ProjectModeSchema,
   controlMode: ControlModeSchema,
+  brownfieldGoal: z.enum(["change", "audit"]).optional(),
   activeSpecId: z.string().min(1).nullable().optional(),
 });
 export type ProjectFile = z.infer<typeof ProjectFileSchema>;
@@ -209,6 +210,7 @@ export const AdapterRoutesSchema = z
     interview: AdapterIdSchema.optional(),
     discuss: AdapterIdSchema.optional(),
     spec: AdapterIdSchema.optional(),
+    "spec-challenge": AdapterIdSchema.optional(),
     ingest: AdapterIdSchema.optional(),
     plan: AdapterIdSchema.optional(),
     execute: AdapterIdSchema.optional(),
@@ -336,6 +338,13 @@ export const LegionConfigSchema = z.object({
       microCommits: z.boolean().default(false),
     })
     .optional(),
+  workflow: z
+    .object({
+      profile: z.enum(["focused", "legacy"]).default("focused"),
+      verificationCommands: z.array(z.string().min(1)).default([]),
+    })
+    .strict()
+    .optional(),
 }).strict();
 export type LegionConfig = z.infer<typeof LegionConfigSchema>;
 
@@ -358,6 +367,7 @@ export const SpecSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.spec),
   id: z.string().min(1),
   title: z.string().min(1),
+  problem: z.string().optional(),
   status: z.enum(["draft", "frozen", "superseded"]),
   mustBeTrue: z.array(z.string()),
   mustNotChange: z.array(z.string()),
@@ -365,6 +375,7 @@ export const SpecSchema = z.object({
   acceptance: z.array(AcceptanceCriterionSchema),
   personas: z.array(z.string()),
   happyPath: z.string(),
+  failureCases: z.array(z.string().min(1)).optional(),
   stories: z.string().nullable().optional(),
   wireframesIndex: z.string().nullable().optional(),
   frozenAt: z.string().nullable().optional(),
@@ -390,6 +401,266 @@ export const TaskSchema = z.object({
   notes: z.string(),
 });
 export type Task = z.infer<typeof TaskSchema>;
+
+export const SpecChallengeRepositoryEvidenceSchema = z
+  .object({
+    kind: z.literal("repository"),
+    path: z.string().trim().min(1),
+    line: z.number().int().positive(),
+    quote: z.string().trim().min(1),
+    claim: z.string().trim().min(1),
+  })
+  .strict();
+
+export const SpecChallengeAssumptionEvidenceSchema = z
+  .object({ kind: z.literal("assumption"), claim: z.string().trim().min(1) })
+  .strict();
+
+export const SpecChallengeEvidenceSchema = z.discriminatedUnion("kind", [
+  SpecChallengeRepositoryEvidenceSchema,
+  SpecChallengeAssumptionEvidenceSchema,
+]);
+export type SpecChallengeEvidence = z.infer<typeof SpecChallengeEvidenceSchema>;
+
+export const SpecChallengeResolutionSchema = z
+  .object({
+    disposition: z.enum(["answered", "dismissed", "risk_accepted"]),
+    response: z.string().trim().min(1),
+    recordedAt: z.string().min(1),
+    recordedBy: z.string().min(1),
+  })
+  .strict();
+export type SpecChallengeResolution = z.infer<typeof SpecChallengeResolutionSchema>;
+
+export const SpecChallengeConcernSchema = z
+  .object({
+    id: z.string().min(1),
+    question: z.string().trim().min(1),
+    whyItMatters: z.string().trim().min(1),
+    evidence: z.array(SpecChallengeEvidenceSchema).min(1),
+    resolution: SpecChallengeResolutionSchema.optional(),
+  })
+  .strict();
+export type SpecChallengeConcern = z.infer<typeof SpecChallengeConcernSchema>;
+
+export const SpecChallengeProposedChangeSchema = z
+  .object({
+    section: z.enum(["mustBeTrue", "mustNotChange", "outOfScope", "failureCases", "acceptance", "decision"]),
+    statement: z.string().trim().min(1),
+    rationale: z.string().trim().min(1),
+    concernIds: z.array(z.string().min(1)).min(1),
+    targetId: z.string().min(1).optional(),
+    kind: z.enum(["behavior", "test", "rubric"]).optional(),
+    priority: PrioritySchema.optional(),
+  })
+  .strict();
+export type SpecChallengeProposedChange = z.infer<typeof SpecChallengeProposedChangeSchema>;
+
+export const SpecChallengeChangeSchema = SpecChallengeProposedChangeSchema.extend({
+  appliedId: z.string().min(1).optional(),
+}).strict();
+export type SpecChallengeChange = z.infer<typeof SpecChallengeChangeSchema>;
+
+export const SpecChallengeAnalysisOutputSchema = z
+  .object({
+    schemaVersion: z.literal("legion-cli-spec-challenge-analysis/v1"),
+    concerns: z
+      .array(
+        z
+          .object({
+            question: z.string().trim().min(1),
+            why: z.string().trim().min(1),
+            evidence: z.array(SpecChallengeEvidenceSchema).min(1),
+          })
+          .strict(),
+      )
+      .max(3),
+  })
+  .strict();
+export type SpecChallengeAnalysisOutput = z.infer<typeof SpecChallengeAnalysisOutputSchema>;
+
+export const SpecChallengeSynthesisOutputSchema = z
+  .object({
+    schemaVersion: z.literal("legion-cli-spec-challenge-synthesis/v1"),
+    changes: z.array(SpecChallengeProposedChangeSchema),
+  })
+  .strict();
+export type SpecChallengeSynthesisOutput = z.infer<typeof SpecChallengeSynthesisOutputSchema>;
+
+const SpecChallengeProgressSchema = z
+  .object({
+    status: z.enum(["pending", "running", "complete", "failed"]),
+    runId: z.string().min(1).nullable(),
+    startedAt: z.string().min(1).optional(),
+    completedAt: z.string().min(1).optional(),
+    error: z.string().min(1).optional(),
+  })
+  .strict();
+
+export const SpecChallengeManualReviewSchema = z
+  .object({
+    measurableSuccess: z.string().min(8).optional(),
+    failureHandling: z.string().min(8).optional(),
+    compatibilityAndScope: z.string().min(8).optional(),
+    acknowledgement: z.string().min(12).optional(),
+    updatedAt: z.string().min(1),
+    updatedBy: z.string().min(1),
+  })
+  .strict();
+export type SpecChallengeManualReview = z.infer<typeof SpecChallengeManualReviewSchema>;
+
+export const SpecChallengeApplicationCheckpointSchema = z
+  .object({
+    expectedDraftFingerprint: Sha256HexSchema,
+    baseSpec: SpecSchema,
+    baseBody: z.string(),
+    spec: SpecSchema,
+    body: z.string(),
+    changes: z.array(SpecChallengeChangeSchema),
+    draftDiff: z.string(),
+  })
+  .strict();
+export type SpecChallengeApplicationCheckpoint = z.infer<typeof SpecChallengeApplicationCheckpointSchema>;
+
+export const SpecChallengeReceiptSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.specChallenge),
+    specId: z.string().min(1),
+    round: z.number().int().positive(),
+    status: z.enum([
+      "analysis_running",
+      "awaiting_resolutions",
+      "synthesis_running",
+      "manual_required",
+      "complete",
+    ]),
+    inputFingerprint: Sha256HexSchema,
+    initialDraftFingerprint: Sha256HexSchema,
+    contextFingerprint: Sha256HexSchema,
+    repositoryFingerprint: Sha256HexSchema,
+    finalDraftFingerprint: Sha256HexSchema.nullable(),
+    generation: SpecChallengeProgressSchema,
+    synthesis: SpecChallengeProgressSchema,
+    concerns: z.array(SpecChallengeConcernSchema).max(3),
+    manualReview: SpecChallengeManualReviewSchema.nullable(),
+    application: SpecChallengeApplicationCheckpointSchema.nullable(),
+    changes: z.array(SpecChallengeChangeSchema),
+    draftDiff: z.string().nullable(),
+    thinkingPath: z.string().min(1),
+    automationError: z.string().min(1).nullable(),
+    createdAt: z.string().min(1),
+    updatedAt: z.string().min(1),
+  })
+  .strict();
+export type SpecChallengeReceipt = z.infer<typeof SpecChallengeReceiptSchema>;
+
+export const SpecApprovalReceiptSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.specApproval),
+    specId: z.string().min(1),
+    specFingerprint: Sha256HexSchema,
+    approvedAt: z.string().min(1),
+    approvedBy: z.string().min(1),
+  })
+  .strict();
+export type SpecApprovalReceipt = z.infer<typeof SpecApprovalReceiptSchema>;
+
+export const PlanApprovalReceiptSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.planApproval),
+    specId: z.string().min(1),
+    approvedAt: z.string().min(1),
+    approvedBy: z.string().min(1),
+    planFingerprint: Sha256HexSchema,
+    approvalId: z.string().min(1),
+    specFingerprint: Sha256HexSchema,
+    taskFingerprint: Sha256HexSchema,
+    configFingerprint: Sha256HexSchema,
+    taskIds: z.array(z.string().min(1)),
+    acceptanceIds: z.array(z.string().min(1)),
+    verificationCommands: z.array(z.string().min(1)),
+  })
+  .strict();
+export type PlanApprovalReceipt = z.infer<typeof PlanApprovalReceiptSchema>;
+
+export const WorkflowCommandEvidenceSchema = z
+  .object({
+    command: z.string().min(1),
+    ok: z.boolean(),
+    started: z.boolean(),
+    status: z.number().int().nullable(),
+    timedOut: z.boolean().optional(),
+    error: z.string().optional(),
+    logPath: z.string().min(1).optional(),
+    trustTier: z.string().min(1),
+    trustTierNote: z.string().min(1),
+  })
+  .strict();
+export type WorkflowCommandEvidence = z.infer<typeof WorkflowCommandEvidenceSchema>;
+
+export const WorkflowReviewEvidenceSchema = z
+  .object({
+    verdict: ReviewVerdictSchema,
+    evidencePath: z.string().min(1),
+    evidenceFingerprint: Sha256HexSchema,
+  })
+  .strict();
+export type WorkflowReviewEvidence = z.infer<typeof WorkflowReviewEvidenceSchema>;
+
+export const WorkflowEvidenceReceiptSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.workflowEvidence),
+    specId: z.string().min(1),
+    planFingerprint: Sha256HexSchema,
+    approvalId: z.string().min(1),
+    productFingerprint: Sha256HexSchema,
+    environmentFingerprint: Sha256HexSchema,
+    status: z.enum(["running", "blocked", "complete"]),
+    completedTaskIds: z.array(z.string().min(1)),
+    integration: z.array(WorkflowCommandEvidenceSchema),
+    review: WorkflowReviewEvidenceSchema.nullable(),
+    blocker: z.string().min(1).nullable(),
+    updatedAt: z.string().min(1),
+  })
+  .strict();
+export type WorkflowEvidenceReceipt = z.infer<typeof WorkflowEvidenceReceiptSchema>;
+
+export const AcceptanceEvidenceStatusSchema = z.enum(["passed", "failed", "not_applicable"]);
+export type AcceptanceEvidenceStatus = z.infer<typeof AcceptanceEvidenceStatusSchema>;
+
+export const AcceptanceEvidenceEntrySchema = z
+  .object({
+    id: z.string().min(1),
+    status: AcceptanceEvidenceStatusSchema,
+    note: z.string().min(1).optional(),
+  })
+  .strict();
+export type AcceptanceEvidenceEntry = z.infer<typeof AcceptanceEvidenceEntrySchema>;
+
+export const AcceptanceReceiptSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.acceptanceReceipt),
+    specId: z.string().min(1),
+    planFingerprint: Sha256HexSchema,
+    approvalId: z.string().min(1),
+    productFingerprint: Sha256HexSchema,
+    recordedAt: z.string().min(1),
+    recordedBy: z.string().min(1),
+    entries: z.array(AcceptanceEvidenceEntrySchema),
+  })
+  .strict();
+export type AcceptanceReceipt = z.infer<typeof AcceptanceReceiptSchema>;
+
+export const WorkflowClaimSchema = z
+  .object({
+    schemaVersion: z.literal(SCHEMA_VERSION.workflowClaim),
+    token: z.string().min(1),
+    pid: z.number().int().positive(),
+    processStartedAt: z.number().finite(),
+    claimedAt: z.string().min(1),
+  })
+  .strict();
+export type WorkflowClaim = z.infer<typeof WorkflowClaimSchema>;
 
 export const PacketSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.packet),

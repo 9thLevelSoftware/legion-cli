@@ -14,7 +14,13 @@ metadata:
 
 # execute
 
-Write product code for one ready task. Execute is required: Legion CLI refuses if no spawnable adapter is configured.
+Write product code for the assigned ready task. The focused `legion-cli execute`
+orchestrator runs approved ready tasks sequentially until complete or blocked;
+this spawn receives one bounded task at a time. `--step` deliberately stops
+after one task, and an explicit task ID is targeted recovery. Failed integration
+or review evidence stays blocked unless the user explicitly runs
+`legion-cli execute --retry`, which retries one failed stage. Execute is
+required: Legion CLI refuses if no spawnable adapter is configured.
 
 Level 3 files only as named; do not load other skills.
 

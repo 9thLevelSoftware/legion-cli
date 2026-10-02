@@ -1,7 +1,7 @@
 ---
 name: verify
 description: >
-  Optional walkthrough notes; not a ship gate.
+  Optional walkthrough notes for focused execution; not a separate ship gate.
   Activated only by `legion-cli verify`. Do not load other skill bodies.
 license: UNLICENSED
 compatibility: "Legion CLI staging; not vendor auto-discovery"
@@ -14,7 +14,9 @@ metadata:
 
 # verify
 
-Optional walkthrough notes. Verify is not a ship gate. In-process `verificationCommands` after execute already marked tasks `done`.
+Optional walkthrough notes. `verify` is an advanced command, not a separate
+ship gate. The focused `execute` stage records planned check evidence and
+review before ship.
 
 ## Contract
 

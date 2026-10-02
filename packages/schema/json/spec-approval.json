@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-spec-approval/v1"
+    },
+    "specId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "specFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "approvedAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approvedBy": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "specId",
+    "specFingerprint",
+    "approvedAt",
+    "approvedBy"
+  ],
+  "additionalProperties": false
+}

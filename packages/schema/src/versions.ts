@@ -31,6 +31,12 @@ export const SCHEMA_VERSION = {
   serve: "legion-cli-serve/v1",
   recipe: "legion-cli-recipe/v1",
   recipesLock: "legion-cli-recipes-lock/v1",
+  planApproval: "legion-cli-plan-approval/v1",
+  specApproval: "legion-cli-spec-approval/v1",
+  workflowEvidence: "legion-cli-workflow-evidence/v1",
+  acceptanceReceipt: "legion-cli-acceptance-receipt/v1",
+  workflowClaim: "legion-cli-workflow-claim/v1",
+  specChallenge: "legion-cli-spec-challenge/v1",
 } as const;
 
 export type SchemaVersion = (typeof SCHEMA_VERSION)[keyof typeof SCHEMA_VERSION];
@@ -81,6 +87,7 @@ export const SkillIdSchema = z.enum([
   "interview",
   "discuss",
   "spec",
+  "spec-challenge",
   "ingest",
   "plan",
   "execute",
