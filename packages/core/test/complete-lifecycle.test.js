@@ -24,11 +24,11 @@ test("complete governed lifecycle binds AC-linked QA to the executed source befo
     const answers = new Map([
       ["What must we not change?", "acceptance.cjs"],
       ["Walk through the happy path in 3–5 steps.", "Run, inspect the result, accept"],
-      ["What does failure look like (empty, error, changed mind)?", "Result does not equal approved"],
-      ["What screens or moments must exist in v0?", "none"],
-      ["Phone, desktop, or both?", "desktop"],
-      ["Any existing brand file we must follow? (path or `none`)", "none"],
-      ["Anything unsure that would block building?", "none"],
+      ["What failures, security concerns, or integration risks must be handled?", "Reject a result that does not equal approved; no network access or external integrations"],
+      ["What interfaces or touchpoints must exist in v0? (use `none` for a service or library)", "src/result.txt and the acceptance command"],
+      ["What runtime or deployment environment matters, if any? (for example CLI, service, browser, mobile, Python, Rust; or `none`)", "The local Node.js CLI workspace"],
+      ["Any existing constraints or design inputs we must follow? (path, link, or `none`)", "none"],
+      ["Which unknowns or external integrations could block building?", "none"],
     ]);
     for (let round = 0; round < 8; round++) {
       const intent = await engine.getIntentState();

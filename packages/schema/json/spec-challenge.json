@@ -1,0 +1,850 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-spec-challenge/v1"
+    },
+    "specId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "round": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "analysis_running",
+        "awaiting_resolutions",
+        "synthesis_running",
+        "manual_required",
+        "complete"
+      ]
+    },
+    "inputFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "initialDraftFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "contextFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "repositoryFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "finalDraftFingerprint": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "generation": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "running",
+            "complete",
+            "failed"
+          ]
+        },
+        "runId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "completedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "status",
+        "runId"
+      ],
+      "additionalProperties": false
+    },
+    "synthesis": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "running",
+            "complete",
+            "failed"
+          ]
+        },
+        "runId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "completedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "status",
+        "runId"
+      ],
+      "additionalProperties": false
+    },
+    "concerns": {
+      "maxItems": 3,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1
+          },
+          "whyItMatters": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "repository"
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "line": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "quote": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "claim": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "path",
+                    "line",
+                    "quote",
+                    "claim"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "assumption"
+                    },
+                    "claim": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "claim"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "resolution": {
+            "type": "object",
+            "properties": {
+              "disposition": {
+                "type": "string",
+                "enum": [
+                  "answered",
+                  "dismissed",
+                  "risk_accepted"
+                ]
+              },
+              "response": {
+                "type": "string",
+                "minLength": 1
+              },
+              "recordedAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "recordedBy": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "disposition",
+              "response",
+              "recordedAt",
+              "recordedBy"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "whyItMatters",
+          "evidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "manualReview": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "measurableSuccess": {
+              "type": "string",
+              "minLength": 8
+            },
+            "failureHandling": {
+              "type": "string",
+              "minLength": 8
+            },
+            "compatibilityAndScope": {
+              "type": "string",
+              "minLength": 8
+            },
+            "acknowledgement": {
+              "type": "string",
+              "minLength": 12
+            },
+            "updatedAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "updatedBy": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "updatedAt",
+            "updatedBy"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "application": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "expectedDraftFingerprint": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "baseSpec": {
+              "type": "object",
+              "properties": {
+                "schemaVersion": {
+                  "type": "string",
+                  "const": "legion-cli-spec/v1"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "problem": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "draft",
+                    "frozen",
+                    "superseded"
+                  ]
+                },
+                "mustBeTrue": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "mustNotChange": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "outOfScope": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "acceptance": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "statement": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "behavior",
+                          "test",
+                          "rubric"
+                        ]
+                      },
+                      "priority": {
+                        "type": "string",
+                        "enum": [
+                          "P0",
+                          "P1",
+                          "P2"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "statement",
+                      "kind",
+                      "priority"
+                    ]
+                  }
+                },
+                "personas": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "happyPath": {
+                  "type": "string"
+                },
+                "failureCases": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "stories": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "wireframesIndex": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "frozenAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "frozenBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "decisions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "statement": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "proposed",
+                          "accepted",
+                          "rejected"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "statement",
+                      "status"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "schemaVersion",
+                "id",
+                "title",
+                "status",
+                "mustBeTrue",
+                "mustNotChange",
+                "outOfScope",
+                "acceptance",
+                "personas",
+                "happyPath"
+              ]
+            },
+            "baseBody": {
+              "type": "string"
+            },
+            "spec": {
+              "type": "object",
+              "properties": {
+                "schemaVersion": {
+                  "type": "string",
+                  "const": "legion-cli-spec/v1"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "problem": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "draft",
+                    "frozen",
+                    "superseded"
+                  ]
+                },
+                "mustBeTrue": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "mustNotChange": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "outOfScope": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "acceptance": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "statement": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "behavior",
+                          "test",
+                          "rubric"
+                        ]
+                      },
+                      "priority": {
+                        "type": "string",
+                        "enum": [
+                          "P0",
+                          "P1",
+                          "P2"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "statement",
+                      "kind",
+                      "priority"
+                    ]
+                  }
+                },
+                "personas": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "happyPath": {
+                  "type": "string"
+                },
+                "failureCases": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "stories": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "wireframesIndex": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "frozenAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "frozenBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "decisions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "statement": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "proposed",
+                          "accepted",
+                          "rejected"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "statement",
+                      "status"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "schemaVersion",
+                "id",
+                "title",
+                "status",
+                "mustBeTrue",
+                "mustNotChange",
+                "outOfScope",
+                "acceptance",
+                "personas",
+                "happyPath"
+              ]
+            },
+            "body": {
+              "type": "string"
+            },
+            "changes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "section": {
+                    "type": "string",
+                    "enum": [
+                      "mustBeTrue",
+                      "mustNotChange",
+                      "outOfScope",
+                      "failureCases",
+                      "acceptance",
+                      "decision"
+                    ]
+                  },
+                  "statement": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "concernIds": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "targetId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "behavior",
+                      "test",
+                      "rubric"
+                    ]
+                  },
+                  "priority": {
+                    "type": "string",
+                    "enum": [
+                      "P0",
+                      "P1",
+                      "P2"
+                    ]
+                  },
+                  "appliedId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "section",
+                  "statement",
+                  "rationale",
+                  "concernIds"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "draftDiff": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "expectedDraftFingerprint",
+            "baseSpec",
+            "baseBody",
+            "spec",
+            "body",
+            "changes",
+            "draftDiff"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "section": {
+            "type": "string",
+            "enum": [
+              "mustBeTrue",
+              "mustNotChange",
+              "outOfScope",
+              "failureCases",
+              "acceptance",
+              "decision"
+            ]
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "concernIds": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "targetId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "behavior",
+              "test",
+              "rubric"
+            ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "appliedId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "section",
+          "statement",
+          "rationale",
+          "concernIds"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "draftDiff": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "thinkingPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "automationError": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "createdAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "updatedAt": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "specId",
+    "round",
+    "status",
+    "inputFingerprint",
+    "initialDraftFingerprint",
+    "contextFingerprint",
+    "repositoryFingerprint",
+    "finalDraftFingerprint",
+    "generation",
+    "synthesis",
+    "concerns",
+    "manualReview",
+    "application",
+    "changes",
+    "draftDiff",
+    "thinkingPath",
+    "automationError",
+    "createdAt",
+    "updatedAt"
+  ],
+  "additionalProperties": false
+}

@@ -1,5 +1,5 @@
 import { createLegionEngine, findSkillsDir, refuse } from "@9thlevelsoftware/legion-cli-core";
-import { parseAdapterFlag } from "./adapter-route.js";
+import { parseAdapterFlag, resolvePersistAdapter } from "./adapter-route.js";
 import { confirmAllowNoSandbox, startingTaskLine } from "./execute.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
@@ -19,6 +19,22 @@ export async function runFix(
       await slurpStdin();
       await confirmAllowNoSandbox("fix");
     }
+  const config = await engine.store.readConfig();
+  if (config.workflow?.profile === "focused") {
+    const { adapter, profile } = resolvePersistAdapter(config, flags);
+    const task = await engine.proposeFix(bug, {
+      ...(adapter ? { adapter } : {}),
+      ...(profile ? { profile } : {}),
+    });
+    const next = "legion-cli plan approve";
+    if (opts.json) {
+      writeJson({ ok: true, taskId: task.id, status: "proposed", next });
+      return 0;
+    }
+    writeOut(`Filed ${task.id} as a proposed amendment. Review and approve the updated plan before execution.`);
+    writeOut(`Next: ${next}`);
+    return 0;
+  }
   const task = await engine.fix(bug);
   const executed = await engine.execute(task.id, {
     fix: true,
@@ -29,7 +45,6 @@ export async function runFix(
   const state = await engine.getState();
   const slice = await engine.listSliceTasks();
   const next = nextCommand(state, slice);
-  const config = await engine.store.readConfig();
   const viewer = `http://${config.dashboard.bind}:${config.dashboard.port}`;
   const green = executed.status === "done";
   const testPath = task.contract.filesAllowed[0] ?? "";

@@ -1,7 +1,7 @@
 ---
 name: qa
 description: >
-  Optional extra QA findings under .legion-cli/qa/**. The scorer is in-process
+  Optional legacy numeric QA findings under .legion-cli/qa/**. The scorer is in-process
   (packages/qa/src/score.ts); this skill adds optional findings only. Activated
   by `legion-cli qa` (in-process; not gated on a spawnable adapter). Do not load
   other skill bodies.
@@ -16,9 +16,17 @@ metadata:
 
 # qa
 
-Optional extra findings under `.legion-cli/qa/**`.
+Optional extra findings under `.legion-cli/qa/**`. Numeric QA remains available
+for reporting and recovery, but the focused ship gate uses approved checks,
+independent review, and requirement-level acceptance evidence.
 
-The scorer is in-process (`packages/qa/src/score.ts`). This skill is optional findings only. It is not the ship gate. `legion-cli qa` scores the product in-process even when this skill does not spawn.
+The scorer is in-process (`packages/qa/src/score.ts`); this skill supplies findings,
+not scores or approval. Numeric QA is a gate for the legacy profile, not focused
+delivery. QA v2 links test title tags `@ac(<id>)` to SPEC priorities and binds run
+reports/scores to the SPEC and tested source. Missing/skipped P0 evidence,
+unavailable/failed runners, and stale evidence cannot pass that legacy gate.
+Untagged successes provide no acceptance coverage. Its host unit runner is trusted
+project code, not sandboxed verification.
 
 ## Contract
 

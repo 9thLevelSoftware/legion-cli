@@ -1,8 +1,7 @@
-import { createLegionEngine, findSkillsDir, HINT, isSliceTerminal, refuse } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, findSkillsDir, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { ticketVerificationLine, writeErr, writeJson, writeOut } from "./io.js";
-import { nextCommand } from "./next.js";
 import { closePrompt, isNo, isYes, readLine, slurpStdin } from "./prompt.js";
 
 export function startingTaskLine(
@@ -19,7 +18,7 @@ export async function confirmAllowNoSandbox(verb: "execute" | "fix"): Promise<vo
   if (!process.stdin.isTTY) {
     refuse(`${verb} --allow-no-sandbox requires a TTY`, HINT.allowNoSandbox);
   }
-  writeErr("Copy jail is not OS isolation. Continue without a hardened sandbox? [Y/n]");
+  writeErr("Copy jail is not OS isolation. Continue without a hardened sandbox? [y/n] (an explicit y is required)");
   const answer = await readLine("> ");
   if (isNo(answer)) {
     refuse(`${verb} --allow-no-sandbox declined`, HINT.allowNoSandbox);
@@ -31,7 +30,7 @@ export async function confirmAllowNoSandbox(verb: "execute" | "fix"): Promise<vo
 
 export async function runExecute(
   opts: CliOpts,
-  flags: { id?: string; resume?: string; untilBlocked?: boolean; jobs?: string; fix?: boolean; adapter?: string; profile?: string; allowNoSandbox?: boolean },
+  flags: { id?: string; step?: boolean; retry?: boolean; resume?: string; untilBlocked?: boolean; jobs?: string; fix?: boolean; adapter?: string; profile?: string; allowNoSandbox?: boolean },
 ): Promise<number> {
   if (flags.adapter && flags.profile) {
     refuse("execute --adapter and --profile are mutually exclusive", "legion-cli execute --profile <name>");
@@ -44,7 +43,7 @@ export async function runExecute(
   if (jobs !== undefined && !flags.untilBlocked) {
     refuse("execute --jobs requires --until-blocked", "legion-cli execute --until-blocked --jobs 1");
   }
-  if (jobs !== undefined && flags.id) {
+  if (jobs !== undefined && (flags.id || flags.step)) {
     refuse("execute --jobs is only for automatic execution", "legion-cli execute --until-blocked --jobs 1");
   }
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
@@ -53,7 +52,10 @@ export async function runExecute(
       await slurpStdin();
       await confirmAllowNoSandbox("execute");
     }
-  const result = await engine.execute(flags.id ?? "auto", {
+  const result = await engine.executeWorkflow({
+    ...(flags.id ? { taskId: flags.id } : {}),
+    step: Boolean(flags.step || flags.id),
+    retry: Boolean(flags.retry),
     ...(flags.resume ? { resume: flags.resume } : {}),
     untilBlocked: Boolean(flags.untilBlocked),
     ...(jobs !== undefined ? { jobs } : {}),
@@ -67,32 +69,30 @@ export async function runExecute(
     ...(adapter ? { adapter } : {}),
     ...(flags.profile ? { profile: flags.profile } : {}),
   });
-  const state = await engine.getState();
-  const slice = await engine.listSliceTasks();
-  const next = nextCommand(state, slice);
-  const config = await engine.store.readConfig();
-  const viewer = `http://${config.dashboard.bind}:${config.dashboard.port}`;
-  const last = result.tasks.at(-1);
   const blocked = result.status === "blocked";
-  const nextRun = last?.ticketId ? HINT.ticket(last.taskId) : next.run;
+  const slice = opts.json ? [] : await engine.listSliceTasks();
 
   if (opts.json) {
+    const state = await engine.getState();
+    const last = result.tasks?.at(-1);
     writeJson({
       ok: !blocked,
-      taskId: result.taskId,
-      phase: result.phase,
+      taskId: result.taskId ?? null,
+      phase: state.phase,
       status: result.status,
-      tasks: result.tasks,
-      warnings: result.warnings,
+      retry: Boolean(flags.retry),
+      completedTaskIds: result.completedTaskIds,
+      blocker: result.blocker,
+      next: result.next,
+      tasks: result.tasks ?? [],
+      warnings: result.warnings ?? [],
       extrasReverted: last?.extrasReverted ?? [],
       incident: Boolean(last?.incident),
-      next: nextRun,
-      viewer,
     });
     return blocked ? 1 : 0;
   }
 
-  for (const outcome of result.tasks) {
+  for (const outcome of result.tasks ?? []) {
     const task = slice.find((item) => item.id === outcome.taskId);
     writeOut(startingTaskLine(outcome.taskId, task?.title, outcome.adapterId));
     if (outcome.profile) writeOut(`Profile: ${outcome.profile}`);
@@ -102,19 +102,9 @@ export async function runExecute(
         : ` estimatedCostUsd=${outcome.usage.estimatedCostUsd}${outcome.usage.costEstimated ? " (estimate)" : ""}`;
       writeOut(`Usage: requests=${outcome.usage.requests ?? "unknown"} toolCalls=${outcome.usage.toolCalls ?? "unknown"} tokens=${outcome.usage.totalTokens ?? "unknown"}${cost}`);
     }
-    if (outcome.incident) {
-      writeOut("inspect .git");
-    }
-    if (outcome.extrasReverted.length > 0) {
-      writeOut(`FileContract extras reverted: ${outcome.extrasReverted.join(", ")}`);
-    }
-    if (outcome.ticketId) {
-      writeOut(
-        outcome.extrasReverted.length > 0
-          ? `Filed ${outcome.ticketId} (type: scope).`
-          : `Filed ${outcome.ticketId}.`,
-      );
-    }
+    if (outcome.incident) writeOut("Sandbox or file-contract incident: inspect .git before continuing.");
+    if (outcome.extrasReverted?.length) writeOut(`FileContract extras reverted: ${outcome.extrasReverted.join(", ")}`);
+    if (outcome.ticketId) writeOut(`Filed ${outcome.ticketId}${outcome.extrasReverted?.length ? " (type: scope)" : ""}.`);
     for (const filed of outcome.filedTickets ?? []) {
       writeOut(ticketVerificationLine(filed));
     }
@@ -125,13 +115,10 @@ export async function runExecute(
     }
     if (outcome.trustTierNote) writeOut(outcome.trustTierNote);
   }
-  for (const warning of result.warnings) writeOut(warning);
-  if (flags.untilBlocked && isSliceTerminal(slice) && !blocked) {
-    writeOut(`Slice complete. Next: ${nextRun}`);
-  } else {
-    writeOut(`Next: ${nextRun}`);
-  }
-  writeOut(`Dashboard: ${viewer}`);
+  for (const warning of result.warnings ?? []) writeOut(warning);
+  if (result.completedTaskIds.length > 0) writeOut(`Completed: ${result.completedTaskIds.join(", ")}`);
+  if (result.blocker) writeOut(`Blocked: ${result.blocker}`);
+  writeOut(`Next: ${result.next}`);
   return blocked ? 1 : 0;
   } finally {
     closePrompt();

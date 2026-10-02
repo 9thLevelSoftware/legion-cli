@@ -47,13 +47,13 @@ Interactive chat uses JSON Lines and includes fork metadata and proposals awaiti
 confirmation. The dashboard follows state/audit SSE events, displays connection
 freshness and offers manual refresh when updates are unavailable.
 
-QA reports link tests to SPEC acceptance criteria with title tags such as
-`@ac(AC-01) @ac(AC-02)`. Criterion priorities come from the SPEC. Untagged passing
-tests cannot cover an acceptance criterion; missing/skipped P0 evidence blocks
-shipping. QA v2 preserves reports per run and binds scores to the SPEC and source
-tested. Recalculate historical v1 scores before a new ship, and rerun QA after
-source changes. The 85-point bar, visual gate and explicit degraded no-browser
-workflow remain in effect.
+Optional legacy QA reports link tests to SPEC acceptance criteria with title tags
+such as `@ac(AC-01) @ac(AC-02)`. Priorities come from the SPEC; untagged passing
+tests cannot cover a criterion. Missing/skipped P0 evidence blocks the legacy QA
+ship gate. QA v2 preserves run reports and binds scores to the SPEC and tested
+source; recalculate v1 scores and rerun after source changes. Its 85-point bar,
+visual gate and explicit degraded no-browser workflow remain in effect. Numeric
+QA does not replace the focused plan-check/review/manual-acceptance gate.
 
 Status and the dashboard expose interrupted run stages, ownership and recovery
 guidance. Compatible interrupted HTTP jobs use `execute --resume <runId>` with
@@ -74,12 +74,12 @@ pnpm exec legion-cli skills show extension:accessibility --project ./product
 pnpm exec legion-cli skills run extension:release-readiness --project ./product
 ```
 
-Parallel execution is explicit: `execution.maxWorkers` defaults to **1**, supports
-**1–4**, and applies only to automatic `--until-blocked` execution. Tasks must be
-dependency-independent with disjoint contracts. Workers use separate sandbox
-jails and outputs are integrated serially with source-baseline checks. Explicit
-task IDs stay single-task. Brownfield `--execute` retains its separate
-`.legion-cli/worktrees/<run>/pr-N/` layout.
+Parallel execution is opt-in: `execution.maxWorkers` defaults to **1** and supports
+**1–4** for automatic execution. Explicit `--jobs` requires `--until-blocked`.
+Tasks must be dependency-independent with disjoint contracts. Workers use separate
+sandbox jails and outputs are integrated serially with source-baseline checks.
+Explicit task IDs and `--step` stay single-task. Brownfield `--execute` retains its
+separate `.legion-cli/worktrees/<run>/pr-N/` layout.
 
 Named `adapter.profiles`, skill profile routes and task profiles can select
 supported model arguments, output limits and operator-supplied pricing.
@@ -111,8 +111,9 @@ fixture/benchmark evidence and opt-in smoke instructions live under
 and platform results are reported separately from deterministic checks.
 
 `pnpm smoke:consumer` packs only allowlisted packages and installs them in a clean
-consumer without workspace links. The complete lifecycle regression covers human
-approval, contracted execution, review, AC-linked QA and ship. CI requires
+consumer without workspace links. The complete legacy lifecycle regression covers
+human approval, contracted execution, review, AC-linked QA and ship. Focused delivery
+uses approved checks, independent review, and manual criterion evidence. CI requires
 Linux/native, Linux/Docker, Windows/native and macOS sandbox checks. The opt-in
 Windows/Docker workflow needs a self-hosted `legion-docker` runner; `Q-WIN-DOCKER`
 remains open until it supplies passing evidence. Packages remain `0.0.0`; no
@@ -122,36 +123,125 @@ publishing is performed by these checks.
 
 Supported invocation: `pnpm exec legion-cli`. To type `legion` anywhere, link it once from this repo: `pnpm -r run build`, then `npm link --force` in `packages/cli` (`--force` replaces another tool's `legion` shim; `legion-cli doctor` warns when PATH `legion` is not this CLI).
 
-The product is the **10-verb lifecycle core** plus extras in `legion-cli help --all`:
+The default workflow is five commands. Each command owns a complete stage; the
+supporting interview, decision, review, and evidence work is available within
+that stage instead of being a ceremony the user must navigate.
 
-`init` → `intent` → `discuss` → `spec` → `plan` → `execute` → `verify` → `review` → `qa` → `ship`
+`init` → `spec` → `plan` → `execute` → `ship`
+
+- `init` configures an adapter and starts a greenfield or brownfield project.
+- `spec` captures intent, investigates relevant context, records decisions, and
+  produces the contract. Before approval it runs one bounded challenge pass:
+  answer, dismiss with a reason, or accept each identified risk, then review
+  the proposed draft changes. `spec approve` freezes it.
+- `plan` turns that contract into bounded tasks, planned checks, and manual
+  acceptance evidence. `plan approve` is required before execution.
+- `execute` completes the approved plan or stops at a concrete blocker. It
+  runs planned checks and an independent review; `execute --step` runs one
+  ready task, `execute <taskId>` is targeted recovery, and `execute --retry`
+  explicitly retries one failed integration or review stage.
+- `ship` is the final human approval and delivery gate. It presents evidence;
+  it never commits, opens a PR, merges, or deploys without the matching option
+  and human confirmation.
+
+`intent`, `discuss`, `verify`, `review`, and `qa` remain available as advanced
+inspection or recovery commands in `legion-cli help --all`. The focused ship
+gate uses the approved plan's checks, review result, and acceptance evidence;
+numeric QA remains optional legacy reporting.
+
+New projects created by this CLI use the focused workflow profile. Existing
+unmarked engine configuration remains compatible as the legacy profile. Migrate
+an existing CLI project by running `plan approve`: it binds the current frozen
+spec, plan, and task artifacts without regenerating them. CLI `execute` always
+requires that approval; direct legacy core APIs remain compatible.
 
 Init requires `--adapter` (`claude` | `generic` | `grok` | `openai` | `codex` | `mimo` | `minimax` | `http` | `acp` (experimental); `fake` is also accepted but is for CI and tests only). There is no product default. Extra adapters spawn with verified vendor argv (`grok -p`, `codex exec`, `mimo run`, `mcode exec`). Dashboard is a **view-only** board: writes are CLI or token POST; it is not the source of truth.
 
-verificationCommands and the QA unit command are trusted code run as you, with API keys and tokens removed from the environment (defence in depth, not a sandbox). Where a sandbox exists, `verificationCommands` run inside it (table above); the QA unit command never does. They are argv-only: split `a && b` into separate commands.
+Approved checks and task `verificationCommands` are trusted project code run as
+you, with credentials scrubbed. They are argv-only: split `a && b` into separate
+commands. They use bwrap/seatbelt where available or explicitly configured Docker;
+the named host allowlist tier is not a sandbox. Verification never uses the copy
+jail and does not require `--allow-no-sandbox`. QA unit commands always use the host.
 
 **What the gates mean.**
-- `verify` is an optional agent walkthrough. It is **not** a ship gate and does not re-run anything. Its notes are **not kept today**: `.legion-cli/qa/**` is engine-owned and restored after every agent run (open item; `review` does not have this problem because its notes go through the run cache). The ship gate is: each task's `verificationCommands` passed at `execute`, `review` PASS, and `qa` pass.
-- `review` PASS needs evidence: the reviewer exited 0, wrote non-empty notes, and filed no tasks and rewrote no task files. A reviewer that crashes or writes nothing is an error, not a PASS.
-- `qa` links tests to declared SPEC criteria using `@ac(<id>)` title tags. Untagged tests provide no acceptance coverage; missing/skipped P0 evidence fails the gate. A runner that times out, is killed or exits non-zero is blocking evidence.
-- `ship` and the interactive `qa checklist` refuse an empty or closed-stdin answer and need an explicit `y` (`n` or a blank for a `qa checklist` criterion is a refusal). That stops accidental approval only: a script or agent that supplies a piped `y` (`echo y | legion-cli ship`), or `qa checklist --tick <id>`, still passes them, and the audit log records whether the answer came from a terminal or a pipe. `execute --allow-no-sandbox` is stricter: it refuses any non-terminal stdin (a program driving a pseudo-terminal could still answer). `wiki trust` has no prompt at all: any process running as you can promote a page.
+- Focused ship needs current approved plan checks, independent review, and
+  criterion-level `plan acceptance` evidence. Failed/stale evidence or changed
+  staged product content blocks delivery; numeric QA is optional legacy reporting.
+- `verify` is an optional advanced agent walkthrough, not a ship gate or check
+  rerun. Its notes remain only in `.legion-cli/cache/runs/<id>/summary.md`; writes
+  to engine-owned `.legion-cli/qa/**` are restored after every spawn.
+- Review PASS requires exit 0, non-empty run-cache notes, no new tasks and no
+  rewrites to existing task files. Focused evidence requires `Verdict: PASS`.
+  The engine copies notes to `qa/review.md`; a crash or empty report is not PASS.
+- Legacy `qa` links test titles to SPEC criteria with `@ac(<id>)`. Untagged tests
+  provide no acceptance coverage; missing/skipped P0 and failed/timed-out runners
+  block its gate. Focused delivery retains its own requirement-level evidence.
+- Ship and interactive QA require explicit `y`; empty/closed stdin refuses.
+  This stops accidental approval, not scripted authorization: piped `y` or
+  `qa checklist --tick <id>` can still approve and are audited.
+  `execute --allow-no-sandbox` requires a real terminal and explicit approval;
+  `wiki trust` has no prompt.
 
-**Hands off while `execute` runs.** `execute` releases `engine.lock` while the agent works (up to 20 minutes) and takes it again afterwards to check what changed. Do not edit the working tree and do not run other legion commands in that time. While an agent run is live, every command that writes (`verify`, `intent`, `discuss`, `spec`, `plan`, `ingest`, `control-mode <mode>`, `ship`, ...) is refused with the run id; `status`, `next`, `doctor` and read-only verbs still work. Legion does not merge concurrent edits: after the run, anything outside the task's `filesAllowed` that differs from the start is reverted, including a change you made yourself. Commit or stash files inside `filesAllowed` first; `execute` warns when the tree is dirty there. Ctrl-C stops the agent too (under the Docker or bwrap sandbox wrapper the container may keep running, but its writes stay in the jail). `skills install` and `design-system install` are not refused. If a run was killed without cleanup (Windows console close, `taskkill`), the next command sees the surviving agent and refuses; `legion-cli doctor` clears a marker whose processes are both gone.
+**Hands off while `execute` runs.** The engine releases its lock during agent
+work and reacquires it to inspect changes. Process-start-identity live-run
+markers refuse other mutations; read-only status/next/doctor remain available.
+Do not edit the checkout: changes outside the task contract are reverted,
+including your own concurrent edits. Commit or stash contracted changes first.
+Ctrl-C stops the run; `doctor` reports live markers and clears dead ones.
 
-From this repo, with a real adapter (`claude` needs the `claude` binary on PATH and signed in):
+With a real adapter (`claude` must be on PATH and signed in):
 
 ```bash
 pnpm install
 pnpm exec legion-cli init --name Checkin --adapter claude
 pnpm exec legion-cli doctor
-pnpm exec legion-cli intent
+pnpm exec legion-cli spec
 ```
 
-`doctor` fails closed until the adapter's binary is on PATH; it only warns when no hardened sandbox is available, and `execute` is what then refuses (unless `--allow-no-sandbox` on a TTY or `sandbox.allowCopyJail`). `intent`, `discuss` and `spec` refuse with "no agent available" when the adapter cannot spawn; they do not fall back to canned text.
+Doctor warns about missing hardened sandbox readiness; execute refuses unless
+explicit copy fallback is permitted. Missing adapters do not produce canned
+intent/discussion/spec content.
 
-`fake` is the CI/test adapter (canned output, no agent). Use it only in tests: `LEGION_CLI_ADAPTER=fake` (PowerShell: `$env:LEGION_CLI_ADAPTER = "fake"`) makes `doctor` treat it as spawnable.
+The following is a fixture/smoke example using the test-only `fake` adapter,
+not an end-to-end real-adapter walkthrough. Use a configured real adapter and
+doctor for actual development.
 
-## Shipped verbs not in the 10-verb lifecycle core
+```bash
+pnpm install
+pnpm exec legion-cli init --name Checkin --adapter fake
+pnpm exec legion-cli spec
+pnpm exec legion-cli spec approve
+pnpm exec legion-cli plan
+pnpm exec legion-cli plan approve --check "pnpm test"
+pnpm exec legion-cli execute
+# After checks and review pass, repeat for each spec criterion.
+pnpm exec legion-cli plan acceptance --pass <criterionId> --note "Manual walkthrough passed"
+pnpm exec legion-cli ship
+```
+
+Windows PowerShell equivalent:
+
+```powershell
+pnpm install
+pnpm exec legion-cli init --name Checkin --adapter fake
+pnpm exec legion-cli spec
+pnpm exec legion-cli spec approve
+pnpm exec legion-cli plan
+pnpm exec legion-cli plan approve --check "pnpm test"
+pnpm exec legion-cli execute
+# After checks and review pass, repeat for each spec criterion.
+pnpm exec legion-cli plan acceptance --pass <criterionId> --note "Manual walkthrough passed"
+pnpm exec legion-cli ship
+
+# Test-only: enable the fake adapter doctor check.
+$env:LEGION_CLI_ADAPTER = "fake"
+pnpm exec legion-cli doctor
+```
+
+`fake` is test-only; doctor treats it as spawnable only with
+`LEGION_CLI_ADAPTER=fake`. Real adapter checks fail closed until configured.
+
+## Advanced commands and extras
 
 See `legion-cli help --all` for the full rows. One sentence each:
 
@@ -172,12 +262,41 @@ See `legion-cli help --all` for the full rows. One sentence each:
 
 JSON schemas for chat sessions/actions, fingerprint files, and serve files live in `packages/schema/json/`.
 
-## Two brownfield surfaces (not one verb)
+## Greenfield and brownfield starts
 
-1. `init --mode brownfield` sets `project.mode` and the next command (`legion-cli brownfield`). After that, 10-verb `execute` is **in-place**.
-2. `legion-cli brownfield` is the audit extra (effort 1–5). The orchestrating agent (the `skills/brownfield` Claude Code skill) does the judgment: it launches specialists, the design writer and reviewers, and implementers. The CLI keeps the books under `.legion-cli/runs/<id>/` (gitignored): `init`, `state`, `roster`, `evidence`, `merge`, `review-status`, `pr-plan`, `dag`, `worktree`, `patterns`. `--execute` is the only worktree path: one worktree per reviewed PR under `.legion-cli/worktrees/<run>/pr-N/`, stacked on its dependency's branch. `legion-cli run promote <id>` copies the run's pages into the wiki (untrusted until `wiki trust`).
+For a new project, use the default greenfield mode. For an existing repository:
 
-Do not merge these.
+```bash
+pnpm exec legion-cli init --mode brownfield --brownfield-goal change --adapter <adapter>
+```
+
+`--brownfield-goal change` performs scoped discovery of the relevant code,
+tests, integration points, and current behavior before `spec`. Use
+`--brownfield-goal audit` to collect findings. Before the interview begins,
+audit mode persists a bounded remediation goal and affected module paths;
+unselected findings remain backlog items. Both paths converge on `spec` →
+`plan` → `execute` → `ship`, and ordinary execute stays **in-place**.
+
+`legion-cli brownfield` remains a separate advanced audit-bookkeeping surface.
+The orchestrating `skills/brownfield` skill launches specialists and reviewers;
+the CLI records runs under `.legion-cli/runs/<id>/`. Its `--execute` mode is the
+only workflow that creates per-PR worktrees under
+`.legion-cli/worktrees/<run>/pr-N/`. Do not merge the two surfaces.
+
+Wireframes are opt-in (`spec --wireframes`); a non-UI spec does not need
+wireframes or user stories. Planned checks are declared at approval time with
+one quoted argv command per `--check`, for example `plan approve --check "pnpm test"`.
+Record manual acceptance with `plan acceptance --pass <criterionId>` (or
+`--fail <criterionId>` / `--not-applicable <criterionId> --note "reason"`).
+
+The focused spec challenge asks no more than three grounded questions about
+measurable success, failure behavior, compatibility, and scope. Each answer is
+saved immediately, so rerunning `spec` resumes unanswered questions without
+regenerating the draft. The challenge receipt records the concern, evidence or
+assumption, response, disposition, rationale, and resulting draft changes.
+When adapter automation is actually unavailable or fails, `spec --manual-review`
+records an explicit acknowledgement and answers to the same three fixed review
+questions. It does not bypass concerns produced by a successful challenge.
 
 Local metrics (never phones home): `legion-cli doctor --metrics`.
 
@@ -194,4 +313,6 @@ pnpm test
 
 Publish is tag-triggered (`git tag v*`) via GitHub Actions trusted publisher for the `@9thlevelsoftware` npm org, with provenance. Untagged `main` does not publish. There is no long-lived npm token.
 
-See [docs/design/product-engineering-cli.md](docs/design/product-engineering-cli.md) for the product design.
+See [docs/design/workflow-focus.md](docs/design/workflow-focus.md) for the
+canonical workflow and [docs/design/product-engineering-cli.md](docs/design/product-engineering-cli.md)
+for the historical architecture record.

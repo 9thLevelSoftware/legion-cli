@@ -47,6 +47,8 @@ async function seedBrownfield(dir) {
     "fake",
     "--mode",
     "brownfield",
+    "--brownfield-goal",
+    "audit",
   ]);
   assert.equal(init.status, 0, init.stderr);
   await mkdir(join(dir, "src"), { recursive: true });

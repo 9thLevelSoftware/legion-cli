@@ -1,8 +1,8 @@
 ---
 name: interview
 description: >
-  Optional polish of intent answers after the CLI question bank.
-  Activated only by `legion-cli intent` when a spawnable adapter exists. Do not load other skill bodies.
+  Optional intent-capture helper used by `legion-cli spec` (and retained by
+  the advanced `legion-cli intent` command). Do not load other skill bodies.
 license: UNLICENSED
 compatibility: "Legion CLI staging; not vendor auto-discovery"
 metadata:
@@ -14,7 +14,8 @@ metadata:
 
 # interview
 
-Optional polish after the CLI question bank.
+Optional intent-capture polish. In the focused workflow, `legion-cli spec`
+owns this work; `legion-cli intent` remains an advanced recovery surface.
 
 ## Contract
 

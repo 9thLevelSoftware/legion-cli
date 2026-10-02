@@ -44,7 +44,39 @@ export async function runPlan(opts: CliOpts, flags: { adapter?: string; profile?
   if (readiness === "FAIL") {
     writeOut(`Next: ${next.run}`);
   } else {
-    writeOut(`Next: ${next.run}     (viewer: legion-cli dashboard)`);
+    writeOut(`Next: ${next.run}`);
   }
   return readiness === "FAIL" ? 1 : 0;
+}
+
+export async function runPlanApprove(opts: CliOpts, flags: { checks?: string[] } = {}): Promise<number> {
+  const engine = createLegionEngine(opts.project);
+  const receipt = await engine.approvePlan(
+    { id: "user" },
+    flags.checks?.length ? { verificationCommands: flags.checks } : undefined,
+  );
+  if (opts.json) writeJson({ ok: true, receipt, next: "legion-cli execute" });
+  else writeOut("Plan approved. Next: legion-cli execute");
+  return 0;
+}
+
+export async function runPlanAcceptance(
+  opts: CliOpts,
+  flags: { pass?: string[]; fail?: string[]; notApplicable?: string[]; note?: string },
+): Promise<number> {
+  const entries = [
+    ...(flags.pass ?? []).map((id) => ({ id, status: "passed" as const })),
+    ...(flags.fail ?? []).map((id) => ({ id, status: "failed" as const })),
+    ...(flags.notApplicable ?? []).map((id) => ({ id, status: "not_applicable" as const })),
+  ];
+  if (entries.length === 0) throw new Error("plan acceptance requires --pass, --fail, or --not-applicable");
+  const engine = createLegionEngine(opts.project);
+  const receipt = await engine.recordAcceptance(
+    entries.map((entry) => ({ ...entry, ...(flags.note ? { note: flags.note } : {}) })),
+    { id: "user" },
+  );
+  const workflow = await engine.getWorkflowStatus();
+  if (opts.json) writeJson({ ok: workflow.acceptance.failed.length === 0, receipt, workflow, next: workflow.next });
+  else writeOut(`Acceptance evidence recorded. Next: ${workflow.next}`);
+  return 0;
 }

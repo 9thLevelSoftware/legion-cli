@@ -11,25 +11,23 @@ export function quoteDecision(decision: DiscussDecision): string {
 
 export function templateDecisions(mapped: IntentMapped, context: ContextFile): DiscussDecision[] {
   const platforms = context.platforms;
-  let platform = "Ship as mobile web, not a native app.";
+  let platform: string | undefined;
   if (platforms.length === 1 && platforms[0] === "desktop") {
-    platform = "Ship as desktop web, not a native app.";
+    platform = "The requested interface includes desktop or browser use.";
   } else if (platforms.includes("phone") && platforms.includes("desktop")) {
-    platform = "Ship as mobile and desktop web, not a native app.";
+    platform = "The requested interface includes phone and desktop or browser use.";
   } else if (platforms.length === 1 && platforms[0] === "phone") {
-    platform = "Ship as mobile web, not a native app.";
+    platform = "The requested interface includes phone or mobile use.";
   }
 
   const out =
     mapped.outOfScope.length > 0
       ? `v0 will not include: ${mapped.outOfScope.join(", ")}.`
-      : "v0 will not include unspecified extras.";
+      : undefined;
 
-  return [
-    { id: "D-001", statement: platform, status: "proposed" },
-    { id: "D-002", statement: out, status: "proposed" },
-    { id: "D-003", statement: "Product data is stored on the device, not on a remote server.", status: "proposed" },
-  ];
+  return [platform, out]
+    .filter((statement): statement is string => Boolean(statement))
+    .map((statement, index) => ({ id: `D-${String(index + 1).padStart(3, "0")}`, statement, status: "proposed" }));
 }
 
 export function decisionFileName(id: string, statement: string): string {

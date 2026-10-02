@@ -42,6 +42,10 @@ function matchesAllowed(posix: string, allowed: readonly string[]): boolean {
 export function engineSotRefuseReason(posix: string): string | null {
   if (posix === ".legion-cli/STATE.md") return `engine-SoT refused: ${posix}`;
   if (posix === ".legion-cli/config.yaml") return `engine-SoT refused: ${posix}`;
+  if (posix === ".legion-cli/map/selection.json") return `engine-SoT refused: ${posix}`;
+  if (posix === ".legion-cli/workflow" || posix.startsWith(".legion-cli/workflow/")) {
+    return `engine-SoT refused: ${posix}`;
+  }
   if (posix === ".legion-cli/tasks" || posix.startsWith(".legion-cli/tasks/")) {
     return `engine-SoT refused: ${posix}`;
   }

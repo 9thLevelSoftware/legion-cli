@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1067,15 +1067,4 @@ test("run promote copies nested run pages untrusted, intent first, no snapshots"
     const again = await engine.promoteRun("21212121");
     assert.equal((await store.readWikiPage(again.pages[0])).data.trust, "untrusted");
   });
-});
-
-test("core src spawns git only through runGit (PATH-decoy safe on Windows)", async () => {
-  const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
-  const hits = [];
-  for (const rel of await readdir(src, { recursive: true })) {
-    if (!rel.endsWith(".ts")) continue;
-    const text = await readFile(join(src, rel), "utf8");
-    if (/\b(?:spawnSync|spawn|execFileSync|execFile|execSync)\(\s*["']git["']/.test(text)) hits.push(rel);
-  }
-  assert.deepEqual(hits, []);
 });

@@ -13,6 +13,15 @@ export const INTENT_Q = {
   scope: "What must we not change, and what will we not build?",
   clarifyMustNotChange: "What must we not change?",
   happyPath: "Walk through the happy path in 3–5 steps.",
+  failure: "What failures, security concerns, or integration risks must be handled?",
+  screens: "What interfaces or touchpoints must exist in v0? (use `none` for a service or library)",
+  platforms: "What runtime or deployment environment matters, if any? (for example CLI, service, browser, mobile, Python, Rust; or `none`)",
+  brand: "Any existing constraints or design inputs we must follow? (path, link, or `none`)",
+  blockers: "Which unknowns or external integrations could block building?",
+} as const;
+
+/** Question text is persisted in interview transcripts, so recognize prior wording on replay. */
+const LEGACY_INTENT_Q = {
   failure: "What does failure look like (empty, error, changed mind)?",
   screens: "What screens or moments must exist in v0?",
   platforms: "Phone, desktop, or both?",
@@ -94,15 +103,25 @@ export function splitMustNotAndOutOfScope(answer: string): {
 
 export function parsePlatforms(answer: string): Array<"phone" | "desktop"> {
   const text = answer.toLowerCase();
-  const both = /\bboth\b|\band\b/.test(text) || (/\bphone\b/.test(text) && /\bdesktop\b/.test(text));
+  const hasPhone = /\bphone\b|\bmobile\b/.test(text);
+  const hasDesktop = /\bdesktop\b|\bweb\b|\bbrowser\b/.test(text);
+  const both = /\bboth\b|\ball\b/.test(text) || (hasPhone && hasDesktop);
   if (both || /\ball\b/.test(text)) return ["phone", "desktop"];
-  if (/\bdesktop\b|\bweb\b/.test(text) && !/\bphone\b|\bmobile\b/.test(text)) return ["desktop"];
-  if (/\bphone\b|\bmobile\b/.test(text)) return ["phone"];
-  return ["phone", "desktop"];
+  if (hasDesktop) return ["desktop"];
+  if (hasPhone) return ["phone"];
+  return [];
+}
+
+function questionVariants(question: string): readonly string[] {
+  const key = (Object.keys(INTENT_Q) as Array<keyof typeof INTENT_Q>).find((name) => INTENT_Q[name] === question);
+  return key && key in LEGACY_INTENT_Q
+    ? [INTENT_Q[key], LEGACY_INTENT_Q[key as keyof typeof LEGACY_INTENT_Q]]
+    : [question];
 }
 
 function hasQuestion(file: IntentAnswersFile, question: string): boolean {
-  return file.rounds.some((round) => round.questions.includes(question));
+  const variants = questionVariants(question);
+  return file.rounds.some((round) => round.questions.some((recorded) => variants.includes(recorded)));
 }
 
 function round2Filled(mapped: IntentMapped): boolean {
@@ -176,21 +195,21 @@ export function applyIntentAnswers(
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
     const a = recorded.answers[i] ?? "";
-    if (q === INTENT_Q.persona && a) mapped.personas = [a];
-    if (q === INTENT_Q.problem) mapped.problem = a;
-    if (q === INTENT_Q.mustBeTrue) mapped.mustBeTrue = splitLines(a);
-    if (q === INTENT_Q.scope) {
+    if (questionVariants(INTENT_Q.persona).includes(q) && a) mapped.personas = [a];
+    if (questionVariants(INTENT_Q.problem).includes(q)) mapped.problem = a;
+    if (questionVariants(INTENT_Q.mustBeTrue).includes(q)) mapped.mustBeTrue = splitLines(a);
+    if (questionVariants(INTENT_Q.scope).includes(q)) {
       const split = splitMustNotAndOutOfScope(a);
       if (split.mustNotChange.length > 0) mapped.mustNotChange = split.mustNotChange;
       if (split.outOfScope.length > 0) mapped.outOfScope = split.outOfScope;
     }
-    if (q === INTENT_Q.clarifyMustNotChange) mapped.mustNotChange = splitList(a);
-    if (q === INTENT_Q.happyPath) mapped.happyPath = a.trim();
-    if (q === INTENT_Q.failure) side.failureLines = splitList(a);
-    if (q === INTENT_Q.screens) mapped.screens = splitList(a);
-    if (q === INTENT_Q.platforms) side.platforms = parsePlatforms(a);
-    if (q === INTENT_Q.brand) side.brand = a.trim();
-    if (q === INTENT_Q.blockers && !/^(none|no|n\/a|-)$/i.test(a.trim())) {
+    if (questionVariants(INTENT_Q.clarifyMustNotChange).includes(q)) mapped.mustNotChange = splitList(a);
+    if (questionVariants(INTENT_Q.happyPath).includes(q)) mapped.happyPath = a.trim();
+    if (questionVariants(INTENT_Q.failure).includes(q)) side.failureLines = splitList(a);
+    if (questionVariants(INTENT_Q.screens).includes(q)) mapped.screens = splitList(a);
+    if (questionVariants(INTENT_Q.platforms).includes(q)) side.platforms = parsePlatforms(a);
+    if (questionVariants(INTENT_Q.brand).includes(q)) side.brand = a.trim();
+    if (questionVariants(INTENT_Q.blockers).includes(q) && !/^(none|no|n\/a|-)$/i.test(a.trim())) {
       side.blockingLines = splitList(a);
     }
   }

@@ -1,7 +1,8 @@
 ---
 name: verify
 description: >
-  Optional agent walkthrough; not a ship gate. Notes are not retained today.
+  Optional walkthrough notes for focused execution; not a separate ship gate.
+  Notes remain only in the run cache, not durable QA evidence.
   Activated only by `legion-cli verify`. Do not load other skill bodies.
 license: UNLICENSED
 compatibility: "Legion CLI staging; not vendor auto-discovery"
@@ -14,7 +15,17 @@ metadata:
 
 # verify
 
-Optional agent walkthrough. Verify is not a ship gate. In-process `verificationCommands` after execute already marked tasks `done`.
+Optional advanced agent walkthrough, not a separate ship gate or check rerun.
+Focused `execute` records approved planned checks and independent review before
+ship. Legacy task `verificationCommands` also run in-process during execute.
+
+These checks are trusted project code with argv-only invocation and scrubbed
+credentials. They run under bwrap/seatbelt when available, Docker only when
+`sandbox.backend: docker` is explicitly configured, or the named host allowlist
+tier. Verification never uses a copy jail or needs `--allow-no-sandbox`; filtering
+is not a trust boundary. QA unit commands always run on the host. bwrap/seatbelt
+permit network egress. This walkthrough must not claim to rerun or replace those
+checks, approve plan evidence, or pass the legacy QA gate.
 
 ## Contract
 

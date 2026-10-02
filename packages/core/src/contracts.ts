@@ -8,6 +8,7 @@ export const SKILL_CONTRACTS: Record<SkillId, readonly string[]> = {
   interview: [".legion-cli/wiki/product/**", ".legion-cli/specs/*/prd.md", ".legion-cli/cache/runs/<id>/**"],
   discuss: [".legion-cli/discuss/**", ".legion-cli/decisions/**", ".legion-cli/cache/runs/<id>/**"],
   spec: [".legion-cli/specs/<activeSpecId>/**", ".legion-cli/cache/runs/<id>/**"],
+  "spec-challenge": [".legion-cli/cache/runs/<id>/**"],
   ingest: [".legion-cli/wiki/**", ".legion-cli/cache/runs/<id>/**"],
   plan: [".legion-cli/plans/**", ".legion-cli/tasks/**", ".legion-cli/cache/runs/<id>/**"],
   execute: [".legion-cli/cache/runs/<id>/**"],
@@ -126,6 +127,8 @@ export function isImplicitForbidden(posixPath: string): boolean {
   if (under !== undefined && /^[^~.]{1,6}~\d+(\.[^.]{1,3})?$/.test(under)) return true;
   if (canon === ".legion-cli/config.yaml") return true;
   if (canon === ".legion-cli/state.md") return true;
+  if (canon === ".legion-cli/map/selection.json") return true;
+  if (canon === ".legion-cli/workflow" || canon.startsWith(".legion-cli/workflow/")) return true;
   if (canon === ".legion-cli/tasks" || canon.startsWith(".legion-cli/tasks/")) return true;
   if (canon.startsWith(".legion-cli/index/") || canon === ".legion-cli/index") return true;
   if (segments.some((part) => isEnvBasename(part))) return true;

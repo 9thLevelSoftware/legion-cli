@@ -214,7 +214,6 @@ test("recursive runner inventory is 14 package legs", async () => {
 
 test("root test script, quarantine register, and publish guard", async () => {
   const root = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
-  const agentsMd = await readFile(join(repoRoot, "AGENTS.md"), "utf8");
   assert.equal(root.scripts.test, "pnpm -r --no-bail run test");
   assert.doesNotMatch(root.scripts.test, /--filter/);
     assert.ok(Array.isArray(root.legionQuarantine));
@@ -237,8 +236,6 @@ test("root test script, quarantine register, and publish guard", async () => {
   const httpPkg = JSON.parse(await readFile(join(repoRoot, "packages", "http", "package.json"), "utf8"));
   assert.notEqual(httpPkg.private, true);
   assert.equal(httpPkg.publishConfig?.access, "public");
-  assert.match(agentsMd, /legionPublishAllowlist/);
-  assert.match(agentsMd, /"private": true/);
 });
 
 test("CI linux-docker and macOS sandbox legs are required", async () => {

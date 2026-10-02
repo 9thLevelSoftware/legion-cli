@@ -4,6 +4,12 @@ Worktree: `D:\legion-cli-enhancements`, branch `enhancements-20260930`.
 The original checkout and its pre-existing untracked work are preserved.
 This change does not publish, deploy, or certify a production release.
 
+This is historical evidence from the enhancement branch, not a verification run
+of the current merge. Its numeric-QA/lifecycle results describe legacy behavior.
+The canonical focused journey and delivery gates are specified in
+[`design/workflow-focus.md`](design/workflow-focus.md); advanced runtime safeguards
+and legacy QA v2 continue to apply in their respective paths.
+
 ## Capability evidence
 
 | Capability | Implementation and regression evidence |

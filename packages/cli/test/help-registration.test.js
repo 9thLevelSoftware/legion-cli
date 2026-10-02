@@ -143,7 +143,7 @@ test("docs and help match registered commands and do not advertise surgical", ()
   assert.match(fixHelp, /allow-no-sandbox/);
   assert.match(replHelp, /NO SANDBOX/i);
   assert.doesNotMatch(replHelp, /Sandboxed interactive REPL/);
-  assert.match(readme, /\$env:LEGION_CLI_ADAPTER/);
+  assert.match(readme, /LEGION_CLI_ADAPTER=fake/);
   for (const extra of ["chat", "undo", "recipe", "repl", "map", "wireframe"]) {
     assert.ok(commands.has(extra) || rows.some((row) => row.path === extra || row.path.startsWith(`${extra} `)), extra);
     assert.match(readme, new RegExp(`\\b${extra}\\b`));

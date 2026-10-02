@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir, readFile, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import test from "node:test";
 
 import { WIREFRAME_PALETTE } from "@9thlevelsoftware/legion-cli-core";
@@ -15,6 +15,13 @@ function yaml(text) {
 
 function acceptDiscuss(dir) {
   return runCli(["discuss", "--project", dir], { input: "Y\nY\nY\n" });
+}
+
+async function readSpecDocuments(dir) {
+  const paths = existsSync(dir)
+    ? (await readdir(dir, { recursive: true })).filter((path) => basename(path) === "SPEC.md").sort()
+    : [];
+  return Promise.all(paths.map(async (path) => [path, await readFile(join(dir, path), "utf8")]));
 }
 
 test("intent --done writes IntentAnswersFile and requires confirm", async () => {
@@ -44,6 +51,81 @@ test("intent --done writes IntentAnswersFile and requires confirm", async () => 
   });
 });
 
+test("spec composes a visible greenfield conversation and defaults wireframes off", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    const result = runCli(["spec", "--project", dir], {
+      input: [
+        "Teammates who need a simple check-in.",
+        "They cannot tell who is available.",
+        "A check-in is recorded in under five seconds.",
+        "Do not change auth. We will not build payroll.",
+        "Open the CLI, check in, see confirmation.",
+        "Return a clear error when unavailable.",
+        "none",
+        "CLI",
+        "none",
+        "none",
+        "Y",
+        "Y",
+      ].join("\n") + "\n",
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(result.stdout), /Who is this for/);
+    assert.match(normalize(result.stdout), /What are they stuck doing today/);
+    assert.match(normalize(result.stdout), /Confirm this is what must be true/);
+    assert.match(normalize(result.stdout), /Decision D-001/);
+    assert.match(normalize(result.stdout), /SPEC\.md/);
+    assert.equal(existsSync(join(dir, ".legion-cli", "specs", "spec-checkin", "wireframes", "INDEX.html")), false);
+  });
+});
+
+test("brownfield spec writes bounded orientation before the same conversation", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "legacy.ts"), "export const legacy = true;\n", "utf8");
+    runCli([
+      "init", "--project", dir, "--name", "Legacy", "--adapter", "fake",
+      "--mode", "brownfield", "--brownfield-goal", "change",
+    ]);
+    const result = runCli(["spec", "--project", dir], { input: "" });
+    assert.notEqual(result.status, 0);
+    assert.match(normalize(result.stdout), /Brownfield orientation: .legion-cli\/map\/DISCOVERY\.md/);
+    assert.equal(existsSync(join(dir, ".legion-cli", "map", "DISCOVERY.md")), true);
+  });
+});
+
+test("brownfield audit refuses to draft without a bounded remediation selection", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "legacy.ts"), "export const legacy = true;\n", "utf8");
+    runCli([
+      "init", "--project", dir, "--name", "Legacy", "--adapter", "fake",
+      "--mode", "brownfield", "--brownfield-goal", "audit",
+    ]);
+    const result = runCli(["spec", "--project", dir], { input: "\n\n" });
+    assert.notEqual(result.status, 0);
+    assert.match(normalize(`${result.stdout}\n${result.stderr}`), /requires a bounded remediation goal and affected area/);
+  });
+});
+
+test("brownfield audit records one selection and reuses it when the spec resumes", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "legacy.ts"), "export const legacy = true;\n", "utf8");
+    runCli([
+      "init", "--project", dir, "--name", "Legacy", "--adapter", "fake",
+      "--mode", "brownfield", "--brownfield-goal", "audit",
+    ]);
+    const selected = runCli(["spec", "--project", dir], {
+      input: "Fix authorization check\nlegacy.ts\n",
+    });
+    assert.notEqual(selected.status, 0, `${selected.stdout}\n${selected.stderr}`);
+    assert.match(normalize(selected.stdout), /Selected remediation: Fix authorization check \(legacy\.ts\)/);
+    const resumed = runCli(["spec", "--project", dir], { input: "" });
+    assert.notEqual(resumed.status, 0);
+    assert.match(normalize(resumed.stdout), /Selected remediation: Fix authorization check \(legacy\.ts\)/);
+    assert.doesNotMatch(normalize(resumed.stdout), /Remediation goal:/);
+  });
+});
+
 test("discuss + spec templates freeze without a model", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
@@ -61,7 +143,7 @@ test("discuss + spec templates freeze without a model", async () => {
     const discuss = acceptDiscuss(dir);
     assert.equal(discuss.status, 0, `${discuss.stdout}\n${discuss.stderr}`);
 
-    const spec = runCli(["spec", "--project", dir]);
+    const spec = runCli(["spec", "--project", dir, "--wireframes"]);
     assert.equal(spec.status, 0, `${spec.stdout}\n${spec.stderr}`);
     assert.match(normalize(spec.stdout), /SPEC\.md/);
     assert.match(normalize(spec.stdout), /wireframes\/INDEX\.html/);
@@ -84,17 +166,28 @@ test("discuss + spec templates freeze without a model", async () => {
     assert.equal(skipAfter.status, 1);
     assert.match(normalize(skipAfter.stderr), /pre-approve/);
 
+    const manualChallenge = runCli(["spec", "--project", dir, "--manual-review"], {
+      input: [
+        "A check-in is recorded in under five seconds and confirmed to the teammate.",
+        "When unavailable, preserve the attempted check-in and show a clear retry message.",
+        "Do not change authentication or add payroll, badge, or calendar scope.",
+        "I acknowledge",
+      ].join("\n") + "\n",
+    });
+    assert.equal(manualChallenge.status, 0, `${manualChallenge.stdout}\n${manualChallenge.stderr}`);
+
     const approve = runCli(["spec", "approve", "--project", dir, "--message", "ship it"]);
     assert.equal(approve.status, 0, approve.stderr);
-    assert.match(normalize(approve.stdout), /Spec frozen/);
     const frozen = await readFile(join(dir, ".legion-cli", "specs", "spec-checkin", "SPEC.md"), "utf8");
-    assert.match(frozen, /status: frozen/);
-    assert.match(frozen, /Approved: ship it/);
-    SpecSchema.parse(parseMarkdownDocument(frozen).frontmatter);
+    const frozenSpec = SpecSchema.parse(parseMarkdownDocument(frozen).frontmatter);
+    assert.equal(frozenSpec.status, "frozen");
+    const state = parseMarkdownDocument(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8")).frontmatter;
+    assert.equal(state.phase, "spec_frozen");
+    assert.equal(state.activeSpecId, frozenSpec.id);
   });
 });
 
-test("spec --skip-wireframes does not write INDEX.html", async () => {
+test("spec does not write wireframes unless explicitly requested", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     runCli(["intent", "--project", dir, "--done"], {
@@ -108,7 +201,7 @@ test("spec --skip-wireframes does not write INDEX.html", async () => {
     });
     const discuss = acceptDiscuss(dir);
     assert.equal(discuss.status, 0, `${discuss.stdout}\n${discuss.stderr}`);
-    const spec = runCli(["spec", "--project", dir, "--skip-wireframes"]);
+    const spec = runCli(["spec", "--project", dir]);
     assert.equal(spec.status, 0, spec.stderr);
     assert.equal(
       existsSync(join(dir, ".legion-cli", "specs", "spec-checkin", "wireframes", "INDEX.html")),
@@ -259,9 +352,15 @@ test("intent, discuss and spec stop with a doctor hint when no agent is availabl
 
     const accepted = acceptDiscuss(dir);
     assert.equal(accepted.status, 0, accepted.stderr);
+    const beforeSpec = parseMarkdownDocument(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8")).frontmatter;
+    const beforeSpecDocuments = await readSpecDocuments(specsDir);
     const spec = runCli(["spec", "--project", dir], noAgent);
     assert.notEqual(spec.status, 0);
-    assert.match(normalize(spec.stderr + spec.stdout), /no agent available for spec/);
+    assert.match(normalize(spec.stderr + spec.stdout), /no agent available/);
     assert.match(normalize(spec.stderr + spec.stdout), /legion-cli doctor/);
+    const afterSpec = parseMarkdownDocument(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8")).frontmatter;
+    assert.equal(afterSpec.phase, beforeSpec.phase);
+    assert.equal(afterSpec.activeSpecId, beforeSpec.activeSpecId);
+    assert.deepEqual(await readSpecDocuments(specsDir), beforeSpecDocuments);
   });
 });

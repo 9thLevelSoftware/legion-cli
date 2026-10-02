@@ -30,7 +30,12 @@ function initGitRepo(dir) {
 
 async function seedReadyToShip(dir, extra = {}) {
   const engine = createLegionEngine(dir);
-  await engine.init({ name: "Checkin", adapter: "fake" });
+  if (extra.focusedViaCli) {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+  } else {
+    await engine.init({ name: "Checkin", adapter: "fake", ...(extra.focused ? { workflowProfile: "focused" } : {}) });
+  }
   await engine.store.writeSpec(
     {
       schemaVersion: "legion-cli-spec/v1",
@@ -203,6 +208,32 @@ test("ship n cancels without shipping", async () => {
     const result = runCli(["ship", "--project", dir], { input: "n\n" });
     assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
     assert.match(normalize(`${result.stdout}\n${result.stderr}`), /cancelled/);
+    const state = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
+    assert.match(state, /phase: ready_to_ship/);
+  });
+});
+
+test("focused projects cannot ship without an approved workflow plan", async () => {
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir, { focusedViaCli: true });
+    initGitRepo(dir);
+    const result = runCli(["ship", "--project", dir], { input: "y\n" });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(`${result.stdout}\n${result.stderr}`), /focused workflow is not ready to ship|plan approve/i);
+  });
+});
+
+test("ship --json with empty piped input refuses approval after writing the review preview to stderr", async () => {
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    initGitRepo(dir);
+    const result = runCli(["ship", "--project", dir, "--json"], { input: "" });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const body = JSON.parse(result.stdout);
+    assert.match(body.error, /ship needs an explicit y/);
+    assert.match(body.next, /^legion-cli ship --project /);
+    assert.match(normalize(result.stderr), /Staged:/);
+    assert.match(normalize(result.stderr), /Acceptance criteria met\?/);
     const state = await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8");
     assert.match(state, /phase: ready_to_ship/);
   });

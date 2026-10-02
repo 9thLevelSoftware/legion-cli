@@ -14,7 +14,9 @@ metadata:
 
 # wireframe
 
-Optional rewrite of inner markup for HTML wireframes. Templates already produced valid files.
+Optional rewrite of inner markup for HTML wireframes. Wireframes are created
+only for a spec that opts in with `spec --wireframes`; their absence is not a
+readiness concern for non-UI work. Templates already produced valid files.
 
 ## Contract
 

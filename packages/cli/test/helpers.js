@@ -39,26 +39,6 @@ export function readGolden(name) {
   return readFile(join(transcriptsDir, name), "utf8").then((text) => normalize(text));
 }
 
-export function sanitizeDoctor(text) {
-  return normalize(text)
-    .replace(/--project '[^']*'/g, "--project <project>")
-    .replace(/^(ok  |FAIL)  Node >= 22 \(.+\)$/m, "$1  Node >= 22 (<version>)")
-    .replace(/^(ok  |FAIL)  pnpm \(.+\)$/m, "$1  pnpm (<version>)")
-    .replace(/^(ok  |FAIL)  git \(.+\)$/m, "$1  git (<version>)")
-    .replace(/^  legion-cli\n(?:    .+\n)+/m, "  legion-cli\n    <paths>\n")
-    .replace(/^  legion\n(?:    .+\n)+/m, "  legion\n    <paths>\n")
-    .replace(/^(ok  |FAIL|warn)  sandbox \(.+\)$/m, "$1  sandbox (<backend>)")
-    .replace(/^Sandbox     .+$/m, "Sandbox     <backend>")
-    .replace(/^Playwright  .+$/m, "Playwright  <playwright>")
-    .replace(/^  claude       .+$/m, "  claude       <detect>")
-    .replace(/^  grok         .+$/m, "  grok         <detect>")
-    .replace(/^  openai       .+$/m, "  openai       <detect>")
-    .replace(/^  codex        .+$/m, "  codex        <detect>")
-    .replace(/^  mimo         .+$/m, "  mimo         <detect>")
-    .replace(/^  minimax      .+$/m, "  minimax      <detect>")
-    .replace(/\nWarnings\n(?:  .+\n?)*(?:\n)?/g, "\n");
-}
-
 export async function withTempDir(fn) {
   const dir = await mkdtemp(join(tmpdir(), "legion-cli-"));
   try {

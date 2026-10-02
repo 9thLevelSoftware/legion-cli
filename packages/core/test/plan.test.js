@@ -115,7 +115,7 @@ test("parent grok plus extra.json gpt-4 child inherits grok", async () => {
         await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
         await writeTask(store, makeTask({ adapter: "grok" }));
         const readiness = await engine.plan("spec-checkin");
-        assert.equal(readiness, "CONCERNS");
+        assert.equal(readiness, "PASS");
         const child = (await store.readTask("TSK-0002")).data;
         assert.equal(child.parentId, "TSK-0001");
         assert.equal(child.adapter, "grok");
@@ -207,7 +207,7 @@ test("extra work becomes a linked ticket, not an expansion", async () => {
         const parent = makeTask();
         await writeTask(store, parent);
         const readiness = await engine.plan("spec-checkin");
-        assert.equal(readiness, "CONCERNS");
+        assert.equal(readiness, "PASS");
         const slice = await engine.listSliceTasks();
         const child = slice.find((task) => task.parentId === "TSK-0001");
         assert.ok(child, "expected linked ticket");
@@ -408,7 +408,7 @@ test("plan spawn cannot stamp status done", async () => {
         await initProject(engine);
         await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
         const readiness = await engine.plan("spec-checkin");
-        assert.equal(readiness, "CONCERNS");
+        assert.equal(readiness, "PASS");
         const task = (await store.readTask("TSK-0001")).data;
         assert.equal(task.status, "ready");
         assert.notEqual(task.status, "done");
@@ -441,7 +441,7 @@ test("extra.json glob is filed as notes ticket, not PersistValidationError", asy
         await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
         await writeTask(store, makeTask());
         const readiness = await engine.plan("spec-checkin");
-        assert.equal(readiness, "CONCERNS");
+        assert.equal(readiness, "PASS");
         const child = (await store.readTask("TSK-0002")).data;
         assert.equal(child.title, "also glob");
         assert.deepEqual(child.contract.filesAllowed, ["notes/TSK-0002.md"]);
@@ -608,7 +608,7 @@ test("plan spawn can emit a P0 task via fake fixture", async () => {
         await initProject(engine);
         await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
         const readiness = await engine.plan("spec-checkin");
-        assert.equal(readiness, "CONCERNS");
+        assert.equal(readiness, "PASS");
         const slice = await engine.listSliceTasks();
         assert.equal(slice[0].id, "TSK-0001");
         assert.equal(slice[0].priority, "P0");
@@ -639,7 +639,7 @@ test("plan prompt.md starts with SessionBrief and has no FileContract heading", 
         await initProject(engine);
         await seedFrozenSpec(store, { wireframesIndex: "wireframes/INDEX.html" });
         const readiness = await engine.plan("spec-checkin");
-        assert.equal(readiness, "CONCERNS");
+        assert.equal(readiness, "PASS");
         const prompt = await readLatestRunPrompt(dir, "plan");
         assert.ok(prompt.startsWith("## SessionBrief\nProject:"));
         assert.match(prompt, /## SkillContract/);

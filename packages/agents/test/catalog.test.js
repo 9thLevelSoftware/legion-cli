@@ -151,14 +151,15 @@ test("listSkillCatalog records missing required SKILL.md as skipped required", a
   });
 });
 
-test("listSkillCatalog of the repo skills tree has ten valid entries", () => {
-  assert.equal(SkillIdSchema.options.length, 12);
+test("listSkillCatalog includes the internal challenge skill", () => {
+  assert.equal(SkillIdSchema.options.length, 13);
   assert.deepEqual(
     [...SkillIdSchema.options],
     [
       "interview",
       "discuss",
       "spec",
+      "spec-challenge",
       "ingest",
       "plan",
       "execute",
@@ -175,7 +176,7 @@ test("listSkillCatalog of the repo skills tree has ten valid entries", () => {
     skipped.filter((row) => row.required),
     [],
   );
-  assert.equal(catalog.skills.length, 12);
+  assert.equal(catalog.skills.length, 13);
   assert.ok(catalog.skills.some((skill) => skill.skillId === "wireframe"));
   assert.ok(catalog.skills.some((skill) => skill.skillId === "chat"));
   assert.ok(catalog.skills.some((skill) => skill.skillId === "map"));

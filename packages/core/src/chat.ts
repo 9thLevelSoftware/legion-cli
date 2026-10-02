@@ -123,15 +123,25 @@ async function nextVerbForState(engine: LegionEngine, phase: Phase): Promise<str
   if (phase === "uninitialized") return "legion-cli init";
   let mode: "greenfield" | "brownfield" | undefined;
   let controlMode: string | undefined;
+  let focused = false;
   try {
     mode = (await engine.store.readProject()).data.mode;
   } catch {
     mode = undefined;
   }
   try {
-    controlMode = (await engine.store.readConfig()).control_mode;
+    const config = await engine.store.readConfig();
+    controlMode = config.control_mode;
+    focused = config.workflow?.profile === "focused";
   } catch {
     controlMode = undefined;
+  }
+  if (focused) {
+    const workflow = await engine.getWorkflowStatus();
+    if (controlMode === "advisory" && workflow.stage === "execute") {
+      return "legion-cli control-mode guarded";
+    }
+    return workflow.next;
   }
   const slice = await engine.listSliceTasks();
   if (phase === "initialized" && mode === "brownfield") return "legion-cli brownfield";

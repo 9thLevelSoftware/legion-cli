@@ -1,5 +1,17 @@
 # Legion CLI — Product Engineering lifecycle engine
 
+> **Current workflow direction (2026-10-01).** This is the historical
+> architecture record. [`workflow-focus.md`](workflow-focus.md) supersedes its
+> public lifecycle framing: the default journey is `init` → `spec` → `plan` →
+> `execute` → `ship`. Intent capture and decision discussion belong in `spec`;
+> planned checks, independent review, and acceptance evidence belong in
+> `execute`; `ship` remains human approval. `intent`, `discuss`, `verify`,
+> `review`, and numeric `qa` stay available as advanced recovery/inspection
+> surfaces. Greenfield and `init --mode brownfield --brownfield-goal
+> change|audit` converge at `spec`; the `legion-cli brownfield` specialist
+> audit and its worktrees remain separate. Where this historical document
+> conflicts with that focused public workflow, the focused guide governs.
+
 | Field | Value |
 | --- | --- |
 | **Title** | Legion CLI: a CLI-owned product development lifecycle engine |
@@ -16,9 +28,20 @@
 
 ### Rev 15 implementation contract
 
-The approved enhancements supersede older deferred rows for bounded concurrent execution, ACP, and embeddings. The engine remains local-first with the same ten lifecycle verbs, explicit adapter selection, guarded approvals, and private workspace root. ACP and hybrid retrieval are opt-in experiments; deterministic fixtures do not certify real agents or retrieval quality. Autonomous control and eight-agent QA remain deferred.
+The approved enhancements supersede older deferred rows for bounded concurrent
+execution, ACP, and embeddings. The engine remains local-first with the five-command
+focused journey described in `workflow-focus.md`, advanced compatibility verbs,
+explicit adapter selection, guarded approvals, and private workspace root. ACP
+and hybrid retrieval are opt-in experiments; deterministic fixtures do not certify
+real agents or retrieval quality. Autonomous control and eight-agent QA remain deferred.
 
-QA v2 links normalized reports to declared SPEC criteria using `@ac(AC-01)` title tags (multiple tags are supported). Criterion priority comes from the SPEC. Outcomes are passed, failed, skipped, or missing; untagged successes do not supply acceptance coverage. Missing or skipped P0 evidence blocks the gate, and missing P1/P2 criteria reduce their rates. Report failures remain blocking. Scores bind the SPEC and tested source hashes and retain run-local reports. Legacy v1 scores remain historical evidence and require recalculation before a new ship.
+For legacy numeric QA, v2 links normalized reports to declared SPEC criteria using
+`@ac(AC-01)` title tags (multiple tags supported). Priority comes from the SPEC;
+outcomes are passed, failed, skipped, or missing, and untagged successes provide no
+coverage. Missing/skipped P0 evidence and report failures block that gate. Scores
+bind SPEC/source hashes and retain run-local reports; v1 scores need recalculation.
+Focused delivery instead requires current approved checks, independent review and
+criterion-level acceptance evidence.
 
 Recovery metadata records process-start identities and atomic starting, running, agent-complete, integrating, verifying, and terminal stages. HTTP jobs checkpoint conversations and tool outcomes around dispatch, retain their original jail, and resume only when prompt, configuration, contracts, source, and jail identities match. Completed calls are not replayed; uncertain command or external-call outcomes block recovery. Status and the viewer expose stage, ownership, logs, interruption and recovery guidance.
 
@@ -26,7 +49,7 @@ Named adapter profiles retain existing adapter routing and add task/skill profil
 
 Extensions use separate `extension:<id>` references rather than opening the lifecycle skill enum. Pinned manifests describe compatibility, resources, tools and permissions. `skills run` executes governed evidence jobs; product recommendations become tickets. Accessibility, performance, migration/rollback and release-readiness packs record unavailable checks explicitly.
 
-Automatic `execute --until-blocked` can opt into one to four workers with `execution.maxWorkers` or `--jobs`. Explicit task execution remains single-task. Dependency-independent, disjoint contracts run in separate existing jails; inspection precedes deterministic serialized application with HEAD and owned-path baselines. Successful siblings remain preserved when another task blocks. Brownfield worktrees remain exclusively `.legion-cli/worktrees/<run>/pr-N/`; lifecycle concurrency does not create worktrees.
+Automatic execute can opt into one to four workers through `execution.maxWorkers`; explicit `--jobs` requires `--until-blocked`. Task IDs and `--step` stay single-task. Dependency-independent disjoint contracts run in separate jails with inspected output and serialized baseline-checked integration. Successful siblings remain preserved when another task blocks. Brownfield worktrees remain exclusively `.legion-cli/worktrees/<run>/pr-N/`; lifecycle concurrency does not create worktrees.
 
 Release validation includes packed-package consumer installation without workspace links and a deterministic complete lifecycle. Linux/native, Linux/Docker, Windows/native and macOS sandbox CI are required. Windows/Docker stays deferred under `Q-WIN-DOCKER` until the opt-in workflow passes on a suitable runner. Publishing and real-provider certification remain separate actions.
 

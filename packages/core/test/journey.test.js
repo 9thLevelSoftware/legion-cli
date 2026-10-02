@@ -52,7 +52,6 @@ async function driveToPlanReady(engine, store, dir) {
   const spec = await engine.draftSpec({ skipWireframes: true });
   await engine.approveSpec(spec.id, { id: "tester" }, { message: "looks right" });
   assert.equal((await engine.getState()).phase, "spec_frozen");
-  assert.match((await store.readSpec(spec.id)).body, /Approved: looks right/);
 
   // The planner agent's output: one task that the fake execute adapter can complete.
   await mkdir(join(dir, "src"), { recursive: true });

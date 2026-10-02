@@ -79,9 +79,11 @@ import {
   MCP_TOOL_TIMEOUT_MS,
   stableHash,
 } from "@9thlevelsoftware/legion-cli-http";
+import type { HttpToolHost } from "@9thlevelsoftware/legion-cli-http";
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
+import { CHALLENGE_REPOSITORY_READ_ROOTS, challengeReadableFiles } from "./spec-challenge-inputs.js";
 import { createHttpToolHost, httpAllowedWrites } from "./http-host.js";
 import { projectSourceIdentity } from "./qa-evidence.js";
 import {
@@ -424,13 +426,15 @@ export function governedMcpToolContractIdentity(
     .map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema, readOnly: tool.readOnly })));
 }
 
-async function governedMcpBridge(config: LegionConfig): Promise<{
-  externalTools: NonNullable<import("@9thlevelsoftware/legion-cli-http").HttpToolHost["externalTools"]>;
-  callExternalTool: NonNullable<import("@9thlevelsoftware/legion-cli-http").HttpToolHost["callExternalTool"]>;
+type GovernedMcpBridge = {
+  externalTools: NonNullable<HttpToolHost["externalTools"]>;
+  callExternalTool: NonNullable<HttpToolHost["callExternalTool"]>;
   close: () => Promise<void>;
   configIdentity: string;
   toolContractIdentity: string;
-} | undefined> {
+};
+
+async function governedMcpBridge(config: LegionConfig): Promise<GovernedMcpBridge | undefined> {
   const allowlist = config.mcpHttpToolAllowlist;
   if (!config.mcpServers || allowlist.length === 0) return undefined;
   const allowed = new Set(allowlist);
@@ -605,6 +609,7 @@ const CONFIG_READ_SET = [
 export function isJailedSpawn(skillId: SkillId, configuredSkills: readonly string[], adapterId: string): boolean {
   return (
     skillId === "execute" ||
+    skillId === "spec-challenge" ||
     configuredSkills.includes(skillId) ||
     adapterId === "http" ||
     (skillId === "ingest" && adapterId !== "fake")
@@ -621,14 +626,13 @@ export function sandboxReadSet(opts: {
   const out = [
     `.legion-cli/cache/skills/${opts.runId}`,
     `.legion-cli/cache/runs/${opts.runId}`,
-    // Generated map artifacts are engine-owned context and remain read-only in the jail.
-    ".legion-cli/map",
   ];
   // Distill links existing catalog titles, so the jailed ingest agent reads the wiki.
   if (opts.skillId === "ingest" && existsSync(join(opts.projectRoot, ".legion-cli", "wiki"))) {
     out.push(".legion-cli/wiki");
   }
   if (opts.specId) out.push(`.legion-cli/specs/${opts.specId}`);
+  if (existsSync(join(opts.projectRoot, ".legion-cli", "map"))) out.push(".legion-cli/map");
   if (opts.taskId) out.push(`.legion-cli/tasks/${opts.taskId}.md`);
   for (const name of CONFIG_READ_SET) {
     if (existsSync(join(opts.projectRoot, name))) out.push(name);
@@ -662,7 +666,7 @@ async function sandboxAllowedWrites(opts: {
       }
     }
   }
-  if (opts.contract) out.push(...opts.contract.filesAllowed, ...opts.contract.expectedArtifacts);
+  if (opts.contract && opts.skillId !== "spec-challenge") out.push(...opts.contract.filesAllowed, ...opts.contract.expectedArtifacts);
   return out;
 }
 
@@ -753,6 +757,10 @@ async function assembleSpawnPrompt(opts: {
 }
 
 export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkillSpawn> {
+  if (opts.skillId === "spec-challenge" &&
+      (opts.extraAllowedRoots?.length || opts.fileContract)) {
+    refuse("spec-challenge permits only its run-cache output", HINT.spec);
+  }
   const runId = `${opts.skillId}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
   const resolution = resolveAdapterId({
     config: opts.config,
@@ -920,7 +928,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
 
   let sandbox: SandboxHandle | undefined;
   let allowedWrites: string[] = [];
-  let mcpBridge: Awaited<ReturnType<typeof governedMcpBridge>>;
+  let mcpBridge: GovernedMcpBridge | undefined;
   const jailed = isJailedSpawn(opts.skillId, opts.config.sandbox.skills, resolution.id);
   if (jailed) {
     try {
@@ -938,16 +946,29 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         specId: opts.specId,
         contract: opts.fileContract,
       });
+      const readSet = opts.skillId === "spec-challenge"
+        ? await challengeReadableFiles(opts.projectRoot, [
+            `.legion-cli/cache/skills/${runId}`,
+            `.legion-cli/cache/runs/${runId}`,
+            ...CHALLENGE_REPOSITORY_READ_ROOTS,
+            ".legion-cli/wiki/product",
+            ".legion-cli/discuss",
+            ".legion-cli/decisions",
+            ".legion-cli/map",
+            ...(opts.specId ? [`.legion-cli/specs/${opts.specId}`] : []),
+          ])
+        : sandboxReadSet({
+            projectRoot: opts.projectRoot,
+            runId,
+            skillId: opts.skillId,
+            specId: opts.specId,
+            taskId: opts.taskId,
+          });
       sandbox = await materializeJail({
         projectRoot: opts.projectRoot,
         runId,
         allowedWrites,
-        readSet: sandboxReadSet({
-          projectRoot: opts.projectRoot,
-          runId,
-          specId: opts.specId,
-          taskId: opts.taskId,
-        }),
+        readSet,
         adapterBinary: tmpl.binary.startsWith("(") ? undefined : tmpl.binary,
         backend: opts.config.sandbox.backend,
         allowDegradedCopy:
@@ -1248,7 +1269,7 @@ export async function resumeHttpSkillSpawn(
   const gitPolicy = await snapshotGitPolicy(opts.projectRoot);
   const chatSessions = await snapshotChatSessions(opts.projectRoot);
   let handle: AgentHandle;
-  let mcpBridge: Awaited<ReturnType<typeof governedMcpBridge>>;
+  let mcpBridge: GovernedMcpBridge | undefined;
   let liveMarker: LiveRunMarker | undefined;
   try {
     mcpBridge = await governedMcpBridge(effectiveConfig);
@@ -1393,6 +1414,9 @@ export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spa
     if (timedOut) error = new AgentError("spawn timed out");
     else if (agentResult.aborted) error = new AgentError("spawn aborted");
     else if (limitReason) error = new AgentError(limitReason);
+    else if (started.skillId === "spec-challenge" && agentResult.exitCode !== 0) {
+      error = new AgentError(`spawn exited ${String(agentResult.exitCode)}`);
+    }
   } catch (err) {
     error = err;
   }

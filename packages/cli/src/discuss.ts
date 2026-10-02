@@ -3,7 +3,7 @@ import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { closePrompt, isNo, readLine, slurpStdin } from "./prompt.js";
 
-export async function runDiscuss(opts: CliOpts): Promise<number> {
+export async function runDiscuss(opts: CliOpts, quiet = false, keepPrompt = false): Promise<number> {
   if (opts.yes) {
     refuse("discuss --yes cannot skip product decisions", HINT.discuss);
   }
@@ -36,13 +36,13 @@ export async function runDiscuss(opts: CliOpts): Promise<number> {
       proposed = await engine.discuss(decisions);
     }
 
-    if (opts.json) {
+    if (opts.json && !quiet) {
       writeJson({ ok: true, remaining: [], next: "legion-cli spec" });
       return 0;
     }
-    writeOut("Decisions recorded. Next: legion-cli spec");
+    if (!quiet) writeOut("Decisions recorded. Next: legion-cli spec");
     return 0;
   } finally {
-    closePrompt();
+    if (!keepPrompt) closePrompt();
   }
 }

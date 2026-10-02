@@ -24,6 +24,13 @@
         "advisory"
       ]
     },
+    "brownfieldGoal": {
+      "type": "string",
+      "enum": [
+        "change",
+        "audit"
+      ]
+    },
     "activeSpecId": {
       "anyOf": [
         {

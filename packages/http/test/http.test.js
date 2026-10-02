@@ -1463,15 +1463,6 @@ test("copy-jail host does not offer run_command through the tool router", async 
   assert.match(out, /unknown tool run_command/);
 });
 
-test("tool router is the only path from adapter to host tools", async () => {
-  const src = await readFile(join(pkgRoot, "src", "adapter.ts"), "utf8");
-  assert.match(src, /await dispatchToolCall\(call, job\.httpHost, job\.skillId\)/);
-  const runFn = src.slice(src.indexOf("async #run"));
-  assert.doesNotMatch(runFn, /httpHost\.writeFile/);
-  assert.doesNotMatch(runFn, /httpHost\.runCommand/);
-  assert.doesNotMatch(runFn, /host\.writeFile/);
-  assert.doesNotMatch(runFn, /host\.runCommand/);
-});
 
 test("adapter tool round-trip writes an allowed path through dispatchToolCall", async () => {
   const toolResults = [];

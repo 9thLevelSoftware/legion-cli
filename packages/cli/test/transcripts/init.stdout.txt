@@ -4,4 +4,4 @@ adapter.default: fake
 adapter readiness: ready (deterministic adapter selected)
 sandbox readiness: <sandbox preflight>
 Supported command: pnpm exec legion-cli --project <project>
-Next: legion-cli intent --project <project>
+Next: legion-cli spec --project <project>

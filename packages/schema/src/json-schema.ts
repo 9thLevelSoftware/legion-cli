@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AssumptionSchema,
+  AcceptanceReceiptSchema,
   AuditEventSchema,
   BrownfieldDagSchema,
   BrownfieldPatternsFileSchema,
@@ -18,6 +19,7 @@ import {
   IntentAnswersFileSchema,
   LegionConfigSchema,
   PacketSchema,
+  PlanApprovalReceiptSchema,
   ProjectFileSchema,
   QAScoreSchema,
   RecipesLockSchema,
@@ -29,8 +31,12 @@ import {
   SkillOverlayPinSchema,
   TopicsFileSchema,
   SpecSchema,
+  SpecApprovalReceiptSchema,
+  SpecChallengeReceiptSchema,
   StateFileSchema,
   TaskSchema,
+  WorkflowEvidenceReceiptSchema,
+  WorkflowClaimSchema,
 } from "./schemas.js";
 import { ADAPTER_IDS, PhaseSchema, SkillIdSchema, TaskStatusSchema } from "./versions.js";
 
@@ -69,6 +75,12 @@ export const JSON_SCHEMA_FILES = [
   "chat-session",
   "serve-file",
   "recipes-lock",
+  "plan-approval",
+  "spec-approval",
+  "workflow-evidence",
+  "acceptance-receipt",
+  "workflow-claim",
+  "spec-challenge",
 ] as const;
 
 export type JsonSchemaFileName = (typeof JSON_SCHEMA_FILES)[number];
@@ -108,6 +120,12 @@ const schemaByFile = {
   "chat-session": ChatSessionFileSchema,
   "serve-file": ServeFileSchema,
   "recipes-lock": RecipesLockSchema,
+  "plan-approval": PlanApprovalReceiptSchema,
+  "spec-approval": SpecApprovalReceiptSchema,
+  "workflow-evidence": WorkflowEvidenceReceiptSchema,
+  "acceptance-receipt": AcceptanceReceiptSchema,
+  "workflow-claim": WorkflowClaimSchema,
+  "spec-challenge": SpecChallengeReceiptSchema,
 } as const satisfies Record<JsonSchemaFileName, z.ZodType>;
 
 export function toLegionJsonSchema(schema: z.ZodType): Record<string, unknown> {

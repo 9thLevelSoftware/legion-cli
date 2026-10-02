@@ -44,6 +44,18 @@ export {
 } from "./recipes.js";
 export type { LoadedRecipe, RecipeExecutionResult } from "./recipes.js";
 export { createLegionEngine, DISTILL_SOURCE_MAX_CHARS, LegionEngine } from "./engine.js";
+export {
+  SPEC_CHALLENGE_THINKING_SUFFIX,
+  specChallengeReceiptPath,
+  specChallengeThinkingPath,
+} from "./spec-challenge.js";
+export {
+  assertDiscoverySelection,
+  DISCOVERY_PATH,
+  prepareDiscovery,
+  recordDiscoverySelection,
+} from "./discovery.js";
+export type { DiscoveryResult, DiscoverySelection } from "./discovery.js";
 export type { MapLspMode, MapOptions, MapResult } from "./map.js";
 export {
   assertIngestSourceAllowed,
@@ -198,6 +210,7 @@ export type {
   ExecuteProgress,
   ExecuteResult,
   ExecuteTaskResult,
+  ExecuteWorkflowOptions,
   FiledTicketSummary,
   TicketSource,
   FileContract,
@@ -214,6 +227,8 @@ export type {
   Packet,
   PacketRespondInput,
   PacketResult,
+  PlanApprovalOptions,
+  PlanApprovalReceipt,
   Phase,
   PromoteRunOptions,
   PromoteRunResult,
@@ -231,6 +246,18 @@ export type {
   SkippedCompactTask,
   Spec,
   Task,
+  AcceptanceEvidenceInput,
+  AcceptanceReceipt,
   WireframeOptions,
   WireframeResult,
+  WorkflowAcceptanceStatus,
+  WorkflowEvidenceReceipt,
+  WorkflowExecutionResult,
+  WorkflowStatus,
+  SpecChallengeDisposition,
+  SpecChallengeManualQuestionKey,
+  SpecChallengeManualReviewInput,
+  SpecChallengeResolutionInput,
+  SpecChallengeResult,
+  SpecChallengeStatus,
 } from "./types.js";

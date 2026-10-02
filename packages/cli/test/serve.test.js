@@ -332,20 +332,23 @@ test("serve --expose warns and omits token from GET HTML", async () => {
   });
 });
 
-test("status Viewer is a live serve URL only while pid is alive", async () => {
+test("status JSON viewer is a live serve URL only while pid is alive", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
-    const idle = runCli(["status", "--project", dir]);
+    const idle = runCli(["status", "--project", dir, "--json"]);
     assert.equal(idle.status, 0, idle.stderr);
-    assert.match(normalize(idle.stdout), /Viewer: legion-cli serve/);
-    assert.doesNotMatch(normalize(idle.stdout), /http:\/\/127\.0\.0\.1:7420/);
+    const idleStatus = JSON.parse(idle.stdout);
+    assert.equal(idleStatus.viewer, "legion-cli serve");
+    assert.equal(idleStatus.viewerLive, false);
 
     const { child, url } = startServeCli(["serve", "--project", dir, "--no-open", "--port", "0", "--no-mcp-http"]);
     try {
       const viewer = await url;
-      const live = runCli(["status", "--project", dir]);
+      const live = runCli(["status", "--project", dir, "--json"]);
       assert.equal(live.status, 0, live.stderr);
-      assert.match(normalize(live.stdout), new RegExp(`Viewer: ${viewer.replaceAll(".", "\\.")}  \\(legion-cli serve --project [^)]*\\)`));
+      const liveStatus = JSON.parse(live.stdout);
+      assert.equal(liveStatus.viewer, viewer);
+      assert.equal(liveStatus.viewerLive, true);
     } finally {
       await stop(child);
     }
@@ -364,9 +367,11 @@ test("status Viewer is a live serve URL only while pid is alive", async () => {
         pid: 1_000_000_000,
       })}\n`,
     );
-    const dead = runCli(["status", "--project", dir]);
-    assert.match(normalize(dead.stdout), /Viewer: legion-cli serve/);
-    assert.doesNotMatch(normalize(dead.stdout), /http:\/\/127\.0\.0\.1:7420/);
+    const dead = runCli(["status", "--project", dir, "--json"]);
+    assert.equal(dead.status, 0, dead.stderr);
+    const deadStatus = JSON.parse(dead.stdout);
+    assert.equal(deadStatus.viewer, "legion-cli serve");
+    assert.equal(deadStatus.viewerLive, false);
   });
 });
 

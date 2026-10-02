@@ -13,7 +13,7 @@ import {
 import type { AdapterId, LegionConfig, ProjectFile, StateFile } from "@9thlevelsoftware/legion-cli-schema";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeJsonLine, writeOut } from "./io.js";
-import { collectBlockers, nextCommand, statusExitCode, type StatusSliceTask } from "./next.js";
+import { ADVISORY_EXECUTION_NEXT, collectBlockers, nextCommand, statusExitCode, type StatusSliceTask } from "./next.js";
 
 async function readOptionalProject(engine: ReturnType<typeof createLegionEngine>): Promise<ProjectFile | null> {
   if (!(await engine.store.pathExists(".legion-cli/PROJECT.md"))) return null;
@@ -38,26 +38,20 @@ async function liveViewer(projectRoot: string): Promise<{ viewer: string; live: 
   return { viewer: `http://${host}:${live.port}`, live: true };
 }
 
-function shouldHintCompact(slice: readonly { status: string }[]): boolean {
-  return slice.some((task) => task.status === "done") && !slice.some((task) => task.status === "in_progress");
-}
-
 function formatHuman(input: {
   project: ProjectFile | null;
   state: StateFile;
   next: { run: string; hint: string };
   blockers: { detail: string }[];
-  viewer: string;
-  viewerLive: boolean;
   blockersOnly: boolean;
   currentTaskAdapter: AdapterId | null;
-  compactHint: boolean;
   run: RunRecoveryStatus | null;
 }): string {
-  const { project, state, next, blockers, viewer, viewerLive, blockersOnly, currentTaskAdapter, compactHint, run } = input;
+  const { project, state, next, blockers, blockersOnly, currentTaskAdapter, run } = input;
   if (blockersOnly) {
-    if (blockers.length === 0) return "No blockers.";
-    return ["Blockers:", ...blockers.map((item) => `  ${item.detail}`)].join("\n");
+    const details = blockers.map((item) => item.detail);
+    if (details.length === 0) return "No blockers.";
+    return ["Blockers:", ...details.map((detail) => `  ${detail}`)].join("\n");
   }
 
   const lines: string[] = [];
@@ -84,8 +78,6 @@ function formatHuman(input: {
   }
   lines.push(`Next up: ${next.hint}`);
   lines.push(`Run:  ${next.run}`);
-  if (compactHint) lines.push("Hint: legion-cli context compact");
-  lines.push(viewerLive ? `Viewer: ${viewer}  (legion-cli serve)` : `Viewer: ${viewer}`);
   if (blockers.length > 0) {
     lines.push("Blockers:");
     for (const item of blockers) lines.push(`  ${item.detail}`);
@@ -156,17 +148,48 @@ export async function runStatus(
         .map((row) => ({ id: row.id, title: row.title, status: row.status as StatusSliceTask["status"] }))
     : [];
   const next = nextCommand(state, slice, project?.mode, config?.control_mode);
+  let workflow: Awaited<ReturnType<typeof engine.getWorkflowStatus>> | null = null;
+  if (state.phase !== "uninitialized") {
+    try {
+      workflow = await engine.getWorkflowStatus();
+    } catch (err) {
+      // Legacy partial artifacts can still be inspected through status. Focused
+      // projects must surface corrupt workflow receipts instead of hiding them.
+      if (config?.workflow?.profile === "focused") throw err;
+      workflow = null;
+    }
+  }
   const blockers = collectBlockers(state.lastReadiness, state.lastReview, slice);
+  if (workflow?.blocker) blockers.push({ kind: "workflow", detail: workflow.blocker });
   const auditProblem = state.phase === "uninitialized" ? null : await auditChainProblem(opts.project);
   if (auditProblem) {
     blockers.push({ kind: "audit", detail: `audit chain: ${auditProblem} (run \`legion-cli doctor\`)` });
   }
   const { viewer, live: viewerLive } = await liveViewer(opts.project);
-  const code = statusExitCode(state.lastReadiness, slice);
+  const legacyCode = statusExitCode(state.lastReadiness, slice);
+  const code =
+    workflow?.execution === "blocked" || workflow?.execution === "stale" || workflow?.planApproval === "stale"
+      ? 2
+      : workflow?.acceptance.failed.length
+        ? 1
+        : legacyCode;
   const current = summaries.find((row) => row.id === state.currentTaskId);
   const currentTaskAdapter = (current?.adapter as AdapterId | null | undefined) ?? null;
   const runs = state.phase === "uninitialized" ? [] : await listRunRecoveryStatuses(opts.project);
   const run = runs.find((item) => item.taskId === state.currentTaskId) ?? runs[0] ?? null;
+  const advisoryBlocksNext = config?.control_mode === "advisory" && (
+    workflow?.next === "legion-cli execute" ||
+    workflow?.next.startsWith("legion-cli execute ") ||
+    (config.workflow?.profile !== "focused" && next.run === ADVISORY_EXECUTION_NEXT.run)
+  );
+  const workflowNext = advisoryBlocksNext
+    ? ADVISORY_EXECUTION_NEXT
+    : workflow
+      ? {
+          run: workflow.next,
+          hint: workflow.next === "legion-cli spec" && workflow.blocker ? workflow.blocker : next.hint,
+        }
+      : next;
 
   if (opts.json) {
     const payload = {
@@ -178,7 +201,7 @@ export async function runStatus(
       activeSpecId: state.activeSpecId ?? null,
       lastReadiness: state.lastReadiness ?? null,
       lastReview: state.lastReview ?? null,
-      next,
+      next: workflowNext,
       blockers,
       viewer,
       viewerLive,
@@ -191,7 +214,7 @@ export async function runStatus(
   }
 
   if (opts.plain) {
-    writeOut(formatPlain({ project, state, next, blockers, currentTaskAdapter, run }));
+    writeOut(formatPlain({ project, state, next: workflowNext, blockers, currentTaskAdapter, run }));
     return code;
   }
 
@@ -199,13 +222,10 @@ export async function runStatus(
     formatHuman({
       project,
       state,
-      next,
+      next: workflowNext,
       blockers,
-      viewer,
-      viewerLive,
       blockersOnly: opts.blockers,
       currentTaskAdapter,
-      compactHint: shouldHintCompact(slice),
       run,
     }),
   );

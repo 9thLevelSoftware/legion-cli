@@ -1,5 +1,9 @@
 # Adapter routing — adapters, named profiles, and usage policy
 
+> Public workflow authority is [`workflow-focus.md`](workflow-focus.md).
+> This routing design retains advanced/legacy command examples; they are not
+> additional default lifecycle waypoints.
+
 | Field | Value |
 | --- | --- |
 | **Title** | Adapter routing: per-task and per-skill selection of which coding-agent CLI to spawn |

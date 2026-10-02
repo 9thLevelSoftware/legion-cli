@@ -119,26 +119,6 @@ test("verify [id] is accepted", async () => {
   });
 });
 
-test("help lists verify and review", async () => {
-  const verify = runCli(["help", "verify"]);
-  assert.equal(verify.status, 0, verify.stderr);
-  assert.match(normalize(verify.stdout), /not a ship gate/);
-  const review = runCli(["help", "review"]);
-  assert.equal(review.status, 0, review.stderr);
-  assert.match(normalize(review.stdout), /FAIL/);
-  assert.match(normalize(review.stdout), /in-place rewrites/);
-  const layer1 = runCli(["help"]);
-  assert.equal(layer1.status, 0, layer1.stderr);
-  assert.match(normalize(layer1.stdout), /in-place rewrites/);
-  const all = runCli(["help", "--all"]);
-  assert.equal(all.status, 0, all.stderr);
-  const out = normalize(all.stdout);
-  assert.match(out, /verify \[id\]/);
-  assert.match(out, /review/);
-  assert.match(out, /in-place rewrites/);
-  assert.match(out, /--adapter/);
-});
-
 test("review FAIL when spawn rewrites an existing TSK", async () => {
   await withTempDir(async (dir) => {
     await seedExecutingDone(dir);

@@ -27,6 +27,7 @@ import {
   writeMapFile,
 } from "@9thlevelsoftware/legion-cli-map";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -101,12 +102,15 @@ import {
 import {
   ADAPTER_ID_HELP,
   ControlModeSchema,
+  AcceptanceReceiptSchema,
+  PlanApprovalReceiptSchema,
   AnyQAScoreSchema,
   QAScoreSchema,
   computeQaPass,
   SURGICAL_MIGRATION_HINT,
   SCHEMA_VERSION,
   type AdapterId,
+  type AcceptanceReceipt,
   type AnyQAScore,
   type Assumption,
   normalizePathKey,
@@ -116,6 +120,7 @@ import {
   type IntentAnswersFile,
   type LegionConfig,
   type Packet,
+  type PlanApprovalReceipt,
   type Phase,
   type ProjectFile,
   type QAScore,
@@ -128,7 +133,11 @@ import {
   type StateFile,
   type Task,
   type TaskStatus,
+  type WorkflowEvidenceReceipt,
+  type SpecChallengeReceipt,
+  type SpecChallengeProposedChange,
 } from "@9thlevelsoftware/legion-cli-schema";
+import type { WorkflowClaim } from "@9thlevelsoftware/legion-cli-schema";
 import { copyShippedCraft, isBrandViolationBlockingFreeze } from "@9thlevelsoftware/legion-cli-design-system";
 import { readHttpCheckpoint } from "@9thlevelsoftware/legion-cli-http";
 import {
@@ -178,7 +187,6 @@ import {
   refuseIfLiveSkillSpawn,
   refuseIfLiveRun,
   resumeAsLiveRun,
-  resumeRunIsLive,
   spawnableAdapterRefuseMessage,
   startSkillSpawn,
   resumeHttpSkillSpawn,
@@ -244,6 +252,7 @@ import type {
   ExecuteOptions,
   ExecuteProgress,
   ExecuteResult,
+  ExecuteWorkflowOptions,
   IngestOpts,
   IngestResult,
   ExecuteTaskResult,
@@ -258,15 +267,69 @@ import type {
   PromoteRunResult,
   PacketRespondInput,
   PacketResult,
+  PlanApprovalOptions,
   QaOptions,
   ReviewResult,
   ShipOptions,
   ShipPreview,
   ShipReceipt,
   VerifyResult,
+  WorkflowExecutionResult,
+  WorkflowStatus,
+  AcceptanceEvidenceInput,
+  SpecChallengeManualQuestionKey,
+  SpecChallengeManualReviewInput,
+  SpecChallengeResolutionInput,
+  SpecChallengeResult,
   WireframeOptions,
   WireframeResult,
 } from "./types.js";
+import {
+  applyManualReview,
+  applySpecChallengeChanges,
+  challengeResult,
+  completeManualReview,
+  createSpecChallengeBinding,
+  newSpecChallengeReceipt,
+  parseSpecChallengeAnalysis,
+  parseSpecChallengeSynthesis,
+  readSpecChallengeReceipt,
+  receiptMatchesBinding,
+  specChallengeAnalysisPath,
+  specChallengeDraftBody,
+  specChallengeReadableFingerprints,
+  specChallengeSynthesisPath,
+  validateManualAnswer,
+  writeSpecChallengeReceipt,
+  writeSpecChallengeThinking,
+  type AppliedSpecChallenge,
+  type SpecChallengeBinding,
+} from "./spec-challenge.js";
+import {
+  acquireWorkflowClaim,
+  WORKFLOW_APPROVAL_PATH,
+  WORKFLOW_REVIEW_PATH,
+  createWorkflowPlanSnapshot,
+  readAcceptanceReceipt,
+  readExplicitReviewEvidence,
+  readPlanApproval,
+  readPlanBody,
+  readSpecApproval,
+  readWorkflowEvidence,
+  readWorkflowDiscoveryContext,
+  workflowEnvironmentFingerprint,
+  workflowFingerprint,
+  workflowProductFingerprint,
+  workflowReviewEvidenceFresh,
+  writeAcceptanceReceipt,
+  writePlanApproval,
+  writeSpecApproval,
+  writeWorkflowEvidence,
+  writeWorkflowReviewReport,
+  releaseWorkflowClaim,
+  type WorkflowPlanSnapshot,
+} from "./workflow.js";
+import { assertDiscoverySelection } from "./discovery.js";
 import {
   brownfieldEntry,
   dagRun,
@@ -502,6 +565,10 @@ function peekTaskFrontmatter(frontmatter: unknown): { specId?: string; filesAllo
   return { specId, filesAllowed };
 }
 
+type EngineSpecDocument = { data: Spec; body: string };
+type EngineSpecChallengeContext =
+  | { applicable: false; specId: string; spec: EngineSpecDocument }
+  | { applicable: true; specId: string; spec: EngineSpecDocument; binding: SpecChallengeBinding };
 function normalizeInjectedQaScore(input: QAScore, spec: Spec, specHash: string, sourceHash: string): QAScore {
   const expected = [...spec.acceptance]
     .map((criterion) => ({ id: criterion.id, priority: criterion.priority }))
@@ -570,6 +637,8 @@ export class LegionEngine {
   readonly #fakeVerificationError?: string;
   readonly #fakeOnVerify?: () => Promise<void>;
   readonly #fakeOnQa?: () => Promise<void>;
+  readonly #fakeAfterChallengeOutputCheckpoint?: () => Promise<void>;
+  readonly #fakeAfterChallengeDraftWrite?: () => Promise<void>;
   readonly #fakeQaScoreInjection: boolean;
   readonly #fakeHandlePid?: number;
   readonly #verificationTimeoutMs: number;
@@ -595,6 +664,8 @@ export class LegionEngine {
     this.#fakeVerificationError = options?.fakeVerificationError;
     this.#fakeOnVerify = options?.fakeOnVerify;
     this.#fakeOnQa = options?.fakeOnQa;
+    this.#fakeAfterChallengeOutputCheckpoint = options?.fakeAfterChallengeOutputCheckpoint;
+    this.#fakeAfterChallengeDraftWrite = options?.fakeAfterChallengeDraftWrite;
     this.#fakeQaScoreInjection = Boolean(options?.fakeQaScoreInjection);
     this.#fakeHandlePid = options?.fakeHandlePid;
     this.#verificationTimeoutMs = options?.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
@@ -608,6 +679,9 @@ export class LegionEngine {
     const mode = opts.mode ?? "greenfield";
     if (mode !== "greenfield" && mode !== "brownfield") {
       refuse("init mode must be greenfield or brownfield", HINT.initMode);
+    }
+    if (opts.brownfieldGoal && mode !== "brownfield") {
+      refuse("brownfield goal requires brownfield mode", HINT.initMode);
     }
     const controlMode = this.#parseControlMode(opts.controlMode ?? "guarded");
     if (!opts.name?.trim()) {
@@ -655,6 +729,7 @@ export class LegionEngine {
         name: opts.name.trim(),
         mode,
         controlMode,
+        ...(mode === "brownfield" ? { brownfieldGoal: opts.brownfieldGoal ?? "change" } : {}),
       };
       await this.store.writeProject(project, "This folder is now a Legion CLI project.\n");
 
@@ -699,6 +774,9 @@ export class LegionEngine {
         },
         skills: { trustKeys: [] },
         map: {},
+        ...(opts.workflowProfile
+          ? { workflow: { profile: opts.workflowProfile, verificationCommands: [] } }
+          : {}),
         search: { mode: "lexical" },
         execution: { maxWorkers: 1 },
         telemetry: {},
@@ -730,6 +808,7 @@ export class LegionEngine {
 
   async approveSpec(specId: string, actor: Actor, opts: { message?: string } = {}): Promise<void> {
     return this.#mutate(async () => {
+      await this.#assertNoLiveInProgress("spec approve");
       const state = await this.#readState();
       if (state.phase !== "spec_draft") {
         refuse("spec approve requires phase spec_draft", HINT.spec);
@@ -751,11 +830,12 @@ export class LegionEngine {
       if (spec.status !== "draft" && !resuming) {
         refuse(`spec ${specId} is ${spec.status}, not draft`, HINT.specApprove);
       }
-      const note = opts.message?.trim();
-      if (resuming && note && !specBody.includes(`Approved: ${note}`)) {
-        await this.store.writeSpec(spec, `${specBody.trim()}\n\nApproved: ${note}\n`);
+      const approvalMessage = opts.message?.trim();
+      if (approvalMessage && !specBody.includes(`## Approval note\n\n${approvalMessage}`)) {
+        specBody = `${specBody.trimEnd()}\n\n## Approval note\n\n${approvalMessage}\n`;
       }
       if (!resuming) {
+        await this.#assertFocusedSpecChallengeCompleteLocked(specId);
         const answers = await this.#loadIntentAnswers();
         if (await isBrandViolationBlockingFreeze(this.projectRoot, spec, answers.mapped.screens)) {
           refuse("brand violation blocks spec freeze for UI work", HINT.designGenerate);
@@ -766,10 +846,30 @@ export class LegionEngine {
           frozenAt: nowIso(),
           frozenBy: actor.id,
         };
-        await this.store.writeSpec(frozen, note ? `${specBody.trim()}
-
-Approved: ${note}
-` : specBody);
+        await this.store.writeSpec(frozen, specBody);
+        await writeSpecApproval(this.store, {
+          schemaVersion: SCHEMA_VERSION.specApproval,
+          specId,
+          specFingerprint: workflowFingerprint({ data: frozen, body: specBody }),
+          approvedAt: frozen.frozenAt ?? nowIso(),
+          approvedBy: actor.id,
+        });
+      } else {
+        const existingApproval = await readSpecApproval(this.store);
+        const resumedFingerprint = workflowFingerprint({ data: spec, body: specBody });
+        if (existingApproval && existingApproval.specFingerprint !== resumedFingerprint) {
+          refuse("the frozen spec differs from its approval receipt", HINT.specApprove);
+        }
+        if (approvalMessage) await this.store.writeSpec(spec, specBody);
+        if (!existingApproval) {
+          await writeSpecApproval(this.store, {
+            schemaVersion: SCHEMA_VERSION.specApproval,
+            specId,
+            specFingerprint: resumedFingerprint,
+            approvedAt: spec.frozenAt ?? nowIso(),
+            approvedBy: spec.frozenBy ?? actor.id,
+          });
+        }
       }
       const project = await this.store.readProject();
       if (project.data.activeSpecId !== specId) {
@@ -1226,6 +1326,7 @@ Approved: ${note}
           promptBody: [
             `Active spec: ${id}`,
             `Read .legion-cli/specs/${id}/SPEC.md.`,
+            "For brownfield projects also read .legion-cli/map/DISCOVERY.md and .legion-cli/map/ARCHITECTURE.md when present.",
             `Write .legion-cli/plans/${id}.md and .legion-cli/tasks/TSK-*.md with FileContracts.`,
             "Every task needs verificationCommands and exclusive concrete filesAllowed.",
             `Optional adapter: is an AdapterId (${ADAPTER_ID_HELP}). Set it only when SPEC or DISCUSS names that coding CLI; otherwise omit.`,
@@ -1340,6 +1441,960 @@ Approved: ${note}
 
   getLastPlanReport(): ReadinessReport | null {
     return this.#lastPlanReport;
+  }
+
+  async approvePlan(actor: Actor = { id: "user" }, opts: PlanApprovalOptions = {}): Promise<PlanApprovalReceipt> {
+    return this.#mutate(async () => {
+      await assertDiscoverySelection(this);
+      await this.#assertNoLiveInProgress("plan approve");
+      const state = await this.#readState();
+      if (state.phase !== "plan_ready" && state.phase !== "executing" && state.phase !== "ready_to_ship") {
+        refuse("plan approve requires plan_ready, executing, or ready_to_ship", HINT.plan);
+      }
+      const currentConfig = await this.#readConfig();
+      const approvalConfig: LegionConfig = currentConfig.workflow?.profile === "focused"
+        ? currentConfig
+        : {
+            ...currentConfig,
+            workflow: {
+              profile: "focused",
+              verificationCommands: currentConfig.workflow?.verificationCommands ?? [],
+            },
+          };
+      // Validate against the effective focused configuration before persisting it. A normal
+      // approval refusal must leave a legacy project on its compatible legacy path.
+      const context = await this.#workflowPlanContext(approvalConfig);
+      const readiness = evaluateReadiness({
+        spec: context.spec,
+        tasks: context.tasks,
+        hasStories: await this.store.pathExists(`.legion-cli/specs/${context.snapshot.specId}/stories.yaml`),
+        skipWireframes: !context.spec.wireframesIndex,
+        openNonBlockingAssumptions: (await this.#listAssumptions()).some(
+          (assumption) => assumption.status === "open" && !assumption.blocking,
+        ),
+      });
+      if (readiness.readiness === "FAIL") {
+        refuse(`plan is not ready: ${readiness.fails.join("; ")}`, HINT.plan);
+      }
+      const planBody = await readPlanBody(this.projectRoot, context.snapshot.specId);
+      if (!planBody?.trim()) {
+        refuse(
+          `plan approval requires a non-empty .legion-cli/plans/${context.snapshot.specId}.md; write the plan document, then approve it`,
+          "legion-cli plan approve",
+        );
+      }
+
+      const approvedSpec = await readSpecApproval(this.store);
+      if (approvedSpec &&
+          (approvedSpec.specId !== context.snapshot.specId ||
+            approvedSpec.specFingerprint !== context.snapshot.specFingerprint)) {
+        refuse("the frozen spec changed after approval; restore the approved spec or approve a new spec", HINT.specApprove);
+      }
+      if (!approvedSpec) {
+        // Legacy frozen specs had no content-bound receipt. This explicit plan approval imports
+        // and binds the current frozen revision instead of silently trusting it during execute.
+        await writeSpecApproval(this.store, {
+          schemaVersion: SCHEMA_VERSION.specApproval,
+          specId: context.snapshot.specId,
+          specFingerprint: context.snapshot.specFingerprint,
+          approvedAt: nowIso(),
+          approvedBy: actor.id,
+        });
+      }
+
+      const priorPlanApproval = await readPlanApproval(this.store);
+      const verificationCommands = [
+        ...new Set([
+          ...(context.config.workflow?.verificationCommands ?? []),
+          ...(priorPlanApproval?.specId === context.snapshot.specId
+            ? priorPlanApproval.verificationCommands
+            : []),
+          ...(opts.verificationCommands ?? []),
+        ].map((command) => command.trim()).filter(Boolean)),
+      ];
+      if (currentConfig.workflow?.profile !== "focused") {
+        await this.store.writeConfig(approvalConfig);
+      }
+      const receipt = PlanApprovalReceiptSchema.parse({
+        schemaVersion: SCHEMA_VERSION.planApproval,
+        specId: context.snapshot.specId,
+        approvedAt: nowIso(),
+        approvedBy: actor.id,
+        approvalId: randomUUID(),
+        planFingerprint: context.snapshot.planFingerprint,
+        specFingerprint: context.snapshot.specFingerprint,
+        taskFingerprint: context.snapshot.taskFingerprint,
+        configFingerprint: context.snapshot.configFingerprint,
+        taskIds: context.snapshot.taskIds,
+        acceptanceIds: context.snapshot.acceptanceIds,
+        verificationCommands,
+      });
+      await writePlanApproval(this.store, receipt);
+      await this.#audit("plan_approve", state.phase, actor.id, {
+        specId: receipt.specId,
+        planFingerprint: receipt.planFingerprint,
+        verificationCommands: receipt.verificationCommands,
+      });
+      return receipt;
+    });
+  }
+
+  async readSpecChallenge(specId?: string): Promise<SpecChallengeResult> {
+    const context = await this.#specChallengeContextLocked(specId);
+    if (!context.applicable) {
+      return challengeResult(
+        context.specId,
+        await readSpecChallengeReceipt(this.store, context.specId),
+        "complete",
+      );
+    }
+    const receipt = await readSpecChallengeReceipt(this.store, context.specId);
+    if (!receipt) return challengeResult(context.specId, null);
+    return challengeResult(
+      context.specId,
+      receipt,
+      receiptMatchesBinding(receipt, context.binding) ? undefined : "stale",
+    );
+  }
+
+  async prepareSpecChallenge(
+    specId?: string,
+    opts?: { adapter?: AdapterId },
+  ): Promise<SpecChallengeResult> {
+    let started: StartedSkillSpawn | undefined;
+    const prepared = await this.#withLockOrRefuse(async (): Promise<
+      { result: SpecChallengeResult } | { recoverRunId: string } | { spawn: true }
+    > => {
+      const context = await this.#specChallengeContextLocked(specId);
+      if (!context.applicable) return { result: challengeResult(context.specId, null, "complete") };
+      let receipt = await readSpecChallengeReceipt(this.store, context.specId);
+      const current = Boolean(receipt && receiptMatchesBinding(receipt, context.binding));
+      if (receipt && current) {
+        if (receipt.status === "analysis_running") {
+          if (receipt.generation.status === "complete" && receipt.generation.runId) {
+            return { recoverRunId: receipt.generation.runId };
+          }
+          if (receipt.generation.runId) {
+            const resume = (await listCacheResumes(this.projectRoot))
+              .find((candidate) => candidate.runId === receipt?.generation.runId);
+            if (resume && ["live", "unknown"].includes(await inspectResumeOwner(resume))) {
+              return { result: challengeResult(context.specId, receipt) };
+            }
+          }
+          receipt = await this.#markChallengeManualRequiredLocked(
+            receipt,
+            "analysis was interrupted before a successful adapter exit could be proven",
+          );
+          return { result: challengeResult(context.specId, receipt) };
+        }
+        return { result: challengeResult(context.specId, receipt) };
+      }
+      await this.#assertNoLiveInProgress("spec challenge");
+      const nextRound = (receipt?.round ?? 0) + 1;
+      receipt = newSpecChallengeReceipt(context.binding, nextRound, nowIso());
+      await writeSpecChallengeReceipt(this.store, receipt);
+      const config = await this.#readConfig();
+      try {
+        started = await startSkillSpawn({
+          ...this.#skillSpawnFields(),
+          config,
+          skillId: "spec-challenge",
+          specId: context.specId,
+          promptBody: this.#specChallengePrompt("analysis", context.specId, null),
+          cliAdapter: opts?.adapter,
+          required: false,
+        });
+      } catch (err) {
+        receipt = await this.#markChallengeManualRequiredLocked(
+          receipt,
+          `analysis automation unavailable: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return { result: challengeResult(context.specId, receipt) };
+      }
+      if (!started.spawned) {
+        receipt = await this.#markChallengeManualRequiredLocked(receipt, "analysis automation is unavailable");
+        return { result: challengeResult(context.specId, receipt) };
+      }
+      receipt = {
+        ...receipt,
+        generation: { ...receipt.generation, runId: started.runId },
+        updatedAt: nowIso(),
+      };
+      await writeSpecChallengeReceipt(this.store, receipt);
+      return { spawn: true };
+    }, { nextHint: "legion-cli spec" });
+
+    if ("result" in prepared) return prepared.result;
+    if ("recoverRunId" in prepared) {
+      return this.#withLockOrRefuse(() => this.#finishChallengeAnalysisLocked(specId, prepared.recoverRunId));
+    }
+    const liveAnalysis = started;
+    if (!liveAnalysis?.spawned) throw new Error("spec challenge spawn was not retained");
+    const waited = await waitStartedSpawn(liveAnalysis);
+    return this.#relock(liveAnalysis.runId, async () => {
+      const context = await this.#specChallengeContextLocked(specId);
+      if (!context.applicable) {
+        await finishStartedSpawn(liveAnalysis);
+        return challengeResult(context.specId, null, "complete");
+      }
+      let receipt = await this.#requireSpecChallengeReceiptLocked(context.specId);
+      if (waited.error) {
+        await finishStartedSpawn(liveAnalysis);
+        receipt = await this.#markChallengeManualRequiredLocked(
+          receipt,
+          `analysis automation failed: ${waited.error instanceof Error ? waited.error.message : String(waited.error)}`,
+        );
+        return challengeResult(context.specId, receipt);
+      }
+      if (!receiptMatchesBinding(receipt, context.binding)) {
+        await finishStartedSpawn(liveAnalysis);
+        return challengeResult(context.specId, receipt, "stale");
+      }
+      let concerns;
+      try {
+        concerns = await parseSpecChallengeAnalysis(
+          this.projectRoot,
+          await this.#readChallengeSpawnOutput(liveAnalysis, specChallengeAnalysisPath(liveAnalysis.runId)),
+          context.specId,
+        );
+      } catch (err) {
+        await finishStartedSpawn(liveAnalysis);
+        receipt = await this.#markChallengeManualRequiredLocked(
+          receipt,
+          err instanceof Error ? err.message : String(err),
+        );
+        return challengeResult(context.specId, receipt);
+      }
+      receipt = {
+        ...receipt,
+        generation: { ...receipt.generation, status: "complete", completedAt: nowIso() },
+        concerns,
+        updatedAt: nowIso(),
+      };
+      // Validated output is durable before copy-out/cleanup, so recovery never depends on a surviving jail.
+      await writeSpecChallengeReceipt(this.store, receipt);
+      await this.#fakeAfterChallengeOutputCheckpoint?.();
+      await finishStartedSpawn(liveAnalysis);
+      return this.#finishChallengeAnalysisLocked(context.specId, liveAnalysis.runId);
+    });
+  }
+
+  async recordSpecChallengeResolution(
+    specId: string,
+    concernId: string,
+    resolution: SpecChallengeResolutionInput,
+    actor: Actor = { id: "user" },
+  ): Promise<SpecChallengeResult> {
+    return this.#mutate(async () => {
+      const context = await this.#specChallengeContextLocked(specId);
+      if (!context.applicable) return challengeResult(context.specId, null, "complete");
+      let receipt = await this.#requireCurrentSpecChallengeLocked(context);
+      await this.#assertNoLiveInProgress("spec challenge resolution");
+      if (receipt.status !== "awaiting_resolutions") {
+        refuse("spec challenge is not awaiting concern resolutions", "legion-cli spec");
+      }
+      const response = resolution.response.trim();
+      if (!response) refuse("spec challenge resolution requires a response or reason", "legion-cli spec");
+      const index = receipt.concerns.findIndex((concern) => concern.id === concernId);
+      if (index < 0) refuse(`unknown spec challenge concern ${concernId}`, "legion-cli spec");
+      const concerns = [...receipt.concerns];
+      concerns[index] = {
+        ...concerns[index],
+        resolution: {
+          disposition: resolution.disposition,
+          response,
+          recordedAt: nowIso(),
+          recordedBy: actor.id,
+        },
+      };
+      receipt = { ...receipt, concerns, updatedAt: nowIso() };
+      await writeSpecChallengeReceipt(this.store, receipt);
+      await writeSpecChallengeThinking(this.projectRoot, receipt);
+      return challengeResult(context.specId, receipt);
+    });
+  }
+
+  async recordSpecChallengeManualAnswer(
+    specId: string,
+    key: SpecChallengeManualQuestionKey,
+    response: string,
+    actor: Actor = { id: "user" },
+  ): Promise<SpecChallengeResult> {
+    return this.#mutate(async () => {
+      const context = await this.#specChallengeContextLocked(specId);
+      if (!context.applicable) return challengeResult(context.specId, null, "complete");
+      let receipt = await this.#requireCurrentSpecChallengeLocked(context);
+      await this.#assertNoLiveInProgress("spec challenge manual review");
+      if (receipt.status !== "manual_required") {
+        refuse("manual review is available only after challenge automation fails", "legion-cli spec");
+      }
+      let value: string;
+      try {
+        value = validateManualAnswer(key, response);
+      } catch (err) {
+        refuse(err instanceof Error ? err.message : String(err), "legion-cli spec --manual-review");
+      }
+      receipt = {
+        ...receipt,
+        manualReview: {
+          ...(receipt.manualReview ?? {}),
+          [key]: value,
+          updatedAt: nowIso(),
+          updatedBy: actor.id,
+        },
+        updatedAt: nowIso(),
+      };
+      await writeSpecChallengeReceipt(this.store, receipt);
+      await writeSpecChallengeThinking(this.projectRoot, receipt);
+      return challengeResult(context.specId, receipt);
+    });
+  }
+
+  async finalizeSpecChallenge(
+    specId?: string,
+    opts?: { adapter?: AdapterId; manualReview?: SpecChallengeManualReviewInput; actor?: Actor },
+  ): Promise<SpecChallengeResult> {
+    let started: StartedSkillSpawn | undefined;
+    const prepared = await this.#withLockOrRefuse(async (): Promise<
+      { result: SpecChallengeResult } | { recoverRunId: string } | { spawn: true }
+    > => {
+      const context = await this.#specChallengeContextLocked(specId);
+      if (!context.applicable) return { result: challengeResult(context.specId, null, "complete") };
+      let receipt = await this.#requireCurrentSpecChallengeLocked(context);
+      await this.#assertNoLiveInProgress("spec challenge finalize");
+      if (receipt.application) {
+        return { result: await this.#applySpecChallengeApplicationLocked(context, receipt) };
+      }
+      if (opts?.manualReview) {
+        if (receipt.status !== "manual_required") {
+          refuse("manual review cannot bypass a successful challenge analysis", "legion-cli spec");
+        }
+        for (const key of ["measurableSuccess", "failureHandling", "compatibilityAndScope", "acknowledgement"] as const) {
+          let value: string;
+          try {
+            value = validateManualAnswer(key, opts.manualReview[key] ?? "");
+          } catch (err) {
+            refuse(err instanceof Error ? err.message : String(err), "legion-cli spec --manual-review");
+          }
+          receipt = {
+            ...receipt,
+            manualReview: {
+              ...(receipt.manualReview ?? {}),
+              [key]: value,
+              updatedAt: nowIso(),
+              updatedBy: opts.actor?.id ?? "user",
+            },
+          };
+          await writeSpecChallengeReceipt(this.store, receipt);
+        }
+      }
+      if (receipt.status === "complete") return { result: challengeResult(context.specId, receipt) };
+      if (receipt.status === "manual_required") {
+        let manual;
+        try {
+          manual = completeManualReview(receipt.manualReview);
+        } catch (err) {
+          refuse(err instanceof Error ? err.message : String(err), "legion-cli spec --manual-review");
+        }
+        if (!manual) return { result: challengeResult(context.specId, receipt) };
+        const applied = applyManualReview(context.spec.data, manual);
+        const body = specChallengeDraftBody(context.spec.body, applied);
+        receipt = await this.#checkpointSpecChallengeApplicationLocked(
+          receipt,
+          context.spec,
+          applied,
+          body,
+        );
+        return { result: await this.#applySpecChallengeApplicationLocked(context, receipt) };
+      }
+      if (receipt.concerns.some((concern) => !concern.resolution)) {
+        refuse("spec challenge has unresolved concerns", "legion-cli spec");
+      }
+      if (receipt.status === "synthesis_running") {
+        if (receipt.synthesis.status === "complete" && receipt.synthesis.runId) {
+          return { recoverRunId: receipt.synthesis.runId };
+        }
+        if (receipt.synthesis.runId) {
+          const resume = (await listCacheResumes(this.projectRoot))
+            .find((candidate) => candidate.runId === receipt?.synthesis.runId);
+          if (resume && ["live", "unknown"].includes(await inspectResumeOwner(resume))) {
+            return { result: challengeResult(context.specId, receipt) };
+          }
+        }
+        receipt = await this.#markChallengeManualRequiredLocked(
+          receipt,
+          "synthesis was interrupted before a successful adapter exit could be proven",
+        );
+        return { result: challengeResult(context.specId, receipt) };
+      }
+      if (receipt.status !== "awaiting_resolutions") {
+        refuse("spec challenge is not ready for synthesis", "legion-cli spec");
+      }
+      const config = await this.#readConfig();
+      receipt = {
+        ...receipt,
+        status: "synthesis_running",
+        synthesis: { status: "running", runId: null, startedAt: nowIso() },
+        updatedAt: nowIso(),
+      };
+      await writeSpecChallengeReceipt(this.store, receipt);
+      try {
+        started = await startSkillSpawn({
+          ...this.#skillSpawnFields(),
+          config,
+          skillId: "spec-challenge",
+          specId: context.specId,
+          promptBody: this.#specChallengePrompt("synthesis", context.specId, receipt),
+          cliAdapter: opts?.adapter,
+          required: false,
+        });
+      } catch (err) {
+        receipt = await this.#markChallengeManualRequiredLocked(
+          receipt,
+          `synthesis automation unavailable: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return { result: challengeResult(context.specId, receipt) };
+      }
+      if (!started.spawned) {
+        receipt = await this.#markChallengeManualRequiredLocked(receipt, "synthesis automation is unavailable");
+        return { result: challengeResult(context.specId, receipt) };
+      }
+      receipt = {
+        ...receipt,
+        synthesis: { ...receipt.synthesis, runId: started.runId },
+        updatedAt: nowIso(),
+      };
+      await writeSpecChallengeReceipt(this.store, receipt);
+      return { spawn: true };
+    }, { nextHint: "legion-cli spec" });
+
+    if ("result" in prepared) return prepared.result;
+    if ("recoverRunId" in prepared) {
+      return this.#withLockOrRefuse(() => this.#finishChallengeSynthesisLocked(specId, prepared.recoverRunId));
+    }
+    const liveSynthesis = started;
+    if (!liveSynthesis?.spawned) throw new Error("spec challenge synthesis spawn was not retained");
+    const waited = await waitStartedSpawn(liveSynthesis);
+    return this.#relock(liveSynthesis.runId, async () => {
+      const context = await this.#specChallengeContextLocked(specId);
+      if (!context.applicable) {
+        await finishStartedSpawn(liveSynthesis);
+        return challengeResult(context.specId, null, "complete");
+      }
+      let receipt = await this.#requireSpecChallengeReceiptLocked(context.specId);
+      if (waited.error) {
+        await finishStartedSpawn(liveSynthesis);
+        receipt = await this.#markChallengeManualRequiredLocked(
+          receipt,
+          `synthesis automation failed: ${waited.error instanceof Error ? waited.error.message : String(waited.error)}`,
+        );
+        return challengeResult(context.specId, receipt);
+      }
+      if (!receiptMatchesBinding(receipt, context.binding)) {
+        await finishStartedSpawn(liveSynthesis);
+        return challengeResult(context.specId, receipt, "stale");
+      }
+      try {
+        const output = parseSpecChallengeSynthesis(
+          await this.#readChallengeSpawnOutput(liveSynthesis, specChallengeSynthesisPath(liveSynthesis.runId)),
+        );
+        const applied = applySpecChallengeChanges(context.spec.data, receipt.concerns, output.changes);
+        const body = specChallengeDraftBody(context.spec.body, applied);
+        receipt = await this.#checkpointSpecChallengeApplicationLocked(
+          receipt,
+          context.spec,
+          applied,
+          body,
+        );
+      } catch (err) {
+        await finishStartedSpawn(liveSynthesis);
+        receipt = await this.#markChallengeManualRequiredLocked(
+          receipt,
+          `synthesis failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return challengeResult(context.specId, receipt);
+      }
+      await this.#fakeAfterChallengeOutputCheckpoint?.();
+      await finishStartedSpawn(liveSynthesis);
+      return this.#finishChallengeSynthesisLocked(context.specId, liveSynthesis.runId);
+    });
+  }
+
+  async getWorkflowStatus(): Promise<WorkflowStatus> {
+    const state = await this.#readState();
+    if (state.phase === "shipped" || state.phase === "abandoned") {
+      return {
+        stage: "spec",
+        planApproval: "missing",
+        execution: "not_started",
+        acceptance: { required: [], passed: [], failed: [], pending: [], notApplicable: [] },
+        blocker: null,
+        next: "legion-cli spec new",
+      };
+    }
+    if (!state.activeSpecId) {
+      return {
+        stage: "spec",
+        planApproval: "missing",
+        execution: "not_started",
+        acceptance: { required: [], passed: [], failed: [], pending: [], notApplicable: [] },
+        blocker: null,
+        next: "legion-cli spec",
+      };
+    }
+    if (["initialized", "intent_draft", "intent_ready", "discussing", "spec_draft"].includes(state.phase)) {
+      let next = "legion-cli spec";
+      let blocker: string | null = null;
+      if (state.phase === "spec_draft") {
+        const config = await this.#readConfig();
+        if (config.workflow?.profile === "focused") {
+          const challenge = await this.readSpecChallenge(state.activeSpecId);
+          if (challenge.status === "complete") next = "legion-cli spec approve";
+          else {
+            next = "legion-cli spec";
+            blocker = challenge.status === "stale"
+              ? "spec challenge evidence is stale"
+              : challenge.status === "manual_required"
+                ? challenge.automationError ?? "spec challenge requires manual review"
+                : "spec challenge is pending";
+          }
+        } else {
+          next = "legion-cli spec approve";
+        }
+      }
+      return {
+        stage: "spec",
+        planApproval: "missing",
+        execution: "not_started",
+        acceptance: { required: [], passed: [], failed: [], pending: [], notApplicable: [] },
+        blocker,
+        next,
+      };
+    }
+    if (["spec_frozen", "planning", "plan_failed"].includes(state.phase)) {
+      return {
+        stage: "plan",
+        planApproval: "missing",
+        execution: "not_started",
+        acceptance: { required: [], passed: [], failed: [], pending: [], notApplicable: [] },
+        blocker: state.phase === "plan_failed" ? "plan checks failed" : null,
+        next: "legion-cli plan",
+      };
+    }
+
+    const context = await this.#workflowPlanContext();
+    const approval = await readPlanApproval(this.store);
+    const planApproval = !approval
+      ? "missing" as const
+      : approval.specId === context.snapshot.specId && approval.planFingerprint === context.snapshot.planFingerprint
+        ? "valid" as const
+        : "stale" as const;
+    if (planApproval !== "valid" || !approval) {
+      const planBody = await readPlanBody(this.projectRoot, context.snapshot.specId);
+      const missingPlanBody = !planBody?.trim();
+      return {
+        stage: "plan",
+        planApproval,
+        execution: "not_started",
+        acceptance: this.#workflowAcceptanceStatus(context.spec, null),
+        blocker: missingPlanBody
+          ? `create .legion-cli/plans/${context.snapshot.specId}.md before approving the plan`
+          : planApproval === "stale"
+            ? "plan approval is stale"
+            : null,
+        next: "legion-cli plan approve",
+      };
+    }
+
+    const productFingerprint = await workflowProductFingerprint(this.projectRoot, context.tasks);
+    const environmentFingerprint = workflowEnvironmentFingerprint();
+    const evidence = await readWorkflowEvidence(this.store);
+    const reviewFresh = !evidence?.review || await workflowReviewEvidenceFresh(this.projectRoot, evidence.review);
+    const evidenceFresh = Boolean(
+      evidence &&
+      evidence.specId === approval.specId &&
+      evidence.planFingerprint === approval.planFingerprint &&
+      evidence.approvalId === approval.approvalId &&
+      evidence.productFingerprint === productFingerprint &&
+      evidence.environmentFingerprint === environmentFingerprint &&
+      reviewFresh,
+    );
+    const execution: WorkflowStatus["execution"] = !evidence
+      ? "not_started"
+      : !evidenceFresh
+        ? "stale"
+        : evidence.status === "complete"
+          ? "complete"
+          : evidence.status === "running"
+            ? "running"
+            : "blocked";
+    const acceptanceReceipt = await readAcceptanceReceipt(this.store);
+    const acceptanceFresh = Boolean(
+      acceptanceReceipt &&
+      acceptanceReceipt.specId === approval.specId &&
+      acceptanceReceipt.planFingerprint === approval.planFingerprint &&
+      acceptanceReceipt.approvalId === approval.approvalId &&
+      acceptanceReceipt.productFingerprint === productFingerprint,
+    );
+    const acceptance = this.#workflowAcceptanceStatus(context.spec, acceptanceFresh ? acceptanceReceipt : null);
+    const ready = execution === "complete" && acceptance.failed.length === 0 && acceptance.pending.length === 0;
+    const retryableExecutionFailure = execution === "blocked" && Boolean(
+      evidenceFresh && evidence && (
+        evidence.integration.some((run) => !run.ok) ||
+        evidence.review?.verdict === "FAIL" ||
+        evidence.blocker?.startsWith("independent review")
+      ),
+    );
+    const blockedTask = context.tasks.find((task) => task.status === "blocked");
+    const blocker = execution === "stale"
+      ? "workflow evidence is stale"
+      : evidenceFresh && evidence?.blocker
+        ? evidence.blocker
+        : acceptance.failed.length > 0
+          ? `acceptance failed: ${acceptance.failed.join(", ")}`
+          : execution === "complete" && acceptance.pending.length > 0
+            ? `acceptance evidence pending: ${acceptance.pending.join(", ")}`
+            : null;
+    return {
+      stage: ready ? "ship" : "execute",
+      planApproval,
+      execution,
+      acceptance,
+      blocker,
+      next: ready
+        ? "legion-cli ship"
+        : execution === "complete" && acceptance.failed.length > 0
+          ? `legion-cli plan acceptance --pass ${acceptance.failed[0]}`
+        : execution === "complete" && acceptance.pending.length > 0
+          ? `legion-cli plan acceptance --pass ${acceptance.pending[0]}`
+          : retryableExecutionFailure
+            ? "legion-cli execute --retry"
+            : blockedTask
+              ? `legion-cli task amend ${blockedTask.id}`
+              : "legion-cli execute",
+    };
+  }
+
+  async recordAcceptance(
+    entries: AcceptanceEvidenceInput[],
+    actor: Actor = { id: "user" },
+  ): Promise<AcceptanceReceipt> {
+    return this.#mutate(async () => {
+      const context = await this.#requireCurrentPlanApproval();
+      const productFingerprint = await workflowProductFingerprint(this.projectRoot, context.tasks);
+      const evidence = await readWorkflowEvidence(this.store);
+      if (!evidence || evidence.status !== "complete" ||
+          evidence.planFingerprint !== context.approval.planFingerprint ||
+          evidence.approvalId !== context.approval.approvalId ||
+          evidence.productFingerprint !== productFingerprint ||
+          evidence.environmentFingerprint !== workflowEnvironmentFingerprint() ||
+          !await workflowReviewEvidenceFresh(this.projectRoot, evidence.review)) {
+        refuse("complete, fresh workflow evidence is required before acceptance", "legion-cli execute");
+      }
+      const validIds = new Set(context.spec.acceptance.map((criterion) => criterion.id));
+      for (const entry of entries) {
+        if (!validIds.has(entry.id)) refuse(`unknown acceptance criterion ${entry.id}`, "legion-cli spec");
+        if ((entry.status === "failed" || entry.status === "not_applicable") && !entry.note?.trim()) {
+          refuse(`${entry.status} acceptance evidence requires --note`, "legion-cli plan acceptance --help");
+        }
+      }
+      const previous = await readAcceptanceReceipt(this.store);
+      const reusable = previous &&
+        previous.specId === context.approval.specId &&
+        previous.planFingerprint === context.approval.planFingerprint &&
+        previous.approvalId === context.approval.approvalId &&
+        previous.productFingerprint === productFingerprint;
+      const merged = new Map((reusable ? previous.entries : []).map((entry) => [entry.id, entry]));
+      for (const entry of entries) merged.set(entry.id, { ...entry, ...(entry.note?.trim() ? { note: entry.note.trim() } : {}) });
+      const receipt = AcceptanceReceiptSchema.parse({
+        schemaVersion: SCHEMA_VERSION.acceptanceReceipt,
+        specId: context.approval.specId,
+        planFingerprint: context.approval.planFingerprint,
+        approvalId: context.approval.approvalId,
+        productFingerprint,
+        recordedAt: nowIso(),
+        recordedBy: actor.id,
+        entries: [...merged.values()].sort((left, right) => left.id.localeCompare(right.id)),
+      });
+      await writeAcceptanceReceipt(this.store, receipt);
+      await this.#audit("acceptance", (await this.#readState()).phase, actor.id, {
+        specId: receipt.specId,
+        entries: entries.map((entry) => ({ id: entry.id, status: entry.status })),
+      });
+      return receipt;
+    });
+  }
+
+  async executeWorkflow(opts: ExecuteWorkflowOptions = {}): Promise<WorkflowExecutionResult> {
+    if (opts.resume && (opts.taskId || opts.step || opts.retry || opts.untilBlocked ||
+        opts.jobs !== undefined || opts.fix || opts.adapter || opts.profile)) {
+      refuse("execute --resume cannot be combined with a task, --step, --retry, --until-blocked, --jobs, --fix, --adapter, or --profile", HINT.execute);
+    }
+    if (opts.jobs !== undefined) {
+      if (!Number.isInteger(opts.jobs) || opts.jobs < 1 || opts.jobs > 4) {
+        refuse("execute jobs must be an integer from 1 to 4", HINT.execute);
+      }
+      if (!opts.untilBlocked || opts.taskId || opts.step) {
+        refuse("execute --jobs requires --until-blocked without a task or --step", HINT.execute);
+      }
+    }
+    let claim: WorkflowClaim;
+    try {
+      claim = await this.#withLockOrRefuse(async () => {
+        const config = await this.#readConfig();
+        if (config.control_mode === "advisory") {
+          refuse("Execute is off in advisory mode", HINT.advisory);
+        }
+        return acquireWorkflowClaim(this.store);
+      });
+    } catch (err) {
+      if (err instanceof LegionRefuseError) throw err;
+      refuse(err instanceof Error ? err.message : String(err), "legion-cli status");
+    }
+    try {
+      return await this.#executeWorkflowClaimed(opts);
+    } finally {
+      await releaseWorkflowClaim(this.store, claim.token);
+    }
+  }
+
+  async #executeWorkflowClaimed(opts: ExecuteWorkflowOptions): Promise<WorkflowExecutionResult> {
+    let context = await this.#requireCurrentPlanApproval();
+    const environmentFingerprint = workflowEnvironmentFingerprint();
+    let productFingerprint = await workflowProductFingerprint(this.projectRoot, context.tasks);
+    let evidence = await readWorkflowEvidence(this.store);
+    let completedTaskIds = context.tasks
+      .filter((task) => task.status === "done" || task.status === "compacted")
+      .map((task) => task.id);
+    const workflowTasks: ExecuteTaskResult[] = [];
+    const workflowWarnings: string[] = [];
+
+    const result = (
+      status: WorkflowExecutionResult["status"],
+      blocker: string | null,
+      next: string,
+      taskId?: string,
+    ): WorkflowExecutionResult => ({
+      status,
+      ...(taskId ? { taskId } : {}),
+      completedTaskIds,
+      blocker,
+      next,
+      tasks: workflowTasks,
+      warnings: workflowWarnings,
+    });
+    const save = async (
+      status: WorkflowEvidenceReceipt["status"],
+      blocker: string | null,
+      integration: WorkflowEvidenceReceipt["integration"],
+      review: WorkflowEvidenceReceipt["review"],
+      boundProductFingerprint?: string,
+    ): Promise<WorkflowEvidenceReceipt> => {
+      return this.#withLockOrRefuse(async () => {
+        context = await this.#requireCurrentPlanApproval();
+        const currentProductFingerprint = await workflowProductFingerprint(this.projectRoot, context.tasks);
+        productFingerprint = boundProductFingerprint ?? currentProductFingerprint;
+        completedTaskIds = context.tasks
+          .filter((task) => task.status === "done" || task.status === "compacted")
+          .map((task) => task.id);
+        const receipt: WorkflowEvidenceReceipt = {
+          schemaVersion: SCHEMA_VERSION.workflowEvidence,
+          specId: context.approval.specId,
+          planFingerprint: context.approval.planFingerprint,
+          approvalId: context.approval.approvalId,
+          productFingerprint,
+          environmentFingerprint,
+          status,
+          completedTaskIds,
+          integration,
+          review,
+          blocker,
+          updatedAt: nowIso(),
+        };
+        await writeWorkflowEvidence(this.store, receipt);
+        evidence = receipt;
+        return receipt;
+      });
+    };
+
+    const evidenceFresh = evidence &&
+      evidence.specId === context.approval.specId &&
+      evidence.planFingerprint === context.approval.planFingerprint &&
+      evidence.approvalId === context.approval.approvalId &&
+      evidence.productFingerprint === productFingerprint &&
+      evidence.environmentFingerprint === environmentFingerprint &&
+      (!evidence.review || await workflowReviewEvidenceFresh(this.projectRoot, evidence.review));
+    if (!opts.retry && evidenceFresh && evidence?.status === "blocked" && evidence.blocker &&
+        (evidence.integration.some((run) => !run.ok) || evidence.review?.verdict === "FAIL" ||
+          evidence.blocker.startsWith("independent review"))) {
+      return result("blocked", evidence.blocker, "legion-cli execute --retry", completedTaskIds.at(-1));
+    }
+
+    let lastTaskId: string | undefined;
+    let first = true;
+    while (true) {
+      context = await this.#requireCurrentPlanApproval();
+      completedTaskIds = context.tasks
+        .filter((task) => task.status === "done" || task.status === "compacted")
+        .map((task) => task.id);
+      const blocked = context.tasks.find((task) => task.status === "blocked");
+      if (blocked && !(first && opts.resume)) {
+        const blocker = `task ${blocked.id} is blocked`;
+        await save("blocked", blocker, evidenceFresh ? evidence?.integration ?? [] : [], null);
+        return result("blocked", blocker, `legion-cli task amend ${blocked.id}`, blocked.id);
+      }
+      const open = context.tasks.filter((task) => task.status !== "done" && task.status !== "compacted");
+      if (open.length === 0 && !(first && opts.resume)) break;
+
+      const target = first && opts.taskId ? opts.taskId : "auto";
+      let executed: ExecuteResult;
+      try {
+        const resume = first ? opts.resume : undefined;
+        executed = await this.execute(target, {
+          adapter: opts.adapter,
+          profile: opts.profile,
+          fix: opts.fix,
+          allowNoSandbox: opts.allowNoSandbox,
+          resume,
+          ...(target === "auto" && !opts.step && !resume
+            ? { untilBlocked: true, jobs: opts.jobs }
+            : {}),
+          onProgress: opts.onProgress,
+        });
+      } catch (err) {
+        const blocker = err instanceof Error ? err.message : String(err);
+        const next = err instanceof LegionRefuseError ? err.nextHint : "legion-cli plan approve";
+        try {
+          await save("blocked", blocker, [], null);
+        } catch {
+          // A spawned task can intentionally stale the approved plan; the caller still gets the blocker.
+        }
+        return result("blocked", blocker, next, lastTaskId);
+      }
+      first = false;
+      lastTaskId = executed.taskId || lastTaskId;
+      workflowTasks.push(...executed.tasks);
+      for (const warning of executed.warnings) if (!workflowWarnings.includes(warning)) workflowWarnings.push(warning);
+      if (executed.status === "blocked") {
+        const blockedTask = executed.tasks.find((task) => task.status === "blocked") ?? executed.tasks.at(-1);
+        const blockedTaskId = blockedTask?.taskId ?? executed.taskId;
+        const blocker = blockedTask?.incident
+          ? "inspect .git — execute touched protected repository metadata"
+          : blockedTask?.reason ?? `task ${blockedTaskId} is blocked`;
+        try {
+          await save("blocked", blocker, [], null);
+        } catch (err) {
+          if (!(err instanceof LegionRefuseError)) throw err;
+          return result("blocked", blocker, err.nextHint, blockedTaskId);
+        }
+        return result("blocked", blocker, blockedTask?.incident ? "legion-cli status" : `legion-cli task amend ${blockedTaskId}`, blockedTaskId);
+      }
+      if (opts.step) {
+        await save("running", null, [], null);
+        return result("step_complete", null, "legion-cli execute", executed.taskId);
+      }
+    }
+
+    context = await this.#requireCurrentPlanApproval();
+    productFingerprint = await workflowProductFingerprint(this.projectRoot, context.tasks);
+    const verificationBaseline = productFingerprint;
+    evidence = await readWorkflowEvidence(this.store);
+    const reusableReceipt = evidence &&
+      evidence.planFingerprint === context.approval.planFingerprint &&
+      evidence.approvalId === context.approval.approvalId &&
+      evidence.productFingerprint === productFingerprint &&
+      evidence.environmentFingerprint === environmentFingerprint
+        ? evidence
+        : null;
+    const integration: WorkflowEvidenceReceipt["integration"] = [];
+    for (const [index, command] of context.approval.verificationCommands.entries()) {
+      const prior = reusableReceipt?.integration[index];
+      if (prior?.command === command && prior.ok) {
+        integration.push(prior);
+        continue;
+      }
+      if (prior?.command === command && !prior.ok && !opts.retry) {
+        const failure = verificationFailureReason([prior]) ?? `verification failed: ${command}`;
+        return result("blocked", failure, "legion-cli execute --retry", lastTaskId);
+      }
+      await this.#withLockOrRefuse(() => this.#assertNoLiveInProgress("execute"));
+      const beforeCheck = await workflowProductFingerprint(this.projectRoot, context.tasks);
+      if (beforeCheck !== verificationBaseline) {
+        const blocker = "product inputs changed during workflow verification";
+        await save("blocked", blocker, integration, null, verificationBaseline);
+        return result("blocked", blocker, "legion-cli execute", lastTaskId);
+      }
+      const [run] = await runVerificationCommands(this.projectRoot, [command], {
+        runId: `workflow-${Date.now()}-${index + 1}-${randomUUID().slice(0, 8)}`,
+        secretEnvNames: configuredApiKeyEnvNames(context.config),
+        sandbox: context.config.sandbox,
+        allowNoSandbox: opts.allowNoSandbox,
+      });
+      if (run) integration.push(run);
+      const afterCheck = await workflowProductFingerprint(this.projectRoot, context.tasks);
+      if (afterCheck !== verificationBaseline) {
+        const blocker = `verification changed product inputs while running: ${command}`;
+        await save("blocked", blocker, integration, null, beforeCheck);
+        return result("blocked", blocker, "legion-cli status", lastTaskId);
+      }
+      const failure = verificationFailureReason(run ? [run] : []);
+      if (failure) {
+        await save("blocked", failure, integration, null);
+        return result("blocked", failure, "legion-cli execute --retry", lastTaskId);
+      }
+      await save("running", null, integration, null, beforeCheck);
+    }
+
+    let completionProductFingerprint = verificationBaseline;
+    let reviewEvidence = reusableReceipt?.review?.verdict === "PASS" &&
+      await workflowReviewEvidenceFresh(this.projectRoot, reusableReceipt.review)
+        ? reusableReceipt.review
+        : null;
+    if (!reviewEvidence) {
+      try {
+        const beforeReview = await workflowProductFingerprint(this.projectRoot, context.tasks);
+        if (beforeReview !== verificationBaseline) {
+          const blocker = "product inputs changed before independent review";
+          await save("blocked", blocker, integration, null, verificationBaseline);
+          return result("blocked", blocker, "legion-cli execute", lastTaskId);
+        }
+        completionProductFingerprint = beforeReview;
+        const reviewed = await this.review({ adapter: opts.adapter, profile: opts.profile });
+        const afterReview = await workflowProductFingerprint(this.projectRoot, context.tasks);
+        if (afterReview !== verificationBaseline) {
+          const blocker = "independent review changed product inputs";
+          await save("blocked", blocker, integration, null, beforeReview);
+          return result("blocked", blocker, "legion-cli status", lastTaskId);
+        }
+        if (reviewed.verdict !== "PASS") {
+          const blocker = "independent review failed and filed follow-up work";
+          const failedReviewEvidence = reviewed.evidenceBody
+            ? await writeWorkflowReviewReport(this.store, reviewed.evidenceBody)
+            : null;
+          await save("blocked", blocker, integration, failedReviewEvidence, beforeReview);
+          return result("blocked", blocker, "legion-cli execute --retry", lastTaskId);
+        }
+        if (reviewed.explicitVerdict !== "PASS" || !reviewed.evidenceBody) {
+          const blocker = `independent review requires a fresh explicit Verdict: PASS in ${WORKFLOW_REVIEW_PATH}`;
+          await save("blocked", blocker, integration, null);
+          return result("blocked", blocker, "legion-cli review", lastTaskId);
+        }
+        reviewEvidence = await writeWorkflowReviewReport(this.store, reviewed.evidenceBody);
+      } catch (err) {
+        const blocker = `independent review failed: ${err instanceof Error ? err.message : String(err)}`;
+        try {
+          await save("blocked", blocker, integration, null);
+        } catch {
+          // Review-created tasks make the prior approval stale by design.
+        }
+        return result("blocked", blocker, "legion-cli plan approve", lastTaskId);
+      }
+    }
+
+    await save("complete", null, integration, reviewEvidence, completionProductFingerprint);
+    const status = await this.getWorkflowStatus();
+    if (status.stage === "ship") return result("complete", null, "legion-cli ship", lastTaskId);
+    return result("blocked", status.blocker, status.next, lastTaskId);
   }
 
   /** Warnings from the last `qa()` run in this engine, e.g. "unit command did not start: …". */
@@ -1638,6 +2693,9 @@ Approved: ${note}
     try {
       setup = await this.#withLockOrRefuse(async () => {
       await this.#assertNoLiveInProgress("execute");
+      if (configured.workflow?.profile === "focused") {
+        configured = (await this.#requireCurrentPlanApproval()).config;
+      }
       const state = await this.#readState();
       if (state.phase === "plan_failed") refuse("Plan failed. Fix the FAIL list before executing", HINT.planRetry);
       if (state.phase !== "plan_ready" && state.phase !== "executing") {
@@ -2177,6 +3235,7 @@ Approved: ${note}
           `Active spec: ${specId}`,
           `Read .legion-cli/specs/${specId}/SPEC.md and .legion-cli/tasks/*.md.`,
           "Write notes to .legion-cli/cache/runs/<id>/review.md (the engine keeps them at .legion-cli/qa/review.md).",
+          "Include exactly one explicit `Verdict: PASS` or `Verdict: FAIL` line in that report.",
           "If the slice does not meet the spec, file tasks under .legion-cli/tasks/ (type: fix) or extra.json.",
           "Creating any new task id or rewriting existing TSK-*.md FAILs this review.",
           "PASS only if ids are unchanged and existing task files are byte-identical.",
@@ -2265,6 +3324,9 @@ Approved: ${note}
         await writeTextFile(join(this.projectRoot, REVIEW_NOTES_PATH), `${notes}
 `, { root: this.projectRoot });
       }
+      const explicitReviewEvidence = notes.length > 0 && !notesRead.problem
+        ? await readExplicitReviewEvidence(this.projectRoot)
+        : null;
       const verdict = await this.#applyReviewSnapshotsLocked(
         await this.#readState(),
         before,
@@ -2277,6 +3339,12 @@ Approved: ${note}
         createdTickets: filedExtras?.tickets ?? [],
         extrasReverted: revert?.extrasReverted ?? [],
         rewrittenExistingTaskIds,
+        ...(explicitReviewEvidence ? {
+          explicitVerdict: explicitReviewEvidence.verdict,
+          evidencePath: explicitReviewEvidence.evidencePath,
+          evidenceFingerprint: explicitReviewEvidence.evidenceFingerprint,
+          evidenceBody: explicitReviewEvidence.body,
+        } : {}),
         warnings: reviewWarnings,
       };
     });
@@ -2429,6 +3497,58 @@ Approved: ${note}
     });
   }
 
+  /** Focused-profile amendment: records bounded bug work without writing or running a regression test. */
+  async proposeFix(bug: string, opts: { adapter?: AdapterId; profile?: string } = {}): Promise<Task> {
+    return this.#mutate(async () => {
+      await this.#assertNoLiveInProgress("fix");
+      const title = bug.trim();
+      if (!title) refuse("fix requires a bug description", HINT.fix);
+      const state = await this.#readState();
+      if (state.phase !== "executing" && state.phase !== "ready_to_ship" && state.phase !== "plan_ready") {
+        refuse("fix requires plan_ready, executing, or ready_to_ship", HINT.execute);
+      }
+      const specId = state.activeSpecId;
+      if (!specId) refuse("fix requires an active spec", HINT.spec);
+      const config = await this.#readConfig();
+      try {
+        resolveAdapterId({ config, skillId: "execute", cliAdapter: opts.adapter, cliProfile: opts.profile });
+      } catch (err) {
+        refuse(err instanceof Error ? err.message : String(err), HINT.fix);
+      }
+      const testPath = regressionTestPath(title);
+      const filesAllowed = fixFilesAllowed(this.projectRoot, testPath);
+      const verifyCmd = regressionVerifyCommand(testPath);
+      if (filesAllowedFailsPlan(filesAllowed) || expectedArtifactsFailsPlan(filesAllowed, [testPath])) {
+        refuse("File paths must be concrete (no * or **)", HINT.concretePaths);
+      }
+      const live = (await this.#listTasks()).filter(
+        (task) => task.status !== "done" && task.status !== "compacted",
+      );
+      const probe = ticketFromInput("TSK-probe", specId, {
+        title,
+        adapter: opts.adapter,
+        profile: opts.profile,
+        contract: { filesAllowed, expectedArtifacts: [testPath], verificationCommands: [verifyCmd] },
+      });
+      const overlaps = overlappingFilesAllowed([probe, ...live]);
+      if (overlaps.length > 0) refuse(`overlapping filesAllowed ${overlaps[0]}`, HINT.fix);
+      await this.#failLastReviewLocked();
+      return (await this.#fileTicketLocked({
+        title,
+        adapter: opts.adapter,
+        profile: opts.profile,
+        type: "bug",
+        priority: "P0",
+        notes: "Proposed focused-workflow amendment. Add a reproducing regression test during approved execution.",
+        contract: {
+          filesAllowed,
+          expectedArtifacts: [testPath],
+          verificationCommands: [verifyCmd],
+        },
+      })).task;
+    });
+  }
+
   async fix(bug: string): Promise<Task> {
     return this.#mutate(async () => {
       const title = bug.trim();
@@ -2500,7 +3620,7 @@ Approved: ${note}
       // Routine appends verify only the chain tail; the gate replays the whole log.
       await healAuditChain(this.projectRoot);
       const state = await this.#readState();
-      await this.#assertCanShip(state, opts);
+      await this.#assertCurrentShipGate(state, opts);
       return this.#stageShipLocked(state);
     });
 
@@ -2526,7 +3646,7 @@ Approved: ${note}
       ) {
         refuse(SHIP_STAGED_CHANGED, HINT.ship);
       }
-      await this.#assertCanShip(state, opts);
+      await this.#assertCurrentShipGate(state, opts);
       return this.#completeShipLocked(state, opts, preview);
     });
   }
@@ -2646,7 +3766,10 @@ Approved: ${note}
       await this.#optionalSpawn(
         "discuss",
         specId,
-        "Propose decisions in .legion-cli/discuss/DISCUSS.md with status proposed. Do not accept them.",
+        [
+          "Propose decisions in .legion-cli/discuss/DISCUSS.md with status proposed. Do not accept them.",
+          "For brownfield projects also read .legion-cli/map/DISCOVERY.md and .legion-cli/map/ARCHITECTURE.md when present.",
+        ].join("\n"),
       );
       discuss = await this.#loadDiscuss();
       if (discuss.decisions.length === 0) {
@@ -2702,6 +3825,8 @@ Approved: ${note}
 
   async draftSpec(opts?: { skipWireframes?: boolean }): Promise<Spec> {
     return this.#mutate(async () => {
+      await this.#assertNoLiveInProgress("spec");
+      await assertDiscoverySelection(this);
       const state = await this.#readState();
       if (state.phase === "spec_frozen" || this.#isPostFreeze(state.phase)) {
         if (opts?.skipWireframes) {
@@ -2711,6 +3836,15 @@ Approved: ${note}
       }
       if (state.phase !== "discussing" && state.phase !== "spec_draft") {
         refuse("spec requires decisions captured", HINT.discuss);
+      }
+      if (state.phase === "spec_draft" && state.activeSpecId &&
+          (await this.#readConfig()).workflow?.profile === "focused") {
+        try {
+          const existing = await this.store.readSpec(state.activeSpecId);
+          if (existing.data.status === "draft") return existing.data;
+        } catch {
+          // A missing draft is reconstructed below from durable interview context.
+        }
       }
       await this.#assertAgentAvailable("spec");
       const skipWireframes = Boolean(opts?.skipWireframes);
@@ -2726,6 +3860,14 @@ Approved: ${note}
           priority: "P1" as const,
         }));
       const discuss = await this.#loadDiscuss();
+      const failureCases = answers.rounds.flatMap((round) =>
+        round.questions.flatMap((question, index) => {
+          if (!/(fail|edge|error|security|integration|unavailable|timeout)/i.test(question)) return [];
+          const answer = round.answers[index]?.trim();
+          if (!answer || /^(none|n\/a|no)$/i.test(answer)) return [];
+          return answer.split(/\r?\n|;/).map((line) => line.trim()).filter(Boolean);
+        }),
+      );
       const spec = buildSpecFromIntent({
         specId,
         title: project.data.name,
@@ -2733,6 +3875,7 @@ Approved: ${note}
         extraAcceptance,
         skipWireframes,
         decisions: discuss.decisions,
+        failureCases,
       });
       await this.store.writeSpec(spec, specMarkdownBody(spec));
       await mkdir(join(this.store.paths.specsDir, specId), { recursive: true });
@@ -2756,6 +3899,7 @@ Approved: ${note}
         specId,
         [
           `Fill .legion-cli/specs/${specId}/SPEC.md from the intent answers if needed.`,
+          "For brownfield projects also read .legion-cli/map/DISCOVERY.md and .legion-cli/map/ARCHITECTURE.md when present.",
           "You may replace inner markup of wireframe HTML files.",
           "Keep the palette: background #f5f5f0, ink #222, accent #c45c26, muted #888.",
           "Do not set status to frozen. The human runs legion-cli spec approve.",
@@ -3136,6 +4280,9 @@ Approved: ${note}
         refuse("Execute needs plan_ready or executing", HINT.plan);
       }
       config = opts.config ?? (await this.#readConfig());
+      if (config.workflow?.profile === "focused") {
+        config = (await this.#requireCurrentPlanApproval()).config;
+      }
       if (config.control_mode === "advisory") {
         refuse("Execute is off in advisory mode", HINT.advisory);
       }
@@ -4156,7 +5303,7 @@ Approved: ${note}
       const context = await this.store.readContext();
       const note = /^https?:\/\//i.test(side.brand)
         ? `Brand URL recorded but not fetched in v0: ${side.brand}`
-        : `Brand file: ${side.brand}`;
+        : `Constraint or design input: ${side.brand}`;
       const standing = context.data.standingInstructions
         ? `${context.data.standingInstructions.trim()}\n${note}\n`
         : `${note}\n`;
@@ -4410,6 +5557,327 @@ Approved: ${note}
     return this.store.readConfig();
   }
 
+  async #specChallengeContextLocked(specId?: string): Promise<EngineSpecChallengeContext> {
+    const state = await this.#readState();
+    const selected = specId ?? state.activeSpecId;
+    if (!selected) refuse("no active spec", HINT.spec);
+    if (state.activeSpecId && selected !== state.activeSpecId) {
+      refuse(`spec challenge requires the active spec ${state.activeSpecId}`, HINT.spec);
+    }
+    let spec;
+    try {
+      spec = await this.store.readSpec(selected);
+    } catch {
+      refuse(`unknown spec ${selected}`, HINT.spec);
+    }
+    const config = await this.#readConfig();
+    if (config.workflow?.profile !== "focused" || spec.data.status !== "draft") {
+      return { applicable: false, specId: selected, spec };
+    }
+    const intent = await this.#loadIntentAnswers();
+    const discuss = await this.#loadDiscuss();
+    const discovery = await readWorkflowDiscoveryContext(this.projectRoot);
+    const readable = await specChallengeReadableFingerprints(this.projectRoot, selected);
+    return {
+      applicable: true,
+      specId: selected,
+      spec,
+      binding: createSpecChallengeBinding({
+        specId: selected,
+        spec,
+        intent,
+        discuss,
+        discovery,
+        repositoryFingerprint: readable.repositoryFingerprint,
+        readableContextFingerprint: readable.contextFingerprint,
+      }),
+    };
+  }
+
+  async #requireSpecChallengeReceiptLocked(specId: string): Promise<SpecChallengeReceipt> {
+    const receipt = await readSpecChallengeReceipt(this.store, specId);
+    if (!receipt) refuse("spec challenge has not started", "legion-cli spec");
+    return receipt;
+  }
+
+  async #requireCurrentSpecChallengeLocked(
+    context: Extract<EngineSpecChallengeContext, { applicable: true }>,
+  ): Promise<SpecChallengeReceipt> {
+    const receipt = await this.#requireSpecChallengeReceiptLocked(context.specId);
+    if (!receiptMatchesBinding(receipt, context.binding)) {
+      refuse("spec challenge evidence is stale after draft or context changes", "legion-cli spec");
+    }
+    return receipt;
+  }
+
+  async #markChallengeManualRequiredLocked(
+    receipt: SpecChallengeReceipt,
+    error: string,
+  ): Promise<SpecChallengeReceipt> {
+    const now = nowIso();
+    const next: SpecChallengeReceipt = {
+      ...receipt,
+      status: "manual_required",
+      generation: receipt.status === "analysis_running"
+        ? { ...receipt.generation, status: "failed", completedAt: now, error }
+        : receipt.generation,
+      synthesis: receipt.status === "synthesis_running"
+        ? { ...receipt.synthesis, status: "failed", completedAt: now, error }
+        : receipt.synthesis,
+      automationError: error,
+      updatedAt: now,
+    };
+    await writeSpecChallengeReceipt(this.store, next);
+    await writeSpecChallengeThinking(this.projectRoot, next);
+    return next;
+  }
+
+  async #readChallengeSpawnOutput(
+    started: Extract<StartedSkillSpawn, { spawned: true }>,
+    storePath: string,
+  ): Promise<string> {
+    const root = started.sandbox?.jailRoot ?? this.projectRoot;
+    return readFile(toFsPath(root, storePath), "utf8");
+  }
+
+  async #finishChallengeAnalysisLocked(specId: string | undefined, runId: string): Promise<SpecChallengeResult> {
+    const context = await this.#specChallengeContextLocked(specId);
+    if (!context.applicable) return challengeResult(context.specId, null, "complete");
+    let receipt = await this.#requireSpecChallengeReceiptLocked(context.specId);
+    if (!receiptMatchesBinding(receipt, context.binding)) return challengeResult(context.specId, receipt, "stale");
+    if (receipt.generation.status !== "complete") {
+      receipt = await this.#markChallengeManualRequiredLocked(
+        receipt,
+        "analysis completion checkpoint is missing",
+      );
+      return challengeResult(context.specId, receipt);
+    }
+    const now = nowIso();
+    receipt = {
+      ...receipt,
+      status: receipt.concerns.length === 0 ? "complete" : "awaiting_resolutions",
+      finalDraftFingerprint: receipt.concerns.length === 0 ? context.binding.initialDraftFingerprint : null,
+      generation: { ...receipt.generation, runId, completedAt: receipt.generation.completedAt ?? now },
+      synthesis: receipt.concerns.length === 0
+        ? { status: "complete", runId: null, completedAt: now }
+        : receipt.synthesis,
+      automationError: null,
+      updatedAt: now,
+    };
+    await writeSpecChallengeReceipt(this.store, receipt);
+    await writeSpecChallengeThinking(this.projectRoot, receipt);
+    return challengeResult(context.specId, receipt);
+  }
+
+  async #finishChallengeSynthesisLocked(specId: string | undefined, _runId: string): Promise<SpecChallengeResult> {
+    const context = await this.#specChallengeContextLocked(specId);
+    if (!context.applicable) return challengeResult(context.specId, null, "complete");
+    const receipt = await this.#requireSpecChallengeReceiptLocked(context.specId);
+    if (!receiptMatchesBinding(receipt, context.binding)) return challengeResult(context.specId, receipt, "stale");
+    return this.#applySpecChallengeApplicationLocked(context, receipt);
+  }
+
+  async #checkpointSpecChallengeApplicationLocked(
+    receipt: SpecChallengeReceipt,
+    base: EngineSpecDocument,
+    applied: AppliedSpecChallenge,
+    body: string,
+  ): Promise<SpecChallengeReceipt> {
+    const now = nowIso();
+    const next: SpecChallengeReceipt = {
+      ...receipt,
+      synthesis: { ...receipt.synthesis, status: "complete", completedAt: now },
+      application: {
+        expectedDraftFingerprint: workflowFingerprint({ data: applied.spec, body }),
+        baseSpec: base.data,
+        baseBody: base.body,
+        spec: applied.spec,
+        body,
+        changes: applied.changes,
+        draftDiff: applied.draftDiff,
+      },
+      changes: applied.changes,
+      draftDiff: applied.draftDiff,
+      updatedAt: now,
+    };
+    await writeSpecChallengeReceipt(this.store, next);
+    return next;
+  }
+
+  async #applySpecChallengeApplicationLocked(
+    context: Extract<EngineSpecChallengeContext, { applicable: true }>,
+    receipt: SpecChallengeReceipt,
+  ): Promise<SpecChallengeResult> {
+    const application = receipt.application;
+    if (!application) {
+      const failed = await this.#markChallengeManualRequiredLocked(
+        receipt,
+        "validated synthesis application checkpoint is missing",
+      );
+      return challengeResult(context.specId, failed);
+    }
+    const base = { data: application.baseSpec, body: application.baseBody };
+    const baseFingerprint = workflowFingerprint(base);
+    const identityKeys = ["schemaVersion", "id", "title", "status", "frozenAt", "frozenBy"] as const;
+    if (baseFingerprint !== receipt.initialDraftFingerprint ||
+        application.baseSpec.id !== context.specId || application.baseSpec.status !== "draft" ||
+        application.spec.id !== context.specId || application.spec.status !== "draft" ||
+        identityKeys.some((key) => application.baseSpec[key] !== application.spec[key]) ||
+        workflowFingerprint({ data: application.spec, body: application.body }) !== application.expectedDraftFingerprint) {
+      refuse("invalid spec challenge application checkpoint", "legion-cli spec");
+    }
+    let replayed: AppliedSpecChallenge;
+    const manual = completeManualReview(receipt.manualReview);
+    if (manual && receipt.automationError) {
+      replayed = applyManualReview(application.baseSpec, manual);
+    } else {
+      const proposed: SpecChallengeProposedChange[] = application.changes.map(({ appliedId: _appliedId, ...change }) => change);
+      replayed = applySpecChallengeChanges(application.baseSpec, receipt.concerns, proposed);
+    }
+    const replayedBody = specChallengeDraftBody(application.baseBody, replayed);
+    if (workflowFingerprint({ data: replayed.spec, body: replayedBody }) !== application.expectedDraftFingerprint ||
+        workflowFingerprint({ changes: replayed.changes, draftDiff: replayed.draftDiff }) !==
+          workflowFingerprint({ changes: application.changes, draftDiff: application.draftDiff })) {
+      refuse("invalid spec challenge application checkpoint", "legion-cli spec");
+    }
+    const currentFingerprint = workflowFingerprint(context.spec);
+    if (currentFingerprint === receipt.initialDraftFingerprint) {
+      await this.store.writeSpec(replayed.spec, replayedBody);
+      await this.#fakeAfterChallengeDraftWrite?.();
+    } else if (currentFingerprint !== application.expectedDraftFingerprint) {
+      return challengeResult(context.specId, receipt, "stale");
+    }
+    const applied: AppliedSpecChallenge = {
+      spec: replayed.spec,
+      changes: replayed.changes,
+      draftDiff: replayed.draftDiff,
+    };
+    const completed = await this.#completeSpecChallengeLocked(receipt, applied, replayedBody);
+    return challengeResult(context.specId, completed);
+  }
+
+  async #completeSpecChallengeLocked(
+    receipt: SpecChallengeReceipt,
+    applied: AppliedSpecChallenge,
+    body: string,
+  ): Promise<SpecChallengeReceipt> {
+    const now = nowIso();
+    const next: SpecChallengeReceipt = {
+      ...receipt,
+      status: "complete",
+      finalDraftFingerprint: workflowFingerprint({ data: applied.spec, body }),
+      synthesis: {
+        ...receipt.synthesis,
+        status: "complete",
+        completedAt: receipt.synthesis.completedAt ?? now,
+      },
+      changes: applied.changes,
+      draftDiff: applied.draftDiff,
+      automationError: receipt.automationError,
+      updatedAt: now,
+    };
+    await writeSpecChallengeReceipt(this.store, next);
+    await writeSpecChallengeThinking(this.projectRoot, next);
+    return next;
+  }
+
+  #specChallengePrompt(
+    mode: "analysis" | "synthesis",
+    specId: string,
+    receipt: SpecChallengeReceipt | null,
+  ): string {
+    if (mode === "analysis") {
+      return [
+        "Mode: analysis",
+        `Review .legion-cli/specs/${specId}/SPEC.md and the staged interview, decisions, map, and readable repository context.`,
+        "Write analysis.json in this run's cache using schemaVersion legion-cli-spec-challenge-analysis/v1.",
+        "Return zero to three concerns. Each concern has question, why, and non-empty evidence.",
+        "Repository evidence requires kind, path, line, exact quote, and claim; otherwise use kind assumption with claim.",
+      ].join("\n");
+    }
+    return [
+      "Mode: synthesis",
+      `Review .legion-cli/specs/${specId}/SPEC.md and only these engine-recorded concern resolutions:`,
+      JSON.stringify(receipt?.concerns ?? [], null, 2),
+      "Write synthesis.json in this run's cache using schemaVersion legion-cli-spec-challenge-synthesis/v1.",
+      "Changes are additive and use section mustBeTrue, mustNotChange, outOfScope, failureCases, acceptance, or decision.",
+      "Each change requires statement, rationale, and concernIds. Acceptance also requires kind behavior|test|rubric and priority P0|P1|P2.",
+      "For safety, each proposed statement must preserve one linked human response verbatim as the complete statement.",
+      "Do not propose changes for dismissed concerns or unrelated scope.",
+    ].join("\n");
+  }
+
+  async #assertFocusedSpecChallengeCompleteLocked(specId: string): Promise<void> {
+    const context = await this.#specChallengeContextLocked(specId);
+    if (!context.applicable) return;
+    const receipt = await readSpecChallengeReceipt(this.store, specId);
+    if (!receipt) refuse("focused spec approval requires a completed challenge", "legion-cli spec");
+    if (!receiptMatchesBinding(receipt, context.binding)) {
+      refuse("focused spec challenge evidence is stale", "legion-cli spec");
+    }
+    if (receipt.status !== "complete" || !receipt.finalDraftFingerprint ||
+        receipt.concerns.some((concern) => !concern.resolution)) {
+      const hint = receipt.status === "manual_required" ? "legion-cli spec --manual-review" : "legion-cli spec";
+      refuse("focused spec challenge is unresolved", hint);
+    }
+  }
+
+  async #workflowPlanContext(configOverride?: LegionConfig): Promise<{
+    snapshot: WorkflowPlanSnapshot;
+    spec: Spec;
+    tasks: Task[];
+    config: LegionConfig;
+  }> {
+    const state = await this.#readState();
+    const specId = state.activeSpecId;
+    if (!specId) refuse("workflow requires an active spec", HINT.spec);
+    const specDoc = await this.store.readSpec(specId);
+    if (specDoc.data.status !== "frozen") refuse("workflow requires a frozen spec", HINT.specApprove);
+    const tasks = sliceTasks(await this.#listGateTasks(), specId);
+    const taskDocs = [];
+    for (const task of tasks) taskDocs.push(await this.store.readTask(task.id));
+    const config = configOverride ?? await this.#readConfig();
+    const project = (await this.store.readProject()).data;
+    const planBody = await readPlanBody(this.projectRoot, specId);
+    const snapshot = createWorkflowPlanSnapshot({
+      spec: specDoc,
+      tasks: taskDocs,
+      planBody,
+      config,
+      project,
+      discoveryContext: await readWorkflowDiscoveryContext(this.projectRoot),
+    });
+    return { snapshot, spec: specDoc.data, tasks, config };
+  }
+
+  async #requireCurrentPlanApproval(): Promise<{
+    approval: PlanApprovalReceipt;
+    snapshot: WorkflowPlanSnapshot;
+    spec: Spec;
+    tasks: Task[];
+    config: LegionConfig;
+  }> {
+    const approval = await readPlanApproval(this.store);
+    if (!approval) refuse("plan approval is required before execute", "legion-cli plan approve");
+    const context = await this.#workflowPlanContext();
+    if (approval.specId !== context.snapshot.specId || approval.planFingerprint !== context.snapshot.planFingerprint) {
+      refuse("plan approval is stale; review and approve the current plan", "legion-cli plan approve");
+    }
+    return { approval, ...context };
+  }
+
+  #workflowAcceptanceStatus(spec: Spec, receipt: AcceptanceReceipt | null): WorkflowStatus["acceptance"] {
+    const required = spec.acceptance.map((criterion) => criterion.id);
+    const byId = new Map((receipt?.entries ?? []).map((entry) => [entry.id, entry.status]));
+    return {
+      required,
+      passed: required.filter((id) => byId.get(id) === "passed"),
+      failed: required.filter((id) => byId.get(id) === "failed"),
+      pending: required.filter((id) => !byId.has(id)),
+      notApplicable: required.filter((id) => byId.get(id) === "not_applicable"),
+    };
+  }
+
   async #loadTaskEntries(): Promise<LoadedTask[]> {
     return (await listTaskFiles(this.projectRoot)).map((entry): LoadedTask =>
       entry.ok
@@ -4497,7 +5965,7 @@ Approved: ${note}
   }
 
   #assertCanReview(state: StateFile, slice: Task[]): void {
-    if (state.phase !== "executing") {
+    if (state.phase !== "executing" && state.phase !== "ready_to_ship") {
       refuse("Review is for a terminal slice after execute", HINT.execute);
     }
     if (!isSliceTerminal(slice) || sliceHasOpenWork(slice)) {
@@ -4520,18 +5988,19 @@ Approved: ${note}
     }
   }
 
-  async #assertReadyToShip(state: StateFile): Promise<void> {
-    const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
-    if (state.lastReview !== "PASS") {
-      refuse("Review must PASS before shipping", HINT.review);
+  async #assertCurrentShipGate(state: StateFile, opts: ShipOptions): Promise<void> {
+    const config = await this.#readConfig();
+    if (config.workflow?.profile === "focused" || await this.store.pathExists(WORKFLOW_APPROVAL_PATH)) {
+      if (state.phase !== "executing" && state.phase !== "ready_to_ship") {
+        refuse("focused ship requires completed execution", "legion-cli execute");
+      }
+      const workflow = await this.getWorkflowStatus();
+      if (workflow.stage !== "ship" || workflow.planApproval !== "valid" || workflow.execution !== "complete") {
+        refuse(workflow.blocker ?? "focused workflow is not ready to ship", workflow.next);
+      }
+      return;
     }
-    const lastQa = await this.#currentQaEvidence(state);
-    if (lastQa?.pass !== true) {
-      refuse("QA must PASS before shipping", HINT.qa);
-    }
-    if (p0TasksNotDone(slice).length > 0) {
-      refuse("A P0 task is not done yet", HINT.blockers);
-    }
+    await this.#assertCanShip(state, opts);
   }
 
   async #assertCanShip(state: StateFile, opts: ShipOptions): Promise<void> {

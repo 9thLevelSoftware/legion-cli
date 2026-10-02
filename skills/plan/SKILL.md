@@ -1,7 +1,8 @@
 ---
 name: plan
 description: >
-  Break a frozen spec into a task board with FileContracts.
+  Break an approved spec into bounded task contracts, planned checks, and
+  acceptance evidence.
   Activated only by `legion-cli plan`. Do not load other skill bodies.
 license: UNLICENSED
 compatibility: "Legion CLI staging; not vendor auto-discovery"
@@ -14,7 +15,11 @@ metadata:
 
 # plan
 
-Emit a task board with file contracts. Plan is required: Legion CLI refuses if no spawnable adapter is configured.
+Emit a task board with file contracts. `legion-cli plan approve` records the
+approved task contracts, explicit automated checks, and manual acceptance
+criteria before execution. It may approve a validated amendment while a focused
+workflow is executing. Plan is required: Legion CLI refuses if no spawnable
+adapter is configured.
 
 ## Contract
 
@@ -40,7 +45,9 @@ Write:
 
 Every task MUST have:
 
-- at least one `verificationCommands` entry (empty verification is a plan FAIL)
+- verification appropriate to its risk. The approved plan declares the
+  integration checks; do not invent pnpm, Playwright, browser, wireframe, or
+  story requirements for work that does not need them.
 - non-empty `filesAllowed` of concrete POSIX repo-relative paths (no `*`, `**`, `?`, no `.git/**`)
 - exclusive `filesAllowed` (two tasks sharing a path is a plan FAIL)
 - `filesForbidden` including `.git/**`, `.legion-cli/config.yaml`, `.legion-cli/index/**`, `.env`, `.env.*`

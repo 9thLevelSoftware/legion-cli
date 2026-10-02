@@ -1,6 +1,6 @@
 import { createLegionEngine, HINT, refuse, type ShipPreview } from "@9thlevelsoftware/legion-cli-core";
 import type { CliOpts } from "./io.js";
-import { writeJson, writeOut } from "./io.js";
+import { writeErr, writeJson, writeOut } from "./io.js";
 import { closePrompt, isNo, isYes, readLine, slurpStdin } from "./prompt.js";
 
 export type ShipFlags = {
@@ -10,7 +10,12 @@ export type ShipFlags = {
 };
 
 async function confirmShip(preview: ShipPreview, json: boolean): Promise<boolean> {
-  if (!json) {
+  if (json) {
+    writeErr(`Staged: ${preview.stagedDisplay}\n`);
+    writeErr(`Unrelated files unchanged: ${preview.unrelatedUnchanged ? "yes" : "no"}\n`);
+    if (preview.diff.trim()) writeErr(`${preview.diff.trimEnd()}\n`);
+    writeErr("Acceptance criteria met?  [y/n] (an explicit y is required)\n");
+  } else {
     writeOut(`Staged: ${preview.stagedDisplay}`);
     writeOut(`Unrelated files unchanged: ${preview.unrelatedUnchanged ? "yes" : "no"}`);
     writeOut(`QA missing: ${preview.qaCoverage.missing.join(", ") || "none"}`);
@@ -19,7 +24,7 @@ async function confirmShip(preview: ShipPreview, json: boolean): Promise<boolean
     if (preview.diff.trim()) writeOut(preview.diff.trimEnd());
     writeOut("Acceptance criteria met?  [y/n] (an explicit y is required)");
   }
-  const answer = await readLine("> ");
+  const answer = await readLine(json ? "" : "> ");
   if (isNo(answer)) return false;
   if (isYes(answer)) return true;
   if (answer === "") refuse("ship needs an explicit y (empty or closed input is not approval)", HINT.ship);

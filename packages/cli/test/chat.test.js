@@ -22,7 +22,7 @@ test("chat --once where am I prints status and does not spawn", async () => {
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const out = normalize(result.stdout);
     assert.match(out, /phase: initialized/);
-    assert.match(out, /legion-cli intent/);
+    assert.match(out, /legion-cli spec/);
     const runs = join(dir, ".legion-cli", "cache", "runs");
     assert.equal(existsSync(runs), false);
   });
@@ -165,7 +165,7 @@ test("chat --once --json pause emits one JSON object", async () => {
       assert.equal(last.status, 0, `${last.stdout}\n${last.stderr}`);
       const body = JSON.parse(last.stdout);
       assert.equal(body.kind, "next");
-      assert.match(body.next, /^legion-cli intent --project /);
+      assert.match(body.next, /^legion-cli spec --project /);
       if (i < 3) assert.equal(body.paused, false);
       else {
         assert.equal(body.paused, true);
@@ -228,7 +228,7 @@ test("paused search --json folds paused into one object", async () => {
       if (i < 3) assert.equal("paused" in body, false);
       else {
         assert.equal(body.paused, true);
-        assert.match(body.next, /legion-cli intent/);
+        assert.match(body.next, /^legion-cli spec --project /);
       }
     }
   });
@@ -243,12 +243,12 @@ test("four idle --once turns print the read then one pause Next", async () => {
       if (i < 3) {
         assert.equal(last.status, 0, `${last.stdout}\n${last.stderr}`);
         assert.doesNotMatch(normalize(last.stdout), /Chat paused/);
-        assert.match(normalize(last.stdout), /Next: legion-cli intent/);
+        assert.match(normalize(last.stdout), /Next: legion-cli spec/);
       }
     }
     assert.equal(last.status, 0, `${last.stdout}\n${last.stderr}`);
     const out = normalize(last.stdout);
-    assert.match(out, /Next: legion-cli intent/);
+    assert.match(out, /Next: legion-cli spec/);
     assert.match(out, /Chat paused/);
     assert.ok(out.indexOf("Next:") < out.indexOf("Chat paused"));
     assert.equal([...out.matchAll(/Next:/g)].length, 1);
