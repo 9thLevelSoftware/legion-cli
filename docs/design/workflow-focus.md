@@ -131,6 +131,14 @@ Failed or stale evidence blocks ship; changed staged product content also refuse
 delivery. A repair or review finding becomes a proposed amendment; approving it
 invalidates the affected plan/evidence instead of starting an automatic repair loop.
 
+Product fingerprints still cover the whole product, not only task-owned files.
+They include file contents, modes, missing tracked paths and symlink targets,
+while retaining the existing bookkeeping and generated-path exclusions.
+Hashing overlaps at most twelve selected paths at a time, preserves their
+original record order and waits for started reads to finish before reporting
+an I/O failure. This changes throughput, not fingerprint identities or reuse
+eligibility; it does not make a filesystem snapshot atomic.
+
 Focused `fix --profile <name>` and `fix --adapter <id>` retain the selected task
 routing on the proposed amendment; they do not execute it. Unknown or conflicting
 selections refuse before invalidating existing review evidence. After renewed plan
