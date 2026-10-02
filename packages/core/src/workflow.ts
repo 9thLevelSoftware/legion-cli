@@ -225,8 +225,25 @@ export async function workflowProductFingerprint(projectRoot: string, _tasks: re
   } else {
     paths = await nonGitProductPaths(projectRoot);
   }
-  const values: unknown[] = [];
-  for (const path of paths) values.push(await hashProductPath(projectRoot, path));
+  const values = new Array<unknown>(paths.length);
+  let nextPath = 0;
+  let failed = false;
+  let failure: unknown;
+  const hashPaths = async (): Promise<void> => {
+    while (!failed) {
+      const index = nextPath++;
+      if (index >= paths.length) return;
+      try {
+        values[index] = await hashProductPath(projectRoot, paths[index]!);
+      } catch (err) {
+        if (!failed) failure = err;
+        failed = true;
+      }
+    }
+  };
+  // Preserve path order and drain started reads before propagating the first failure.
+  await Promise.all(Array.from({ length: Math.min(4, paths.length) }, hashPaths));
+  if (failed) throw failure;
   return workflowFingerprint(values);
 }
 
