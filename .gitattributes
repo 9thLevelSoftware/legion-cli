@@ -1,1 +1,2 @@
 packages/schema/json/*.json text eol=lf
+/autoresearch.sh text eol=lf
