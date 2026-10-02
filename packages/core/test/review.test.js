@@ -16,6 +16,7 @@ import {
   seedPlanReady,
   withEngine,
   withFakeAdapter,
+  withReviewNotes,
   writeUnspawnableGrok,
 } from "./helpers.js";
 
@@ -88,7 +89,7 @@ test("review spawn with zero new tasks is PASS and stays executing", async () =>
         assert.equal((await engine.getState()).phase, "executing");
         assert.equal((await engine.getState()).lastReview, "PASS");
       },
-      { skillsDir },
+      withReviewNotes({ skillsDir }),
     );
   });
 });
@@ -210,12 +211,16 @@ test("review spawn cannot stamp status done; child must execute before re-review
             return true;
           },
         );
+        // A review-filed ticket runs the engine default (pnpm test); the human sets what this repo runs.
+        assert.deepEqual(child.contract.verificationCommands, ["pnpm test"]);
+        await store.writeTask({ ...child, contract: { ...child.contract, verificationCommands: verify } }, "child\n");
         // same tree, no review fixture — execute must not rewrite the child as done
         const runner = new LegionEngine(dir, undefined, { skillsDir });
         const executed = await runner.execute("TSK-0002");
         assert.equal(executed.status, "done");
         assert.equal((await store.readTask("TSK-0002")).data.status, "done");
-        const later = await runner.review();
+        // review notes are outside execute's contract, so the reviewer is a separate engine
+        const later = await new LegionEngine(dir, undefined, withReviewNotes({ skillsDir })).review();
         assert.equal(later.verdict, "PASS");
         assert.deepEqual(later.createdTaskIds, []);
         assert.equal((await runner.getState()).lastReview, "PASS");
@@ -316,7 +321,7 @@ test("review spawn notes-only edit of existing TSK is FAIL and restores bytes", 
   });
 });
 
-test("review extra.json files a child without treating parent blocks as a rewrite", async () => {
+test("review extra.json files an unlinked child (agent parentId ignored) without a rewrite", async () => {
   await withFakeAdapter(async () => {
     await withEngine(
       async ({ engine, store }) => {
@@ -328,10 +333,10 @@ test("review extra.json files a child without treating parent blocks as a rewrit
         assert.deepEqual(review.rewrittenExistingTaskIds, []);
         assert.equal((await engine.getState()).lastReview, "FAIL");
         const child = (await store.readTask("TSK-0002")).data;
-        assert.equal(child.parentId, "TSK-0001");
-        assert.deepEqual(child.blockedBy, ["TSK-0001"]);
+        assert.equal(child.parentId, undefined, "review has no engine source: the agent parentId is ignored");
+        assert.deepEqual(child.blockedBy, []);
         const parent = (await store.readTask("TSK-0001")).data;
-        assert.ok(parent.blocks.includes("TSK-0002"));
+        assert.equal(parent.blocks.includes("TSK-0002"), false);
         assert.equal(parent.status, "done");
       },
       {
@@ -516,7 +521,7 @@ test("review prompt.md starts with SessionBrief and has no FileContract heading"
         assert.doesNotMatch(prompt, /^## FileContract$/m);
         assert.ok(prompt.indexOf("## SessionBrief") < prompt.indexOf("## SkillContract"));
       },
-      { skillsDir },
+      withReviewNotes({ skillsDir }),
     );
   });
 });

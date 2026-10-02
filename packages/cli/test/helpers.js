@@ -10,11 +10,22 @@ const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const bin = join(pkgRoot, "dist", "bin.js");
 export const transcriptsDir = join(pkgRoot, "test", "transcripts");
 
+/** Verbs that stop with "no agent available" unless the adapter is spawnable. */
+const AGENT_VERBS = new Set(["intent", "discuss", "spec"]);
+
+/**
+ * `opts.noAgent: true` runs with no spawnable agent. Otherwise intent, discuss and spec run
+ * with the in-process fake agent, so tests exercise the flow an installed agent would give.
+ */
 export function runCli(args, opts = {}) {
+  const fakeAgent =
+    AGENT_VERBS.has(args[0]) && !opts.noAgent && opts.env?.LEGION_CLI_ADAPTER === undefined
+      ? { LEGION_CLI_ADAPTER: "fake" }
+      : {};
   return spawnSync(process.execPath, [bin, ...args], {
     encoding: "utf8",
     cwd: opts.cwd,
-    env: { ...process.env, ...(opts.env ?? {}) },
+    env: { ...process.env, ...fakeAgent, ...(opts.env ?? {}) },
     windowsHide: true,
     input: opts.input,
   });
@@ -26,25 +37,6 @@ export function normalize(text) {
 
 export function readGolden(name) {
   return readFile(join(transcriptsDir, name), "utf8").then((text) => normalize(text));
-}
-
-export function sanitizeDoctor(text) {
-  return normalize(text)
-    .replace(/^(ok  |FAIL)  Node >= 22 \(.+\)$/m, "$1  Node >= 22 (<version>)")
-    .replace(/^(ok  |FAIL)  pnpm \(.+\)$/m, "$1  pnpm (<version>)")
-    .replace(/^(ok  |FAIL)  git \(.+\)$/m, "$1  git (<version>)")
-    .replace(/^  legion-cli\n(?:    .+\n)+/m, "  legion-cli\n    <paths>\n")
-    .replace(/^  legion\n(?:    .+\n)+/m, "  legion\n    <paths>\n")
-    .replace(/^(ok  |FAIL|warn)  sandbox \(.+\)$/m, "$1  sandbox (<backend>)")
-    .replace(/^Sandbox     .+$/m, "Sandbox     <backend>")
-    .replace(/^Playwright  .+$/m, "Playwright  <playwright>")
-    .replace(/^  claude       .+$/m, "  claude       <detect>")
-    .replace(/^  grok         .+$/m, "  grok         <detect>")
-    .replace(/^  openai       .+$/m, "  openai       <detect>")
-    .replace(/^  codex        .+$/m, "  codex        <detect>")
-    .replace(/^  mimo         .+$/m, "  mimo         <detect>")
-    .replace(/^  minimax      .+$/m, "  minimax      <detect>")
-    .replace(/\nWarnings\n(?:  .+\n?)*(?:\n)?/g, "\n");
 }
 
 export async function withTempDir(fn) {

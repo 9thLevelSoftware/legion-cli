@@ -78,6 +78,7 @@ export const StateFileSchema = z.object({
   phase: PhaseSchema,
   activeSpecId: z.string().min(1).nullable().optional(),
   currentTaskId: z.string().min(1).nullable().optional(),
+  activeTaskIds: z.array(z.string().min(1)).optional(),
   lastReadiness: ReadinessSchema.nullable().optional(),
   lastReview: ReviewVerdictSchema.nullable().optional(),
   lastQaId: z.string().min(1).nullable().optional(),
@@ -180,6 +181,59 @@ export const HttpAdapterConfigSchema = z
   });
 export type HttpAdapterConfig = z.infer<typeof HttpAdapterConfigSchema>;
 
+export const AcpAdapterConfigSchema = z
+  .object({
+    command: z.string().min(1),
+    args: z.array(z.string()).default([]),
+    env: z.record(z.string(), z.string()).optional(),
+    enabled: z.literal(true).optional(),
+  })
+  .strict();
+export type AcpAdapterConfig = z.infer<typeof AcpAdapterConfigSchema>;
+
+export const AgentUsageSchema = z
+  .object({
+    requests: z.number().int().nonnegative().optional(),
+    toolCalls: z.number().int().nonnegative().optional(),
+    inputTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
+    totalTokens: z.number().int().nonnegative().optional(),
+    estimatedCostUsd: z.number().nonnegative().optional(),
+    model: z.string().min(1).optional(),
+    profile: z.string().min(1).optional(),
+    costEstimated: z.boolean().optional(),
+  })
+  .strict();
+export type AgentUsage = z.infer<typeof AgentUsageSchema>;
+
+const ProfileSlugSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/);
+
+export const AdapterProfileSchema = z
+  .object({
+    adapter: AdapterIdSchema,
+    modelArgs: z.array(z.string()).default([]),
+    outputLimit: z.number().int().positive().optional(),
+    pricing: z
+      .object({
+        inputPerMillionUsd: z.number().nonnegative().optional(),
+        outputPerMillionUsd: z.number().nonnegative().optional(),
+        requestUsd: z.number().nonnegative().optional(),
+      })
+      .strict()
+      .optional(),
+    limits: z
+      .object({
+        maxRequests: z.number().int().positive().optional(),
+        maxToolRounds: z.number().int().positive().optional(),
+        maxReportedTokens: z.number().int().positive().optional(),
+        maxEstimatedCostUsd: z.number().nonnegative().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type AdapterProfile = z.infer<typeof AdapterProfileSchema>;
+
 export const SandboxConfigSchema = z
   .object({
     requireHardened: z.boolean().default(true),
@@ -249,19 +303,47 @@ function adapterTargetsId(
   return routed.includes(id) || named.includes(id);
 }
 
-export const McpServerConfigSchema = z
+const McpStdioServerConfigSchema = z
   .object({
-    command: z.string().min(1).optional(),
+    transport: z.literal("stdio").default("stdio"),
+    command: z.string().min(1),
     args: z.array(z.string()).default([]),
     env: z.record(z.string(), z.string()).optional(),
-    url: z.string().url().optional(),
-    transport: z.enum(["stdio", "sse"]).default("stdio"),
   })
   .strict();
+
+const McpRemoteServerConfigSchema = z
+  .object({
+    transport: z.enum(["sse", "streamable-http"]),
+    url: z.string().url(),
+    authTokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]{1,63}$/).optional(),
+    allowLoopback: z.boolean().default(false),
+  })
+  .strict();
+
+export const McpServerConfigSchema = z.union([McpStdioServerConfigSchema, McpRemoteServerConfigSchema]);
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 
 export const McpServersConfigSchema = z.record(z.string().min(1), McpServerConfigSchema);
 export type McpServersConfig = z.infer<typeof McpServersConfigSchema>;
+
+const LoopbackOtlpEndpointSchema = z.string().url().superRefine((value, ctx) => {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    ctx.addIssue({ code: "custom", message: "telemetry.otlpEndpoint must use http or https" });
+  }
+  if (url.hostname !== "127.0.0.1" && url.hostname !== "::1" && url.hostname !== "[::1]") {
+    ctx.addIssue({ code: "custom", message: "telemetry.otlpEndpoint must use an explicit loopback IP" });
+  }
+  if (url.username || url.password) {
+    ctx.addIssue({ code: "custom", message: "telemetry.otlpEndpoint cannot include credentials" });
+  }
+});
 
 export const LegionConfigSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.config),
@@ -285,8 +367,11 @@ export const LegionConfigSchema = z.object({
       mimo: ExtraAdapterConfigSchema.optional(),
       minimax: ExtraAdapterConfigSchema.optional(),
       http: HttpAdapterConfigSchema.optional(),
+      acp: AcpAdapterConfigSchema.optional(),
       routes: AdapterRoutesSchema.optional(),
       named: NamedAdapterRoutesSchema.optional(),
+      profiles: z.record(ProfileSlugSchema, AdapterProfileSchema).optional(),
+      skillProfiles: z.partialRecord(SkillIdSchema, ProfileSlugSchema).optional(),
     })
     .strict()
     .refine((adapter) => !adapterTargetsId(adapter, "generic") || adapter.generic !== undefined, {
@@ -296,6 +381,10 @@ export const LegionConfigSchema = z.object({
     .refine((adapter) => !adapterTargetsId(adapter, "http") || adapter.http !== undefined, {
       message: "adapter.http is required when adapter.default or any routes/named target is http",
       path: ["http"],
+    })
+    .refine((adapter) => !adapterTargetsId(adapter, "acp") || adapter.acp !== undefined, {
+      message: "adapter.acp is required when adapter.default or any routes/named target is acp",
+      path: ["acp"],
     }),
   ingest: z
     .object({
@@ -332,7 +421,30 @@ export const LegionConfigSchema = z.object({
   }),
   skills: SkillsConfigSchema.default({ trustKeys: [] }),
   map: MapConfigSchema.default({}),
+  search: z
+    .object({
+      mode: z.enum(["lexical", "hybrid"]).default("lexical"),
+      vectorsPath: z.string().min(1).optional(),
+      embeddingCommand: z.string().min(1).optional(),
+    })
+    .strict()
+    .default({ mode: "lexical" }),
+  execution: z
+    .object({
+      maxWorkers: z.number().int().min(1).max(4).default(1),
+    })
+    .strict()
+    .default({ maxWorkers: 1 }),
+  telemetry: z
+    .object({
+      otlpEndpoint: LoopbackOtlpEndpointSchema.optional(),
+    })
+    .strict()
+    .default({}),
   mcpServers: McpServersConfigSchema.optional(),
+  mcpHttpToolAllowlist: z
+    .array(z.string().regex(/^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$/))
+    .default([]),
   git: z
     .object({
       microCommits: z.boolean().default(false),
@@ -393,6 +505,7 @@ export const TaskSchema = z.object({
   priority: PrioritySchema,
   specId: z.string().min(1),
   adapter: AdapterIdSchema.optional(),
+  profile: ProfileSlugSchema.optional(),
   parentId: z.string().min(1).nullable().optional(),
   blockedBy: z.array(z.string().min(1)),
   blocks: z.array(z.string().min(1)),
@@ -716,11 +829,17 @@ export const AuditEventSchema = z.object({
 });
 export type AuditEvent = z.infer<typeof AuditEventSchema>;
 
-export const AdapterResolutionSourceSchema = z.enum(["cli", "task", "route", "default"]);
+export const AdapterResolutionSourceSchema = z.enum([
+  "cli",
+  "profile",
+  "task",
+  "skill-profile",
+  "route",
+  "default",
+]);
 export type AdapterResolutionSource = z.infer<typeof AdapterResolutionSourceSchema>;
 
-export const ResumeFileSchema = z.object({
-  schemaVersion: z.literal(SCHEMA_VERSION.resume),
+const ResumeBaseSchema = z.object({
   runId: z.string().min(1),
   taskId: z.string().min(1).nullable().optional(),
   skillId: SkillIdSchema,
@@ -734,6 +853,51 @@ export const ResumeFileSchema = z.object({
   argvSummary: z.string().optional(),
   resolutionSource: AdapterResolutionSourceSchema.optional(),
 });
+
+export const LegacyResumeFileSchema = ResumeBaseSchema.extend({
+  schemaVersion: z.literal("legion-cli-resume/v1"),
+});
+
+export const ResumeStageSchema = z.enum([
+  "starting",
+  "running",
+  "agent-complete",
+  "integrating",
+  "verifying",
+  "completed",
+  "blocked",
+  "interrupted",
+]);
+export type ResumeStage = z.infer<typeof ResumeStageSchema>;
+
+export const CurrentResumeFileSchema = ResumeBaseSchema.extend({
+  schemaVersion: z.literal(SCHEMA_VERSION.resume),
+  stage: ResumeStageSchema,
+  stageUpdatedAt: z.string().min(1),
+  pidStartedAt: z.number().nonnegative().nullable().optional(),
+  enginePidStartedAt: z.number().nonnegative(),
+  /** Set when the command has returned control; a long-lived server PID no longer owns this run. */
+  engineOwnershipReleasedAt: z.string().min(1).optional(),
+  /** Fail closed when an abort returned without a child PID whose death can be established. */
+  childTerminationUncertain: z.boolean().optional(),
+  logs: z
+    .object({
+      stdout: z.string().min(1),
+      stderr: z.string().min(1),
+      verification: z.array(z.string().min(1)).optional(),
+    })
+    .strict(),
+  interruptionReason: z.string().min(1).optional(),
+  recoveryCommand: z.string().min(1).optional(),
+  sourceIdentity: z.string().min(1).optional(),
+  contractIdentity: z.string().min(1).optional(),
+  jailIdentity: z.string().min(1).optional(),
+  checkpointPath: z.string().min(1).optional(),
+  usage: AgentUsageSchema.optional(),
+});
+export type CurrentResumeFile = z.infer<typeof CurrentResumeFileSchema>;
+
+export const ResumeFileSchema = z.union([CurrentResumeFileSchema, LegacyResumeFileSchema]);
 export type ResumeFile = z.infer<typeof ResumeFileSchema>;
 
 /**
@@ -919,12 +1083,14 @@ export function computeQaPass(input: {
   mode: "full" | "no-browser";
   total: number;
   buckets: { p0: { failed: number }; visual: { regressions: number } };
+  reportFailures?: number;
 }): boolean {
   return (
     input.mode === "full" &&
     input.total >= 85 &&
     input.buckets.p0.failed === 0 &&
-    input.buckets.visual.regressions === 0
+    input.buckets.visual.regressions === 0 &&
+    (input.reportFailures ?? 0) === 0
   );
 }
 
@@ -943,17 +1109,41 @@ function qaExpectedTotal(mode: "full" | "no-browser", buckets: QaBuckets): numbe
   return mode === "no-browser" ? Math.min(sum, 70) : sum;
 }
 
-export const QAScoreSchema = z
-  .object({
+const QaScoreBaseSchema = z.object({
+  id: z.string().min(1),
+  specId: z.string().min(1),
+  mode: z.enum(["full", "no-browser"]),
+  buckets: QaBucketsSchema,
+  total: z.number().min(0).max(100),
+  pass: z.boolean(),
+  evidencePaths: z.array(z.string()),
+  createdAt: z.string().min(1),
+});
+
+export const LegacyQAScoreSchema = QaScoreBaseSchema.extend({
+  schemaVersion: z.literal("legion-cli-qa/v1"),
+});
+export type LegacyQAScore = z.infer<typeof LegacyQAScoreSchema>;
+
+export const QaCriterionOutcomeSchema = z.enum(["passed", "failed", "skipped", "missing"]);
+export type QaCriterionOutcome = z.infer<typeof QaCriterionOutcomeSchema>;
+
+export const QAScoreSchema = QaScoreBaseSchema.extend({
     schemaVersion: z.literal(SCHEMA_VERSION.qa),
-    id: z.string().min(1),
-    specId: z.string().min(1),
-    mode: z.enum(["full", "no-browser"]),
-    buckets: QaBucketsSchema,
-    total: z.number().min(0).max(100),
-    pass: z.boolean(),
-    evidencePaths: z.array(z.string()),
-    createdAt: z.string().min(1),
+    criteria: z.array(
+      z.object({
+        id: z.string().min(1),
+        priority: PrioritySchema,
+        outcome: QaCriterionOutcomeSchema,
+      }),
+    ),
+    missingCriterionIds: z.array(z.string().min(1)),
+    failedCriterionIds: z.array(z.string().min(1)),
+    skippedCriterionIds: z.array(z.string().min(1)),
+    reportFailures: z.number().int().nonnegative(),
+    specHash: Sha256HexSchema,
+    sourceHash: Sha256HexSchema,
+    usage: AgentUsageSchema.optional(),
   })
   .refine((score) => qaBucketPointsValid(score.buckets), {
     path: ["buckets"],
@@ -969,6 +1159,8 @@ export const QAScoreSchema = z
     message: "pass must be mode==full && total>=85 && p0.failed==0 && visual.regressions==0",
   });
 export type QAScore = z.infer<typeof QAScoreSchema>;
+export const AnyQAScoreSchema = z.union([QAScoreSchema, LegacyQAScoreSchema]);
+export type AnyQAScore = z.infer<typeof AnyQAScoreSchema>;
 
 export const DesignSystemIdSchema = z
   .string()
@@ -1059,6 +1251,9 @@ export const SessionBriefSchema = z.object({
     )
     .optional(),
   mapRootHash: Sha256HexSchema.optional(),
+  mapSlice: z.string().optional(),
+  mapFreshness: z.string().optional(),
+  contextSelection: z.array(z.string()).optional(),
   characterCount: z.number().int().min(0),
 });
 export type SessionBrief = z.infer<typeof SessionBriefSchema>;

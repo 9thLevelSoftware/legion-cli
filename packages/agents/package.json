@@ -16,12 +16,17 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "skills",
+    "extensions",
+    "scripts/copy-resources.js"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-resources.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm run build && node --test test/*.test.js",
+    "prepack": "node ../../scripts/copy-skills.mjs",
+    "postpack": "node ../../scripts/copy-skills.mjs --clean",
     "prepublishOnly": "pnpm run build"
   },
   "publishConfig": {
@@ -44,6 +49,7 @@
     "adapter"
   ],
   "dependencies": {
+    "@agentclientprotocol/sdk": "^1.5.1",
     "@9thlevelsoftware/legion-cli-http": "workspace:*",
     "@9thlevelsoftware/legion-cli-persist": "workspace:*",
     "@9thlevelsoftware/legion-cli-sandbox": "workspace:*",

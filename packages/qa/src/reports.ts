@@ -7,7 +7,20 @@ export type ParsedTest = {
   skipped: boolean;
   visualFailure: boolean;
   priority: Priority;
+  acceptanceIds: string[];
 };
+
+export function acceptanceIdsFromTitle(title: string): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const match of title.matchAll(/@ac\(\s*([A-Za-z0-9][A-Za-z0-9._:-]*)\s*\)/gi)) {
+    const id = match[1];
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -40,6 +53,7 @@ function pushTest(acc: ParsedTest[], title: string, ok: boolean, skipped: boolea
     skipped,
     visualFailure: visualFailure || (isVisualTitle(trimmed) && !ok && !skipped),
     priority: priorityFromTitle(trimmed),
+    acceptanceIds: acceptanceIdsFromTitle(trimmed),
   });
 }
 

@@ -16,6 +16,11 @@ export type NextCommand = {
   hint: string;
 };
 
+export const ADVISORY_EXECUTION_NEXT: NextCommand = {
+  run: "legion-cli control-mode guarded",
+  hint: "advisory blocks execute; set guarded to run tasks.",
+};
+
 export function formatReadyTaskLine(
   task: Pick<Task, "id" | "title" | "priority"> & { adapter?: string },
 ): string {
@@ -90,16 +95,11 @@ export function nextCommand(
   mode?: "greenfield" | "brownfield",
   controlMode?: ControlMode,
 ): NextCommand {
+  if (controlMode === "advisory" && (state.phase === "plan_ready" || state.phase === "executing")) {
+    return ADVISORY_EXECUTION_NEXT;
+  }
   if (state.phase === "executing" && isSliceTerminal(slice)) {
     return { run: "legion-cli execute", hint: "finish workflow verification and record acceptance evidence." };
-  }
-  const wouldExecute =
-    state.phase === "plan_ready" || (state.phase === "executing" && !isSliceTerminal(slice));
-  if (controlMode === "advisory" && wouldExecute) {
-    return {
-      run: "legion-cli control-mode guarded",
-      hint: "advisory blocks execute; set guarded to run tasks.",
-    };
   }
   return NEXT_BY_PHASE[state.phase];
 }
@@ -114,7 +114,7 @@ export function statusExitCode(
 }
 
 export type Blocker = {
-  kind: "task" | "readiness" | "review" | "workflow";
+  kind: "task" | "readiness" | "review" | "workflow" | "audit";
   id?: string;
   detail: string;
 };

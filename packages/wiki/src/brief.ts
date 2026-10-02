@@ -14,13 +14,24 @@ import {
   SessionBriefSchema,
   type Assumption,
   type FileContract,
+  type FingerprintFile,
   type QAScore,
   type SessionBrief,
 } from "@9thlevelsoftware/legion-cli-schema";
-import { hubs, loadWikiLinks, loadWikiPages, type WikiPageRow } from "./graph.js";
+import { hubs, loadWikiBodies, loadWikiLinks, loadWikiPageHeads, type WikiPageHead } from "./graph.js";
 import { twoLineSummary } from "./parser.js";
 
 export const SESSION_BRIEF_CHAR_CAP = 24_000;
+export const MAP_SLICE_CHAR_CAP = 6_000;
+
+/** @internal Work counters for tests (assert bounded work, not wall time); not a stable API. */
+export const briefCounters = { renders: 0, summaries: 0, bodiesLoaded: 0 };
+
+export function resetBriefCounters(): void {
+  briefCounters.renders = 0;
+  briefCounters.summaries = 0;
+  briefCounters.bodiesLoaded = 0;
+}
 
 async function listMarkdown(dir: string): Promise<string[]> {
   let names: string[];
@@ -80,11 +91,12 @@ async function loadLastQa(store: LegionReader, lastQaId: string | null | undefin
   }
 }
 
-function wikiEntry(page: WikiPageRow): SessionBrief["wiki"][number] {
+function wikiEntry(page: WikiPageHead, body: string): SessionBrief["wiki"][number] {
   if (page.trust === "untrusted") {
     return { path: page.path, title: page.title, summary: null, trust: "untrusted" };
   }
-  const summary = twoLineSummary(page.body);
+  briefCounters.summaries += 1;
+  const summary = twoLineSummary(body);
   return {
     path: page.path,
     title: page.title,
@@ -93,12 +105,18 @@ function wikiEntry(page: WikiPageRow): SessionBrief["wiki"][number] {
   };
 }
 
+/** Rendered length of a page line when its summary is dropped (the smallest a page can be). */
+function minWikiLineLength(page: Pick<WikiPageHead, "title" | "path" | "trust">): number {
+  const line = page.trust === "untrusted" ? `- ${page.title} (${page.path}) untrusted` : `- ${page.title} (${page.path})`;
+  return line.length + 1;
+}
+
 function rankWikiPages(
-  pages: WikiPageRow[],
+  pages: WikiPageHead[],
   hubIds: Set<string>,
   specLinked: Set<string>,
-): WikiPageRow[] {
-  const score = (page: WikiPageRow): number => {
+): WikiPageHead[] {
+  const score = (page: WikiPageHead): number => {
     if (hubIds.has(page.id)) return 0;
     if (specLinked.has(page.id) || [...specLinked].some((id) => page.id.endsWith(id) || id.endsWith(page.id))) {
       return 1;
@@ -107,6 +125,19 @@ function rankWikiPages(
     return 3;
   };
   return [...pages].sort((a, b) => score(a) - score(b) || a.id.localeCompare(b.id));
+}
+
+function wikiLines(page: SessionBrief["wiki"][number]): string[] {
+  if (page.trust === "untrusted") return [`- ${page.title} (${page.path}) untrusted`];
+  const lines = [`- ${page.title} (${page.path})`];
+  if (page.summary) for (const summaryLine of page.summary.split("\n")) lines.push(`  ${summaryLine}`);
+  return lines;
+}
+
+function wikiChunkLength(page: SessionBrief["wiki"][number]): number {
+  let n = 0;
+  for (const line of wikiLines(page)) n += line.length + 1;
+  return n;
 }
 
 export function renderSessionBrief(brief: SessionBrief): string {
@@ -119,6 +150,12 @@ export function renderSessionBrief(brief: SessionBrief): string {
   }
   if (brief.mapRootHash) {
     lines.push(`Map rootHash: ${brief.mapRootHash}`);
+  }
+  if (brief.mapFreshness) {
+    lines.push(`Map freshness: ${brief.mapFreshness}`);
+  }
+  if (brief.contextSelection && brief.contextSelection.length > 0) {
+    lines.push(`Context selection: ${brief.contextSelection.join("; ")}`);
   }
   lines.push("");
   lines.push("Blocking assumptions:");
@@ -152,24 +189,18 @@ export function renderSessionBrief(brief: SessionBrief): string {
   if (brief.wiki.length === 0) {
     lines.push("- (none)");
   } else {
-    for (const page of brief.wiki) {
-      if (page.trust === "untrusted") {
-        lines.push(`- ${page.title} (${page.path}) untrusted`);
-      } else if (page.summary) {
-        lines.push(`- ${page.title} (${page.path})`);
-        for (const summaryLine of page.summary.split("\n")) {
-          lines.push(`  ${summaryLine}`);
-        }
-      } else {
-        lines.push(`- ${page.title} (${page.path})`);
-      }
-    }
+    for (const page of brief.wiki) lines.push(...wikiLines(page));
   }
   if (brief.contract) {
     lines.push("");
     lines.push("FileContract:");
     lines.push(`  filesAllowed: ${brief.contract.filesAllowed.join(", ")}`);
     lines.push(`  verificationCommands: ${brief.contract.verificationCommands.join(", ")}`);
+  }
+  if (brief.mapSlice) {
+    lines.push("");
+    lines.push("Repository map slice:");
+    lines.push(brief.mapSlice);
   }
   if (brief.lastQa) {
     lines.push("");
@@ -195,6 +226,9 @@ export function assembleSessionBrief(input: {
   lastQa?: SessionBrief["lastQa"];
   skills?: SessionBrief["skills"];
   mapRootHash?: string;
+  mapSlice?: string;
+  mapFreshness?: string;
+  contextSelection?: string[];
 }): SessionBrief {
   const base = {
     schemaVersion: SCHEMA_VERSION.brief,
@@ -206,6 +240,11 @@ export function assembleSessionBrief(input: {
     contract: input.contract ?? null,
     lastQa: input.lastQa ?? null,
     ...(input.mapRootHash ? { mapRootHash: input.mapRootHash } : {}),
+    ...(input.mapSlice ? { mapSlice: input.mapSlice } : {}),
+    ...(input.mapFreshness ? { mapFreshness: input.mapFreshness } : {}),
+    ...(input.contextSelection && input.contextSelection.length > 0
+      ? { contextSelection: input.contextSelection }
+      : {}),
   };
   let wiki = input.wiki;
   let skills = input.skills;
@@ -215,17 +254,37 @@ export function assembleSessionBrief(input: {
     wiki,
     ...(skills !== undefined ? { skills } : {}),
   });
-  const render = (): string => renderSessionBrief(withCount(snapshot(), ""));
+  // Rendering never reads characterCount, so the schema is parsed once, at the end (withCount).
+  const render = (): string => {
+    briefCounters.renders += 1;
+    return renderSessionBrief({ ...snapshot(), characterCount: 0 } as SessionBrief);
+  };
 
-  let rendered = render();
-  if (rendered.length > SESSION_BRIEF_CHAR_CAP) {
+  // Single pass: size the fixed part once (empty wiki renders "- (none)\n"), then pick the longest
+  // wiki prefix that fits from running lengths instead of re-rendering after every dropped page.
+  const EMPTY_WIKI_LEN = "- (none)\n".length;
+  const wikiEmpty = wiki;
+  wiki = [];
+  const fixedLen = render().length - EMPTY_WIKI_LEN;
+  wiki = wikiEmpty;
+  const fit = (chunks: number[]): number => {
+    let total = fixedLen;
+    const prefix = [0];
+    for (const n of chunks) {
+      total += n;
+      prefix.push(total);
+    }
+    let k = chunks.length;
+    while (k > 0 && prefix[k]! > SESSION_BRIEF_CHAR_CAP) k -= 1;
+    return k;
+  };
+  const fullChunks = wiki.map(wikiChunkLength);
+  const fullTotal = fixedLen + (fullChunks.length === 0 ? EMPTY_WIKI_LEN : fullChunks.reduce((x, y) => x + y, 0));
+  if (fullTotal > SESSION_BRIEF_CHAR_CAP) {
     wiki = wiki.map((page) => ({ ...page, summary: null }));
-    rendered = render();
+    wiki = wiki.slice(0, fit(wiki.map(wikiChunkLength)));
   }
-  while (rendered.length > SESSION_BRIEF_CHAR_CAP && wiki.length > 0) {
-    wiki = wiki.slice(0, -1);
-    rendered = render();
-  }
+  let rendered = render();
   if (rendered.length > SESSION_BRIEF_CHAR_CAP && skills && skills.length > 0) {
     skills = skills.map((skill) => ({ ...skill, description: "" }));
     rendered = render();
@@ -261,20 +320,82 @@ export async function ensureWikiIndex(
   await writable.rebuild();
 }
 
-async function readMapRootHash(store: LegionReader): Promise<string | undefined> {
+function sameModulePath(left: string, right: string): boolean {
+  const a = left.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]sx?|py|rs|go)$/i, "");
+  const b = right.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]sx?|py|rs|go)$/i, "");
+  return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+}
+
+function isOwnedModule(path: string, allowed: readonly string[]): boolean {
+  return allowed.some((entry) => !entry.includes("*") && sameModulePath(path, entry));
+}
+
+function mapLine(module: FingerprintFile["modules"][number]): string {
+  const exports = module.exports.slice(0, 8).join(", ");
+  return `- ${module.path} (${module.language})${exports ? `: ${exports}` : ""}`;
+}
+
+function mapSlice(
+  fingerprints: FingerprintFile,
+  contract: FileContract | null,
+): { slice: string; selection: string[] } | undefined {
+  if (!contract || fingerprints.modules.length === 0) return undefined;
+  const modules = [...fingerprints.modules].sort((a, b) => a.path.localeCompare(b.path));
+  const owned = modules.filter((module) => isOwnedModule(module.path, contract.filesAllowed));
+  const direct = modules.filter((module) =>
+    !owned.some((candidate) => candidate.path === module.path) &&
+    (module.imports.some((imp) => owned.some((candidate) => sameModulePath(imp, candidate.path))) ||
+      owned.some((candidate) => candidate.imports.some((imp) => sameModulePath(imp, module.path)))),
+  );
+  const inbound = new Map(modules.map((module) => [module.path, 0]));
+  for (const module of modules) {
+    for (const imp of module.imports) {
+      const target = modules.find((candidate) => sameModulePath(imp, candidate.path));
+      if (target) inbound.set(target.path, (inbound.get(target.path) ?? 0) + 1);
+    }
+  }
+  const central = modules
+    .filter((module) => !owned.some((candidate) => candidate.path === module.path) && !direct.some((candidate) => candidate.path === module.path))
+    .sort((a, b) => (inbound.get(b.path) ?? 0) - (inbound.get(a.path) ?? 0) || a.path.localeCompare(b.path));
+  const selected = [
+    ...owned.map((module) => ({ module, reason: "task-owned" })),
+    ...direct.map((module) => ({ module, reason: "direct dependency" })),
+    ...central.map((module) => ({ module, reason: "central module" })),
+  ];
+  const lines = ["Map selection is deterministic: task-owned files, direct dependencies, then central modules."];
+  const selection: string[] = [];
+  for (const entry of selected) {
+    const line = `${entry.reason}: ${mapLine(entry.module)}`;
+    if (`${lines.join("\n")}\n${line}`.length > MAP_SLICE_CHAR_CAP) break;
+    lines.push(line);
+    selection.push(`${entry.reason}: ${entry.module.path}`);
+  }
+  return { slice: lines.join("\n"), selection };
+}
+
+async function readMapContext(
+  store: LegionReader,
+  contract: FileContract | null,
+): Promise<{ rootHash?: string; freshness?: string; slice?: string; selection?: string[] }> {
   try {
     const dirSt = await lstat(store.paths.mapDir);
-    if (dirSt.isSymbolicLink() || !dirSt.isDirectory()) return undefined;
+    if (dirSt.isSymbolicLink() || !dirSt.isDirectory()) return {};
   } catch {
-    return undefined;
+    return {};
   }
   try {
     const parsed = FingerprintFileSchema.safeParse(
       JSON.parse(await readFile(join(store.paths.mapDir, "fingerprints.json"), "utf8")),
     );
-    return parsed.success ? parsed.data.rootHash : undefined;
+    if (!parsed.success) return {};
+    const selected = mapSlice(parsed.data, contract);
+    return {
+      rootHash: parsed.data.rootHash,
+      freshness: `generated ${parsed.data.generatedAt} (${parsed.data.backend})`,
+      ...(selected ? { slice: selected.slice, selection: selected.selection } : {}),
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -316,13 +437,28 @@ export async function buildSessionBrief(
     }
   }
 
-  const pages = loadWikiPages(store.projectRoot);
+  const pages = loadWikiPageHeads(store.projectRoot);
   const links = loadWikiLinks(store.projectRoot);
   const hubIds = new Set(hubs(links).map((row) => row.id));
   const ranked = rankWikiPages(pages, hubIds, specLinked);
-  const wiki = ranked.map(wikiEntry);
+  // Pages past the point where even summary-less lines overflow the cap can never be rendered:
+  // read bodies (and summarise) only for the ranked head that can still fit.
+  let minTotal = 0;
+  let keep = 0;
+  while (keep < ranked.length && minTotal <= SESSION_BRIEF_CHAR_CAP) {
+    minTotal += minWikiLineLength(ranked[keep]!);
+    keep += 1;
+  }
+  const head = ranked.slice(0, keep);
+  const bodies = loadWikiBodies(
+    store.projectRoot,
+    head.filter((page) => page.trust !== "untrusted").map((page) => page.id),
+  );
+  briefCounters.bodiesLoaded += bodies.size;
+  const wiki = head.map((page) => wikiEntry(page, bodies.get(page.id) ?? ""));
   const lastQa = await loadLastQa(store, state.lastQaId);
 
+  const map = await readMapContext(store, contract);
   return assembleSessionBrief({
     project: {
       name: project.name,
@@ -337,6 +473,9 @@ export async function buildSessionBrief(
     contract,
     lastQa,
     skills: opts?.skills,
-    mapRootHash: opts?.mapRootHash ?? (await readMapRootHash(store)),
+    mapRootHash: opts?.mapRootHash ?? map.rootHash,
+    mapSlice: map.slice,
+    mapFreshness: map.freshness,
+    contextSelection: map.selection,
   });
 }

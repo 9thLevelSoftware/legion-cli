@@ -225,7 +225,7 @@ export async function runSpecShow(opts: CliOpts): Promise<number> {
 }
 
 export async function runSpecApprove(opts: CliOpts, flags: SpecFlags): Promise<number> {
-  if (flags.skipWireframes || process.argv.includes("--skip-wireframes")) {
+  if (flags.skipWireframes) {
     refuse("--skip-wireframes is pre-approve only", HINT.skipWireframes);
   }
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });

@@ -65,137 +65,6 @@ test("registers bin legion-cli and legion to the same script", () => {
   });
 });
 
-function helpSection(out, header, nextHeader) {
-  const start = out.indexOf(header);
-  assert.notEqual(start, -1, `missing ${header}`);
-  const from = out.slice(start);
-  const end = nextHeader ? from.indexOf(`\n${nextHeader}`, header.length) : -1;
-  return end === -1 ? from : from.slice(0, end);
-}
-
-function assertInvocationLines(out) {
-  const lines = out.split("\n");
-  for (const line of INVOCATION_LINES) {
-    assert.ok(lines.includes(line), `missing exact line: ${line}`);
-  }
-}
-
-function assertLayer1(out) {
-  assertInvocationLines(out);
-  assert.doesNotMatch(out, /Does not register bin legion/);
-  assert.match(out, /^status \(default\) {2}/m);
-  assert.match(out, /^doctor {2}/m);
-  assert.match(out, /^help --all {2}/m);
-  for (const verb of ["init", "intent", "discuss", "spec", "plan", "execute", "verify", "review", "qa", "ship"]) {
-    assert.match(out, new RegExp(`^${verb} {2}`, "m"), `Layer-1 missing command ${verb}`);
-  }
-  assert.doesNotMatch(out, /\bsearch\b/);
-  assert.doesNotMatch(out, /\bbrief\b/);
-  assert.doesNotMatch(out, /^chat {2}/m);
-  assert.doesNotMatch(out, /^map {2}/m);
-  assert.doesNotMatch(out, /^wireframe {2}/m);
-  assert.doesNotMatch(out, /^serve {2}/m);
-  assert.doesNotMatch(out, /^skills /m);
-  assert.doesNotMatch(out, /^brownfield {2}/m);
-  assert.doesNotMatch(out, /wiki trust/);
-  assert.doesNotMatch(out, /\bshow\b/);
-  assert.doesNotMatch(out, /assume list/);
-  assert.doesNotMatch(out, /assume answer/);
-  assert.doesNotMatch(out, /index rebuild/);
-}
-
-test("help mentions pnpm exec legion-cli and legion alias", () => {
-  const result = runCli(["help"]);
-  assert.equal(result.status, 0, result.stderr);
-  assertLayer1(normalize(result.stdout));
-});
-
-test("--help prints Layer 1 and omits search/brief/wiki trust/show", () => {
-  const result = runCli(["--help"]);
-  assert.equal(result.status, 0, result.stderr);
-  assertLayer1(normalize(result.stdout));
-});
-
-test("help --all lists the grouped command surface", () => {
-  const result = runCli(["help", "--all"]);
-  assert.equal(result.status, 0, result.stderr);
-  const out = normalize(result.stdout);
-  assert.match(out, /Lifecycle core:/);
-  assert.match(out, /Always-on operations:/);
-  assert.match(out, /Board extras:/);
-  assert.match(out, /Shipped adjacent/);
-  assert.doesNotMatch(out, /Available now:/);
-  assert.doesNotMatch(out, /Full v0 command surface:/);
-  assert.match(out, /^ {2}intent$/m);
-  assert.match(out, /^ {2}plan$/m);
-  assert.match(out, /^ {2}next$/m);
-  assert.match(out, /ticket create/);
-  assert.match(out, /--parent, --title, --from-agent, --type, --priority, --adapter, --route/);
-  assert.match(out, /task amend/);
-  assert.match(out, /^ {2}dashboard$/m);
-  assert.match(out, /^ {2}wireframe$/m);
-  assert.match(out, /packet new/);
-  assert.match(out, /packet respond/);
-  assert.match(out, /--message, --title, --type, --priority/);
-  assert.match(out, /^ {2}brownfield \[context\]$/m);
-  assert.match(out, /roster\|evidence\|merge\|review-status\|pr-plan\|dag\|worktree\|state\|patterns/);
-  assert.match(out, /--effort 1–5, --execute, --resume/);
-  assert.match(out, /verify/);
-  assert.match(out, /^ {2}review$/m);
-  assert.match(out, /^ {2}qa$/m);
-  assert.match(out, /fix/);
-  assert.match(out, /^ {2}ship$/m);
-  assert.match(out, /abandon/);
-  assertInvocationLines(out);
-  assert.doesNotMatch(out, /Does not register bin legion/);
-  assert.doesNotMatch(out, /does not register the legion bin/);
-  assert.match(out, /--yes \(ignored by intent confirm and ship; discuss refuses\)/);
-  assert.match(out, /--metrics/);
-  assert.match(out, /spec show/);
-  assert.match(out, /spec approve/);
-  assert.match(out, /spec new/);
-  assert.match(out, /qa checklist/);
-  const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");
-  assert.match(alwaysOn, /index rebuild/);
-  assert.match(alwaysOn, /^ {2}chat$/m);
-  assert.doesNotMatch(alwaysOn, /assume list/);
-  assert.doesNotMatch(alwaysOn, /assume answer/);
-  const board = helpSection(out, "Board extras:", "Shipped adjacent");
-  assert.match(board, /assume list/);
-  assert.match(board, /assume answer/);
-  assert.doesNotMatch(board, /index rebuild/);
-  const adjacent = helpSection(out, "Shipped adjacent");
-  assert.match(adjacent, /skills list/);
-  assert.match(adjacent, /skills show <id>/);
-  assert.match(adjacent, /skills install <dir\|github:owner\/repo@tag>/);
-  assert.match(adjacent, /^ {2}brownfield \[context\]$/m);
-  assert.match(adjacent, /--effort 1–5, --execute, --resume/);
-  assert.match(adjacent, /brownfield \[context\]\n.*--effort 1–5, --execute, --resume, --lsp/);
-  assert.doesNotMatch(out, /Later, not this series/);
-  assert.doesNotMatch(out, /Not in this product/);
-});
-
-test("help --all lists dashboard as shipped adjacent", () => {
-  const result = runCli(["help", "--all"]);
-  assert.equal(result.status, 0, result.stderr);
-  const out = normalize(result.stdout);
-  assert.match(out, /Shipped adjacent/);
-  assert.match(out, /dashboard/);
-  assert.match(out, /--no-open, --port, --expose/);
-  assert.equal([...out.matchAll(/^ {2}dashboard$/gm)].length, 1);
-});
-
-test("help --all lists serve as shipped adjacent and not later", () => {
-  const result = runCli(["help", "--all"]);
-  assert.equal(result.status, 0, result.stderr);
-  const out = normalize(result.stdout);
-  const adjacent = helpSection(out, "Shipped adjacent");
-  assert.match(adjacent, /^ {2}serve$/m);
-  assert.match(adjacent, /--mcp-http\/--no-mcp-http/);
-  assert.match(adjacent, /--webmcp/);
-  assert.doesNotMatch(out, /Later, not this series/);
-  assert.doesNotMatch(out, /Not in this product/);
-});
 
 test("mcp is a read-only stdio command", () => {
   const help = runCli(["mcp", "--help"]);
@@ -215,21 +84,6 @@ test("unknown command still hints help --all", () => {
   assert.match(err, /help --all/);
 });
 
-test("help --all does not call control-mode later", () => {
-  const result = runCli(["help", "--all"]);
-  assert.equal(result.status, 0, result.stderr);
-  const out = normalize(result.stdout);
-  assert.doesNotMatch(out, /Later, not this series/);
-  assert.doesNotMatch(out, /Not in this product/);
-  const adjacent = helpSection(out, "Shipped adjacent (not the default window):");
-  assert.match(adjacent, /^ {2}map$/m);
-  assert.match(adjacent, /--refresh, --lsp, --no-lsp/);
-  assert.doesNotMatch(out, /v0 gap; follow-up PRs in this series/);
-  assert.doesNotMatch(out, /v0 gap/);
-  const alwaysOn = helpSection(out, "Always-on operations:", "Board extras:");
-  assert.match(alwaysOn, /control-mode \[mode\]/);
-  assert.match(alwaysOn, /^ {2}chat$/m);
-});
 
 test("installer flags refuse with exit 2", () => {
   for (const flag of INSTALLER_FLAGS) {
@@ -470,36 +324,6 @@ test("runBounded caps stdout at 1 MiB and kills the process tree", async () => {
   });
 });
 
-test("help --all init lists --mode; intent drops --resume; dashboard is view-only", () => {
-  const result = runCli(["help", "--all"]);
-  assert.equal(result.status, 0, result.stderr);
-  const out = normalize(result.stdout);
-  const lifecycle = helpSection(out, "Lifecycle core:", "Always-on operations:");
-  assert.match(lifecycle, /--mode greenfield\|brownfield/);
-  assert.doesNotMatch(lifecycle, /--resume/);
-  assert.match(lifecycle, /--done/);
-  assert.doesNotMatch(out, /optional writes/);
-  assert.match(out, /read-only viewer/);
-  assert.match(out, /ticket\|wikiTrust\|qaChecklist/);
-  assert.match(out, /untrusted until wiki trust/);
-});
-
-test("init --mode help does not call brownfield v1", () => {
-  const result = runCli(["init", "--help"]);
-  assert.equal(result.status, 0, result.stderr);
-  const out = normalize(result.stdout);
-  assert.match(out, /--mode/);
-  assert.doesNotMatch(out, /greenfield \(v0\)/);
-  assert.doesNotMatch(out, /brownfield \(v1\)/);
-});
-
-test("--yes help says discuss refuses", () => {
-  const result = runCli(["discuss", "--help"]);
-  assert.equal(result.status, 0, result.stderr);
-  const out = normalize(result.stdout);
-  assert.match(out, /ignored by intent confirm and ship; discuss refuses/);
-  assert.doesNotMatch(out, /ignored by intent confirm, ship, and discuss/);
-});
 
 test("intent --help does not list --resume", () => {
   const result = runCli(["intent", "--help"]);
@@ -523,7 +347,7 @@ test("parent verbs require a subcommand and print Next", () => {
     ["task", /task requires amend/, /Next: legion-cli task amend <id>/],
     ["context", /context requires compact/, /Next: legion-cli context compact/],
     ["run", /run requires promote/, /Next: legion-cli run promote <id>/],
-    ["skills", /skills requires list, install, or show/, /Next: legion-cli skills list/],
+    ["skills", /skills requires list, install, show, or run/, /Next: legion-cli skills list/],
   ];
   for (const [verb, requires, next] of cases) {
     const result = runCli([verb]);

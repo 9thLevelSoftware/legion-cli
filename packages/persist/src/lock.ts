@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import { isWin32BusyError } from "./atomic-write.js";
+import { isWin32BusyError, retryFsOp } from "./atomic-write.js";
 import { EngineLockedError } from "./errors.js";
 import { DEFAULT_LOCK_TIMEOUT_MS } from "./layout.js";
 import { ownProcessStartedAt, processIdentity, startedAfterRecorded } from "./process-identity.js";
@@ -43,6 +43,19 @@ async function unlinkIfExists(lockPath: string): Promise<void> {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== "ENOENT") throw err;
   }
+}
+
+/** Remove the lock file only while it still holds this holder's token (it may have been stolen). */
+async function unlinkIfOwned(lockPath: string, token: string): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readFile(lockPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
+  if (!raw.includes(`"token":"${token}"`)) return;
+  await unlinkIfExists(lockPath);
 }
 
 type LockPayload = { pid: number; pidStartedAt?: number; acquiredAt?: string };
@@ -236,7 +249,7 @@ export async function acquireEngineLock(
           try {
             await handle.close();
           } finally {
-            await unlinkIfExists(lockPath);
+            await retryFsOp(() => unlinkIfOwned(lockPath, token));
           }
         },
       };
@@ -259,7 +272,7 @@ export async function acquireEngineLock(
       if (Date.now() - started >= timeoutMs) {
         // Contention path only: the start-time lookup is slow on Windows (PowerShell).
         let final: Inspection = quick;
-        if (!deepChecked) {
+        if (!deepChecked && timeoutMs > 0) {
           deepChecked = true;
           final = await inspectLock(lockPath, true);
           if (final.kind === "gone") continue;

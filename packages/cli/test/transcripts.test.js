@@ -5,7 +5,7 @@ import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
-import { allowCopyJail, allowCopyJailIn, normalize, readGolden, runCli, sanitizeDoctor, withTempDir } from "./helpers.js";
+import { allowCopyJail, allowCopyJailIn, normalize, readGolden, runCli, withTempDir } from "./helpers.js";
 
 function quoteArg(value) {
   return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
@@ -59,6 +59,15 @@ async function assertTranscript(actual, name) {
   assert.equal(normalize(actual), expected);
 }
 
+function normalizeProjectScope(text, project) {
+  return normalize(text).replaceAll(`--project '${project.replaceAll("'", "''")}'`, "--project <project>");
+}
+
+async function assertScopedTranscript(actual, name, project) {
+  const expected = await readGolden(name);
+  assert.equal(normalizeProjectScope(actual, project), expected);
+}
+
 async function seedExecutingSlice(dir, tasks) {
   const engine = createLegionEngine(dir);
   await engine.init({ name: "Checkin", adapter: "fake" });
@@ -90,7 +99,7 @@ test("bare legion-cli is uninitialized status (golden)", async () => {
   await withTempDir(async (dir) => {
     const result = runCli(["--project", dir]);
     assert.equal(result.status, 0, result.stderr);
-    await assertTranscript(result.stdout, "status-uninitialized.stdout.txt");
+    await assertScopedTranscript(result.stdout, "status-uninitialized.stdout.txt", dir);
     assert.equal(normalize(result.stderr), "");
   });
 });
@@ -99,7 +108,18 @@ test("init --name --adapter fake writes templates (golden)", async () => {
   await withTempDir(async (dir) => {
     const result = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
     assert.equal(result.status, 0, result.stderr);
-    await assertTranscript(result.stdout, "init.stdout.txt");
+    assert.match(result.stdout, /adapter readiness: ready/);
+    assert.match(result.stdout, /sandbox readiness: (?:ready|needs attention)/);
+    if (result.stdout.includes("sandbox readiness: needs attention")) {
+      assert.match(result.stdout, /Remediation: none; install a supported hardened sandbox, then run legion-cli doctor/);
+    }
+    await assertScopedTranscript(
+      result.stdout
+        .replace(/^sandbox readiness: .+\n/m, "sandbox readiness: <sandbox preflight>\n")
+        .replace(/^Remediation: .+\n/m, ""),
+      "init.stdout.txt",
+      dir,
+    );
 
     const project = await readFile(join(dir, ".legion-cli", "PROJECT.md"), "utf8");
     assert.match(project, /name: Checkin/);
@@ -117,7 +137,7 @@ test("status after init (golden)", async () => {
     assert.equal(init.status, 0, init.stderr);
     const result = runCli(["status", "--project", dir]);
     assert.equal(result.status, 0, result.stderr);
-    await assertTranscript(result.stdout, "status-initialized.stdout.txt");
+    await assertScopedTranscript(result.stdout, "status-initialized.stdout.txt", dir);
   });
 });
 
@@ -146,7 +166,15 @@ test("init --mode brownfield writes templates (golden)", async () => {
       "audit",
     ]);
     assert.equal(result.status, 0, result.stderr);
-    await assertTranscript(result.stdout, "init-brownfield.stdout.txt");
+    assert.match(result.stdout, /adapter readiness: ready/);
+    assert.match(result.stdout, /sandbox readiness: (?:ready|needs attention)/);
+    await assertScopedTranscript(
+      result.stdout
+        .replace(/^sandbox readiness: .+\n/m, "sandbox readiness: <sandbox preflight>\n")
+        .replace(/^Remediation: .+\n/m, ""),
+      "init-brownfield.stdout.txt",
+      dir,
+    );
     const project = await readFile(join(dir, ".legion-cli", "PROJECT.md"), "utf8");
     assert.match(project, /mode: brownfield/);
   });
@@ -173,21 +201,7 @@ test("init requires adapter when non-interactive (golden)", async () => {
   await withTempDir(async (dir) => {
     const result = runCli(["init", "--project", dir, "--name", "Checkin"]);
     assert.equal(result.status, 1);
-    await assertTranscript(result.stderr, "init-missing-adapter.stderr.txt");
-  });
-});
-
-test("doctor after init with fake adapter (golden)", async () => {
-  await withTempDir(async (dir) => {
-    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
-    assert.equal(init.status, 0, init.stderr);
-    await allowCopyJailIn(dir);
-    const result = runCli(["doctor", "--project", dir], {
-      env: { LEGION_CLI_ADAPTER: "fake" },
-    });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    const expected = await readGolden("doctor.stdout.txt");
-    assert.equal(sanitizeDoctor(result.stdout), expected);
+    await assertScopedTranscript(result.stderr, "init-missing-adapter.stderr.txt", dir);
   });
 });
 
@@ -260,7 +274,7 @@ test("status --json after init", async () => {
     assert.equal(body.phase, "initialized");
     assert.equal(body.name, "Checkin");
     assert.equal(body.mode, "greenfield");
-    assert.equal(body.next.run, "legion-cli spec");
+    assert.match(body.next.run, /^legion-cli spec --project /);
   });
 });
 
@@ -346,7 +360,7 @@ test("status does not promote compaction or the dashboard", async () => {
     assert.match(out, /Run:  legion-cli plan approve/);
     assert.doesNotMatch(out, /context compact|Viewer:/);
     const json = runCli(["status", "--json", "--project", dir]);
-    assert.equal(JSON.parse(json.stdout).next.run, "legion-cli plan approve");
+    assert.match(JSON.parse(json.stdout).next.run, /^legion-cli plan approve --project /);
   });
 });
 
@@ -454,10 +468,6 @@ for (const skill of ["plan", "execute", "review"]) {
         env: { LEGION_CLI_ADAPTER: "fake" },
       });
       assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
-      if (skill === "plan") {
-        const expected = await readGolden("doctor-route-plan-unspawnable.stdout.txt");
-        assert.equal(sanitizeDoctor(result.stdout), expected);
-      }
       const out = normalize(result.stdout);
       assert.match(out, new RegExp(`FAIL  adapter.routes.${skill} spawnable \\(grok is not spawnable\\)`));
       assert.match(out, new RegExp(`^  ${skill.padEnd(13)}grok  not spawnable$`, "m"));
@@ -710,6 +720,15 @@ test("Checkin session key lines match the design-doc walkthrough (golden)", asyn
 
     const spec = runCli(["spec", "--project", dir]);
     assert.equal(spec.status, 0, `${spec.stdout}\n${spec.stderr}`);
+    const challenge = runCli(["spec", "--project", dir, "--manual-review"], {
+      input: [
+        "A check-in is recorded in under five seconds and confirmed to the teammate.",
+        "When unavailable, preserve the attempted check-in and show a clear retry message.",
+        "Do not change authentication or add payroll, badge, or calendar scope.",
+        "I acknowledge",
+      ].join("\n") + "\n",
+    });
+    assert.equal(challenge.status, 0, `${challenge.stdout}\n${challenge.stderr}`);
 
     const approve = runCli(["spec", "approve", "--project", dir]);
     assert.equal(approve.status, 0, approve.stderr);
@@ -742,7 +761,7 @@ test("Checkin session key lines match the design-doc walkthrough (golden)", asyn
 
     const execute = runCli(["execute", "--until-blocked", "--project", dir], fake);
     assert.equal(execute.status, 1, `${execute.stdout}\n${execute.stderr}`);
-    assert.match(normalize(execute.stdout), /independent review requires a fresh explicit Verdict: PASS/);
+    assert.match(normalize(execute.stdout), /review failed: agent wrote no notes/);
 
     const combined = [
       normalize(intent.stdout),

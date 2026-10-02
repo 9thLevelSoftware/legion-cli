@@ -36,10 +36,29 @@ test("skills list and show report packaged execute", async () => {
     assert.equal(listed.status, 0, listed.stderr);
     const payload = JSON.parse(listed.stdout);
     assert.ok(payload.skills.some((skill) => skill.skillId === "execute"));
+    assert.ok(payload.extensions.some((extension) => extension.ref === "extension:accessibility"));
     const shown = runCli(["skills", "show", "execute", "--project", dir]);
     assert.equal(shown.status, 0, shown.stderr);
     assert.match(normalize(shown.stdout), /source: packaged/);
     assert.match(normalize(shown.stdout), /skillId: execute/);
+    const extension = runCli(["skills", "show", "extension:accessibility", "--project", dir, "--json"]);
+    assert.equal(extension.status, 0, extension.stderr);
+    const extensionPayload = JSON.parse(extension.stdout);
+    assert.equal(extensionPayload.ref, "extension:accessibility");
+    assert.deepEqual(extensionPayload.permissions.write, [".legion-cli/extensions/runs/**"]);
+  });
+});
+
+test("skills run accepts extension refs and fails closed when evidence is absent", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
+    const result = runCli(["skills", "run", "extension:accessibility", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(normalize(result.stderr), /unknown command/);
+    assert.match(normalize(result.stderr), /evidence\.json/);
   });
 });
 

@@ -79,6 +79,13 @@ test("parses node:test NDJSON and Jest JSON", () => {
   assert.equal(jest[1].priority, "P2");
 });
 
+test("parses every canonical acceptance id from repeated @ac tags", () => {
+  const [parsed] = parseTestReport({
+    tests: [{ title: "checkout works @ac(AC-01) @ac(AC-02)", status: "passed" }],
+  });
+  assert.deepEqual(parsed.acceptanceIds, ["AC-01", "AC-02"]);
+});
+
 test("runCommand captures JSON from node -e", async () => {
   const dir = await mkdtemp(join(tmpdir(), "legion-qa-"));
   const payload = { tests: [{ title: "health @p0", status: "passed" }] };

@@ -48,6 +48,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Clean consumer smoke
+        run: pnpm smoke:consumer
+
   linux-docker:
     name: Linux Docker
     runs-on: ubuntu-latest
@@ -82,9 +85,8 @@ jobs:
         run: pnpm test
 
   macos:
-    name: macOS (best-effort, droppable)
+    name: macOS sandbox
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -103,6 +105,9 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Require macOS sandbox
+        run: node --input-type=module -e 'import { detectSandbox } from "./packages/sandbox/dist/index.js"; const d = detectSandbox(); if (d.backend !== "seatbelt" || !d.hardened) { console.error(JSON.stringify(d)); process.exit(1); }'
 
       - name: Test
         run: pnpm test

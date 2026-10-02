@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { lstat, readdir, readFile, readlink, rm } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import {
@@ -21,6 +20,7 @@ import {
 import {
   isGitRepo,
   isPidAlive,
+  runGit,
   ownProcessStartedAt,
   processIdentity,
   sameProcessStart,
@@ -177,10 +177,9 @@ async function hashProductPath(projectRoot: string, posixPath: string): Promise<
 }
 
 function gitPaths(projectRoot: string, args: string[]): string[] {
-  const run = spawnSync("git", args, { cwd: projectRoot, encoding: "buffer", windowsHide: true, shell: false });
-  if (run.status !== 0) throw new Error(run.stderr?.toString("utf8").trim() || `git ${args.join(" ")} failed`);
+  const run = runGit(projectRoot, args);
+  if (run.status !== 0) throw new Error(run.stderr.trim() || `git ${args.join(" ")} failed`);
   return run.stdout
-    .toString("utf8")
     .split("\0")
     .map((path) => path.replaceAll("\\", "/"))
     .filter(Boolean);

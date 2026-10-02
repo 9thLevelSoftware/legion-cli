@@ -46,10 +46,12 @@
     "@9thlevelsoftware/legion-cli-agents": "workspace:*",
     "@9thlevelsoftware/legion-cli-dashboard": "workspace:*",
     "@9thlevelsoftware/legion-cli-graph": "workspace:*",
+    "@9thlevelsoftware/legion-cli-http": "workspace:*",
     "@9thlevelsoftware/legion-cli-persist": "workspace:*",
     "@9thlevelsoftware/legion-cli-schema": "workspace:*",
     "@9thlevelsoftware/legion-cli-wiki": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "undici": "^7.16.0",
     "zod": "^4.5.4"
   }
 }

@@ -77,7 +77,8 @@
                 "codex",
                 "mimo",
                 "minimax",
-                "http"
+                "http",
+                "acp"
               ]
             }
           },
@@ -321,6 +322,18 @@
     "mapRootHash": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
+    },
+    "mapSlice": {
+      "type": "string"
+    },
+    "mapFreshness": {
+      "type": "string"
+    },
+    "contextSelection": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "characterCount": {
       "type": "integer",

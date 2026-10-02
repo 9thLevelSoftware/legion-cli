@@ -29,41 +29,14 @@
       "name": "Windows-Docker CI leg",
       "owningPr": 8,
       "failBy": "2026-12-31"
-    },
-    {
-      "id": "Q-INT-BROWNFIELD",
-      "finding": "F-039",
-      "name": "brownfield integration suite",
-      "owningPr": 2,
-      "failBy": "2026-12-31"
-    },
-    {
-      "id": "Q-INT-INGEST",
-      "finding": "F-039",
-      "name": "ingest integration suite",
-      "owningPr": 9,
-      "failBy": "2026-12-31"
-    },
-    {
-      "id": "Q-INT-RUN",
-      "finding": "F-039",
-      "name": "run integration suite",
-      "owningPr": 6,
-      "failBy": "2026-12-31"
-    },
-    {
-      "id": "Q-INT-IMPORT",
-      "finding": "F-039",
-      "name": "import integration suite",
-      "owningPr": 9,
-      "failBy": "2026-12-31"
     }
   ],
   "scripts": {
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r --no-bail run test",
-    "prepare": "pnpm run build"
+    "prepare": "pnpm run build",
+    "smoke:consumer": "node scripts/consumer-smoke.mjs"
   },
   "devDependencies": {
     "@9thlevelsoftware/legion-cli": "workspace:*",

@@ -2,6 +2,7 @@
 name: verify
 description: >
   Optional walkthrough notes for focused execution; not a separate ship gate.
+  Notes remain only in the run cache, not durable QA evidence.
   Activated only by `legion-cli verify`. Do not load other skill bodies.
 license: UNLICENSED
 compatibility: "Legion CLI staging; not vendor auto-discovery"
@@ -14,15 +15,23 @@ metadata:
 
 # verify
 
-Optional walkthrough notes. `verify` is an advanced command, not a separate
-ship gate. The focused `execute` stage records planned check evidence and
-review before ship.
+Optional advanced agent walkthrough, not a separate ship gate or check rerun.
+Focused `execute` records approved planned checks and independent review before
+ship. Legacy task `verificationCommands` also run in-process during execute.
+
+These checks are trusted project code with argv-only invocation and scrubbed
+credentials. They run under bwrap/seatbelt when available, Docker only when
+`sandbox.backend: docker` is explicitly configured, or the named host allowlist
+tier. Verification never uses a copy jail or needs `--allow-no-sandbox`; filtering
+is not a trust boundary. QA unit commands always run on the host. bwrap/seatbelt
+permit network egress. This walkthrough must not claim to rerun or replace those
+checks, approve plan evidence, or pass the legacy QA gate.
 
 ## Contract
 
 Allowed roots:
 
-- `.legion-cli/qa/**`
+- `.legion-cli/qa/**` is engine-owned and restored after every spawn: nothing written there survives, so do not use it for notes
 - `.legion-cli/tasks/**`
 - `.legion-cli/cache/runs/<id>/**`
 
@@ -34,7 +43,7 @@ Implicit forbidden still applies: `.git/**`, `.env*`, `.legion-cli/config.yaml`,
 
 ## Task
 
-Write optional walkthrough notes to `.legion-cli/qa/verify.md` (or `.legion-cli/qa/verify/<taskId>.md` when walking one task).
+Walk the slice. Any notes you want to keep go in `.legion-cli/cache/runs/<id>/summary.md`; the engine does not copy verify notes anywhere else yet (known open item), so put actionable findings in fix tasks (below).
 
 If you find fix work, file a child task (`type: fix`, `parentId`) under `.legion-cli/tasks/` or write `.legion-cli/cache/runs/<id>/extra.json`. Do not expand a live task's `filesAllowed`. Extra work is a linked ticket.
 

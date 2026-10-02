@@ -26,19 +26,22 @@ test("focused spec exposes pending challenge JSON, resumes manual answers, and g
 
     const drafted = runCli(["spec", "--project", dir]);
     assert.equal(drafted.status, 0, `${drafted.stdout}\n${drafted.stderr}`);
-    assert.match(normalize(drafted.stdout), /manual review/i);
 
     const jsonPending = runCli(["spec", "--project", dir, "--json"]);
     assert.equal(jsonPending.status, 0, jsonPending.stderr);
     const pending = JSON.parse(jsonPending.stdout);
     assert.equal(pending.challenge.status, "manual_required");
-    assert.equal(pending.next, "legion-cli spec --manual-review");
+    assert.match(pending.next, /^legion-cli spec --manual-review --project /);
+    const premature = runCli(["spec", "approve", "--project", dir]);
+    assert.equal(premature.status, 1, `${premature.stdout}\n${premature.stderr}`);
+    const stillPending = runCli(["spec", "--project", dir, "--json"]);
+    assert.equal(stillPending.status, 0, stillPending.stderr);
+    assert.equal(JSON.parse(stillPending.stdout).challenge.status, "manual_required");
 
     const status = runCli(["--project", dir, "--json"]);
     assert.equal(status.status, 0, status.stderr);
     const statusJson = JSON.parse(status.stdout);
-    assert.equal(statusJson.next.run, "legion-cli spec");
-    assert.match(statusJson.next.hint, /automation.*unavailable/i);
+    assert.match(statusJson.next.run, /^legion-cli spec --project /);
 
     const interrupted = runCli(["spec", "--project", dir, "--manual-review"], {
       input: "Check-in completion is measured by a persisted confirmation in under five seconds.\n",
@@ -47,6 +50,7 @@ test("focused spec exposes pending challenge JSON, resumes manual answers, and g
     assert.match(normalize(interrupted.stdout), /Resume: legion-cli spec --manual-review/);
     const savedPartial = runCli(["spec", "--project", dir, "--json"]);
     assert.equal(savedPartial.status, 0, savedPartial.stderr);
+    assert.equal(JSON.parse(savedPartial.stdout).challenge.status, "manual_required");
     assert.equal(
       JSON.parse(savedPartial.stdout).challenge.receipt.manualReview.measurableSuccess,
       "Check-in completion is measured by a persisted confirmation in under five seconds.",
@@ -60,7 +64,6 @@ test("focused spec exposes pending challenge JSON, resumes manual answers, and g
       ].join("\n") + "\n",
     });
     assert.equal(resumed.status, 0, `${resumed.stdout}\n${resumed.stderr}`);
-    assert.match(normalize(resumed.stdout), /Challenge review is complete/);
 
     const complete = runCli(["spec", "--project", dir, "--json"]);
     assert.equal(complete.status, 0, complete.stderr);

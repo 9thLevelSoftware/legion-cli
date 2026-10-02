@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { skillContract } from "../dist/index.js";
 import { finishStartedSpawn, startSkillSpawn, waitStartedSpawn } from "../dist/spawn.js";
-import { initProject, withEngine, withFakeAdapter } from "./helpers.js";
+import { initProject, makeSpec, patchState, withEngine, withFakeAdapter, writeSpec } from "./helpers.js";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "../../../skills");
 
@@ -56,9 +56,26 @@ test("challenge cannot broaden its write contract", async () => {
   await assert.rejects(startSkillSpawn({ skillId: "spec-challenge", fileContract: { filesAllowed: ["src/main.ts"] } }), /permits only its run-cache output/);
 });
 
-test("governed wait refuses nonzero exits and aborted calls", async () => {
-  for (const result of [{ exitCode: 1 }, { exitCode: null }, { exitCode: 0, aborted: true }]) {
-    const waited = await waitStartedSpawn({ started: Date.now(), handle: { wait: async () => result } });
-    assert.match(String(waited.error), /spawn (exited|aborted)/);
-  }
+test("failed challenge agents cannot certify an empty analysis", async () => {
+  await withFakeAdapter(async () => {
+    for (const failure of [{ fakeExitCode: 1 }, { fakeTimedOut: true }]) {
+      await withEngine(async ({ engine, store }) => {
+        await initProject(engine, { workflowProfile: "focused" });
+        const spec = makeSpec();
+        await writeSpec(store, spec);
+        const project = await store.readProject();
+        await store.writeProject({ ...project.data, activeSpecId: spec.id }, project.body);
+        await patchState(store, { phase: "spec_draft", activeSpecId: spec.id });
+        const challenged = await engine.prepareSpecChallenge(spec.id);
+        assert.equal(challenged.status, "manual_required");
+        assert.equal(challenged.receipt.generation.status, "failed");
+        await assert.rejects(() => engine.approveSpec(spec.id, { id: "owner" }), /challenge is unresolved/);
+        assert.equal((await store.readSpec(spec.id)).data.status, "draft");
+      }, {
+        skillsDir,
+        ...failure,
+        fakeArtifacts: [{ path: ".legion-cli/cache/runs/<id>/analysis.json", content: '{"schemaVersion":"legion-cli-spec-challenge-analysis/v1","concerns":[]}\n' }],
+      });
+    }
+  });
 });

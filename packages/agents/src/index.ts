@@ -71,6 +71,7 @@ export { FakeAdapter, FAKE_WAIT_READY_ENV, FAKE_WAIT_RELEASE_ENV, holdWaitFromEn
 export { ClaudeAdapter } from "./adapters/claude.js";
 export { GenericAdapter } from "./adapters/generic.js";
 export { ExtraAdapter } from "./adapters/extra.js";
+export { AcpAdapter } from "./adapters/acp.js";
 export {
   cmdExePath,
   cmdScriptLaunch,
@@ -81,12 +82,52 @@ export {
   runTool,
   unwrapCmdShim,
   whichAll,
+  withNoCwdExeSearch,
 } from "./which.js";
 export { isSecretEnvName, scrubSecretsEnv, SECRET_ENV_NAME } from "./env-scrub.js";
 export { ARGV_ONLY_MESSAGE, parseCommandLine, runCommand, splitCommand } from "./run-command.js";
+export { terminateAgentProcessTree } from "./process.js";
 export type { RunCommandOptions, RunCommandResult } from "./run-command.js";
 export type { StageSkillOptions } from "./stage.js";
 export type { RunCachePaths } from "./paths.js";
+export {
+  extensionOverlayDir,
+  findExtensionsDir,
+  hashExtensionTree,
+  installExtensionOverlay,
+  listExtensionCatalog,
+  parseExtensionFrontmatter,
+  resolveExtensionDir,
+  validateExtensionResources,
+} from "./extensions.js";
+export type {
+  ExtensionManifest,
+  ExtensionPermissions,
+  ExtensionPin,
+  ParsedExtension,
+} from "./extensions.js";
+export { createExtensionRunId, extensionCommandSpawnOpts, extensionReadSet, runGovernedExtension } from "./extension-run.js";
+export type {
+  ExtensionCheck,
+  ExtensionEvidence,
+  ExtensionRecommendation,
+  GovernedExtensionResult,
+} from "./extension-run.js";
+export {
+  applyProfileArgs,
+  applyUsagePricing,
+  assertProfileRuntimeSupport,
+  resolveAgentProfile,
+  usageLimitReason,
+} from "./profiles.js";
+export { exportUsageTelemetry, usageTelemetryPayload } from "./telemetry.js";
+export type {
+  AgentLimits,
+  AgentPricing,
+  AgentProfileConfig,
+  AgentUsage,
+  ResolvedAgentProfile,
+} from "./profiles.js";
 export type {
   AdapterCreateOptions,
   AdapterResolution,

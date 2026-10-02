@@ -5,7 +5,7 @@ export {
   writeChecklist,
 } from "./checklist.js";
 export type { QaChecklistReceipt } from "./checklist.js";
-export { extractJsonPayload, parseTestReport, reportFailClosed } from "./reports.js";
+export { acceptanceIdsFromTitle, extractJsonPayload, parseTestReport, reportFailClosed } from "./reports.js";
 export type { ParsedTest } from "./reports.js";
 export {
   DEFAULT_PLAYWRIGHT_COMMAND,
@@ -16,6 +16,13 @@ export {
   splitCommand,
 } from "./run.js";
 export type { CommandCapture, ProjectQaResult, QaCommandOptions, RunProjectQaOptions } from "./run.js";
-export { formatQaScore, QA_NO_BROWSER_CAP, scoreQa, scoreSpecReports, ZERO_TESTS_REASON } from "./score.js";
+export {
+  formatQaScore,
+  QA_NO_BROWSER_CAP,
+  scorePersistedReports,
+  scoreQa,
+  scoreSpecReports,
+  ZERO_TESTS_REASON,
+} from "./score.js";
 export type { QaMode, ScoreQaInput } from "./score.js";
 export { isUiAcceptance, isVisualTitle, priorityFromTitle, specHasUi, tagFromPriority } from "./tags.js";

@@ -1,6 +1,11 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { sliceTasks } from "@9thlevelsoftware/legion-cli-core";
+import {
+  evaluateQaEvidenceFreshness,
+  listRunRecoveryStatuses,
+  sliceTasks,
+  type RunRecoveryStatus,
+} from "@9thlevelsoftware/legion-cli-core";
 import { unresolvedBlockers } from "@9thlevelsoftware/legion-cli-graph";
 import {
   AUDIT_VIEW_CAP,
@@ -14,6 +19,7 @@ import {
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   IngestReceiptSchema,
+  AnyQAScoreSchema,
   SCHEMA_VERSION,
   type AdapterId,
   type AuditEvent,
@@ -72,6 +78,10 @@ export type DashboardSnapshot = {
   currentTaskId: string | null;
   lastReadiness: StateFile["lastReadiness"];
   lastReview: StateFile["lastReview"];
+  /** A conservative evidence summary; no evidence is never displayed as passing. */
+  evidenceCoverage: string;
+  /** Project-scoped next lifecycle command for copy/paste. */
+  nextCommand: string;
   path: { steps: Phase[]; current: Phase };
   currentTask: DashboardTask | null;
   tasks: DashboardTask[];
@@ -85,12 +95,53 @@ export type DashboardSnapshot = {
   spec: { id: string; title: string; status: Spec["status"]; body: string } | null;
   prd: string | null;
   wireframesIndex: string | null;
+  runs: RunRecoveryStatus[];
+  qaEvidence: {
+    schemaVersion: string;
+    total: number;
+    pass: boolean;
+    current: boolean;
+    staleReason: string | null;
+    criteria: { total: number; passed: number; failed: number; missing: number; skipped: number };
+    missing: string[];
+    failed: string[];
+    skipped: string[];
+  } | null;
 };
 
 const UNINITIALIZED: StateFile = {
   schemaVersion: SCHEMA_VERSION.state,
   phase: "uninitialized",
 };
+
+function quoteProjectForShell(projectRoot: string): string {
+  if (process.platform === "win32") return `'${projectRoot.replaceAll("'", "''")}'`;
+  return `'${projectRoot.replaceAll("'", "'\\''")}'`;
+}
+
+function projectScopedCommand(command: string, projectRoot: string): string {
+  if (!/(?:^|\s)(?:pnpm\s+exec\s+)?legion-cli(?:\s|$)/.test(command) || /(?:^|\s)--project(?:\s|=|$)/.test(command)) {
+    return command;
+  }
+  return `${command} --project ${quoteProjectForShell(projectRoot)}`;
+}
+
+function nextCommandForPhase(phase: Phase, projectRoot: string): string {
+  const next: Partial<Record<Phase, string>> = {
+    uninitialized: "init --adapter <id>",
+    initialized: "intent",
+    intent_draft: "intent",
+    intent_ready: "discuss",
+    discussing: "discuss",
+    spec_draft: "spec approve",
+    spec_frozen: "plan",
+    planning: "plan",
+    plan_ready: "execute",
+    executing: "execute",
+    ready_to_ship: "ship",
+  };
+  return projectScopedCommand(`legion-cli ${next[phase] ?? "status"}`, projectRoot);
+}
 
 async function listMarkdown(dir: string): Promise<string[]> {
   try {
@@ -239,6 +290,77 @@ async function loadSpecView(
   }
 }
 
+async function loadQaEvidence(
+  store: LegionStore,
+  state: StateFile,
+  tasks: readonly Task[],
+): Promise<DashboardSnapshot["qaEvidence"]> {
+  if (!state.lastQaId) return null;
+  try {
+    const raw = JSON.parse(
+      await readFile(join(store.paths.qaDir, "scores", `${state.lastQaId}.json`), "utf8"),
+    );
+    const score = AnyQAScoreSchema.parse(raw);
+    if (score.schemaVersion !== SCHEMA_VERSION.qa) {
+      return {
+        schemaVersion: score.schemaVersion,
+        total: score.total,
+        pass: score.pass,
+        current: false,
+        staleReason: "legacy QA scores require recalculation",
+        criteria: { total: 0, passed: 0, failed: 0, missing: 0, skipped: 0 },
+        missing: [],
+        failed: [],
+        skipped: [],
+      };
+    }
+    if (!state.activeSpecId) return null;
+    const specDoc = await store.readSpec(state.activeSpecId);
+    const freshness = await evaluateQaEvidenceFreshness({
+      projectRoot: store.projectRoot,
+      activeSpecId: state.activeSpecId,
+      spec: specDoc.data,
+      specBody: specDoc.body,
+      tasks,
+      score,
+    });
+    if (!freshness.evidenceValid) {
+      return {
+        schemaVersion: score.schemaVersion,
+        total: 0,
+        pass: false,
+        current: false,
+        staleReason: freshness.staleReason,
+        criteria: { total: 0, passed: 0, failed: 0, missing: 0, skipped: 0 },
+        missing: [],
+        failed: [],
+        skipped: [],
+      };
+    }
+    const criteria = { total: score.criteria.length, passed: 0, failed: 0, missing: 0, skipped: 0 };
+    for (const criterion of score.criteria) criteria[criterion.outcome]++;
+    return {
+      schemaVersion: score.schemaVersion,
+      total: score.total,
+      pass: score.pass,
+      current: freshness.current,
+      staleReason: freshness.staleReason,
+      criteria,
+      missing: score.missingCriterionIds,
+      failed: score.failedCriterionIds,
+      skipped: score.skippedCriterionIds,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function evidenceCoverage(evidence: DashboardSnapshot["qaEvidence"]): string {
+  if (!evidence) return "No QA evidence recorded";
+  const freshness = evidence.current ? "Current QA evidence" : `Stale QA evidence: ${evidence.staleReason ?? "recalculate QA"}`;
+  return `${freshness}; criteria ${evidence.criteria.passed}/${evidence.criteria.total} passed, ${evidence.criteria.failed} failed, ${evidence.criteria.missing} missing, ${evidence.criteria.skipped} skipped`;
+}
+
 export async function loadSnapshot(
   projectRoot: string,
   opts?: { rebuild?: boolean },
@@ -268,6 +390,11 @@ export async function loadSnapshot(
     }
   }
   const specView = await loadSpecView(store, state.activeSpecId);
+  const qaEvidence = await loadQaEvidence(store, state, shown);
+  const runs = (await listRunRecoveryStatuses(projectRoot)).map((run) => ({
+    ...run,
+    ...(run.recoveryCommand ? { recoveryCommand: projectScopedCommand(run.recoveryCommand, projectRoot) } : {}),
+  }));
   return {
     readOnly: true,
     project: project
@@ -278,6 +405,8 @@ export async function loadSnapshot(
     currentTaskId: state.currentTaskId ?? null,
     lastReadiness: state.lastReadiness ?? null,
     lastReview: state.lastReview ?? null,
+    evidenceCoverage: evidenceCoverage(qaEvidence),
+    nextCommand: nextCommandForPhase(state.phase, projectRoot),
     path: { steps: LIFECYCLE_PATH, current: state.phase },
     currentTask: current,
     tasks,
@@ -286,6 +415,8 @@ export async function loadSnapshot(
     invalidTasks: invalid.map((entry) => ({ file: entry.file, error: entry.error, kind: entry.kind })),
     graph: { nodes: tasks.map((task) => task.id), edges },
     audit: await loadAuditEvents(store, state.phase),
+    runs,
+    qaEvidence,
     ...specView,
   };
 }

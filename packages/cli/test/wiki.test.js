@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { DISTILL_SOURCE_MAX_CHARS } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, DISTILL_SOURCE_MAX_CHARS } from "@9thlevelsoftware/legion-cli-core";
 
 import { normalize, runCli, withTempDir } from "./helpers.js";
 
@@ -87,6 +87,39 @@ test("help --all lists ingest search show brief wiki trust as always-on operatio
   assert.doesNotMatch(alwaysOn, /assume list/);
 });
 
+test("nested help resolves full command paths", () => {
+  const result = runCli(["help", "spec approve"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(normalize(result.stdout), /Freeze the spec/);
+  assert.match(normalize(result.stdout), /--message/);
+});
+
+test("init reports local adapter and sandbox preflight without provider activity", async () => {
+  await withTempDir(async (dir) => {
+    const result = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake", "--json"]);
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.preflight.adapter.ready, true);
+    assert.equal(typeof payload.preflight.sandbox.backend, "string");
+    assert.equal(typeof payload.preflight.ready, "boolean");
+  });
+});
+
+test("search --limit returns parseable truncation metadata", async () => {
+  await withTempDir(async (dir) => {
+    runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await writeFile(join(dir, "one.md"), "# Alpha one\n\nAlpha result.\n", "utf8");
+    await writeFile(join(dir, "two.md"), "# Alpha two\n\nAlpha result.\n", "utf8");
+    runCli(["ingest", "--project", dir, "--no-commit", "one.md", "two.md"]);
+    const result = runCli(["search", "--project", dir, "--json", "--limit", "1", "Alpha"]);
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.hits.length, 1);
+    assert.equal(payload.truncated, true);
+    assert.ok(payload.total > payload.hits.length);
+  });
+});
+
 test("ingest --help lists --distill", () => {
   const result = runCli(["ingest", "--help"]);
   assert.equal(result.status, 0, result.stderr);
@@ -140,5 +173,32 @@ test("ingest --distill with fake adapter keeps excerpt and prints distill ran", 
     assert.equal(index.status, 0, index.stderr);
     assert.match(normalize(index.stdout), /trust: reviewed/);
     assert.match(normalize(index.stdout), /Wiki index/);
+  });
+});
+
+test("ingest --distill refuses (non-zero) with a real adapter and no hardened sandbox (backend: copy)", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const engine = createLegionEngine(dir);
+    const config = await engine.store.readConfig();
+    await engine.store.writeConfig({
+      ...config,
+      // backend "copy" is never hardened, so the refusal is deterministic on every host.
+      sandbox: { ...config.sandbox, backend: "copy" },
+      adapter: {
+        ...config.adapter,
+        default: "generic",
+        generic: { binary: process.execPath, args: ["-e", "process.exit(0)", "{{pointer}}"] },
+      },
+    });
+    await writeFile(join(dir, "notes.md"), "# Notes\n\nDurable fact.\n", "utf8");
+    const result = runCli(["ingest", "--project", dir, "--no-commit", "--distill", "notes.md"]);
+    assert.notEqual(result.status, 0, result.stdout);
+    const err = normalize(`${result.stderr}${result.stdout}`);
+    assert.match(err, /needs a hardened sandbox: bwrap on Linux, seatbelt on macOS, or Docker/);
+    // Excerpt-only ingest is unchanged on the same configuration.
+    const plain = runCli(["ingest", "--project", dir, "--no-commit", "notes.md"]);
+    assert.equal(plain.status, 0, plain.stderr);
   });
 });

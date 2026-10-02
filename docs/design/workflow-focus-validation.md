@@ -79,3 +79,27 @@ Linux/Docker CI cannot be claimed from the local Windows checkout.
   process trees.
 - Whole-repository product hashing is conservative and can be slow in large
   brownfield repositories. A future cache must preserve stale-evidence detection.
+
+## Merge integration verification (PR #127)
+
+The integration preserves the focused workflow and bounded challenge while
+merging `main` at `5036e8d1`. Newer guarded runtime, audit, resume, profile,
+parallel-execution, and delivery checks remain in force.
+
+- Schema build/emission, workspace build, and workspace typecheck passed.
+- The repaired workspace run passed twelve package suites. The subsequent core
+  suite passed 615 tests with seven platform skips. The CLI suite passed 300
+  tests with one remaining fixture-snapshot failure; after correcting that
+  fixture, all 23 tests in the affected execute suite passed. A final all-green
+  root invocation was not repeated.
+- Clean consumer smoke packed and installed all fourteen allowlisted packages
+  without workspace links, then exercised installed help, init, JSON status,
+  skills, extensions, craft resources, and brownfield help.
+- A disposable real-CLI scenario refused unresolved spec approval, resumed
+  partial manual review, froze the reviewed spec, and recommended `plan`.
+- Checkpoint interruption reproduced a stale live-owner recovery blocker before
+  repair; same-process checkpoint recovery completed afterward. A real CLI fix
+  proposal also retained its selected profile after repair.
+
+These are Windows-local checks, with deterministic adapters for agent-dependent
+scenarios; they do not certify live vendor behavior or the remote CI platforms.

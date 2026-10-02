@@ -1,0 +1,25 @@
+name: Windows Docker (opt-in)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-docker:
+    # Q-WIN-DOCKER remains open until an appropriately provisioned runner passes.
+    runs-on: [self-hosted, Windows, legion-docker]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Require hardened Docker backend
+        shell: pwsh
+        run: |
+          docker info
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --input-type=module -e 'import { detectSandbox } from "./packages/sandbox/dist/index.js"; const d = detectSandbox(); if (d.backend !== "docker" || !d.hardened) { console.error(JSON.stringify(d)); process.exit(1); }'
+      - run: pnpm typecheck
+      - run: pnpm test

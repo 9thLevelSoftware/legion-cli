@@ -29,7 +29,7 @@ export {
   scanChatSessions,
 } from "./chat.js";
 export type { ChatApplyResult, ChatRouteOpts, ChatTurnKind, ChatTurnResult } from "./chat.js";
-export { setUndoGitResetHard, undoLastTask } from "./undo.js";
+export { setUndoGitResetHard, setUndoGitRevert, undoLastTask } from "./undo.js";
 export type { UndoResult } from "./undo.js";
 export {
   COMMUNITY_RECIPE_LOCK_MESSAGE,
@@ -110,12 +110,22 @@ export {
   argvSummarySafe,
   defaultAllowCopyJail,
   findSkillsDir,
+  governedMcpConfigIdentity,
+  governedMcpToolContractIdentity,
+  inspectResumeOwner,
+  listRunRecoveryStatuses,
   listCacheResumesCalls,
   optionalSkillSpawn,
+  preserveStartedHttpSpawnForRecovery,
+  refuseIfLiveRun,
   resetListCacheResumesCalls,
   resolveSkillDir,
+  resumeHttpSkillSpawn,
   resumeRunIsLive,
+  updateResumeStage,
 } from "./spawn.js";
+export type { ResumeOwnerStatus, RunRecoveryStatus } from "./spawn.js";
+export { evaluateQaEvidenceFreshness, projectSourceIdentity, qaSourceHash, qaSpecHash } from "./qa-evidence.js";
 export {
   WIREFRAME_PALETTE,
   assertWireframeHtml,
@@ -125,6 +135,8 @@ export {
 export { SKIP_WIREFRAMES_NOTE, buildSpecFromIntent, specMarkdownBody, quoteDecision } from "./spec-build.js";
 export {
   assertCanTransition,
+  assertCanUndoTransition,
+  UNDO_ONLY_PHASE_TRANSITIONS,
   assertLegalPhase,
   canTransition,
   hintForIllegalTransition,
@@ -139,6 +151,8 @@ export {
 } from "./readiness.js";
 export type { ReadinessReport } from "./readiness.js";
 export { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
+export { createHttpToolHost, engineSotRefuseReason, httpAllowedWrites } from "./http-host.js";
+export type { HttpHostOpts } from "./http-host.js";
 export {
   displayStagedRoots,
   isShipAllowedPath,
@@ -193,9 +207,12 @@ export type {
   CompactedTask,
   DecisionInput,
   ExecuteOptions,
+  ExecuteProgress,
   ExecuteResult,
   ExecuteTaskResult,
   ExecuteWorkflowOptions,
+  FiledTicketSummary,
+  TicketSource,
   FileContract,
   GardenReport,
   IngestOpts,

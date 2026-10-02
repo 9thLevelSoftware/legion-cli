@@ -15,7 +15,7 @@ const LIFECYCLE_CORE = [
   [
     "init",
     "Start a product in this folder",
-    `--name, --adapter ${ADAPTER_ID_HELP}, --mode greenfield|brownfield, --http-base-url, --http-model, --http-api-key-env`,
+    `--name, --adapter ${ADAPTER_ID_HELP}, --mode greenfield|brownfield, --brownfield-goal change|audit, --generic-binary, --generic-args, --http-base-url, --http-model, --http-api-key-env, --http-allow-loopback, --acp-command, --acp-args`,
   ],
   ["intent", "Interview me about the product", "--done"],
   ["discuss", "Capture decisions before planning", ""],
@@ -23,12 +23,12 @@ const LIFECYCLE_CORE = [
   ["spec show", "Show the spec path", ""],
   ["spec approve", "Freeze the spec", "--message"],
   ["spec new", "Start the next increment after ship", ""],
-  ["plan", "Break approved work into tasks", "--adapter"],
+  ["plan", "Break approved work into tasks", "--adapter, --profile"],
   ["plan approve", "Approve the plan and its checks", "--check <command...>"],
   ["plan acceptance", "Record manual acceptance evidence", "--pass|--fail|--not-applicable <ids...>, --note"],
-  ["execute [id]", "Run approved work to completion or a blocker", "--step, --retry, --until-blocked, --fix, --adapter, --allow-no-sandbox (TTY confirmation)"],
-  ["verify [id]", "Optional walkthrough notes (not a ship gate)", "--adapter"],
-  ["review", "Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review", "--adapter"],
+  ["execute [id]", "Run approved work to completion or a blocker", "--step, --retry, --resume <runId>, --until-blocked, --jobs 1-4, --fix, --adapter, --profile, --allow-no-sandbox (TTY confirmation)"],
+  ["verify [id]", "Optional agent walkthrough (not a ship gate; notes not retained yet)", "--adapter, --profile"],
+  ["review", "Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review; PASS needs exit 0 and notes", "--adapter, --profile"],
   ["qa", "Score the product (when the slice is done)", "--mode full|no-browser"],
   ["qa checklist", "Tick AC items when no browser", "--tick"],
   ["ship", "Final human review; stage diff", "--allow-degraded-qa, --pr (needs --commit), --commit"],
@@ -36,35 +36,35 @@ const LIFECYCLE_CORE = [
 
 const ALWAYS_ON = [
   ["status (default)", "Where am I? What next?", "--blockers, --plain"],
-  ["doctor", "Is my laptop ready?", "--metrics"],
+  ["doctor", "Is my laptop ready?", "--metrics, --rebaseline-audit"],
   ["control-mode [mode]", "Show or set guarded|advisory", ""],
   ["ingest <src…>", "Teach Legion CLI from these files/links", "--transcript, --diff, --no-commit, --distill"],
   ["wiki trust <page>", "I have read this ingested page; treat it as real", ""],
-  ["search <q>", "Search the wiki", "--mentions, --include-untrusted"],
+  ["search <q>", "Search the wiki", "--mentions, --include-untrusted, --limit <n>"],
   ["show <page>", "Open one wiki/spec/task/map page", ""],
   ["brief", "Print what the next agent will see", ""],
-  ["chat", "REPL that routes into engine verbs", "--once, --adapter, --fork"],
+  ["chat", "REPL that routes into engine verbs", "--once, --adapter, --profile, --fork"],
   ["index rebuild", "Repair search", ""],
   ["help", "Commands", "--all"],
 ] as const;
 
 const BOARD_EXTRAS = [
   ["next", "What is unblocked?", ""],
-  ["ticket create", "Park extra work", "--parent, --title, --from-agent, --type, --priority, --adapter, --route"],
-  ["task amend", "Human changes a file contract", "--allow-deps, --adapter, --route, --clear-adapter, --unblock, --recover"],
+  ["ticket create", "Park extra work", "--parent, --title, --from-agent, --type, --priority, --adapter, --route, --profile"],
+  ["task amend", "Human changes a file contract", "--allow-deps, --adapter, --route, --profile, --clear-adapter, --clear-profile, --unblock, --recover"],
   ["undo", "Revert last completed task or Legion commit", "--task"],
   ["recipe list", "List available workflow recipes", ""],
   ["recipe run <name>", "Execute a workflow recipe", "--param"],
   ["repl", "Host-mode interactive REPL (NO SANDBOX)", "--lang node|python"],
-  ["fix <bug>", "Test first (must stay RED), then fix", "--adapter, --allow-no-sandbox (TTY confirmation)"],
+  ["fix <bug>", "Test first (must stay RED), then fix", "--adapter, --profile, --allow-no-sandbox (TTY confirmation)"],
   ["abandon", "Stop this spec without shipping", "--message"],
   ["assume list", "Open questions that block work", ""],
   ["assume answer <id>", "Confirm or reject an assumption", "--status confirmed|rejected"],
 ] as const;
 
 const SHIPPED_ADJACENT = [
-  ["serve", "Dashboard plus read-only MCP HTTP (MCP HTTP is loopback-only)", "--port, --expose, --no-open, --mcp-http/--no-mcp-http, --webmcp, --token-stdout"],
-  ["dashboard", "Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist); not the source of truth)", "--no-open, --port, --expose"],
+  ["serve", "Dashboard plus read-only MCP HTTP (MCP HTTP is loopback-only)", "--port, --expose (needs --no-mcp-http: MCP HTTP is loopback-only), --no-open, --mcp-http/--no-mcp-http, --webmcp, --token-stdout"],
+  ["dashboard", "Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist); not the source of truth)", "--no-open, --port, --expose, --webmcp, --token-stdout"],
   ["packet new", "PM/designer request without the DAG", "--title, --request, --requester"],
   ["packet respond", "Spawn tickets from a packet (does not execute)", "--message, --title, --type, --priority"],
   ["context compact", "Manual compaction of done tasks", ""],
@@ -83,8 +83,9 @@ const SHIPPED_ADJACENT = [
   ["design-system generate", "Generate a design system from a brief", "--name, --work-type, --platforms, --wcag, --brand"],
   ["skills list", "List packaged and overlay skills", ""],
   ["skills show <id>", "Show one packaged or overlay skill", ""],
-  ["skills install <dir|github:owner/repo@tag>", "Install a pinned skill overlay", "--unsigned, --skill, --integrity"],
-  ["wireframe", "Re-generate HTML wireframes after spec edits", "--restyle, --spawn, --adapter"],
+  ["skills install <dir|github:owner/repo@tag>", "Install a pinned skill or extension overlay", "--unsigned, --skill, --extension, --integrity"],
+  ["skills run <extension:id>", "Run a governed extension evidence job", "--profile"],
+  ["wireframe", "Re-generate HTML wireframes after spec edits", "--restyle, --spawn, --adapter, --profile"],
 ] as const;
 
 const INVOCATION = [

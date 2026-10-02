@@ -5,6 +5,7 @@ import type {
   AdapterId,
   AdapterResolutionSource,
   AcceptanceReceipt,
+  AgentUsage,
   Assumption,
   BrownfieldDagNode,
   BrownfieldRoster,
@@ -39,8 +40,20 @@ export type LegionEngineOptions = {
   fakeArtifacts?: FakeArtifact[];
   fakeThrowAfterWrite?: boolean;
   fakeTimedOut?: boolean;
+  /** Test-only: exit code the fake agent reports. */
+  fakeExitCode?: number;
+  /** Test-only: per-task exit codes for parallel fake-agent coverage. */
+  fakeExitCodeForTask?: (taskId: string) => number | undefined;
+  /** Test-only: adapter resource cleanup hook for each parallel task. */
+  fakeResourceCleanupForTask?: (taskId: string) => Promise<void>;
+  /** Test-only: fake agent writes no summary. */
+  fakeOmitSummary?: boolean;
   fakeHoldWait?: FakeHoldWait;
   fakeOnWait?: () => Promise<void>;
+  /** Test-only: runs immediately before each serialized parallel output application. */
+  fakeBeforeParallelApply?: (taskId: string, index: number) => Promise<void>;
+  /** Test-only: can hold one parallel member before its child starts. */
+  fakeBeforeParallelStart?: (taskId: string, index: number) => Promise<void>;
   fakeHandlePid?: number;
   /** Test-only, like the other fake* seams: verification throws this message. */
   fakeVerificationError?: string;
@@ -52,7 +65,11 @@ export type LegionEngineOptions = {
   fakeAfterChallengeOutputCheckpoint?: () => Promise<void>;
   /** Test-only: runs after an engine-authored challenge draft write and before the completion receipt. */
   fakeAfterChallengeDraftWrite?: () => Promise<void>;
+  /** Test-only: permits QaOptions.score; production engines must execute configured reports. */
+  fakeQaScoreInjection?: boolean;
   verificationTimeoutMs?: number;
+  /** Test-only: overrides hardened-backend detection for the `ingest --distill` refusal. */
+  fakeDistillSandboxHardened?: boolean;
 };
 
 export type IntentState = {
@@ -77,6 +94,7 @@ export type InitOptions = {
   adapter: AdapterId;
   generic?: { binary: string; args: string[] };
   http?: { baseUrl: string; model: string; apiKeyEnv: string; allowLoopback?: boolean };
+  acp?: { command: string; args: string[]; enabled: true };
   mode?: "greenfield" | "brownfield";
   brownfieldGoal?: "change" | "audit";
   /** New public CLI initialization uses focused; omitted preserves low-level API compatibility. */
@@ -100,6 +118,11 @@ export type ExecuteWorkflowOptions = {
   taskId?: string;
   step?: boolean;
   adapter?: AdapterId;
+  profile?: string;
+  resume?: string;
+  untilBlocked?: boolean;
+  jobs?: number;
+  onProgress?: ExecuteOptions["onProgress"];
   fix?: boolean;
   allowNoSandbox?: boolean;
   /** Explicitly retry the failed integration or review stage once. */
@@ -358,6 +381,11 @@ export type ShipPreview = {
   unrelatedUnchanged: boolean;
   unrelated: string[];
   productFingerprint: string;
+  qaCoverage: {
+    missing: string[];
+    failed: string[];
+    skipped: string[];
+  };
 };
 
 export type ShipOptions = {
@@ -366,15 +394,47 @@ export type ShipOptions = {
   pr?: boolean;
   actor?: string;
   confirm?: (preview: ShipPreview) => Promise<boolean>;
+  /** Where the confirm answer came from; recorded in the ship audit event. */
+  confirmSource?: "tty" | "piped";
   /** Test seam for `gh pr create`. */
   prCreate?: (input: { cwd: string; title: string; body: string }) => { url?: string; error?: string };
 };
 
 export type ExecuteOptions = {
+  /** Resume a compatible interrupted engine-owned HTTP run. */
+  resume?: string;
   untilBlocked?: boolean;
   fix?: boolean;
   adapter?: AdapterId;
+  /** Parallel workers for automatic --until-blocked execution (1-4). */
+  jobs?: number;
+  /** Named adapter profile; mutually exclusive with adapter. */
+  profile?: string;
   allowNoSandbox?: boolean;
+  onProgress?: (progress: ExecuteProgress) => void;
+};
+
+export type ExecuteProgress = {
+  taskId: string;
+  stage: "starting" | "running" | "agent-complete" | "integrating" | "verifying" | "done" | "blocked";
+  elapsedMs: number;
+  logPath?: string;
+};
+
+export type TicketSource = {
+  id: string;
+  label: "running task" | "verified task" | "parent";
+  filesAllowed: readonly string[];
+  verificationCommands: readonly string[];
+};
+
+/** A ticket filed from agent output, with what it will run and where the commands came from (F-039). */
+export type FiledTicketSummary = {
+  id: string;
+  verificationCommands: string[];
+  filesAllowed: string[];
+  /** "parent" | "running task" | "verified task" | "engine default (pnpm test)". */
+  verificationSource: string;
 };
 
 export type ExecuteTaskResult = {
@@ -385,6 +445,8 @@ export type ExecuteTaskResult = {
   incident: boolean;
   headMoved: boolean;
   ticketId?: string;
+  /** Every ticket filed from this task's agent output, with the commands each will run. */
+  filedTickets?: FiledTicketSummary[];
   verificationPass?: boolean;
   /** Why the task was blocked by verification, e.g. "verification command did not start: …". */
   reason?: string;
@@ -392,6 +454,13 @@ export type ExecuteTaskResult = {
   trustTierNote?: string;
   adapterId?: AdapterId;
   resolutionSource?: AdapterResolutionSource;
+  profile?: string;
+  usage?: AgentUsage;
+  limitReason?: string;
+  /** Set when the agent exited non-zero; shown as a warning (verification commands remain the evidence). */
+  agentExitWarning?: string;
+  /** Set when the tree was dirty inside the task filesAllowed at start (F-007 residual). */
+  dirtyWarning?: string;
 };
 
 export type ExecuteResult = {
@@ -407,19 +476,26 @@ export type VerifyResult = {
   spawned: boolean;
   notesPath?: string;
   createdTaskIds: string[];
+  /** The commands each created ticket will run (inherited, never agent-authored). */
+  createdTickets: FiledTicketSummary[];
   extrasReverted: string[];
+  /** One line per skipped or non-zero agent run; verify is optional, so these warn instead of failing. */
+  warnings: string[];
 };
 
 export type ReviewResult = {
   verdict: ReviewVerdict;
   createdTaskIds: string[];
+  createdTickets: FiledTicketSummary[];
   extrasReverted: string[];
   rewrittenExistingTaskIds: string[];
   explicitVerdict?: ReviewVerdict;
   evidencePath?: string;
   evidenceFingerprint?: string;
-  /** Captured before spawn cleanup restores engine-owned QA paths. */
+  /** Captured from this run's review report before spawn cleanup. */
   evidenceBody?: string;
+  /** Non-zero agent exit on a review that still ended FAIL (filed tasks). */
+  warnings: string[];
 };
 
 export type ShipReceipt = {
@@ -460,6 +536,17 @@ export type NewTicket = {
   notes?: string;
   contract?: Partial<FileContract>;
   adapter?: AdapterId;
+  profile?: string;
+  /**
+   * Engine-supplied source for an agent-filed ticket (the running or verified task). Takes
+   * precedence over an agent-chosen parentId for the inherited commands and the filesAllowed cap.
+   */
+  inheritFrom?: TicketSource;
+  /**
+   * Set by the engine for agent spawns with no engine-supplied source (review, verify without a
+   * task): the agent's own parentId and filesAllowed are ignored (default commands, notes/<id>.md).
+   */
+  agentSourceless?: boolean;
 };
 
 export type NewPacket = {
@@ -487,8 +574,10 @@ export type AmendTaskOptions = {
   blockedBy?: string[];
   blocks?: string[];
   adapter?: AdapterId;
+  profile?: string;
   /** Mutually exclusive with `adapter`. */
   clearAdapter?: boolean;
+  clearProfile?: boolean;
 };
 
 export type CompactedTask = {
@@ -515,6 +604,7 @@ export type WireframeOptions = {
   restyle?: boolean;
   spawn?: boolean;
   adapter?: AdapterId;
+  profile?: string;
 };
 
 export type WireframeResult = {

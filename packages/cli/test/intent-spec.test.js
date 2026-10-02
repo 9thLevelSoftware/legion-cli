@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir, readFile, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import test from "node:test";
 
 import { WIREFRAME_PALETTE } from "@9thlevelsoftware/legion-cli-core";
@@ -15,6 +15,13 @@ function yaml(text) {
 
 function acceptDiscuss(dir) {
   return runCli(["discuss", "--project", dir], { input: "Y\nY\nY\n" });
+}
+
+async function readSpecDocuments(dir) {
+  const paths = existsSync(dir)
+    ? (await readdir(dir, { recursive: true })).filter((path) => basename(path) === "SPEC.md").sort()
+    : [];
+  return Promise.all(paths.map(async (path) => [path, await readFile(join(dir, path), "utf8")]));
 }
 
 test("intent --done writes IntentAnswersFile and requires confirm", async () => {
@@ -168,14 +175,15 @@ test("discuss + spec templates freeze without a model", async () => {
       ].join("\n") + "\n",
     });
     assert.equal(manualChallenge.status, 0, `${manualChallenge.stdout}\n${manualChallenge.stderr}`);
-    assert.match(normalize(manualChallenge.stdout), /Challenge review is complete/);
 
-    const approve = runCli(["spec", "approve", "--project", dir]);
+    const approve = runCli(["spec", "approve", "--project", dir, "--message", "ship it"]);
     assert.equal(approve.status, 0, approve.stderr);
-    assert.match(normalize(approve.stdout), /Spec frozen/);
     const frozen = await readFile(join(dir, ".legion-cli", "specs", "spec-checkin", "SPEC.md"), "utf8");
-    assert.match(frozen, /status: frozen/);
-    SpecSchema.parse(parseMarkdownDocument(frozen).frontmatter);
+    const frozenSpec = SpecSchema.parse(parseMarkdownDocument(frozen).frontmatter);
+    assert.equal(frozenSpec.status, "frozen");
+    const state = parseMarkdownDocument(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8")).frontmatter;
+    assert.equal(state.phase, "spec_frozen");
+    assert.equal(state.activeSpecId, frozenSpec.id);
   });
 });
 
@@ -306,5 +314,53 @@ test("intent discuss spec do not accept --adapter", async () => {
     assert.doesNotMatch(normalize(intentHelp.stdout), /--adapter/);
     const discussHelp = runCli(["help", "discuss"]);
     assert.doesNotMatch(normalize(discussHelp.stdout), /--adapter/);
+  });
+});
+
+const INTENT_INPUT =
+  [
+    "Teammates who keep missing who's in the office.",
+    "They ping five chat apps every morning.",
+    "People can tap in or out on their phone in under five seconds.",
+    "Do not change auth. We will not build payroll, badges, or calendar sync.",
+    "Y",
+  ].join("\n") + "\n";
+
+test("intent, discuss and spec stop with a doctor hint when no agent is available", async () => {
+  await withTempDir(async (dir) => {
+    const noAgent = { noAgent: true, env: { LEGION_CLI_ADAPTER: "" } };
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+
+    // intent confirmation is the step that spawns; the refusal must leave the phase and files alone.
+    const intent = runCli(["intent", "--project", dir, "--done"], { ...noAgent, input: INTENT_INPUT });
+    assert.notEqual(intent.status, 0);
+    assert.match(normalize(intent.stderr + intent.stdout), /no agent available for interview/);
+    assert.match(normalize(intent.stderr + intent.stdout), /legion-cli doctor/);
+    assert.match(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8"), /phase: intent_draft/);
+    const specsDir = join(dir, ".legion-cli", "specs");
+    assert.equal(existsSync(specsDir) ? (await readdir(specsDir)).length : 0, 0);
+
+    // the refused run already saved the answers; with an agent only the confirmation is left
+    const ok = runCli(["intent", "--project", dir, "--done"], { input: "Y\n" });
+    assert.equal(ok.status, 0, ok.stderr);
+    const discuss = runCli(["discuss", "--project", dir], { ...noAgent, input: "Y\nY\nY\n" });
+    assert.notEqual(discuss.status, 0);
+    assert.match(normalize(discuss.stderr + discuss.stdout), /no agent available for discuss/);
+    assert.match(normalize(discuss.stderr + discuss.stdout), /legion-cli doctor/);
+    assert.match(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8"), /phase: intent_ready/);
+
+    const accepted = acceptDiscuss(dir);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    const beforeSpec = parseMarkdownDocument(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8")).frontmatter;
+    const beforeSpecDocuments = await readSpecDocuments(specsDir);
+    const spec = runCli(["spec", "--project", dir], noAgent);
+    assert.notEqual(spec.status, 0);
+    assert.match(normalize(spec.stderr + spec.stdout), /no agent available/);
+    assert.match(normalize(spec.stderr + spec.stdout), /legion-cli doctor/);
+    const afterSpec = parseMarkdownDocument(await readFile(join(dir, ".legion-cli", "STATE.md"), "utf8")).frontmatter;
+    assert.equal(afterSpec.phase, beforeSpec.phase);
+    assert.equal(afterSpec.activeSpecId, beforeSpec.activeSpecId);
+    assert.deepEqual(await readSpecDocuments(specsDir), beforeSpecDocuments);
   });
 });

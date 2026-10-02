@@ -1,13 +1,14 @@
-import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, findSkillsDir, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 
-export async function runPlan(opts: CliOpts, flags: { adapter?: string } = {}): Promise<number> {
+export async function runPlan(opts: CliOpts, flags: { adapter?: string; profile?: string } = {}): Promise<number> {
+  if (flags.adapter && flags.profile) refuse("plan --adapter and --profile are mutually exclusive", "legion-cli plan --profile <name>");
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
-  const readiness = await engine.plan(undefined, adapter ? { adapter } : undefined);
+  const readiness = await engine.plan(undefined, { ...(adapter ? { adapter } : {}), ...(flags.profile ? { profile: flags.profile } : {}) });
   const state = await engine.getState();
   const report = engine.getLastPlanReport();
   const slice = await engine.listSliceTasks();

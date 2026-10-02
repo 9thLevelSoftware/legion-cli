@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { LegionRefuseError, specChallengeReceiptPath } from "../dist/index.js";
+import { findSkillsDir, LegionRefuseError, specChallengeReceiptPath } from "../dist/index.js";
 import {
   initProject,
   makeSpec,
@@ -13,6 +13,8 @@ import {
   withFakeAdapter,
   writeSpec,
 } from "./helpers.js";
+
+const skillsDir = findSkillsDir();
 
 const analysis = (concerns) => ({
   path: ".legion-cli/cache/runs/<id>/analysis.json",
@@ -66,7 +68,7 @@ test("manual review cannot bypass a successful challenge with unresolved concern
       assert.deepEqual(resolved.receipt.concerns.map((concern) => concern.resolution?.disposition), [
         "answered", "dismissed", "risk_accepted",
       ]);
-    }, { skillsDir: join(process.cwd(), "skills"), fakeArtifacts: [analysis(concerns)] });
+    }, { skillsDir, fakeArtifacts: [analysis(concerns)] });
   });
 });
 
@@ -86,7 +88,7 @@ test("unproven interrupted analysis becomes manual-required without starting ano
       assert.equal(recovered.status, "manual_required");
       assert.match(recovered.automationError, /interrupted/i);
       assert.equal(recovered.receipt.generation.runId, "spec-challenge-dead-run");
-    }, { skillsDir: join(process.cwd(), "skills"), fakeArtifacts: [analysis([])] });
+    }, { skillsDir, fakeArtifacts: [analysis([])] });
   });
 });
 
@@ -102,7 +104,7 @@ test("legacy and frozen specs remain challenge-compatible without retrospective 
       assert.equal((await engine.readSpecChallenge(draft.id)).status, "complete");
       assert.equal((await engine.prepareSpecChallenge(draft.id)).receipt, null);
       await engine.approveSpec(draft.id, { id: "owner" });
-    }, { skillsDir: join(process.cwd(), "skills") });
+    }, { skillsDir });
 
     await withEngine(async ({ engine, store }) => {
       await initProject(engine, { workflowProfile: "focused" });
@@ -111,7 +113,7 @@ test("legacy and frozen specs remain challenge-compatible without retrospective 
       assert.equal(challenge.status, "complete");
       assert.equal(challenge.receipt, null);
       assert.equal((await engine.prepareSpecChallenge(frozen.id)).status, "complete");
-    }, { skillsDir: join(process.cwd(), "skills") });
+    }, { skillsDir });
   });
 });
 
@@ -134,6 +136,6 @@ test("focused brownfield challenge uses its configured adapter route", async () 
       const result = await engine.prepareSpecChallenge(spec.id);
       assert.equal(result.status, "complete");
       assert.equal(result.receipt.generation.status, "complete");
-    }, { skillsDir: join(process.cwd(), "skills"), fakeArtifacts: [analysis([])] });
+    }, { skillsDir, fakeArtifacts: [analysis([])] });
   });
 });

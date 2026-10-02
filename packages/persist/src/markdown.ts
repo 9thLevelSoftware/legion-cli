@@ -70,12 +70,14 @@ export const persistWork = {
   parseAttempts: 0,
   taskFileReads: 0,
   auditBytesRead: 0,
+  auditLinesHashed: 0,
 };
 
 export function resetPersistWork(): void {
   persistWork.parseAttempts = 0;
   persistWork.taskFileReads = 0;
   persistWork.auditBytesRead = 0;
+  persistWork.auditLinesHashed = 0;
 }
 
 const TASK_MARKDOWN_RE = /(?:^|[\\/])\.legion-cli[\\/]tasks[\\/][^\\/]+\.md$/i;

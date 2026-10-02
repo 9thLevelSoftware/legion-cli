@@ -1,8 +1,8 @@
-import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, findSkillsDir, refuse } from "@9thlevelsoftware/legion-cli-core";
 import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
-import { writeJson, writeOut } from "./io.js";
+import { ticketVerificationLine, writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
 
 /** Test seam: fake adapter artifacts when LEGION_CLI_ADAPTER=fake. */
@@ -18,13 +18,14 @@ function reviewFakeArtifacts(): FakeArtifact[] | undefined {
   }
 }
 
-export async function runReview(opts: CliOpts, flags: { adapter?: string } = {}): Promise<number> {
+export async function runReview(opts: CliOpts, flags: { adapter?: string; profile?: string } = {}): Promise<number> {
+  if (flags.adapter && flags.profile) refuse("review --adapter and --profile are mutually exclusive", "legion-cli review --profile <name>");
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, {
     skillsDir: findSkillsDir(),
     fakeArtifacts: reviewFakeArtifacts(),
   });
-  const result = await engine.review(adapter ? { adapter } : undefined);
+  const result = await engine.review({ ...(adapter ? { adapter } : {}), ...(flags.profile ? { profile: flags.profile } : {}) });
   const state = await engine.getState();
   const slice = await engine.listSliceTasks();
   const next = nextCommand(state, slice);
@@ -39,6 +40,7 @@ export async function runReview(opts: CliOpts, flags: { adapter?: string } = {})
       createdTaskIds: result.createdTaskIds,
       rewrittenExistingTaskIds: result.rewrittenExistingTaskIds,
       extrasReverted: result.extrasReverted,
+      warnings: result.warnings,
       phase: state.phase,
       lastReview: state.lastReview ?? null,
       next: next.run,
@@ -55,6 +57,10 @@ export async function runReview(opts: CliOpts, flags: { adapter?: string } = {})
     writeOut(`Review FAIL. Existing tasks were rewritten: ${result.rewrittenExistingTaskIds.join(", ")}.`);
   } else {
     writeOut("Review FAIL.");
+  }
+  for (const line of result.warnings) writeOut(`Warning: ${line}`);
+  for (const filed of result.createdTickets) {
+    writeOut(ticketVerificationLine(filed));
   }
   writeOut(`Next: ${next.run}`);
   writeOut(`Dashboard: ${viewer}`);

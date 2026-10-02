@@ -30,7 +30,7 @@ function seedDraft(dir) {
   assert.equal(intent.status, 0, intent.stderr);
   const discuss = acceptDiscuss(dir);
   assert.equal(discuss.status, 0, `${discuss.stdout}\n${discuss.stderr}`);
-  const spec = runCli(["spec", "--project", dir]);
+  const spec = runCli(["spec", "--project", dir, "--wireframes"]);
   assert.equal(spec.status, 0, `${spec.stdout}\n${spec.stderr}`);
 }
 
@@ -91,6 +91,23 @@ test("frozen without --restyle refuses; --restyle with fixture keeps h1", async 
     const page = join(dir, ".legion-cli", "specs", "spec-checkin", "wireframes", "home.html");
     const before = await readFile(page, "utf8");
     await writeFile(page, before.replace("<h1>home</h1>", "<h1>Keep Me</h1>"), "utf8");
+    const refreshed = runCli(["spec", "--project", dir]);
+    assert.equal(refreshed.status, 0, `${refreshed.stdout}\n${refreshed.stderr}`);
+    const pending = runCli(["spec", "--project", dir, "--json"]);
+    assert.equal(pending.status, 0, pending.stderr);
+    assert.equal(JSON.parse(pending.stdout).challenge.status, "manual_required");
+    const challenge = runCli(["spec", "--project", dir, "--manual-review"], {
+      input: [
+        "A check-in is recorded in under five seconds and confirmed to the teammate.",
+        "When unavailable, preserve the attempted check-in and show a clear retry message.",
+        "Keep authentication unchanged and do not add payroll.",
+        "I acknowledge",
+      ].join("\n") + "\n",
+    });
+    assert.equal(challenge.status, 0, `${challenge.stdout}\n${challenge.stderr}`);
+    const reviewed = runCli(["spec", "--project", dir, "--json"]);
+    assert.equal(reviewed.status, 0, reviewed.stderr);
+    assert.equal(JSON.parse(reviewed.stdout).challenge.status, "complete");
     const approve = runCli(["spec", "approve", "--project", dir]);
     assert.equal(approve.status, 0, approve.stderr);
 

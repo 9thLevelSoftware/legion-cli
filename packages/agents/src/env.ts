@@ -24,10 +24,15 @@ export const ADAPTER_CREDENTIAL_KEYS = {
   mimo: [] as const,
   minimax: ["MINIMAX_API_KEY"],
   http: [] as const,
+  acp: [] as const,
 } as const satisfies Record<AgentAdapterId, readonly string[]>;
 
-/** Windows CreateProcess / node.exe fail without these even when PATH is set. */
-const WINDOWS_INHERIT = ["SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATHEXT"] as const;
+/**
+ * Windows CreateProcess / node.exe fail without these even when PATH is set. powershell.exe
+ * (a `.ps1` agent, or an agent that shells out to it) stalls for tens of seconds without
+ * PSModulePath. Upper-case: compared against the upper-cased key.
+ */
+const WINDOWS_INHERIT = ["SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATHEXT", "PSMODULEPATH"] as const;
 
 function inferAdapterIdFromBinary(binary?: string): AgentAdapterId | undefined {
   if (!binary) return undefined;
@@ -42,7 +47,7 @@ function inferAdapterIdFromBinary(binary?: string): AgentAdapterId | undefined {
 
 function assumedBinaryBasename(adapterId: AgentAdapterId): string | undefined {
   if (adapterId === "claude") return "claude";
-  if (adapterId === "generic" || adapterId === "fake" || adapterId === "http") return undefined;
+  if (adapterId === "generic" || adapterId === "fake" || adapterId === "http" || adapterId === "acp") return undefined;
   return ASSUMED_EXTRA_BINARIES[adapterId];
 }
 

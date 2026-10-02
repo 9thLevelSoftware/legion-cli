@@ -21,6 +21,7 @@ import {
   workflowFingerprint,
 } from "../dist/workflow.js";
 import {
+  initGitRepo,
   initProject,
   makeQaScore,
   makeSpec,
@@ -38,7 +39,7 @@ import {
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills");
 const explicitPassReview = {
-  path: ".legion-cli/qa/review.md",
+  path: ".legion-cli/cache/runs/<id>/review.md",
   content: "# Independent review\n\nVerdict: PASS\n",
 };
 
@@ -216,13 +217,13 @@ test("a legacy ready_to_ship project can adopt the focused workflow and finish",
     await withEngine(async ({ engine, store, dir }) => {
       await initProject(engine);
       const legacyQa = makeQaScore({ id: "qa-legacy" });
-      await writeQaFile(store, legacyQa);
       await seedFocusedPlan(store, dir, {
         phase: "ready_to_ship",
         taskStatus: "done",
         lastReview: "PASS",
         lastQaId: legacyQa.id,
       });
+      await writeQaFile(store, legacyQa);
       assert.equal((await store.readConfig()).workflow, undefined);
 
       const check = passingVerificationCommand();
@@ -276,6 +277,42 @@ test("planned checks, fresh review, manual acceptance, and human ship form one e
     }, { skillsDir, fakeArtifacts: [explicitPassReview] });
   });
 });
+test("focused default execution honors configured parallelism and reports the blocked task", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initFocused(engine);
+      const config = await store.readConfig();
+      await store.writeConfig({ ...config, execution: { maxWorkers: 2 } });
+      await seedFocusedPlan(store, dir, {
+        contract: { verificationCommands: [`${quoteArg(process.execPath)} -e process.exit(1)`] },
+        extraTasks: [makeTask({
+          id: "TSK-0002",
+          status: "ready",
+          contract: {
+            filesAllowed: ["src/other.ts"],
+            expectedArtifacts: ["src/other.ts"],
+            verificationCommands: [passingVerificationCommand()],
+          },
+        })],
+      });
+      await engine.approvePlan({ id: "owner" });
+
+      const executed = await engine.executeWorkflow();
+      assert.equal(executed.status, "blocked");
+      assert.equal(executed.taskId, "TSK-0001");
+      assert.equal(executed.next, "legion-cli task amend TSK-0001");
+      assert.deepEqual(executed.tasks.map(({ taskId, status }) => ({ taskId, status })), [
+        { taskId: "TSK-0001", status: "blocked" },
+        { taskId: "TSK-0002", status: "done" },
+      ]);
+      assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
+      assert.equal((await store.readTask("TSK-0002")).data.status, "done");
+      const evidence = await readWorkflowYaml(store, WORKFLOW_EVIDENCE_PATH, WorkflowEvidenceReceiptSchema);
+      assert.deepEqual(evidence.completedTaskIds, ["TSK-0002"]);
+    }, { skillsDir });
+  });
+});
+
 
 test("--step persists progress and a later engine resumes at verification and review", async () => {
   await withFakeAdapter(async () => {
@@ -345,7 +382,7 @@ test("failed planned checks stay blocked until retry and retry reruns only the f
 
 for (const [label, fakeArtifacts] of [
   ["missing", []],
-  ["ambiguous", [{ path: ".legion-cli/qa/review.md", content: "Verdict: PASS\nVerdict: FAIL\n" }]],
+  ["ambiguous", [{ path: ".legion-cli/cache/runs/<id>/review.md", content: "Verdict: PASS\nVerdict: FAIL\n" }]],
 ]) {
   test(`${label} explicit reviewer evidence blocks focused completion`, async () => {
     await withFakeAdapter(async () => {
@@ -356,8 +393,8 @@ for (const [label, fakeArtifacts] of [
 
         const result = await engine.executeWorkflow();
         assert.equal(result.status, "blocked");
-        assert.match(result.blocker, /fresh explicit Verdict: PASS/);
-        assert.equal(result.next, "legion-cli review");
+        assert.match(result.blocker, label === "missing" ? /review failed: agent wrote no notes/ : /fresh explicit Verdict: PASS/);
+        assert.equal(result.next, label === "missing" ? "legion-cli plan approve" : "legion-cli review");
         const evidence = await readWorkflowYaml(store, WORKFLOW_EVIDENCE_PATH, WorkflowEvidenceReceiptSchema);
         assert.equal(evidence.status, "blocked");
         assert.equal(evidence.review, null);
@@ -459,3 +496,128 @@ test("a planned check that mutates product inputs is blocked and cannot certify 
     assert.equal((await engine.getWorkflowStatus()).execution, "stale");
   });
 });
+
+for (const selection of [
+  { label: "profile", options: { profile: "fixture" } },
+  { label: "explicit adapter", options: { adapter: "fake" } },
+]) {
+  test(`focused fix retains its ${selection.label} route through approval and execution`, async () => {
+    await withFakeAdapter(async () => {
+      await withEngine(async ({ engine, store, dir }) => {
+        await initFocused(engine);
+        await seedFocusedPlan(store, dir, { phase: "executing", taskStatus: "done", lastReview: "PASS" });
+        await mkdir(join(dir, "src"), { recursive: true });
+        await writeFile(join(dir, "src", "main.ts"), "export const repaired = false;\n", "utf8");
+        const config = await store.readConfig();
+        await store.writeConfig({
+          ...config,
+          adapter: {
+            ...config.adapter,
+            default: "generic",
+            generic: { binary: "intentionally-unselected-generic", args: ["{{pointer}}"] },
+            profiles: { fixture: { adapter: "fake", modelArgs: [] } },
+          },
+        });
+        initGitRepo(dir);
+        await engine.approvePlan({ id: "owner" });
+
+        const proposed = await engine.proposeFix("Repair the generated result", selection.options);
+        const persisted = (await store.readTask(proposed.id)).data;
+        assert.equal(persisted.type, "bug");
+        assert.equal(persisted.profile, selection.options.profile);
+        assert.equal(persisted.adapter, selection.options.adapter);
+        assert.equal((await engine.getState()).lastReview, "FAIL");
+        assert.equal((await engine.getWorkflowStatus()).planApproval, "stale");
+        const regressionPath = persisted.contract.expectedArtifacts[0];
+        assert.equal(await store.pathExists(regressionPath), false, "proposal does not write its own regression");
+        await writeTask(store, {
+          ...persisted,
+          contract: {
+            ...persisted.contract,
+            filesAllowed: ["src/repair.ts", regressionPath],
+            expectedArtifacts: ["src/repair.ts", regressionPath],
+          },
+        });
+        await engine.approvePlan({ id: "owner" });
+
+        const executor = new LegionEngine(dir, undefined, {
+          skillsDir,
+          fakeArtifacts: [
+            { path: "src/repair.ts", content: "export const repaired = true;\n" },
+            {
+              path: regressionPath,
+              content: [
+                'import assert from "node:assert/strict";',
+                'import { readFileSync } from "node:fs";',
+                'assert.equal(readFileSync("src/repair.ts", "utf8"), "export const repaired = true;\\n");',
+              ].join("\n"),
+            },
+          ],
+        });
+        const execution = await executor.execute(proposed.id);
+        assert.equal(execution.status, "done", JSON.stringify(execution.tasks));
+        assert.equal(execution.tasks[0].adapterId, "fake");
+        assert.equal(execution.tasks[0].resolutionSource, "task");
+        assert.equal(execution.tasks[0].profile, selection.options.profile);
+        assert.equal((await store.readTask(proposed.id)).data.status, "done");
+        assert.equal(await readFile(join(dir, "src", "repair.ts"), "utf8"), "export const repaired = true;\n");
+      }, { skillsDir });
+    });
+  });
+}
+
+test("unknown or conflicting focused fix selections preserve prior review and tasks", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initFocused(engine);
+    await seedFocusedPlan(store, dir, { phase: "executing", taskStatus: "done", lastReview: "PASS" });
+    const config = await store.readConfig();
+    await store.writeConfig({
+      ...config,
+      adapter: { ...config.adapter, profiles: { fixture: { adapter: "fake", modelArgs: [] } } },
+    });
+    const approval = await engine.approvePlan({ id: "owner" });
+    const taskBefore = await store.readTask("TSK-0001");
+    const stateBefore = await engine.getState();
+    const taskIdsBefore = await engine.snapshotTaskIds();
+
+    for (const [options, refusal] of [
+      [{ profile: "missing" }, /unknown.*profile|profile.*unknown/i],
+      [{ adapter: "fake", profile: "fixture" }, /mutually exclusive/],
+    ]) {
+      await assert.rejects(
+        () => engine.proposeFix("Repair the generated result", options),
+        (error) => error instanceof LegionRefuseError && refusal.test(error.message),
+      );
+      assert.deepEqual(await engine.getState(), stateBefore);
+      assert.equal((await engine.getState()).lastReview, "PASS");
+      assert.deepEqual(await engine.snapshotTaskIds(), taskIdsBefore);
+      assert.deepEqual(await store.readTask("TSK-0001"), taskBefore);
+      assert.equal((await engine.getWorkflowStatus()).planApproval, "valid");
+      assert.equal((await readWorkflowYaml(store, WORKFLOW_APPROVAL_PATH, PlanApprovalReceiptSchema)).approvalId, approval.approvalId);
+    }
+  }, { skillsDir });
+});
+
+for (const workflowProfile of ["focused", undefined]) {
+  test(`advisory ${workflowProfile ?? "legacy"} workflow refuses even when every task is done`, async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine, { workflowProfile, controlMode: "advisory" });
+      await seedFocusedPlan(store, dir, { phase: "executing", taskStatus: "done", lastReview: "PASS" });
+      if (workflowProfile === "focused") await engine.approvePlan({ id: "owner" });
+      const stateBefore = await engine.getState();
+      const configBefore = await store.readConfig();
+      const taskBefore = await store.readTask("TSK-0001");
+
+      await assert.rejects(
+        () => engine.executeWorkflow(),
+        (error) => error instanceof LegionRefuseError && /advisory/.test(error.message),
+      );
+      assert.deepEqual(await engine.getState(), stateBefore);
+      assert.deepEqual(await store.readConfig(), configBefore);
+      assert.deepEqual(await store.readTask("TSK-0001"), taskBefore);
+      assert.equal(await store.pathExists(".legion-cli/workflow/run-claim.yaml"), false);
+      assert.equal(await store.pathExists(WORKFLOW_EVIDENCE_PATH), false);
+      if (!workflowProfile) assert.equal(await store.pathExists(WORKFLOW_APPROVAL_PATH), false);
+    }, { skillsDir });
+  });
+}

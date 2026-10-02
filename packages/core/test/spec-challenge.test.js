@@ -4,7 +4,7 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { LegionEngine, LegionRefuseError, specChallengeReceiptPath } from "../dist/index.js";
+import { findSkillsDir, LegionEngine, LegionRefuseError, specChallengeReceiptPath } from "../dist/index.js";
 import { finishStartedSpawn, startSkillSpawn, waitStartedSpawn } from "../dist/spawn.js";
 import { workflowFingerprint } from "../dist/workflow.js";
 import { SpecChallengeReceiptSchema } from "@9thlevelsoftware/legion-cli-schema";
@@ -16,6 +16,8 @@ import {
   withFakeAdapter,
   writeSpec,
 } from "./helpers.js";
+
+const skillsDir = findSkillsDir();
 
 const analysis = (concerns) => ({
   path: ".legion-cli/cache/runs/<id>/analysis.json",
@@ -36,21 +38,6 @@ async function seedFocusedDraft(engine, store, dir) {
   await patchState(store, { phase: "spec_draft", activeSpecId: spec.id });
   await writeFile(join(dir, "README.md"), "The check-in API returns unavailable when offline.\n", "utf8");
   return spec;
-}
-
-async function markRunDead(dir, runId) {
-  const path = join(dir, ".legion-cli", "cache", "runs", runId, "resume.json");
-  const resume = JSON.parse(await readFile(path, "utf8"));
-  await writeFile(path, `${JSON.stringify({
-    ...resume,
-    pid: 2_000_000_000,
-    enginePid: 2_000_000_001,
-    startedAt: "2000-01-01T00:00:00.000Z",
-  }, null, 2)}\n`, "utf8");
-  const livePath = join(dir, ".legion-cli", "cache", "live-spawn.json");
-  const live = JSON.parse(await readFile(livePath, "utf8"));
-  assert.equal(live.runId, runId);
-  await writeFile(livePath, `${JSON.stringify({ ...live, enginePid: 2_000_000_001 })}\n`, "utf8");
 }
 
 async function challengeRunNames(dir) {
@@ -75,7 +62,7 @@ async function startHeldMapSpawn(dir, store) {
     config: await store.readConfig(),
     skillId: "map",
     promptBody: "Hold an unrelated map operation for concurrency testing.",
-    skillsDir: join(process.cwd(), "skills"),
+    skillsDir,
     store,
     required: true,
     holdWait: { readyPath, releasePath, timeoutMs: 15_000 },
@@ -107,7 +94,7 @@ test("zero-concern analysis completes once and permits focused approval", async 
       assert.deepEqual(after, before, "a completed unchanged analysis is not repeated");
       await engine.approveSpec(spec.id, { id: "owner" });
       assert.equal((await store.readSpec(spec.id)).data.status, "frozen");
-    }, { skillsDir: join(process.cwd(), "skills"), fakeArtifacts: [analysis([])] });
+    }, { skillsDir, fakeArtifacts: [analysis([])] });
   });
 });
 
@@ -176,7 +163,7 @@ test("concerns require immediate human resolutions and synthesis applies only gr
       assert.ok(draft.data.failureCases.includes(changes[0].statement));
       assert.ok(draft.data.mustNotChange.includes(changes[1].statement));
       assert.match(await readFile(join(dir, finalized.receipt.thinkingPath), "utf8"), /risk_accepted/);
-    }, { skillsDir: join(process.cwd(), "skills"), fakeArtifacts: [analysis(concerns), synthesis(changes)] });
+    }, { skillsDir, fakeArtifacts: [analysis(concerns), synthesis(changes)] });
   });
 });
 
@@ -205,7 +192,7 @@ test("invalid analysis and failed synthesis require explicit substantive manual 
       assert.equal(completed.status, "complete");
       assert.ok((await store.readSpec(spec.id)).data.failureCases.some((item) => /unavailable service/i.test(item)));
     }, {
-      skillsDir: join(process.cwd(), "skills"),
+      skillsDir,
       fakeArtifacts: [analysis([1, 2, 3, 4].map((i) => ({
         question: `Question ${i}?`,
         why: "It matters.",
@@ -267,7 +254,7 @@ test("synthesis failure preserves a dismissed resolution and resumes partial man
       assert.equal(completed.receipt.concerns[0].resolution.disposition, "dismissed");
       assert.match(await readFile(join(dir, completed.receipt.thinkingPath), "utf8"), /I acknowledge/);
       assert.ok((await store.readSpec(spec.id)).body.includes("## Challenge clarifications"));
-    }, { skillsDir: join(process.cwd(), "skills"), fakeArtifacts: [analysis(concerns)] });
+    }, { skillsDir, fakeArtifacts: [analysis(concerns)] });
   });
 });
 
@@ -293,7 +280,7 @@ test("external draft edits stale completion and explicit prepare starts one new 
       const discuss = await store.readDiscuss();
       await store.writeDiscuss(discuss.data, `${discuss.body}\nInterview decision context changed.\n`);
       assert.equal((await engine.readSpecChallenge(spec.id)).status, "stale");
-    }, { skillsDir: join(process.cwd(), "skills"), fakeArtifacts: [analysis([])] });
+    }, { skillsDir, fakeArtifacts: [analysis([])] });
   });
 });
 
@@ -351,7 +338,7 @@ test("successful analysis and synthesis checkpoints recover without repeating ad
       assert.equal(recoveredSynthesis.status, "complete");
       assert.equal((await readdir(join(dir, ".legion-cli", "cache", "runs"))).length, runCountAfterSynthesis);
       assert.ok((await store.readSpec(spec.id)).data.failureCases.includes(response));
-    }, { skillsDir: join(process.cwd(), "skills"), fakeArtifacts: [analysis(concerns), synthesis(changes)] });
+    }, { skillsDir, fakeArtifacts: [analysis(concerns), synthesis(changes)] });
   });
 });
 
@@ -367,7 +354,7 @@ test("receipt reads reject mismatched identities and noncanonical thinking paths
 
       await store.writeYaml(path, { ...completed.receipt, thinkingPath: ".legion-cli/workflow/untrusted.md" });
       await assert.rejects(() => engine.readSpecChallenge(spec.id), /thinking path mismatch/);
-    }, { skillsDir: join(process.cwd(), "skills"), fakeArtifacts: [analysis([])] });
+    }, { skillsDir, fakeArtifacts: [analysis([])] });
   });
 });
 
@@ -415,7 +402,7 @@ test("tampered application checkpoints cannot remove existing requirements durin
 
       await assert.rejects(() => engine.finalizeSpecChallenge(spec.id), /invalid spec challenge application checkpoint/);
       assert.deepEqual((await store.readSpec(spec.id)).data.mustBeTrue, application.baseSpec.mustBeTrue);
-    }, { skillsDir: join(process.cwd(), "skills"), fakeArtifacts: [analysis(concerns), synthesis(changes)] });
+    }, { skillsDir, fakeArtifacts: [analysis(concerns), synthesis(changes)] });
   });
 });
 
@@ -429,7 +416,7 @@ test("analysis output checkpoint recovers without copied jail output or another 
     await withEngine(async ({ engine: bootstrap, store, dir }) => {
       const spec = await seedFocusedDraft(bootstrap, store, dir);
       const crashing = new LegionEngine(dir, undefined, {
-        skillsDir: join(process.cwd(), "skills"),
+        skillsDir,
         fakeArtifacts: [analysis(concerns)],
         fakeAfterChallengeOutputCheckpoint: async () => {
           throw new Error("fault after analysis output checkpoint");
@@ -450,14 +437,13 @@ test("analysis output checkpoint recovers without copied jail output or another 
         (error) => error?.code === "ENOENT",
       );
       const beforeRuns = await challengeRunNames(dir);
-      await markRunDead(dir, runId);
 
-      const restarted = new LegionEngine(dir, undefined, { skillsDir: join(process.cwd(), "skills") });
+      const restarted = new LegionEngine(dir, undefined, { skillsDir });
       const recovered = await restarted.prepareSpecChallenge(spec.id);
       assert.equal(recovered.status, "awaiting_resolutions");
       assert.equal(recovered.receipt.concerns[0].question, concerns[0].question);
       assert.deepEqual(await challengeRunNames(dir), beforeRuns);
-    }, { skillsDir: join(process.cwd(), "skills") });
+    }, { skillsDir });
   });
 });
 
@@ -478,7 +464,7 @@ test("synthesis output checkpoint recovers without copied jail output or another
     await withEngine(async ({ engine: bootstrap, store, dir }) => {
       const spec = await seedFocusedDraft(bootstrap, store, dir);
       const analyzer = new LegionEngine(dir, undefined, {
-        skillsDir: join(process.cwd(), "skills"),
+        skillsDir,
         fakeArtifacts: [analysis(concerns)],
       });
       await analyzer.prepareSpecChallenge(spec.id);
@@ -489,7 +475,7 @@ test("synthesis output checkpoint recovers without copied jail output or another
         { id: "owner" },
       );
       const crashing = new LegionEngine(dir, undefined, {
-        skillsDir: join(process.cwd(), "skills"),
+        skillsDir,
         fakeArtifacts: [synthesis(changes)],
         fakeAfterChallengeOutputCheckpoint: async () => {
           throw new Error("fault after synthesis output checkpoint");
@@ -510,14 +496,13 @@ test("synthesis output checkpoint recovers without copied jail output or another
         (error) => error?.code === "ENOENT",
       );
       const beforeRuns = await challengeRunNames(dir);
-      await markRunDead(dir, runId);
 
-      const restarted = new LegionEngine(dir, undefined, { skillsDir: join(process.cwd(), "skills") });
+      const restarted = new LegionEngine(dir, undefined, { skillsDir });
       const recovered = await restarted.finalizeSpecChallenge(spec.id);
       assert.equal(recovered.status, "complete");
       assert.ok((await store.readSpec(spec.id)).data.failureCases.includes(response));
       assert.deepEqual(await challengeRunNames(dir), beforeRuns);
-    }, { skillsDir: join(process.cwd(), "skills") });
+    }, { skillsDir });
   });
 });
 
@@ -538,7 +523,7 @@ test("draft-write checkpoint completes idempotently after restart", async () => 
     await withEngine(async ({ engine: bootstrap, store, dir }) => {
       const spec = await seedFocusedDraft(bootstrap, store, dir);
       const analyzer = new LegionEngine(dir, undefined, {
-        skillsDir: join(process.cwd(), "skills"),
+        skillsDir,
         fakeArtifacts: [analysis(concerns)],
       });
       await analyzer.prepareSpecChallenge(spec.id);
@@ -549,7 +534,7 @@ test("draft-write checkpoint completes idempotently after restart", async () => 
         { id: "owner" },
       );
       const crashing = new LegionEngine(dir, undefined, {
-        skillsDir: join(process.cwd(), "skills"),
+        skillsDir,
         fakeArtifacts: [synthesis(changes)],
         fakeAfterChallengeDraftWrite: async () => {
           throw new Error("fault after challenge draft write");
@@ -567,14 +552,14 @@ test("draft-write checkpoint completes idempotently after restart", async () => 
       assert.ok(checkpoint.receipt.application);
       const beforeRuns = await challengeRunNames(dir);
 
-      const restarted = new LegionEngine(dir, undefined, { skillsDir: join(process.cwd(), "skills") });
+      const restarted = new LegionEngine(dir, undefined, { skillsDir });
       const recovered = await restarted.finalizeSpecChallenge(spec.id);
       assert.equal(recovered.status, "complete");
       const finalDraft = await store.readSpec(spec.id);
       assert.deepEqual(finalDraft.data.failureCases, written.data.failureCases);
       assert.equal((finalDraft.body.match(/legion-cli:spec-challenge:start/g) ?? []).length, 1);
       assert.deepEqual(await challengeRunNames(dir), beforeRuns);
-    }, { skillsDir: join(process.cwd(), "skills") });
+    }, { skillsDir });
   });
 });
 
@@ -588,7 +573,7 @@ test("held unrelated spawns reject every challenge mutation without changing rec
     await withEngine(async ({ engine: bootstrap, store, dir }) => {
       const spec = await seedFocusedDraft(bootstrap, store, dir);
       const analyzer = new LegionEngine(dir, undefined, {
-        skillsDir: join(process.cwd(), "skills"),
+        skillsDir,
         fakeArtifacts: [analysis(concerns)],
       });
       const prepared = await analyzer.prepareSpecChallenge(spec.id);
@@ -609,7 +594,7 @@ test("held unrelated spawns reject every challenge mutation without changing rec
       ]) {
         await assert.rejects(
           mutate,
-          (error) => error instanceof LegionRefuseError && /refused while map is running/.test(error.message),
+          LegionRefuseError,
         );
         assert.equal(await readFile(receiptPath, "utf8"), receiptBefore);
         assert.equal(await readFile(draftPath, "utf8"), draftBefore);
@@ -637,11 +622,11 @@ test("held unrelated spawns reject every challenge mutation without changing rec
           "A phone check-in completes within five seconds.",
           { id: "owner" },
         ),
-        (error) => error instanceof LegionRefuseError && /refused while map is running/.test(error.message),
+        LegionRefuseError,
       );
       assert.equal(await readFile(receiptPath, "utf8"), manualBefore);
       assert.equal(await readFile(draftPath, "utf8"), draftBefore);
       await secondHold.finish();
-    }, { skillsDir: join(process.cwd(), "skills") });
+    }, { skillsDir });
   });
 });

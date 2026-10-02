@@ -10,6 +10,49 @@ export type SearchHit = {
   via: "fts" | "neighbor" | "mentions" | "catalog";
 };
 
+function terms(query: string): string[] {
+  return query.toLocaleLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? [];
+}
+
+/** A small deterministic BM25 scorer for the local wiki corpus. */
+function bm25(
+  page: WikiPageRow,
+  queryTerms: readonly string[],
+  avgLength: number,
+  totalDocuments: number,
+  documentFrequency: ReadonlyMap<string, number>,
+): number {
+  if (queryTerms.length === 0) return 0;
+  const text = `${page.title} ${page.path} ${page.body}`.toLocaleLowerCase();
+  const words = terms(text);
+  const length = Math.max(words.length, 1);
+  let score = 0;
+  for (const term of queryTerms) {
+    let count = 0;
+    for (const word of words) if (word === term) count++;
+    if (count === 0) continue;
+    const df = documentFrequency.get(term) ?? 0;
+    const idf = Math.log(1 + (totalDocuments - df + 0.5) / (df + 0.5));
+    const k1 = 1.2;
+    const b = 0.75;
+    score += idf * (count * (k1 + 1)) / (count + k1 * (1 - b + b * (length / Math.max(avgLength, 1))));
+  }
+  return score;
+}
+
+function wholeTitleOrPathMatch(page: WikiPageRow, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return false;
+  const values = [page.title, page.path, page.id].map((value) => value.toLowerCase());
+  try {
+    const aliases = JSON.parse(page.aliases_json ?? "[]") as unknown;
+    if (Array.isArray(aliases)) values.push(...aliases.map((alias) => String(alias).toLowerCase()));
+  } catch {
+    // aliases_json is advisory
+  }
+  return values.includes(needle);
+}
+
 function ftsPhrase(q: string): string {
   return `"${q.trim().replaceAll('"', '""')}"`;
 }
@@ -59,6 +102,14 @@ export function searchWiki(
   const includeUntrusted = opts?.includeUntrusted === true;
   const pages = loadWikiPages(projectRoot);
   const byId = pageById(pages);
+  const queryTerms = terms(query);
+  const avgLength = pages.length === 0 ? 1 : pages.reduce((sum, page) => sum + terms(page.body).length, 0) / pages.length;
+  const documentFrequency = new Map<string, number>();
+  for (const page of pages) {
+    for (const term of new Set(terms(`${page.title} ${page.path} ${page.body}`))) {
+      documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
+    }
+  }
 
   if (opts?.mentions) {
     const links = loadWikiLinks(projectRoot);
@@ -104,36 +155,32 @@ export function searchWiki(
     );
   }
 
-  const hits: SearchHit[] = [];
+  const scored: Array<{ hit: SearchHit; score: number; exact: boolean; titleOrPath: boolean }> = [];
   const seen = new Set<string>();
   for (const page of matched) {
     const untrustedBodyOnly = page.trust === "untrusted" && !includeUntrusted && !titleOrPathMatches(page, query);
     if (untrustedBodyOnly) continue;
     seen.add(page.id);
-    hits.push({
-      id: page.id,
-      path: page.path,
-      title: page.title,
-      trust: page.trust,
-      snippet: snippetFor(page, includeUntrusted, query),
-      via: "fts",
+    scored.push({
+      hit: { id: page.id, path: page.path, title: page.title, trust: page.trust, snippet: snippetFor(page, includeUntrusted, query), via: "fts" },
+      score: bm25(page, queryTerms, avgLength, pages.length, documentFrequency),
+      exact: wholeTitleOrPathMatch(page, query),
+      titleOrPath: titleOrPathMatches(page, query),
     });
   }
 
   const links = loadWikiLinks(projectRoot);
-  for (const hit of [...hits]) {
+  for (const { hit } of [...scored]) {
     for (const neighborId of neighbors(links, hit.id)) {
       if (seen.has(neighborId)) continue;
       const page = byId.get(neighborId);
       if (!page) continue;
       seen.add(neighborId);
-      hits.push({
-        id: page.id,
-        path: page.path,
-        title: page.title,
-        trust: page.trust,
-        snippet: page.trust === "reviewed" || includeUntrusted ? twoLineFromBody(page.body) : "",
-        via: "neighbor",
+      scored.push({
+        hit: { id: page.id, path: page.path, title: page.title, trust: page.trust, snippet: page.trust === "reviewed" || includeUntrusted ? twoLineFromBody(page.body) : "", via: "neighbor" },
+        score: bm25(page, queryTerms, avgLength, pages.length, documentFrequency),
+        exact: wholeTitleOrPathMatch(page, query),
+        titleOrPath: titleOrPathMatches(page, query),
       });
     }
   }
@@ -146,18 +193,14 @@ export function searchWiki(
         posixEndsWithWikiIndex(page.path),
     );
     if (catalog) {
-      hits.push({
-        id: catalog.id,
-        path: catalog.path,
-        title: catalog.title,
-        trust: catalog.trust,
-        snippet: snippetFor(catalog, includeUntrusted, query),
-        via: "catalog",
-      });
+      scored.push({ hit: { id: catalog.id, path: catalog.path, title: catalog.title, trust: catalog.trust, snippet: snippetFor(catalog, includeUntrusted, query), via: "catalog" }, score: 0, exact: false, titleOrPath: false });
     }
   }
 
-  return hits;
+  const viaRank: Record<SearchHit["via"], number> = { fts: 0, neighbor: 1, mentions: 2, catalog: 3 };
+  return scored
+    .sort((a, b) => Number(b.exact) - Number(a.exact) || Number(b.titleOrPath) - Number(a.titleOrPath) || viaRank[a.hit.via] - viaRank[b.hit.via] || b.score - a.score || a.hit.id.localeCompare(b.hit.id))
+    .map(({ hit }) => hit);
 }
 
 function posixEndsWithWikiIndex(path: string): boolean {

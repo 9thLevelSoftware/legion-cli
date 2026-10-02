@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createWriteStream, realpathSync, type WriteStream } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -34,6 +34,11 @@ function terminate(pid: number, force: boolean): void {
   if (pid <= 0) return;
   if (process.platform === "win32") terminateWindows(pid, force);
   else terminateUnix(pid, force);
+}
+
+/** Terminates the complete adapter process tree/group. */
+export function terminateAgentProcessTree(pid: number, force = false): void {
+  terminate(pid, force);
 }
 
 function powershellExePath(): string {
@@ -115,6 +120,77 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
   });
 }
 
+/** Spawn an interactive stdio adapter through the same wrapper and process-group policy as CLI adapters. */
+export function spawnInteractiveAgentProcess(
+  binary: string,
+  args: string[],
+  job: AgentJob,
+): ChildProcessWithoutNullStreams {
+  const resolved = resolveBinary(binary) ?? binary;
+  const common = {
+    cwd: job.cwd,
+    env: spawnEnv(job),
+    windowsHide: true,
+    shell: false,
+    detached: process.platform !== "win32",
+    stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
+  };
+  if (job.wrapper) {
+    let invoke = resolved;
+    try {
+      invoke = realpathSync(resolved);
+    } catch {
+      invoke = resolved;
+    }
+    invoke = translateWrapperInvoke(job.wrapper, invoke, job.cwd);
+    return spawn(job.wrapper.bin, [...job.wrapper.argvPrefix, invoke, ...args], common);
+  }
+  return spawn(resolved, args, common);
+}
+
+/**
+ * Kill the agent tree when this engine is interrupted or exits. POSIX agents run in their own
+ * process group, so the terminal's Ctrl-C never reaches them; without this they keep writing into
+ * the project after Legion is gone. Windows children die with the engine only when they share its
+ * job object, so the same hooks run there too. Under the Docker/bwrap wrapper the killed pid is the
+ * wrapper client, so a container may outlive an interrupt (its writes stay in the jail). Handlers do not run on a Windows console close or
+ * `taskkill /F`: the identity-based live-run marker is what makes the next command see a survivor.
+ * Mirrors `runCommand`: after killing, let the signal act on us as it would have.
+ */
+function killTreeOnInterrupt(child: ChildProcess, pid: number, exited: Promise<unknown>): void {
+  if (pid <= 0) return;
+  const kill = (): void => {
+    // The child already exited: its pid may belong to someone else now.
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    try {
+      terminate(pid, true);
+    } catch {
+      // best effort: the process may already be gone
+    }
+  };
+  const onExit = (): void => kill();
+  const onSignal = (signal: NodeJS.Signals): void => {
+    kill();
+    remove();
+    if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+  };
+  const onInt = (): void => onSignal("SIGINT");
+  const onTerm = (): void => onSignal("SIGTERM");
+  // A closed terminal sends SIGHUP; the agent has its own process group and would never see it.
+  const onHup = (): void => onSignal("SIGHUP");
+  const remove = (): void => {
+    process.removeListener("exit", onExit);
+    process.removeListener("SIGINT", onInt);
+    process.removeListener("SIGTERM", onTerm);
+    if (process.platform !== "win32") process.removeListener("SIGHUP", onHup);
+  };
+  process.once("exit", onExit);
+  process.once("SIGINT", onInt);
+  process.once("SIGTERM", onTerm);
+  if (process.platform !== "win32") process.once("SIGHUP", onHup);
+  void exited.then(remove, remove);
+}
+
 class ChildAgentHandle implements AgentHandle {
   readonly pid: number;
   readonly #stdoutPath: string;
@@ -124,6 +200,7 @@ class ChildAgentHandle implements AgentHandle {
   readonly #stderr: WriteStream;
   readonly #done: Promise<AgentResult>;
   #exitCode: number | null = null;
+  #errorMessage: string | undefined;
   #exited = false;
   #aborted = false;
   #timedOut = false;
@@ -158,7 +235,10 @@ class ChildAgentHandle implements AgentHandle {
     };
 
     opts.child.once("exit", (code) => onExit(code));
-    opts.child.once("error", () => onExit(null));
+    opts.child.once("error", (err) => {
+      this.#errorMessage ??= err instanceof Error ? err.message : String(err);
+      onExit(null);
+    });
 
     const timeoutMs = opts.job.timeoutMs > 0 ? opts.job.timeoutMs : DEFAULT_TIMEOUT_MS;
     this.#timeout = setTimeout(() => {
@@ -208,6 +288,7 @@ class ChildAgentHandle implements AgentHandle {
       stdoutPath: this.#stdoutPath,
       stderrPath: this.#stderrPath,
       summaryPath,
+      ...(this.#errorMessage ? { errorMessage: this.#errorMessage } : {}),
     });
   }
 }
@@ -233,7 +314,7 @@ export async function spawnAgentProcess(opts: {
     ]);
     throw err;
   }
-  return new ChildAgentHandle({
+  const handle = new ChildAgentHandle({
     job: opts.job,
     child,
     stdout,
@@ -242,4 +323,6 @@ export async function spawnAgentProcess(opts: {
     stderrPath: opts.stderrPath,
     summaryPath: opts.summaryPath,
   });
+  killTreeOnInterrupt(child, handle.pid, handle.wait());
+  return handle;
 }

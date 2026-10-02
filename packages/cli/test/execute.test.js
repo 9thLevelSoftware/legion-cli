@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
@@ -90,7 +90,7 @@ async function seedPlanReady(dir, extra = {}) {
     }
   }
   await writeFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "# Checkin plan\n\nImplement the approved tasks.\n", "utf8");
-  await engine.approvePlan();
+  if (extra.approve !== false) await engine.approvePlan();
   return engine;
 }
 
@@ -103,18 +103,119 @@ test("execute refuses before plan_ready", async () => {
   });
 });
 
-test("focused fix files a proposed amendment without spawning execution", async () => {
+test("focused fix persists a configured profile on a proposed amendment without execution", async () => {
   await withTempDir(async (dir) => {
-    await seedPlanReady(dir, { focused: true, task: { status: "done" } });
-    const result = runCli(["fix", "login is denied", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    const engine = await seedPlanReady(dir, { focused: true, task: { status: "done" } });
+    const config = await engine.store.readConfig();
+    await engine.store.writeConfig({
+      ...config,
+      adapter: { ...config.adapter, profiles: { careful: { adapter: "fake", modelArgs: [] } } },
+    });
+    await engine.approvePlan();
+    assert.equal((await engine.getWorkflowStatus()).planApproval, "valid");
+    const approvalPath = join(dir, ".legion-cli", "workflow", "plan-approval.yaml");
+    const beforeApproval = await readFile(approvalPath, "utf8");
+    const original = await engine.store.readTask("TSK-0001");
+    const beforeTasks = await engine.listSliceTasks();
+    const runsDir = join(dir, ".legion-cli", "cache", "runs");
+    const beforeRuns = existsSync(runsDir) ? await readdir(runsDir) : [];
+    const result = runCli(["fix", "login is denied", "--profile", "careful", "--project", dir]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const proposed = (await engine.listSliceTasks()).filter((task) => !beforeTasks.some((before) => before.id === task.id));
+    assert.equal(proposed.length, 1);
+    const [task] = proposed;
+    assert.equal(task.type, "bug");
+    assert.equal(task.profile, "careful");
+    assert.match(normalize(result.stdout), new RegExp(task.id));
+    assert.deepEqual(await engine.store.readTask("TSK-0001"), original);
+    assert.equal(await readFile(approvalPath, "utf8"), beforeApproval);
+    assert.notEqual((await engine.getWorkflowStatus()).planApproval, "valid");
+    assert.equal((await engine.getState()).currentTaskId, null);
+    for (const path of task.contract.filesAllowed) assert.equal(existsSync(join(dir, path)), false);
+    assert.deepEqual(existsSync(runsDir) ? await readdir(runsDir) : [], beforeRuns);
+  });
+});
+
+test("focused fix JSON persists an explicit adapter without executing the proposed task", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedPlanReady(dir, { focused: true, task: { status: "done" } });
+    const original = await engine.store.readTask("TSK-0001");
+    const result = runCli(["fix", "logout fails", "--adapter", "grok", "--project", dir, "--json"]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.ok, true);
+    assert.equal(body.status, "proposed");
+    assert.match(body.next, /^legion-cli plan approve\b/);
+    const proposed = (await engine.listSliceTasks()).find((task) => task.id === body.taskId);
+    assert.ok(proposed);
+    assert.notEqual(proposed.id, "TSK-0001");
+    assert.equal(proposed.adapter, "grok");
+    assert.equal(proposed.profile, undefined);
+    assert.deepEqual(await engine.store.readTask("TSK-0001"), original);
+    assert.notEqual((await engine.getWorkflowStatus()).planApproval, "valid");
+    assert.equal((await engine.getState()).currentTaskId, null);
+    for (const path of proposed.contract.filesAllowed) assert.equal(existsSync(join(dir, path)), false);
+  });
+});
+
+test("focused fix rejects an unknown profile without mutating the approved plan", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedPlanReady(dir, { focused: true, task: { status: "done" } });
+    const beforeTasks = await engine.listSliceTasks();
+    const beforeState = await engine.getState();
+    const beforeSpec = await engine.store.readSpec("spec-checkin");
+    const planPath = join(dir, ".legion-cli", "plans", "spec-checkin.md");
+    const approvalPath = join(dir, ".legion-cli", "workflow", "plan-approval.yaml");
+    const beforePlan = await readFile(planPath, "utf8");
+    const beforeApproval = await readFile(approvalPath, "utf8");
+    const runsDir = join(dir, ".legion-cli", "cache", "runs");
+    const beforeRuns = existsSync(runsDir) ? await readdir(runsDir) : [];
+    const result = runCli(["fix", "login is denied", "--profile", "unknown", "--project", dir, "--json"]);
     assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
-    assert.match(normalize(result.stdout), /proposed amendment/);
-    assert.match(normalize(result.stdout), /Next: legion-cli plan approve/);
-    assert.doesNotMatch(normalize(result.stdout), /Starting TSK-/);
-    const engine = createLegionEngine(dir);
-    const [task] = await engine.listSliceTasks();
-    assert.ok(task, "focused fix should create a proposed task");
-    assert.equal(existsSync(join(dir, task.contract.filesAllowed[0])), false);
+    assert.equal(typeof JSON.parse(result.stdout).error, "string");
+    assert.deepEqual(await engine.listSliceTasks(), beforeTasks);
+    assert.deepEqual(await engine.getState(), beforeState);
+    assert.deepEqual(await engine.store.readSpec("spec-checkin"), beforeSpec);
+    assert.equal(await readFile(planPath, "utf8"), beforePlan);
+    assert.equal(await readFile(approvalPath, "utf8"), beforeApproval);
+    assert.deepEqual(existsSync(runsDir) ? await readdir(runsDir) : [], beforeRuns);
+    assert.equal(existsSync(join(dir, "src", "main.ts")), false);
+  });
+});
+
+test("focused advisory status retains approval gates before recommending guarded execution", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedPlanReady(dir, { focused: true, approve: false });
+    const mode = runCli(["control-mode", "advisory", "--project", dir]);
+    assert.equal(mode.status, 0, mode.stderr);
+    const unapprovedTask = await engine.store.readTask("TSK-0001");
+    const unapproved = runCli(["status", "--project", dir, "--json"]);
+    assert.equal(unapproved.status, 0, unapproved.stderr);
+    assert.match(JSON.parse(unapproved.stdout).next.run, /^legion-cli plan approve\b/);
+    assert.deepEqual(await engine.store.readTask("TSK-0001"), unapprovedTask);
+    await engine.approvePlan();
+    const approvedTask = await engine.store.readTask("TSK-0001");
+    const approved = runCli(["status", "--project", dir, "--json"]);
+    assert.equal(approved.status, 0, approved.stderr);
+    assert.match(JSON.parse(approved.stdout).next.run, /^legion-cli control-mode guarded\b/);
+    assert.deepEqual(await engine.store.readTask("TSK-0001"), approvedTask);
+    assert.equal(existsSync(join(dir, "src", "main.ts")), false);
+  });
+});
+
+test("advisory status does not recommend execution for an all-terminal slice awaiting workflow integration", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedPlanReady(dir, { focused: true, task: { status: "done" } });
+    const state = await engine.store.readState();
+    await engine.store.writeState({ ...state.data, phase: "executing" }, state.body);
+    const mode = runCli(["control-mode", "advisory", "--project", dir]);
+    assert.equal(mode.status, 0, mode.stderr);
+    await engine.approvePlan();
+    const result = runCli(["status", "--project", dir, "--json"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(JSON.parse(result.stdout).next.run, /^legion-cli control-mode guarded\b/);
+    assert.equal((await engine.getState()).phase, "executing");
+    assert.equal((await engine.store.readTask("TSK-0001")).data.status, "done");
   });
 });
 
@@ -165,7 +266,7 @@ test("execute --until-blocked loops remaining ready tasks", async () => {
     assert.match(out, /TSK-0001/);
     assert.match(out, /TSK-0002/);
     assert.match(out, /Completed: TSK-0001, TSK-0002/);
-    assert.match(out, /independent review requires a fresh explicit Verdict: PASS/);
+    assert.match(out, /review failed: agent wrote no notes/);
     const engine = createLegionEngine(dir);
     assert.equal((await engine.store.readTask("TSK-0001")).data.status, "done");
     assert.equal((await engine.store.readTask("TSK-0002")).data.status, "done");
@@ -186,9 +287,56 @@ test("help lists execute flags", async () => {
   assert.equal(result.status, 0, result.stderr);
   const out = normalize(result.stdout);
   assert.match(out, /until-blocked/);
+  assert.match(out, /jobs/);
   assert.match(out, /fix/);
   assert.match(out, /adapter/);
   assert.match(out, /allow-no-sandbox/);
+});
+
+test("execute --jobs validates the bounded automatic until-blocked surface", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir);
+    for (const args of [
+      ["execute", "--jobs", "2"],
+      ["execute", "TSK-0001", "--until-blocked", "--jobs", "2"],
+      ["execute", "--until-blocked", "--jobs", "5"],
+      ["execute", "--step", "--until-blocked", "--jobs", "2"],
+    ]) {
+      const result = runCli([...args, "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+      assert.equal(result.status, 1, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
+      assert.match(normalize(result.stderr), /--jobs/);
+    }
+  });
+});
+
+test("execute --json keeps progress on stderr and emits one parseable document", async () => {
+  await withTempDir(async (dir) => {
+    await seedPlanReady(dir);
+    const result = runCli(["execute", "--step", "--json", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.ok, true);
+    assert.equal(body.taskId, "TSK-0001");
+    assert.match(normalize(result.stderr), /\[TSK-0001\].*(running|verifying)/);
+  });
+});
+
+test("execute --resume refuses an unknown run without starting ready work", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedPlanReady(dir);
+    const result = runCli(["execute", "--resume", "missing-run", "--json", "--project", dir], {
+      env: { LEGION_CLI_ADAPTER: "fake" },
+    });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const body = JSON.parse(result.stdout);
+    assert.equal(body.ok, false);
+    assert.match(body.blocker, /unknown execute resume run missing-run/);
+    assert.equal((await engine.store.readTask("TSK-0001")).data.status, "ready");
+    assert.equal((await engine.getState()).currentTaskId, null);
+    assert.equal(existsSync(join(dir, "src", "main.ts")), false);
+  });
 });
 
 test("execute --allow-no-sandbox without TTY refuses", async () => {

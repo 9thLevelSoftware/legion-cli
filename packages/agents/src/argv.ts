@@ -74,6 +74,11 @@ export const FROZEN_ARGV_TABLE = {
     argv: null,
     spawnable: true,
   },
+  acp: {
+    binary: "adapter.acp.command",
+    argv: null,
+    spawnable: true,
+  },
 } as const satisfies Record<
   AgentAdapterId,
   { binary: string; argv: readonly string[] | null; spawnable: boolean }
@@ -190,5 +195,10 @@ export function templateArgv(
     }
     case "http":
       return { binary: FROZEN_ARGV_TABLE.http.binary, argv: [] };
+    case "acp":
+      return {
+        binary: config.adapter.acp?.command ?? FROZEN_ARGV_TABLE.acp.binary,
+        argv: config.adapter.acp?.args ?? [],
+      };
   }
 }

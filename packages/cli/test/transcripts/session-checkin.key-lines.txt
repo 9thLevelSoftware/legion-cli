@@ -2,4 +2,4 @@ Next: legion-cli discuss    (or type legion-cli)
 Spec frozen. Next: legion-cli plan
 Next: legion-cli plan approve
 Plan approved. Next: legion-cli execute
-independent review requires a fresh explicit Verdict: PASS
+review failed: agent wrote no notes

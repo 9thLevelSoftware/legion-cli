@@ -8,6 +8,7 @@ import {
   MCP_HTTP_MAX_BODY_BYTES,
   MCP_HTTP_RATE_PER_SEC,
   MCP_TOOLS,
+  LegionMcpClientPool,
   closeMcpHttp,
   handleMcpHttp,
 } from "../dist/index.js";
@@ -86,6 +87,34 @@ test("POST tools/list returns eight names; legion_cli_status JSON has next", asy
         assert.ok(json.next);
         assert.ok(json.next.run);
       });
+    });
+  });
+});
+
+test("client pool connects over streamable HTTP and governed calls require an exact read-only allowlist", async () => {
+  await withStore(async ({ dir }) => {
+    await withMcpHttp(dir, async (base) => {
+      const config = {
+        remote: {
+          transport: "streamable-http",
+          url: `${base}/mcp`,
+          allowLoopback: true,
+        },
+      };
+      const deniedPool = new LegionMcpClientPool(config);
+      const denied = await deniedPool.callGovernedHttpTool("remote:legion_cli_status", {});
+      assert.equal(denied?.isError, true);
+      assert.match(denied?.content?.[0]?.text ?? "", /allowlist/);
+      await deniedPool.closeAll();
+
+      const pool = new LegionMcpClientPool(config, {
+        governedHttpToolAllowlist: ["remote:legion_cli_status"],
+      });
+      const tools = await pool.listAllTools();
+      assert.ok(tools.some((tool) => tool.name === "remote:legion_cli_status" && tool.readOnly));
+      const result = await pool.callGovernedHttpTool("remote:legion_cli_status", {});
+      assert.equal(Boolean(result?.isError), false, result?.content?.[0]?.text);
+      await pool.closeAll();
     });
   });
 });

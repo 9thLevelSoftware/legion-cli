@@ -12,7 +12,9 @@ export type TaskAmendFlags = {
   allowDeps?: boolean;
   adapter?: string;
   route?: string;
+  profile?: string;
   clearAdapter?: boolean;
+  clearProfile?: boolean;
   unblock?: boolean;
   recover?: boolean;
 };

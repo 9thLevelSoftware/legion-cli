@@ -64,6 +64,9 @@ test("flags.mcpApps lists ui:// resources with CSP self and status text fallback
       assert.doesNotMatch(html.text, /optional writes/);
       assert.doesNotMatch(html.text, /legion-cli-token/);
       assert.doesNotMatch(html.text, /webmcp\.js/);
+      assert.doesNotMatch(html.text, /dashboard\.js/);
+      assert.doesNotMatch(html.text, /data-manual-refresh|data-copy-command|Live updates connecting/);
+      assert.match(html.text, /Snapshot \(read-only\):/);
       assert.deepEqual(html._meta?.ui?.csp, {
         connectDomains: ["'self'"],
         resourceDomains: ["'self'"],

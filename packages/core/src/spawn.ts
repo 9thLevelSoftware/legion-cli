@@ -1,8 +1,12 @@
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { glob, mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   AgentError,
+  applyProfileArgs,
+  applyUsagePricing,
+  assertProfileRuntimeSupport,
   buildPointerPrompt,
   DEFAULT_TIMEOUT_MS,
   filterSpawnEnv,
@@ -18,9 +22,12 @@ import {
   skillCatalogPath,
   stageSkill,
   templateArgv,
+  usageLimitReason,
+  exportUsageTelemetry,
   writeRunPrompt,
   type AdapterResolution,
   type AgentHandle,
+  type AgentUsage,
   type FakeArtifact,
   type FakeHoldWait,
   type ResolvedSkillDir,
@@ -28,14 +35,27 @@ import {
 import { composeDesignContext, readActive } from "@9thlevelsoftware/legion-cli-design-system";
 import {
   AuditTamperError,
+  appendAuditEvent,
+  createLegionStore,
+  ownProcessStartedAt,
+  processIdentity,
+  sameProcessStart,
+  writeTextFile,
+  clearLiveRun,
+  createLiveRun,
   isPidAlive,
+  liveRunFromResume,
+  liveRunState,
   openEngineCommand,
+  recordLiveRunAgent,
   RestoreRefusedError,
   type LegionReader,
+  type LiveRunMarker,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   assertExecuteSandbox,
   materializeJail,
+  reopenJail,
   SandboxError,
   type SandboxHandle,
 } from "@9thlevelsoftware/legion-cli-sandbox";
@@ -43,17 +63,29 @@ import {
   isConcretePosixRepoRelativePath,
   ResumeFileSchema,
   SCHEMA_VERSION,
+  type CurrentResumeFile,
   type AdapterId,
   type FileContract,
   type LegionConfig,
   type ResumeFile,
+  type ResumeStage,
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
+import {
+  LegionMcpClientPool,
+  MCP_CONNECT_TIMEOUT_MS,
+  MCP_POOL_MAX,
+  MCP_REMOTE_MAX_RESPONSE_BYTES,
+  MCP_TOOL_TIMEOUT_MS,
+  stableHash,
+} from "@9thlevelsoftware/legion-cli-http";
+import type { HttpToolHost } from "@9thlevelsoftware/legion-cli-http";
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
 import { CHALLENGE_REPOSITORY_READ_ROOTS, challengeReadableFiles } from "./spec-challenge-inputs.js";
 import { createHttpToolHost, httpAllowedWrites } from "./http-host.js";
+import { projectSourceIdentity } from "./qa-evidence.js";
 import {
   recordPreSpawnRef,
   revertExtras,
@@ -82,10 +114,27 @@ export async function resolveSkillDir(opts: {
   return resolveOverlaySkillDir(opts);
 }
 
+/**
+ * Refuse while any listed run is live (its engine or agent still holds the recorded identity).
+ * `ownRunId` is the run this call is finishing: the owning engine's own relock is exempt.
+ * `live` comes from `liveRuns()`, which also clears provably dead markers and migrates the legacy file.
+ */
+function liveRunMarkerRel(runId: string): string {
+  return `.legion-cli/cache/live-spawn/${runId}.json`;
+}
+
 type LiveSpawnMarker = { enginePid: number; skillId: SkillId; runId: string };
 
 function liveSpawnPath(projectRoot: string): string {
   return join(projectRoot, ".legion-cli", "cache", "live-spawn.json");
+}
+
+function liveSpawnsDir(projectRoot: string): string {
+  return join(projectRoot, ".legion-cli", "cache", "live-spawns");
+}
+
+function liveSpawnRunPath(projectRoot: string, runId: string): string {
+  return join(liveSpawnsDir(projectRoot), `${runId}.json`);
 }
 
 export async function writeLiveSpawnMarker(
@@ -94,14 +143,21 @@ export async function writeLiveSpawnMarker(
   runId: string,
 ): Promise<void> {
   await mkdir(join(projectRoot, ".legion-cli", "cache"), { recursive: true });
-  await writeFile(
-    liveSpawnPath(projectRoot),
-    `${JSON.stringify({ enginePid: process.pid, skillId, runId })}\n`,
-    "utf8",
-  );
+  await mkdir(liveSpawnsDir(projectRoot), { recursive: true });
+  const body = `${JSON.stringify({ enginePid: process.pid, skillId, runId })}\n`;
+  await writeFile(liveSpawnRunPath(projectRoot, runId), body, "utf8");
+  const primary = await readLiveSpawnMarker(projectRoot);
+  if (!primary || !isPidAlive(primary.enginePid)) {
+    await writeFile(liveSpawnPath(projectRoot), body, "utf8");
+  }
 }
 
 export async function clearLiveSpawnMarker(projectRoot: string, runId?: string): Promise<void> {
+  if (runId) {
+    await unlink(liveSpawnRunPath(projectRoot, runId)).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== "ENOENT") throw err;
+    });
+  }
   try {
     if (runId) {
       const raw = await readFile(liveSpawnPath(projectRoot), "utf8");
@@ -111,6 +167,23 @@ export async function clearLiveSpawnMarker(projectRoot: string, runId?: string):
     await unlink(liveSpawnPath(projectRoot));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  if (runId) {
+    const remaining = await readLiveSpawnMarkers(projectRoot, false);
+    const next = remaining[0];
+    if (next) {
+      await writeFile(liveSpawnPath(projectRoot), `${JSON.stringify(next)}\n`, "utf8");
+    }
+  } else {
+    let names: string[] = [];
+    try {
+      names = await readdir(liveSpawnsDir(projectRoot));
+    } catch {
+      names = [];
+    }
+    await Promise.all(
+      names.filter((name) => name.endsWith(".json")).map((name) => unlink(join(liveSpawnsDir(projectRoot), name)).catch(() => undefined)),
+    );
   }
 }
 
@@ -124,14 +197,63 @@ export async function readLiveSpawnMarker(projectRoot: string): Promise<LiveSpaw
   }
 }
 
-export async function refuseIfLiveSkillSpawn(projectRoot: string, action: string): Promise<void> {
-  const live = await readLiveSpawnMarker(projectRoot);
-  if (!live) return;
-  if (!isPidAlive(live.enginePid)) {
-    await clearLiveSpawnMarker(projectRoot);
-    return;
+async function readLiveSpawnMarkers(projectRoot: string, includePrimary = true): Promise<LiveSpawnMarker[]> {
+  const found = new Map<string, LiveSpawnMarker>();
+  if (includePrimary) {
+    const primary = await readLiveSpawnMarker(projectRoot);
+    if (primary) found.set(primary.runId, primary);
   }
-  refuse(`${action} is refused while ${live.skillId} is running`, HINT.status);
+  let names: string[] = [];
+  try {
+    names = await readdir(liveSpawnsDir(projectRoot));
+  } catch {
+    names = [];
+  }
+  for (const name of names.filter((entry) => entry.endsWith(".json")).sort()) {
+    try {
+      const marker = JSON.parse(await readFile(join(liveSpawnsDir(projectRoot), name), "utf8")) as LiveSpawnMarker;
+      if (typeof marker.enginePid === "number" && typeof marker.skillId === "string" && typeof marker.runId === "string") {
+        found.set(marker.runId, marker);
+      }
+    } catch {
+      // Ignore malformed marker; resume recovery remains authoritative.
+    }
+  }
+  return [...found.values()];
+}
+
+export async function refuseIfLiveSkillSpawn(projectRoot: string, action: string): Promise<void> {
+  for (const live of await readLiveSpawnMarkers(projectRoot)) {
+    if (!isPidAlive(live.enginePid)) {
+      await clearLiveSpawnMarker(projectRoot, live.runId);
+      continue;
+    }
+    refuse(`${action} is refused while ${live.skillId} is running`, HINT.status);
+  }
+}
+
+export function refuseIfLiveRun(
+  live: readonly LiveRunMarker[],
+  opts?: { ownRunId?: string; ownRunIds?: readonly string[] },
+): void {
+  const own = new Set([...(opts?.ownRunIds ?? []), ...(opts?.ownRunId ? [opts.ownRunId] : [])]);
+  const other = live.find((marker) => !(own.has(marker.runId) && marker.enginePid === process.pid));
+  if (!other) return;
+  const task = other.taskId ? ` (task ${other.taskId})` : "";
+  const where = other.evidence
+    ? `This run has no marker; the evidence is ${other.evidence} (check that its pids are a legion agent)`
+    : `if a process there is not a legion agent, delete ${liveRunMarkerRel(other.runId)}`;
+  refuse(
+    `refused while another legion command is running: ${other.skillId} run ${other.runId} is live${task}. ` +
+      `Hands off the tree until it finishes. Check with legion-cli status; if it died, legion-cli doctor clears its marker (${where})`,
+    HINT.status,
+  );
+}
+
+/** Treat a resume.json as a run marker: same identity check, keyed on the run's recorded start. */
+export async function resumeAsLiveRun(resume: ResumeFile): Promise<LiveRunMarker | null> {
+  const marker = liveRunFromResume(resume);
+  return (await liveRunState(marker)).live ? marker : null;
 }
 
 function skillMissingHint(skillId: SkillId): string {
@@ -165,6 +287,8 @@ export type OptionalSpawnResult = {
   revert: RevertResult | null;
   error?: unknown;
   timedOut?: boolean;
+  exitCode?: number | null;
+  agentErrorMessage?: string;
   durationMs?: number;
   resolution?: AdapterResolution;
   binary?: string;
@@ -185,14 +309,20 @@ export type SkillSpawnOpts = {
   fakeArtifacts?: FakeArtifact[];
   throwAfterWrite?: boolean;
   timedOut?: boolean;
+  exitCode?: number;
+  omitSummary?: boolean;
   required?: boolean;
   cliAdapter?: AdapterId;
   taskAdapter?: AdapterId;
+  cliProfile?: string;
+  taskProfile?: string;
   store?: LegionReader;
   holdWait?: FakeHoldWait;
   onWait?: () => Promise<void>;
   handlePid?: number;
   allowNoSandbox?: boolean;
+  /** Test-only resource owned by this spawn; governed MCP uses the same lifecycle slot. */
+  resourceCleanup?: () => Promise<void>;
 };
 
 type SpawnRevertCtx = {
@@ -217,19 +347,243 @@ export type StartedSkillSpawn =
       spawned: true;
       runId: string;
       handle: AgentHandle;
+      skillId: SkillId;
+      telemetryEndpoint?: string;
+      completionMetadata?: { outcome: "complete" | "failed"; usage?: AgentUsage; limitReason?: string };
       started: number;
       revertCtx: SpawnRevertCtx;
       resolution: AdapterResolution;
       binary: string;
       argvSummary: string;
       sandbox?: SandboxHandle;
+      resourceCleanup?: () => Promise<void>;
     };
+
+/** Release adapter-owned resources once even when several recovery/finalization paths converge. */
+export async function cleanupStartedSpawnResources(
+  started: Extract<StartedSkillSpawn, { spawned: true }>,
+): Promise<void> {
+  const cleanup = started.resourceCleanup;
+  if (!cleanup) return;
+  started.resourceCleanup = undefined;
+  await cleanup().catch(() => undefined);
+}
 
 export type WaitedSkillSpawn = {
   error?: unknown;
   timedOut: boolean;
   durationMs: number;
+  usage?: AgentUsage;
+  limitReason?: string;
+  recovery?: "resume" | "manual" | "none";
+  /** Agent exit code; null when killed or never started. */
+  exitCode?: number | null;
+  /** Spawn failure message (for example ENOENT) when the process never ran. */
+  agentErrorMessage?: string;
+  aborted?: boolean;
 };
+
+export function governedMcpConfigIdentity(config: LegionConfig): string | null {
+  const allowlist = config.mcpHttpToolAllowlist;
+  if (!config.mcpServers || allowlist.length === 0) return null;
+  const selectedServers = new Set(allowlist.map((name) => name.slice(0, name.indexOf(":"))));
+  const normalizedServers = Object.entries(config.mcpServers)
+    .filter(([name]) => selectedServers.has(name))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, server]) => server.transport === "stdio"
+      ? {
+          name,
+          transport: "stdio" as const,
+          command: server.command,
+          args: server.args,
+          envNames: Object.keys(server.env ?? {}).sort(),
+        }
+      : {
+          name,
+          transport: server.transport,
+          url: server.url,
+          authTokenEnv: server.authTokenEnv,
+          allowLoopback: server.allowLoopback,
+        });
+  return stableHash({
+    version: "governed-mcp-v1",
+    allowlist: [...allowlist].sort(),
+    servers: normalizedServers,
+    limits: {
+      pool: MCP_POOL_MAX,
+      connectTimeoutMs: MCP_CONNECT_TIMEOUT_MS,
+      toolTimeoutMs: MCP_TOOL_TIMEOUT_MS,
+      responseBytes: MCP_REMOTE_MAX_RESPONSE_BYTES,
+    },
+  });
+}
+
+export function governedMcpToolContractIdentity(
+  tools: ReadonlyArray<{ name: string; inputSchema: Record<string, unknown>; readOnly: boolean }>,
+): string {
+  return stableHash([...tools]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema, readOnly: tool.readOnly })));
+}
+
+type GovernedMcpBridge = {
+  externalTools: NonNullable<HttpToolHost["externalTools"]>;
+  callExternalTool: NonNullable<HttpToolHost["callExternalTool"]>;
+  close: () => Promise<void>;
+  configIdentity: string;
+  toolContractIdentity: string;
+};
+
+async function governedMcpBridge(config: LegionConfig): Promise<GovernedMcpBridge | undefined> {
+  const allowlist = config.mcpHttpToolAllowlist;
+  if (!config.mcpServers || allowlist.length === 0) return undefined;
+  const allowed = new Set(allowlist);
+  const configIdentity = governedMcpConfigIdentity(config);
+  if (!configIdentity) return undefined;
+  const pool = new LegionMcpClientPool(config.mcpServers, { governedHttpToolAllowlist: allowlist });
+  let listed: Awaited<ReturnType<LegionMcpClientPool["listAllTools"]>>;
+  try {
+    listed = (await pool.listAllTools()).filter((tool) => tool.readOnly && allowed.has(tool.name));
+  } catch (err) {
+    await pool.closeAll().catch(() => undefined);
+    throw err;
+  }
+  listed.sort((a, b) => a.name.localeCompare(b.name));
+  const toolContractIdentity = governedMcpToolContractIdentity(listed);
+  const byCallName = new Map<string, string>();
+  const externalTools = listed.map((tool) => {
+    const callName = `mcp_${stableHash(tool.name).slice(0, 20)}`;
+    byCallName.set(callName, tool.name);
+    return {
+      callName,
+      namespacedName: tool.name,
+      ...(tool.description ? { description: tool.description } : {}),
+      inputSchema: tool.inputSchema,
+    };
+  });
+  return {
+    externalTools,
+    configIdentity,
+    toolContractIdentity,
+    async callExternalTool(callName, args, signal) {
+      const namespaced = byCallName.get(callName);
+      if (!namespaced) return `error: unknown governed MCP tool ${callName}`;
+      const result = await pool.callGovernedHttpTool(namespaced, args, signal);
+      return JSON.stringify(result ?? { isError: true, reason: "unknown-server" });
+    },
+    close: () => pool.closeAll(),
+  };
+}
+
+export type ResumeOwnerStatus = "live" | "stale" | "unknown" | "terminal";
+export type RunRecoveryStatus = {
+  runId: string;
+  taskId: string | null;
+  stage: ResumeStage | "legacy";
+  ownerStatus: ResumeOwnerStatus;
+  logs: { stdout: string; stderr: string; verification?: string[] };
+  interruptionReason: string | null;
+  recoveryCommand: string | null;
+  startedAt: string;
+};
+
+const TERMINAL_RESUME_STAGES = new Set<ResumeStage>(["completed"]);
+
+function runResumePath(projectRoot: string, runId: string): string {
+  return join(projectRoot, ".legion-cli", "cache", "runs", runId, "resume.json");
+}
+
+async function writeResumeRecord(projectRoot: string, resume: CurrentResumeFile): Promise<void> {
+  const parsed = ResumeFileSchema.parse(resume);
+  await writeTextFile(runResumePath(projectRoot, resume.runId), `${JSON.stringify(parsed, null, 2)}\n`, {
+    root: projectRoot,
+  });
+}
+
+export async function updateResumeStage(
+  projectRoot: string,
+  runId: string,
+  stage: ResumeStage,
+  patch: Partial<
+    Pick<
+      CurrentResumeFile,
+      | "pid"
+      | "pidStartedAt"
+      | "logs"
+      | "interruptionReason"
+      | "recoveryCommand"
+      | "checkpointPath"
+      | "usage"
+      | "engineOwnershipReleasedAt"
+      | "childTerminationUncertain"
+    >
+  > = {},
+): Promise<CurrentResumeFile | null> {
+  let raw: string;
+  try {
+    raw = await readFile(runResumePath(projectRoot, runId), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  const parsed = ResumeFileSchema.parse(JSON.parse(raw));
+  if (parsed.schemaVersion !== SCHEMA_VERSION.resume) return null;
+  const next = {
+    ...parsed,
+    ...patch,
+    stage,
+    stageUpdatedAt: new Date().toISOString(),
+  } satisfies CurrentResumeFile;
+  await writeResumeRecord(projectRoot, next);
+  return next;
+}
+
+export async function inspectResumeOwner(
+  resume: ResumeFile,
+  identify: (pid: number) => Promise<number | null> = processIdentity,
+): Promise<ResumeOwnerStatus> {
+  if (resume.schemaVersion === "legion-cli-resume/v2" && TERMINAL_RESUME_STAGES.has(resume.stage)) {
+    return "terminal";
+  }
+  if (resume.schemaVersion === "legion-cli-resume/v1") {
+    return resumeRunIsLive(resume) ? "live" : "stale";
+  }
+
+  const owners = [
+    ...(resume.engineOwnershipReleasedAt
+      ? []
+      : [{ pid: resume.enginePid, startedAt: resume.enginePidStartedAt }]),
+    { pid: resume.pid ?? undefined, startedAt: resume.pidStartedAt ?? undefined },
+  ].filter((owner): owner is { pid: number; startedAt: number | undefined } => typeof owner.pid === "number");
+  if (owners.length === 0) return resume.childTerminationUncertain ? "unknown" : "stale";
+
+  let unknown = false;
+  for (const owner of owners) {
+    if (owner.startedAt === undefined) {
+      if (isPidAlive(owner.pid)) unknown = true;
+      continue;
+    }
+    const actual = await identify(owner.pid);
+    if (actual !== null && sameProcessStart(actual, owner.startedAt)) return "live";
+    if (actual === null && isPidAlive(owner.pid)) unknown = true;
+  }
+  return unknown ? "unknown" : "stale";
+}
+
+/** Describes a run that did not end with exit code 0, or undefined when it did. A timeout is reported separately. */
+export function agentExitProblem(waited: {
+  exitCode?: number | null;
+  timedOut?: boolean;
+  agentErrorMessage?: string;
+}): string | undefined {
+  if (waited.timedOut || waited.exitCode === undefined || waited.exitCode === 0) return undefined;
+  if (waited.exitCode === null) {
+    return waited.agentErrorMessage
+      ? `agent did not run to completion (${waited.agentErrorMessage})`
+      : "agent was killed or did not start (no exit code)";
+  }
+  return `agent exited with code ${waited.exitCode}`;
+}
 
 const CONFIG_READ_SET = [
   "package.json",
@@ -247,24 +601,36 @@ const CONFIG_READ_SET = [
   "scripts",
 ] as const;
 
-async function sandboxReadSet(opts: {
+/**
+ * execute, configured skills and the http adapter run jailed. ingest --distill feeds untrusted
+ * content to the agent (F-042): engine.ts refuses it without a hardened backend, and it always
+ * runs jailed here. The fake test adapter runs no agent, so it is exempt.
+ */
+export function isJailedSpawn(skillId: SkillId, configuredSkills: readonly string[], adapterId: string): boolean {
+  return (
+    skillId === "execute" ||
+    skillId === "spec-challenge" ||
+    configuredSkills.includes(skillId) ||
+    adapterId === "http" ||
+    (skillId === "ingest" && adapterId !== "fake")
+  );
+}
+
+export function sandboxReadSet(opts: {
   projectRoot: string;
   runId: string;
+  skillId?: SkillId;
   specId?: string;
   taskId?: string;
-  skillId?: SkillId;
-}): Promise<string[]> {
-  if (opts.skillId === "spec-challenge") {
-    const contextRoots = [".legion-cli/wiki/product", ".legion-cli/discuss", ".legion-cli/decisions", ".legion-cli/map"];
-    if (opts.specId) contextRoots.push(`.legion-cli/specs/${opts.specId}`);
-    return challengeReadableFiles(opts.projectRoot, [
-      `.legion-cli/cache/skills/${opts.runId}`,
-      `.legion-cli/cache/runs/${opts.runId}`,
-      ...CHALLENGE_REPOSITORY_READ_ROOTS,
-      ...contextRoots,
-    ]);
+}): string[] {
+  const out = [
+    `.legion-cli/cache/skills/${opts.runId}`,
+    `.legion-cli/cache/runs/${opts.runId}`,
+  ];
+  // Distill links existing catalog titles, so the jailed ingest agent reads the wiki.
+  if (opts.skillId === "ingest" && existsSync(join(opts.projectRoot, ".legion-cli", "wiki"))) {
+    out.push(".legion-cli/wiki");
   }
-  const out = [`.legion-cli/cache/skills/${opts.runId}`, `.legion-cli/cache/runs/${opts.runId}`];
   if (opts.specId) out.push(`.legion-cli/specs/${opts.specId}`);
   if (existsSync(join(opts.projectRoot, ".legion-cli", "map"))) out.push(".legion-cli/map");
   if (opts.taskId) out.push(`.legion-cli/tasks/${opts.taskId}.md`);
@@ -395,15 +761,29 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       (opts.extraAllowedRoots?.length || opts.fileContract)) {
     refuse("spec-challenge permits only its run-cache output", HINT.spec);
   }
-  const runId = `${opts.skillId}-${Date.now().toString(36)}`;
+  const runId = `${opts.skillId}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
   const resolution = resolveAdapterId({
     config: opts.config,
     skillId: opts.skillId,
     taskAdapter: opts.taskAdapter,
     cliAdapter: opts.cliAdapter,
+    taskProfile: opts.taskProfile,
+    cliProfile: opts.cliProfile,
+  });
+  const effectiveConfig = resolution.profileConfig ? applyProfileArgs(opts.config, {
+    adapterId: resolution.id,
+    source: resolution.source,
+    ...(resolution.profile ? { profile: resolution.profile } : {}),
+    config: resolution.profileConfig,
+  }) : opts.config;
+  assertProfileRuntimeSupport({
+    adapterId: resolution.id,
+    source: resolution.source,
+    ...(resolution.profile ? { profile: resolution.profile } : {}),
+    ...(resolution.profileConfig ? { config: resolution.profileConfig } : {}),
   });
 
-  if (!(await isResolvedAdapterSpawnable(opts.config, resolution.id))) {
+  if (!(await isResolvedAdapterSpawnable(effectiveConfig, resolution.id))) {
     if (opts.required) {
       refuse(spawnableAdapterRefuseMessage(opts.skillId, resolution), HINT.doctor);
     }
@@ -450,19 +830,21 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     return { spawned: false, runId, resolution };
   }
 
-  const adapter = resolveAdapter(opts.config, {
+  const adapter = resolveAdapter(effectiveConfig, {
     id: resolution.id,
     artifacts: opts.fakeArtifacts ?? [],
     throwAfterWrite: opts.throwAfterWrite,
     timedOut: opts.timedOut,
+    exitCode: opts.exitCode,
+    omitSummary: opts.omitSummary,
     holdWait: opts.holdWait,
     onWait: opts.onWait,
     handlePid: opts.handlePid,
   });
-  const tmpl = templateArgv(resolution.id, opts.config);
+  const tmpl = templateArgv(resolution.id, effectiveConfig);
   const argvSummary =
     resolution.id === "http"
-      ? `POST /chat/completions model=${opts.config.adapter.http?.model ?? ""}`
+      ? `POST /chat/completions model=${effectiveConfig.adapter.http?.model ?? ""}`
       : argvSummarySafe(tmpl.argv);
 
   const contract = skillContract(opts.skillId, { runId, specId: opts.specId });
@@ -486,7 +868,8 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     skillId: opts.skillId,
     skillDir,
     skillsDir,
-    promptBody: opts.promptBody,
+    // the run id is only known here; prompts name run-cache paths with a literal <id>
+    promptBody: opts.promptBody.replaceAll("<id>", runId),
     allowedRoots,
     fileContract: opts.fileContract,
     store: opts.store,
@@ -505,80 +888,140 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   // unioning raw `git status --ignored` (that would revert pre-existing ignored files).
   const snapshot = await snapshotPaths(opts.projectRoot);
   const dirtyAtStart = snapshotDirtyPaths(opts.projectRoot, preSpawnRef);
+  const sourceIdentity = await projectSourceIdentity(opts.projectRoot, [
+    ...(opts.fileContract?.filesAllowed ?? []),
+    ...(opts.fileContract?.expectedArtifacts ?? []),
+  ]);
   const gitPolicy = await snapshotGitPolicy(opts.projectRoot);
   const chatSessions = await snapshotChatSessions(opts.projectRoot);
   const resumeDir = join(opts.projectRoot, ".legion-cli", "cache", "runs", runId);
   await mkdir(resumeDir, { recursive: true });
-
-  const writeResume = async (pid: number | null) => {
-    await writeFile(
-      join(resumeDir, "resume.json"),
-      `${JSON.stringify(
-        {
-          schemaVersion: SCHEMA_VERSION.resume,
-          runId,
-          taskId: opts.taskId ?? null,
-          skillId: opts.skillId,
-          preSpawnRef: preSpawnRef ?? "UNBORN",
-          startedAt: new Date().toISOString(),
-          pid,
-          enginePid: process.pid,
-          adapterId: resolution.id,
-          binary: tmpl.binary,
-          argvSummary,
-          resolutionSource: resolution.source,
-        },
-        null,
-        2,
-      )}\n`,
-      "utf8",
-    );
+  const startedAt = new Date().toISOString();
+  let resume: CurrentResumeFile = {
+    schemaVersion: SCHEMA_VERSION.resume,
+    runId,
+    taskId: opts.taskId ?? null,
+    skillId: opts.skillId,
+    preSpawnRef: preSpawnRef ?? "UNBORN",
+    startedAt,
+    stage: "starting",
+    stageUpdatedAt: startedAt,
+    pid: null,
+    enginePid: process.pid,
+    enginePidStartedAt: ownProcessStartedAt(),
+    adapterId: resolution.id,
+    binary: tmpl.binary,
+    argvSummary,
+    resolutionSource: resolution.source,
+    logs: {
+      stdout: `.legion-cli/cache/runs/${runId}/stdout.log`,
+      stderr: `.legion-cli/cache/runs/${runId}/stderr.log`,
+    },
+    sourceIdentity,
+    contractIdentity: stableHash({
+      skillId: opts.skillId,
+      fileContract: opts.fileContract ?? null,
+      filesForbidden: opts.filesForbidden ?? [],
+    }),
   };
-  await writeResume(null);
+  await writeResumeRecord(opts.projectRoot, resume);
 
   let sandbox: SandboxHandle | undefined;
   let allowedWrites: string[] = [];
-  const jailed =
-    opts.skillId === "execute" ||
-    opts.skillId === "spec-challenge" ||
-    opts.config.sandbox.skills.includes(opts.skillId) ||
-    resolution.id === "http";
+  let mcpBridge: GovernedMcpBridge | undefined;
+  const jailed = isJailedSpawn(opts.skillId, opts.config.sandbox.skills, resolution.id);
   if (jailed) {
     try {
-      assertExecuteSandbox(opts.config, { allowNoSandbox: opts.allowNoSandbox });
-    } catch (err) {
-      if (err instanceof SandboxError) refuse(err.message, HINT.allowNoSandbox);
-      throw err;
-    }
-    const filtered = filterSpawnEnv(process.env, adapter.id, adapter.binary);
-    allowedWrites = await sandboxAllowedWrites({
-      projectRoot: opts.projectRoot,
-      runId,
-      skillId: opts.skillId,
-      specId: opts.specId,
-      contract: opts.fileContract,
-    });
-    sandbox = await materializeJail({
-      projectRoot: opts.projectRoot,
-      runId,
-      allowedWrites,
-      readSet: await sandboxReadSet({
+      try {
+        assertExecuteSandbox(opts.config, { allowNoSandbox: opts.allowNoSandbox });
+      } catch (err) {
+        if (err instanceof SandboxError) refuse(err.message, HINT.allowNoSandbox);
+        throw err;
+      }
+      const filtered = filterSpawnEnv(process.env, adapter.id, adapter.binary);
+      allowedWrites = await sandboxAllowedWrites({
         projectRoot: opts.projectRoot,
         runId,
-        specId: opts.specId,
-        taskId: opts.taskId,
         skillId: opts.skillId,
-      }),
-      adapterBinary: tmpl.binary.startsWith("(") ? undefined : tmpl.binary,
-      backend: opts.config.sandbox.backend,
-      allowDegradedCopy:
-        Boolean(opts.allowNoSandbox) ||
-        opts.config.sandbox.allowCopyJail ||
-        !opts.config.sandbox.requireHardened,
-      credentialKeys: Object.keys(filtered),
-    });
+        specId: opts.specId,
+        contract: opts.fileContract,
+      });
+      const readSet = opts.skillId === "spec-challenge"
+        ? await challengeReadableFiles(opts.projectRoot, [
+            `.legion-cli/cache/skills/${runId}`,
+            `.legion-cli/cache/runs/${runId}`,
+            ...CHALLENGE_REPOSITORY_READ_ROOTS,
+            ".legion-cli/wiki/product",
+            ".legion-cli/discuss",
+            ".legion-cli/decisions",
+            ".legion-cli/map",
+            ...(opts.specId ? [`.legion-cli/specs/${opts.specId}`] : []),
+          ])
+        : sandboxReadSet({
+            projectRoot: opts.projectRoot,
+            runId,
+            skillId: opts.skillId,
+            specId: opts.specId,
+            taskId: opts.taskId,
+          });
+      sandbox = await materializeJail({
+        projectRoot: opts.projectRoot,
+        runId,
+        allowedWrites,
+        readSet,
+        adapterBinary: tmpl.binary.startsWith("(") ? undefined : tmpl.binary,
+        backend: opts.config.sandbox.backend,
+        allowDegradedCopy:
+          Boolean(opts.allowNoSandbox) ||
+          opts.config.sandbox.allowCopyJail ||
+          !opts.config.sandbox.requireHardened,
+        credentialKeys: Object.keys(filtered),
+      });
+      mcpBridge = resolution.id === "http" ? await governedMcpBridge(effectiveConfig) : undefined;
+      resume = {
+        ...resume,
+        jailIdentity: sandbox.identity,
+        contractIdentity: stableHash({
+          skillId: opts.skillId,
+          allowedWrites,
+          filesForbidden: filesForbidden ?? [],
+          toolSurface: resolution.id === "http" ? "governed-http-v1" : "spawn-cli",
+          governedMcpConfig: mcpBridge?.configIdentity ?? null,
+          governedMcpTools: mcpBridge?.toolContractIdentity ?? null,
+        }),
+        ...(resolution.id === "http"
+          ? { checkpointPath: `.legion-cli/cache/runs/${runId}/http-checkpoint.json` }
+          : {}),
+      };
+      await writeResumeRecord(opts.projectRoot, resume);
+    } catch (err) {
+      await mcpBridge?.close().catch(() => undefined);
+      await sandbox?.destroy().catch(() => undefined);
+      await updateResumeStage(opts.projectRoot, runId, "interrupted", {
+        pid: null,
+        pidStartedAt: null,
+        engineOwnershipReleasedAt: new Date().toISOString(),
+        childTerminationUncertain: false,
+        interruptionReason: `spawn start failed: ${err instanceof Error ? err.message : String(err)}`,
+        ...(opts.taskId ? { recoveryCommand: `legion-cli task amend ${opts.taskId} --unblock` } : {}),
+      });
+      throw err;
+    }
   }
 
+  // The marker exists before the agent does, so an engine crash right after spawn still leaves a
+  // record; the agent pid is added once known. `wx`: never overwrites another run's marker.
+  let liveMarker: LiveRunMarker;
+  try {
+    liveMarker = await createLiveRun(opts.projectRoot, {
+      runId,
+      skillId: opts.skillId,
+      taskId: opts.taskId ?? null,
+    });
+  } catch (err) {
+    await sandbox?.destroy().catch(() => undefined);
+    throw err;
+  }
   let handle: AgentHandle;
   try {
     const spawnOpts = sandbox?.spawnOpts();
@@ -593,6 +1036,30 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       cwd: spawnOpts?.cwd ?? opts.projectRoot,
       timeoutMs: DEFAULT_TIMEOUT_MS,
       env,
+      ...(resolution.id === "http"
+        ? {
+            checkpointRoot: opts.projectRoot,
+            sourceIdentity: resume.sourceIdentity,
+            contractIdentity: resume.contractIdentity,
+            ...(mcpBridge ? { externalConfigIdentity: mcpBridge.configIdentity } : {}),
+            jailIdentity: resume.jailIdentity,
+            ...(resolution.profile ? { profile: resolution.profile } : {}),
+            ...(resolution.profileConfig?.outputLimit ? { outputLimit: resolution.profileConfig.outputLimit } : {}),
+            ...(resolution.profileConfig?.limits?.maxRequests
+              ? { maxRequests: resolution.profileConfig.limits.maxRequests }
+              : {}),
+            ...(resolution.profileConfig?.limits?.maxToolRounds
+              ? { maxToolRounds: resolution.profileConfig.limits.maxToolRounds }
+              : {}),
+            ...(resolution.profileConfig?.limits?.maxReportedTokens
+              ? { maxReportedTokens: resolution.profileConfig.limits.maxReportedTokens }
+              : {}),
+            ...(resolution.profileConfig?.limits?.maxEstimatedCostUsd !== undefined
+              ? { maxEstimatedCostUsd: resolution.profileConfig.limits.maxEstimatedCostUsd }
+              : {}),
+            ...(resolution.profileConfig?.pricing ? { pricing: resolution.profileConfig.pricing } : {}),
+          }
+        : {}),
       expectedArtifacts: opts.fakeArtifacts,
       ...(spawnOpts?.wrapper ? { wrapper: spawnOpts.wrapper } : {}),
       ...(sandbox && resolution.id === "http"
@@ -603,20 +1070,60 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
               filesForbidden,
               hardened: sandbox.hardened,
               spawnOpts: spawnOpts ?? { cwd: sandbox.jailRoot, env },
+              ...(mcpBridge
+                ? { externalTools: mcpBridge.externalTools, callExternalTool: mcpBridge.callExternalTool }
+                : {}),
             }),
           }
         : {}),
     });
   } catch (err) {
+    await mcpBridge?.close().catch(() => undefined);
     await sandbox?.destroy().catch(() => undefined);
+    await updateResumeStage(opts.projectRoot, runId, "interrupted", {
+      pid: null,
+      pidStartedAt: null,
+      engineOwnershipReleasedAt: new Date().toISOString(),
+      childTerminationUncertain: false,
+      interruptionReason: `spawn start failed: ${err instanceof Error ? err.message : String(err)}`,
+      ...(opts.taskId ? { recoveryCommand: `legion-cli task amend ${opts.taskId} --unblock` } : {}),
+    });
+    await clearLiveRun(opts.projectRoot, runId).catch(() => undefined);
     throw err;
   }
-  await writeResume(handle.pid);
-  await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, runId);
+  try {
+    resume = {
+      ...resume,
+      pid: handle.pid,
+      pidStartedAt: handle.pid ? await processIdentity(handle.pid) : null,
+      stage: "running",
+      stageUpdatedAt: new Date().toISOString(),
+    };
+    await writeResumeRecord(opts.projectRoot, resume);
+    if (handle.pid && handle.pid > 0) await recordLiveRunAgent(opts.projectRoot, liveMarker, handle.pid);
+    await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, runId);
+  } catch (err) {
+    // Never leave a running agent no one owns: stop it, drop the jail and the marker, rethrow.
+    await handle.abort().catch(() => undefined);
+    await sandbox?.destroy().catch(() => undefined);
+    await clearLiveRun(opts.projectRoot, runId).catch(() => undefined);
+    await clearLiveSpawnMarker(opts.projectRoot, runId).catch(() => undefined);
+    await updateResumeStage(opts.projectRoot, runId, "interrupted", {
+      pid: null,
+      pidStartedAt: null,
+      engineOwnershipReleasedAt: new Date().toISOString(),
+      childTerminationUncertain: false,
+      interruptionReason: `spawn ownership recording failed: ${err instanceof Error ? err.message : String(err)}`,
+      ...(opts.taskId ? { recoveryCommand: `legion-cli task amend ${opts.taskId} --unblock` } : {}),
+    }).catch(() => undefined);
+    throw err;
+  }
   return {
     spawned: true,
     runId,
     handle,
+    skillId: opts.skillId,
+    ...(opts.config.telemetry.otlpEndpoint ? { telemetryEndpoint: opts.config.telemetry.otlpEndpoint } : {}),
     started: Date.now(),
     revertCtx: {
       projectRoot: opts.projectRoot,
@@ -633,30 +1140,327 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     binary: tmpl.binary,
     argvSummary,
     sandbox,
+    ...(mcpBridge || opts.resourceCleanup
+      ? {
+          resourceCleanup: async () => {
+            await Promise.all([
+              ...(mcpBridge ? [mcpBridge.close()] : []),
+              ...(opts.resourceCleanup ? [opts.resourceCleanup()] : []),
+            ]);
+          },
+        }
+      : {}),
+  };
+}
+
+/** Preserve an interrupted HTTP jail/checkpoint for an explicit, identity-checked resume. */
+export async function preserveStartedHttpSpawnForRecovery(
+  started: Extract<StartedSkillSpawn, { spawned: true }>,
+  reason: string,
+  recoveryCommand = `legion-cli execute --resume ${started.runId}`,
+): Promise<void> {
+  if (started.resolution.id !== "http" || !started.sandbox) {
+    throw new Error("only sandboxed HTTP runs can be checkpoint-resumed");
+  }
+  await updateResumeStage(started.revertCtx.projectRoot, started.runId, "interrupted", {
+    pid: null,
+    pidStartedAt: null,
+    interruptionReason: reason,
+    recoveryCommand,
+    engineOwnershipReleasedAt: new Date().toISOString(),
+    childTerminationUncertain: false,
+  });
+  await cleanupStartedSpawnResources(started);
+  await clearLiveSpawnMarker(started.revertCtx.projectRoot, started.runId);
+  await clearLiveRun(started.revertCtx.projectRoot, started.runId).catch(() => undefined);
+}
+
+/** Reopen the retained jail and continue an engine-owned HTTP checkpoint without replaying completed tools. */
+export async function resumeHttpSkillSpawn(
+  opts: SkillSpawnOpts & { runId: string },
+): Promise<Extract<StartedSkillSpawn, { spawned: true }>> {
+  const raw = await readFile(runResumePath(opts.projectRoot, opts.runId), "utf8").catch(() => "");
+  let resumeJson: unknown = null;
+  try {
+    resumeJson = raw ? JSON.parse(raw) : null;
+  } catch {
+    resumeJson = null;
+  }
+  const parsed = ResumeFileSchema.safeParse(resumeJson);
+  if (!parsed.success || parsed.data.schemaVersion !== SCHEMA_VERSION.resume) {
+    refuse(`execute resume ${opts.runId} has no compatible resume record`, HINT.execute);
+  }
+  const resume = parsed.data;
+  if (
+    resume.skillId !== "execute" ||
+    resume.adapterId !== "http" ||
+    resume.taskId !== opts.taskId ||
+    !resume.checkpointPath ||
+    !resume.sourceIdentity ||
+    !resume.contractIdentity ||
+    !resume.jailIdentity ||
+    !["interrupted", "agent-complete"].includes(resume.stage)
+  ) {
+    refuse(`execute resume ${opts.runId} is not a recoverable HTTP run`, HINT.execute);
+  }
+  if ((await inspectResumeOwner(resume)) !== "stale") {
+    refuse(`execute resume ${opts.runId} still has a live or uncertain owner`, HINT.status);
+  }
+  const resolution = resolveAdapterId({
+    config: opts.config,
+    skillId: opts.skillId,
+    taskAdapter: opts.taskAdapter,
+    cliAdapter: opts.cliAdapter,
+    taskProfile: opts.taskProfile,
+    cliProfile: opts.cliProfile,
+  });
+  if (resolution.id !== "http") refuse(`execute resume ${opts.runId} no longer resolves to http`, HINT.doctor);
+  const effectiveConfig = resolution.profileConfig ? applyProfileArgs(opts.config, {
+    adapterId: resolution.id,
+    source: resolution.source,
+    ...(resolution.profile ? { profile: resolution.profile } : {}),
+    config: resolution.profileConfig,
+  }) : opts.config;
+  const sourceIdentity = await projectSourceIdentity(opts.projectRoot, [
+    ...(opts.fileContract?.filesAllowed ?? []),
+    ...(opts.fileContract?.expectedArtifacts ?? []),
+  ]);
+  if (sourceIdentity !== resume.sourceIdentity) {
+    refuse(`execute resume ${opts.runId} refused because project source changed`, HINT.status);
+  }
+  const contract = skillContract(opts.skillId, { runId: opts.runId, specId: opts.specId });
+  const extraAllowedRoots = opts.extraAllowedRoots ?? [
+    ...(opts.fileContract?.filesAllowed ?? []),
+    ...(opts.fileContract?.expectedArtifacts ?? []),
+  ];
+  const allowedRoots = [...contract.allowedRoots, ...extraAllowedRoots];
+  const filesForbidden = opts.filesForbidden ?? opts.fileContract?.filesForbidden;
+  const allowedWrites = await sandboxAllowedWrites({
+    projectRoot: opts.projectRoot,
+    runId: opts.runId,
+    skillId: opts.skillId,
+    specId: opts.specId,
+    contract: opts.fileContract,
+  });
+  const adapter = resolveAdapter(effectiveConfig, { id: "http" });
+  const tmpl = templateArgv("http", effectiveConfig);
+  const filtered = filterSpawnEnv(process.env, adapter.id, adapter.binary);
+  const sandbox = await reopenJail({
+    projectRoot: opts.projectRoot,
+    runId: opts.runId,
+    allowedWrites,
+    readSet: [],
+    adapterBinary: undefined,
+    backend: effectiveConfig.sandbox.backend,
+    allowDegradedCopy: Boolean(opts.allowNoSandbox) || effectiveConfig.sandbox.allowCopyJail || !effectiveConfig.sandbox.requireHardened,
+    credentialKeys: Object.keys(filtered),
+    expectedIdentity: resume.jailIdentity,
+  });
+  const jailIdentity = sandbox.identity;
+  if (jailIdentity !== resume.jailIdentity) {
+    await sandbox.destroy().catch(() => undefined);
+    refuse(`execute resume ${opts.runId} refused because the retained jail changed`, HINT.status);
+  }
+  const spawnOpts = sandbox.spawnOpts();
+  const env = Object.fromEntries(Object.entries(spawnOpts.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  const promptPath = join(opts.projectRoot, ".legion-cli", "cache", "runs", opts.runId, "prompt.md");
+  const snapshot = await snapshotPaths(opts.projectRoot);
+  const dirtyAtStart = snapshotDirtyPaths(opts.projectRoot, resume.preSpawnRef === "UNBORN" ? null : resume.preSpawnRef);
+  const gitPolicy = await snapshotGitPolicy(opts.projectRoot);
+  const chatSessions = await snapshotChatSessions(opts.projectRoot);
+  let handle: AgentHandle;
+  let mcpBridge: GovernedMcpBridge | undefined;
+  let liveMarker: LiveRunMarker | undefined;
+  try {
+    mcpBridge = await governedMcpBridge(effectiveConfig);
+    const contractIdentity = stableHash({
+      skillId: opts.skillId,
+      allowedWrites,
+      filesForbidden: filesForbidden ?? [],
+      toolSurface: "governed-http-v1",
+      governedMcpConfig: mcpBridge?.configIdentity ?? null,
+      governedMcpTools: mcpBridge?.toolContractIdentity ?? null,
+    });
+    if (contractIdentity !== resume.contractIdentity) {
+      refuse(`execute resume ${opts.runId} refused because the task or governed MCP contract changed`, HINT.status);
+    }
+    liveMarker = await createLiveRun(opts.projectRoot, {
+      runId: opts.runId,
+      skillId: opts.skillId,
+      taskId: opts.taskId ?? null,
+    });
+    handle = await adapter.spawn({
+      runId: opts.runId,
+      skillId: opts.skillId,
+      promptPath,
+      pointerPrompt: buildPointerPrompt(opts.runId, opts.skillId),
+      cwd: spawnOpts.cwd,
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      env,
+      resume: true,
+      checkpointRoot: opts.projectRoot,
+      sourceIdentity,
+      contractIdentity,
+      ...(mcpBridge ? { externalConfigIdentity: mcpBridge.configIdentity } : {}),
+      jailIdentity,
+      ...(resolution.profile ? { profile: resolution.profile } : {}),
+      ...(resolution.profileConfig?.outputLimit ? { outputLimit: resolution.profileConfig.outputLimit } : {}),
+      ...(resolution.profileConfig?.limits?.maxRequests ? { maxRequests: resolution.profileConfig.limits.maxRequests } : {}),
+      ...(resolution.profileConfig?.limits?.maxToolRounds ? { maxToolRounds: resolution.profileConfig.limits.maxToolRounds } : {}),
+      ...(resolution.profileConfig?.limits?.maxReportedTokens ? { maxReportedTokens: resolution.profileConfig.limits.maxReportedTokens } : {}),
+      ...(resolution.profileConfig?.limits?.maxEstimatedCostUsd !== undefined
+        ? { maxEstimatedCostUsd: resolution.profileConfig.limits.maxEstimatedCostUsd }
+        : {}),
+      ...(resolution.profileConfig?.pricing ? { pricing: resolution.profileConfig.pricing } : {}),
+      httpHost: createHttpToolHost({
+        jailRoot: sandbox.jailRoot,
+        allowedWrites: httpAllowedWrites(allowedWrites),
+        filesForbidden,
+        hardened: sandbox.hardened,
+        spawnOpts,
+        ...(mcpBridge
+          ? { externalTools: mcpBridge.externalTools, callExternalTool: mcpBridge.callExternalTool }
+          : {}),
+      }),
+    });
+  } catch (err) {
+    await mcpBridge?.close().catch(() => undefined);
+    if (liveMarker) await clearLiveRun(opts.projectRoot, opts.runId).catch(() => undefined);
+    // The retained jail remains available after a failed resume attempt.
+    throw err;
+  }
+  const nextResume: CurrentResumeFile = {
+    ...resume,
+    stage: "running",
+    stageUpdatedAt: new Date().toISOString(),
+    pid: handle.pid,
+    pidStartedAt: handle.pid ? await processIdentity(handle.pid) : null,
+    enginePid: process.pid,
+    enginePidStartedAt: ownProcessStartedAt(),
+    engineOwnershipReleasedAt: undefined,
+    childTerminationUncertain: false,
+    interruptionReason: undefined,
+    recoveryCommand: `legion-cli execute --resume ${opts.runId}`,
+  };
+  try {
+    await writeResumeRecord(opts.projectRoot, nextResume);
+    if (liveMarker && handle.pid && handle.pid > 0) {
+      await recordLiveRunAgent(opts.projectRoot, liveMarker, handle.pid);
+    }
+    await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, opts.runId);
+  } catch (err) {
+    await handle.abort().catch(() => undefined);
+    await clearLiveRun(opts.projectRoot, opts.runId).catch(() => undefined);
+    await clearLiveSpawnMarker(opts.projectRoot, opts.runId).catch(() => undefined);
+    await updateResumeStage(opts.projectRoot, opts.runId, "interrupted", {
+      pid: null,
+      pidStartedAt: null,
+      engineOwnershipReleasedAt: new Date().toISOString(),
+      childTerminationUncertain: false,
+      interruptionReason: `resume ownership recording failed: ${err instanceof Error ? err.message : String(err)}`,
+      recoveryCommand: `legion-cli execute --resume ${opts.runId}`,
+    }).catch(() => undefined);
+    throw err;
+  }
+  return {
+    spawned: true,
+    runId: opts.runId,
+    handle,
+    skillId: opts.skillId,
+    ...(opts.config.telemetry.otlpEndpoint ? { telemetryEndpoint: opts.config.telemetry.otlpEndpoint } : {}),
+    started: Date.now(),
+    revertCtx: {
+      projectRoot: opts.projectRoot,
+      preSpawnRef: resume.preSpawnRef === "UNBORN" ? null : resume.preSpawnRef,
+      allowedRoots,
+      filesForbidden,
+      snapshot,
+      gitPolicy,
+      dirtyAtStart,
+      chatSessions,
+      commandId: opts.runId,
+    },
+    resolution,
+    binary: tmpl.binary,
+    argvSummary: `POST /chat/completions model=${effectiveConfig.adapter.http?.model ?? ""}`,
+    sandbox,
+    ...(mcpBridge ? { resourceCleanup: mcpBridge.close } : {}),
   };
 }
 
 export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spawned: true }>): Promise<WaitedSkillSpawn> {
   let error: unknown;
   let timedOut = false;
+  let usage: AgentUsage | undefined;
+  let limitReason: string | undefined;
+  let recovery: WaitedSkillSpawn["recovery"];
+  let exitCode: number | null | undefined;
+  let agentErrorMessage: string | undefined;
+  let aborted = false;
   try {
     const agentResult = await started.handle.wait();
     timedOut = Boolean(agentResult.timedOut);
+    exitCode = agentResult.exitCode;
+    agentErrorMessage = agentResult.errorMessage;
+    aborted = Boolean(agentResult.aborted);
+    recovery = agentResult.recovery;
+    usage = agentResult.usage
+      ? applyUsagePricing(
+          { ...agentResult.usage, ...(started.resolution.profile ? { profile: started.resolution.profile } : {}) },
+          started.resolution.profileConfig?.pricing,
+        )
+      : undefined;
+    limitReason = usageLimitReason(usage ?? {}, started.resolution.profileConfig?.limits) ?? undefined;
     if (timedOut) error = new AgentError("spawn timed out");
-    else if (agentResult.aborted || agentResult.exitCode !== 0) {
-      error = new AgentError(agentResult.aborted ? "spawn aborted" : `spawn exited ${String(agentResult.exitCode)}`);
+    else if (agentResult.aborted) error = new AgentError("spawn aborted");
+    else if (limitReason) error = new AgentError(limitReason);
+    else if (started.skillId === "spec-challenge" && agentResult.exitCode !== 0) {
+      error = new AgentError(`spawn exited ${String(agentResult.exitCode)}`);
     }
   } catch (err) {
     error = err;
   }
-  return { error, timedOut, durationMs: Date.now() - started.started };
+  await updateResumeStage(started.revertCtx.projectRoot, started.runId, "agent-complete", {
+    ...(error
+      ? { interruptionReason: error instanceof Error ? error.message : String(error) }
+      : {}),
+    ...(usage ? { usage } : {}),
+  });
+  const outcome = error ? "failed" : "complete";
+  started.completionMetadata = {
+    outcome,
+    ...(usage ? { usage } : {}),
+    ...(limitReason ? { limitReason } : {}),
+  };
+  await exportUsageTelemetry({
+    endpoint: started.telemetryEndpoint,
+    adapter: started.resolution.id,
+    profile: started.resolution.profile,
+    skill: started.skillId,
+    outcome,
+    usage,
+  }).catch(() => undefined);
+  return {
+    error,
+    timedOut,
+    durationMs: Date.now() - started.started,
+    ...(usage ? { usage } : {}),
+    ...(limitReason ? { limitReason } : {}),
+    ...(recovery ? { recovery } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(agentErrorMessage ? { agentErrorMessage } : {}),
+    ...(aborted ? { aborted } : {}),
+  };
 }
 
 export async function finishStartedSpawn(
   started: Extract<StartedSkillSpawn, { spawned: true }>,
+  opts?: { keepMarker?: boolean },
 ): Promise<RevertResult> {
+  await updateResumeStage(started.revertCtx.projectRoot, started.runId, "integrating");
   let copied: string[] = [];
   let dropped: string[] = [];
+  let agentStillAlive = false;
   const resumePath = join(
     started.revertCtx.projectRoot,
     ".legion-cli",
@@ -666,6 +1470,7 @@ export async function finishStartedSpawn(
     "resume.json",
   );
   let resumeRaw: string | undefined;
+  let completed = false;
   try {
     if (started.sandbox) {
       try {
@@ -687,6 +1492,7 @@ export async function finishStartedSpawn(
     }
     const childPid = started.handle.pid;
     const agentAlive = Boolean(childPid && childPid !== process.pid && isPidAlive(childPid));
+    agentStillAlive = agentAlive;
     let revert;
     try {
       revert = await revertExtras({
@@ -709,6 +1515,7 @@ export async function finishStartedSpawn(
         extrasReverted.add(rel);
       }
     }
+    completed = true;
     return {
       ...revert,
       extrasReverted: [...extrasReverted],
@@ -717,11 +1524,52 @@ export async function finishStartedSpawn(
       sandboxDropped: dropped,
     };
   } finally {
+    const executeContinues = completed && started.skillId === "execute";
     if (resumeRaw !== undefined) {
-      await writeFile(resumePath, resumeRaw, "utf8").catch(() => undefined);
+      await writeTextFile(resumePath, resumeRaw, { root: started.revertCtx.projectRoot }).catch(() => undefined);
     }
+    await updateResumeStage(
+      started.revertCtx.projectRoot,
+      started.runId,
+      completed ? (started.skillId === "execute" ? "integrating" : "completed") : "interrupted",
+      {
+        pid: null,
+        pidStartedAt: null,
+        childTerminationUncertain: false,
+        ...(!executeContinues ? { engineOwnershipReleasedAt: new Date().toISOString() } : {}),
+        ...(completed ? {} : { interruptionReason: "integration interrupted" }),
+      },
+    );
     await started.sandbox?.destroy().catch(() => undefined);
-    await clearLiveSpawnMarker(started.revertCtx.projectRoot, started.runId);
+    await cleanupStartedSpawnResources(started);
+    if (!executeContinues) {
+      await clearLiveSpawnMarker(started.revertCtx.projectRoot, started.runId);
+    }
+    const metadata = started.completionMetadata;
+    if (metadata) {
+      try {
+        const phase = (await createLegionStore(started.revertCtx.projectRoot).readState()).data.phase;
+        await appendAuditEvent(started.revertCtx.projectRoot, {
+          ts: new Date().toISOString(),
+          type: "agent_run",
+          phase,
+          actor: "agent",
+          data: {
+            skillId: started.skillId,
+            adapterId: started.resolution.id,
+            profile: started.resolution.profile ?? null,
+            outcome: metadata.outcome,
+            runId: started.runId,
+            usage: metadata.usage ?? null,
+            limitReason: metadata.limitReason ?? null,
+          },
+        });
+      } catch {
+        // Completion remains authoritative; metrics are best-effort metadata.
+      }
+    }
+    // A surviving agent keeps its marker: the guard must hold while anything can still write.
+    if (!agentStillAlive && !opts?.keepMarker) await clearLiveRun(started.revertCtx.projectRoot, started.runId);
   }
 }
 
@@ -738,6 +1586,8 @@ export async function optionalSkillSpawn(opts: SkillSpawnOpts): Promise<Optional
     revert,
     error: waited.error,
     timedOut: waited.timedOut,
+    exitCode: waited.exitCode,
+    agentErrorMessage: waited.agentErrorMessage,
     durationMs: waited.durationMs,
     resolution: started.resolution,
     binary: started.binary,
@@ -801,4 +1651,46 @@ export async function findLatestTaskResume(projectRoot: string, taskId: string):
   if (matches.length === 0) return null;
   matches.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   return matches[matches.length - 1] ?? null;
+}
+
+export async function listRunRecoveryStatuses(projectRoot: string): Promise<RunRecoveryStatus[]> {
+  const resumes = await listCacheResumes(projectRoot);
+  const statuses = await Promise.all(
+    resumes.map(async (resume): Promise<RunRecoveryStatus> => {
+      const ownerStatus = await inspectResumeOwner(resume);
+      const taskId = resume.taskId ?? null;
+      const legacyLogs = {
+        stdout: `.legion-cli/cache/runs/${resume.runId}/stdout.log`,
+        stderr: `.legion-cli/cache/runs/${resume.runId}/stderr.log`,
+      };
+      if (resume.schemaVersion === "legion-cli-resume/v1") {
+        return {
+          runId: resume.runId,
+          taskId,
+          stage: "legacy",
+          ownerStatus,
+          logs: legacyLogs,
+          interruptionReason: ownerStatus === "stale" ? "legacy run owner is no longer live" : null,
+          recoveryCommand: ownerStatus === "stale" && taskId ? `legion-cli task amend ${taskId} --recover` : null,
+          startedAt: resume.startedAt,
+        };
+      }
+      const recoveryCommand =
+        resume.recoveryCommand ??
+        (ownerStatus === "stale" && taskId
+          ? `legion-cli task amend ${taskId} ${resume.stage === "verifying" ? "--recover" : "--unblock"}`
+          : null);
+      return {
+        runId: resume.runId,
+        taskId,
+        stage: resume.stage,
+        ownerStatus,
+        logs: resume.logs,
+        interruptionReason: resume.interruptionReason ?? null,
+        recoveryCommand,
+        startedAt: resume.startedAt,
+      };
+    }),
+  );
+  return statuses.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || a.runId.localeCompare(b.runId));
 }

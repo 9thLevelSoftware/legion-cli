@@ -2,5 +2,7 @@ Legion CLI created a project in this folder.
 mode: brownfield
 brownfield goal: audit
 adapter.default: fake
-Supported command: pnpm exec legion-cli
-Next: legion-cli spec
+adapter readiness: ready (deterministic adapter selected)
+sandbox readiness: <sandbox preflight>
+Supported command: pnpm exec legion-cli --project <project>
+Next: legion-cli spec --project <project>

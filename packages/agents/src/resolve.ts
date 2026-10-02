@@ -4,7 +4,9 @@ import { ClaudeAdapter } from "./adapters/claude.js";
 import { ExtraAdapter } from "./adapters/extra.js";
 import { FakeAdapter } from "./adapters/fake.js";
 import { GenericAdapter } from "./adapters/generic.js";
+import { AcpAdapter } from "./adapters/acp.js";
 import { AdapterConfigError } from "./errors.js";
+import { resolveAgentProfile } from "./profiles.js";
 import {
   DETECT_ADAPTER_IDS,
   DETECT_ONLY_ADAPTER_IDS,
@@ -25,13 +27,22 @@ export function resolveAdapterId(input: {
   skillId: SkillId;
   taskAdapter?: AgentAdapterId | null;
   cliAdapter?: AgentAdapterId | null;
+  taskProfile?: string | null;
+  cliProfile?: string | null;
 }): AdapterResolution {
-  if (input.cliAdapter) return { id: input.cliAdapter, source: "cli" };
-  const taskScoped = input.skillId === "execute" || input.skillId === "verify";
-  if (taskScoped && input.taskAdapter) return { id: input.taskAdapter, source: "task" };
-  const routed = input.config.adapter.routes?.[input.skillId];
-  if (routed) return { id: routed, source: "route" };
-  return { id: input.config.adapter.default, source: "default" };
+  const resolved = resolveAgentProfile(input.config, {
+    skillId: input.skillId,
+    taskAdapter: input.taskAdapter,
+    cliAdapter: input.cliAdapter,
+    taskProfile: input.taskProfile,
+    cliProfile: input.cliProfile,
+  });
+  return {
+    id: resolved.adapterId,
+    source: resolved.source,
+    ...(resolved.profile ? { profile: resolved.profile } : {}),
+    ...(resolved.config ? { profileConfig: resolved.config } : {}),
+  };
 }
 
 export function isDetectOnly(id: AgentAdapterId): boolean {
@@ -45,6 +56,8 @@ export function createAdapter(id: AgentAdapterId, options: AdapterCreateOptions 
         holdWait: options.holdWait,
         onWait: options.onWait,
         handlePid: options.handlePid,
+        exitCode: options.exitCode,
+        omitSummary: options.omitSummary,
       });
     case "claude":
       return new ClaudeAdapter(options.extraArgs ?? []);
@@ -62,6 +75,8 @@ export function createAdapter(id: AgentAdapterId, options: AdapterCreateOptions 
       return new ExtraAdapter("minimax", options.minimax);
     case "http":
       return new HttpAdapter(options.http);
+    case "acp":
+      return new AcpAdapter(options.acp);
   }
 }
 
@@ -83,12 +98,15 @@ export function resolveAdapter(
     mimo: options.mimo ?? config.adapter.mimo,
     minimax: options.minimax ?? config.adapter.minimax,
     http: options.http ?? config.adapter.http,
+    acp: options.acp ?? config.adapter.acp,
     artifacts: options.artifacts,
     throwAfterWrite: options.throwAfterWrite,
     timedOut: options.timedOut,
     holdWait: options.holdWait,
     onWait: options.onWait,
     handlePid: options.handlePid,
+    exitCode: options.exitCode,
+    omitSummary: options.omitSummary,
   });
 }
 
@@ -106,6 +124,7 @@ export async function detectMatrix(
       mimo: config?.adapter.mimo,
       minimax: config?.adapter.minimax,
       http: config?.adapter.http,
+      acp: config?.adapter.acp,
     });
     out[id] = await adapter.detect();
   }

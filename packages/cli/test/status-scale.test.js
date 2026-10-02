@@ -141,7 +141,9 @@ invalid
       process.stdout.write = orig;
     }
     const payload = JSON.parse(chunks.join(""));
-    assert.equal(payload.next.run, "legion-cli qa");
+    // This direct handler test bypasses resolveOpts(), which supplies command
+    // output scope for a CLI invocation.
+    assert.equal(payload.next.run, "legion-cli execute");
     assert.equal(payload.blockers.length, 0);
   });
 });

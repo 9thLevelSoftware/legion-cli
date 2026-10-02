@@ -14,13 +14,15 @@ metadata:
 
 # execute
 
-Write product code for the assigned ready task. The focused `legion-cli execute`
-orchestrator runs approved ready tasks sequentially until complete or blocked;
-this spawn receives one bounded task at a time. `--step` deliberately stops
-after one task, and an explicit task ID is targeted recovery. Failed integration
-or review evidence stays blocked unless the user explicitly runs
-`legion-cli execute --retry`, which retries one failed stage. Execute is
-required: Legion CLI refuses if no spawnable adapter is configured.
+Write product code for the assigned ready task. Focused `legion-cli execute`
+orchestrates approved ready work until complete or blocked, with one worker by
+default. Configured `execution.maxWorkers` or `--until-blocked --jobs <count>` (1–4) can
+select bounded parallel work in separate jails with disjoint contracts and
+serialized integration. This spawn still receives exactly one bounded task.
+`--step` stops after one task; an explicit task ID is targeted recovery. Failed
+integration/review evidence stays blocked unless the user explicitly runs
+`legion-cli execute --retry`, which retries one failed stage. Execute requires
+a spawnable adapter.
 
 Level 3 files only as named; do not load other skills.
 
@@ -43,7 +45,7 @@ Implicit forbidden still applies: `.git/**`, `.env*`, `.legion-cli/config.yaml`,
 
 Read the FileContract and spec in prompt.md.
 
-Write only listed files. Copy each acceptance criterion's `priority` into new test titles as `@p0` / `@p1` / `@p2` (untagged tests count as P1). Visual tests: `@visual`.
+Write only listed files. Link every acceptance test to its criterion with the canonical title tag `@ac(AC-ID)`; repeat the tag when one test covers multiple criteria. Also copy each linked criterion's `priority` into the title as `@p0` / `@p1` / `@p2`. Untagged passing tests do not supply acceptance coverage. Visual tests also use `@visual`.
 
 If you discover extra work, stop expanding `filesAllowed` and write `.legion-cli/cache/runs/<id>/extra.json`. Extra work is a linked ticket, never an in-place expansion.
 

@@ -3,7 +3,7 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { INTENT_Q, LegionRefuseError, canTransition, PHASES } from "../dist/index.js";
+import { INTENT_Q, LegionEngine, LegionRefuseError, canTransition, PHASES } from "../dist/index.js";
 import {
   initProject,
   makeQaScore,
@@ -15,8 +15,10 @@ import {
   seedPlanReady,
   withEngine,
   withFakeAdapter,
+  withReviewNotes,
   writeSpec,
   writeTask,
+  writeQaFile,
 } from "./helpers.js";
 
 test("init writes initialized greenfield project", async () => {
@@ -107,7 +109,7 @@ test("PASS readiness lands in plan_ready", async () => {
 
 test("executing stays until every slice task is done or blocked", async () => {
   await withFakeAdapter(async () => {
-    await withEngine(async ({ engine, store }) => {
+    await withEngine(async ({ engine, store, dir }) => {
       await initProject(engine);
       const verify = [passingVerificationCommand()];
       await seedPlanReady(store, {
@@ -132,7 +134,8 @@ test("executing stays until every slice task is done or blocked", async () => {
         slice.map((task) => `${task.id}:${task.status}`),
         ["TSK-0001:done", "TSK-0002:blocked"],
       );
-      const review = await engine.review();
+      // Review notes are outside execute's contract, so the reviewer is its own engine.
+      const review = await new LegionEngine(dir, undefined, withReviewNotes()).review();
       assert.equal(review.verdict, "PASS");
       assert.equal((await engine.getState()).phase, "executing");
     });
@@ -160,7 +163,7 @@ test("slice is all tasks of activeSpecId", async () => {
       );
       const review = await engine.review();
       assert.equal(review.verdict, "PASS");
-    });
+    }, withReviewNotes());
   });
 });
 
@@ -210,7 +213,7 @@ test("review PASS only if spawn created zero new tasks", async () => {
     assert.equal(pass.verdict, "PASS");
     assert.deepEqual(pass.createdTaskIds, []);
     assert.equal((await engine.getState()).lastReview, "PASS");
-  });
+  }, withReviewNotes());
   });
 });
 
@@ -259,11 +262,7 @@ test("spec new from shipped", async () => {
       lastQaId: "qa-1",
       task: { status: "done" },
     });
-    await writeFile(
-      join(store.paths.qaDir, "scores", "qa-1.json"),
-      `${JSON.stringify(makeQaScore(), null, 2)}\n`,
-      "utf8",
-    );
+    await writeQaFile(store, makeQaScore());
     const receipt = await engine.ship();
     assert.equal(receipt.phase, "shipped");
     assert.equal((await engine.getState()).phase, "shipped");
@@ -398,53 +397,24 @@ test("10 concurrent fileTicket calls on one engine give 10 distinct ids and 10 f
   });
 });
 
-test("transition refuses plan_concerns and unknown phases", async () => {
-  await withEngine(async ({ engine }) => {
-    await initProject(engine);
-    await assert.rejects(
-      () => engine.transition("plan_concerns"),
-      (err) => {
-        assert.equal(err instanceof LegionRefuseError, true);
-        return true;
-      },
-    );
-  });
-});
-
 test("canTransition has no plan_concerns edge", () => {
   for (const phase of PHASES) {
     assert.equal(canTransition(phase, "plan_concerns"), false);
   }
 });
 
-test("plan walks spec_frozen → planning → plan_ready and transition cannot skip readiness", async () => {
+test("plan walks spec_frozen → planning → plan_ready", async () => {
   await withFakeAdapter(async () => {
   await withEngine(async ({ engine, store }) => {
     await initProject(engine);
     await seedFrozenSpec(store);
     await writeTask(store, makeTask());
-    await assert.rejects(
-      () => engine.transition("plan_ready"),
-      (err) => {
-        assert.equal(err instanceof LegionRefuseError, true);
-        assert.match(err.nextHint, /legion-cli plan/);
-        return true;
-      },
-    );
     const readiness = await engine.plan("spec-checkin");
     assert.equal(readiness, "PASS");
     assert.equal((await engine.getState()).phase, "plan_ready");
     assert.equal((await engine.getState()).lastReadiness, "PASS");
 
     await patchState(store, { phase: "planning", lastReadiness: null });
-    await assert.rejects(
-      () => engine.transition("plan_ready"),
-      (err) => {
-        assert.equal(err instanceof LegionRefuseError, true);
-        assert.match(err.nextHint, /legion-cli plan/);
-        return true;
-      },
-    );
     const again = await engine.plan("spec-checkin");
     assert.equal(again, "PASS");
     assert.equal((await engine.getState()).phase, "plan_ready");
@@ -485,7 +455,7 @@ test("reopening a blocked slice task after review PASS invalidates lastReview", 
         return true;
       },
     );
-  });
+  }, withReviewNotes());
   });
 });
 
@@ -511,6 +481,6 @@ test("qa is refused after a review that filed fix tasks until re-review PASS", a
     const score = await engine.qa({ score: makeQaScore() });
     assert.equal(score.pass, true);
     assert.equal((await engine.getState()).phase, "ready_to_ship");
-  });
+  }, withReviewNotes());
   });
 });

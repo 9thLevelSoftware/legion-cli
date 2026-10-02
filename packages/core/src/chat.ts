@@ -54,6 +54,7 @@ export type ChatApplyResult = {
 
 export type ChatRouteOpts = {
   cliAdapter?: AdapterId;
+  cliProfile?: string;
   /** Test seam: model JSON used only when the rule router is unclear. */
   fixtureAction?: unknown;
 };
@@ -122,15 +123,25 @@ async function nextVerbForState(engine: LegionEngine, phase: Phase): Promise<str
   if (phase === "uninitialized") return "legion-cli init";
   let mode: "greenfield" | "brownfield" | undefined;
   let controlMode: string | undefined;
+  let focused = false;
   try {
     mode = (await engine.store.readProject()).data.mode;
   } catch {
     mode = undefined;
   }
   try {
-    controlMode = (await engine.store.readConfig()).control_mode;
+    const config = await engine.store.readConfig();
+    controlMode = config.control_mode;
+    focused = config.workflow?.profile === "focused";
   } catch {
     controlMode = undefined;
+  }
+  if (focused) {
+    const workflow = await engine.getWorkflowStatus();
+    if (controlMode === "advisory" && workflow.stage === "execute") {
+      return "legion-cli control-mode guarded";
+    }
+    return workflow.next;
   }
   const slice = await engine.listSliceTasks();
   if (phase === "initialized" && mode === "brownfield") return "legion-cli brownfield";
@@ -564,7 +575,7 @@ export async function routeChatTurn(
       raw = opts.fixtureAction;
     } else {
       const prompt = await buildChatPrompt(engine, text, session);
-      const spawn = await engine.spawnChatSkill(prompt, opts?.cliAdapter);
+      const spawn = await engine.spawnChatSkill(prompt, opts?.cliAdapter, opts?.cliProfile);
       spawned = spawn.spawned;
       raw = spawn.spawned ? await readSpawnedAction(engine.projectRoot, spawn.runId) : undefined;
     }

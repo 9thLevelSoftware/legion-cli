@@ -89,13 +89,29 @@ completion path instead.
 
 ## Execution and delivery evidence
 
-`execute` runs the ready work sequentially by default until all approved work
-is complete or it reaches a failed check, review finding, unresolved decision,
-scope change, sandbox incident, missing tool, or interruption. It saves the
-continuation point. `execute --step` runs one ready task; `execute <taskId>`
-supports targeted recovery. `execute --retry` retries exactly one failed
-integration or review stage; failed evidence otherwise remains blocked and is
-not retried automatically.
+`execute` runs ready work with one worker by default until all approved work is
+complete or it reaches a failed check, review finding, unresolved decision, scope
+change, sandbox incident, missing tool, or interruption. It saves the continuation
+point. `execution.maxWorkers` can opt automatic execution into 1–4 workers;
+explicit `--jobs <count>` requires `--until-blocked`. Parallel tasks must be
+dependency-independent with disjoint contracts and separate jails; integration
+is serialized with source-baseline checks, not concurrent writes to the checkout.
+`execute --step` runs one ready task; `execute <taskId>` supports single-task
+targeted recovery. `execute --retry` retries exactly one failed integration or
+review stage; failed evidence otherwise stays blocked, never automatically retried.
+
+Interrupted compatible HTTP jobs can use `execute --resume <runId>` with the
+original jail and matching prompt/configuration/contracts/source identities.
+Completed tools are not replayed; uncertain command or external-call effects
+require operator reconciliation. While a spawn is live, process-identity run
+markers refuse other mutations even when the engine lock is released.
+
+Approved checks are trusted project code. One quoted argv command per `--check`
+runs with credentials scrubbed under bwrap/seatbelt where available, explicitly
+selected Docker, or the named host allowlist tier. An explicitly selected hardened
+backend that is unavailable fails closed. Verification never uses a copy jail
+or requires `--allow-no-sandbox`; filtering is not a trust boundary. QA unit
+commands always run on the host. bwrap/seatbelt permit network egress.
 
 The ship gate evaluates requirement-level evidence:
 
@@ -107,9 +123,27 @@ The ship gate evaluates requirement-level evidence:
 Evidence is reusable only while the spec, plan, relevant source snapshot,
 command, and execution context still match. Each integration command saves its
 own resumable report, and independent review saves its report and fingerprint.
-Failed or stale evidence blocks ship. A repair or review finding becomes a
-proposed amendment; approving it invalidates the affected plan or evidence
-instead of starting an automatic repair loop.
+Review notes are written in the run cache and promoted by the engine into pinned
+QA state. PASS requires exit 0, non-empty notes, no new tasks, unchanged existing
+task files, and an explicit `Verdict: PASS` for focused evidence. Optional `verify`
+walkthrough notes stay in run cache and are not approval/check evidence.
+Failed or stale evidence blocks ship; changed staged product content also refuses
+delivery. A repair or review finding becomes a proposed amendment; approving it
+invalidates the affected plan/evidence instead of starting an automatic repair loop.
+
+Focused `fix --profile <name>` and `fix --adapter <id>` retain the selected task
+routing on the proposed amendment; they do not execute it. Unknown or conflicting
+selections refuse before invalidating existing review evidence. After renewed plan
+approval, execution uses the persisted selection unless explicitly overridden.
+
+Advisory mode refuses explicit execution before approval or integration work,
+including when every task is already complete. Focused status still leads through
+missing spec/plan approvals; an execution-ready next command instead requests
+`control-mode guarded`.
+
+Legacy numeric QA remains optional for focused delivery; when used, its v2
+AC-linked reports retain SPEC/source freshness, missing/skipped P0 refusal,
+runner-failure blocking, and explicit degraded-workflow rules.
 
 ## Implementation acceptance checklist
 

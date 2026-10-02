@@ -44,7 +44,7 @@ test("control-mode shows default guarded and sets advisory", async () => {
     const payload = JSON.parse(jsonSet.stdout);
     assert.equal(payload.ok, true);
     assert.equal(payload.control_mode, "advisory");
-    assert.equal(payload.next, "legion-cli doctor");
+    assert.match(payload.next, /^legion-cli doctor --project /);
     assert.equal((await engine.store.readConfig()).control_mode, "advisory");
     assert.equal((await engine.store.readProject()).data.controlMode, "advisory");
   });

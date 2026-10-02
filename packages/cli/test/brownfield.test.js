@@ -248,7 +248,7 @@ test("legion-cli run promote copies run pages untrusted even with --yes", async 
       `.legion-cli/wiki/runs/${runId}/analysis/code.md`,
     ]);
     assert.equal(body.trust, "untrusted");
-    assert.equal(body.next, `legion-cli wiki trust runs/${runId}/intent`);
+    assert.match(body.next, new RegExp(`^legion-cli wiki trust runs/${runId}/intent --project `));
     const page = await readFile(join(dir, ".legion-cli", "wiki", "runs", runId, "intent.md"), "utf8");
     assert.match(page, /trust: untrusted/);
 

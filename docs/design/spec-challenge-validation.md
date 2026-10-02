@@ -48,3 +48,16 @@ Linux/macOS CI were not exercised in this local implementation pass.
 Source changes were developed in an isolated worktree copied from the existing
 uncommitted work. Integration checks each original file against its starting hash
 and copies only the challenge changes; existing work is preserved.
+
+## Merge integration recovery
+
+Challenge finalization releases stopped-agent ownership markers even if a
+post-checkpoint operation throws. A surviving engine process can resume the
+validated checkpoint through a new engine instance without changing marker PIDs
+or launching another analysis. Markers for genuinely live children remain guarded.
+
+The merged Windows smoke reproduced the checkpoint exception and recovery refusal
+before this correction, then completed recovery in the same process afterward.
+Workspace build/typecheck and a clean installed-package consumer smoke also passed.
+The verification table above records the original implementation pass, not this
+merge's complete regression results.

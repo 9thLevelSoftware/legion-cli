@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LegionEngine } from "../dist/index.js";
+import { LegionEngine, projectSourceIdentity, qaSpecHash } from "../dist/index.js";
+import { specHasUi } from "@9thlevelsoftware/legion-cli-qa";
 
 export function quoteArg(value) {
   return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
@@ -58,7 +59,7 @@ export function commitAll(dir, message = "seed") {
 export async function withEngine(fn, options) {
   const dir = await mkdtemp(join(tmpdir(), "legion-core-"));
   try {
-    const engine = new LegionEngine(dir, undefined, options);
+    const engine = new LegionEngine(dir, undefined, { fakeQaScoreInjection: true, ...options });
     await fn({ dir, engine, store: engine.store });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -160,20 +161,29 @@ export function makeTask(overrides = {}) {
 
 export function makeQaScore(overrides = {}) {
   return {
-    schemaVersion: "legion-cli-qa/v1",
+    schemaVersion: "legion-cli-qa/v2",
     id: "qa-1",
     specId: "spec-checkin",
     mode: "full",
     buckets: {
       p0: { points: 40, max: 40, failed: 0 },
-      p1: { points: 27, max: 30, passRate: 0.9 },
-      p2: { points: 12, max: 15, passRate: 0.8 },
+      p1: { points: 30, max: 30, passRate: 1 },
+      p2: { points: 15, max: 15, passRate: 1 },
       visual: { points: 15, max: 15, regressions: 0 },
     },
-    total: 94,
+    total: 100,
     pass: true,
     evidencePaths: [".legion-cli/qa/scores/qa-1.json"],
     createdAt: "2026-09-01T12:00:00Z",
+    criteria: [
+      { id: "AC-01", priority: "P0", outcome: "passed" },
+    ],
+    missingCriterionIds: [],
+    failedCriterionIds: [],
+    skippedCriterionIds: [],
+    reportFailures: 0,
+    specHash: "0".repeat(64),
+    sourceHash: "0".repeat(64),
     ...overrides,
   };
 }
@@ -192,6 +202,75 @@ export async function writeTask(store, task, body = "Task body.\n") {
 }
 
 export async function writeQaFile(store, score) {
+  const state = (await store.readState()).data;
+  const spec = await store.readSpec(state.activeSpecId);
+  const evidenceDir = join(store.paths.qaDir, "runs", score.id);
+  await mkdir(evidenceDir, { recursive: true });
+  const tests = score.criteria.flatMap((criterion) => {
+    if (criterion.outcome === "missing") return [];
+    return [{
+      title: `criterion ${criterion.id} @ac(${criterion.id})`,
+      status: criterion.outcome === "passed" ? "passed" : criterion.outcome === "failed" ? "failed" : "skipped",
+    }];
+  });
+  if (tests.length === 0) tests.push({ title: "unlinked passing test", status: "passed" });
+  const criterionFailures = score.criteria.filter((criterion) => criterion.outcome === "failed").length;
+  const visualFailures = score.mode === "full" ? score.buckets.visual.regressions : 0;
+  const visualTests = [];
+  for (let i = 0; i < visualFailures; i += 1) {
+    visualTests.push({ title: `visual regression ${i + 1} @visual`, status: "failed", visualFailure: true });
+  }
+  for (let i = criterionFailures + visualFailures; i < score.reportFailures; i += 1) {
+    tests.push({ title: `unlinked report failure ${i + 1}`, status: "failed" });
+  }
+  await writeFile(join(evidenceDir, "unit.json"), `${JSON.stringify({ tests }, null, 2)}\n`, "utf8");
+  await writeFile(
+    join(evidenceDir, "unit.meta.json"),
+    `${JSON.stringify({ version: 1, kind: "unit", capture: { started: true, status: 0, timedOut: false } }, null, 2)}\n`,
+    "utf8",
+  );
+  const evidencePaths = [
+    `.legion-cli/qa/runs/${score.id}/unit.json`,
+    `.legion-cli/qa/runs/${score.id}/unit.meta.json`,
+  ];
+  if (score.mode === "full" && specHasUi(spec.data)) {
+    const playwrightTests = visualTests.length > 0
+      ? visualTests
+      : [{ title: "playwright smoke", status: "passed" }];
+    await writeFile(
+      join(evidenceDir, "playwright.json"),
+      `${JSON.stringify({ tests: playwrightTests }, null, 2)}\n`,
+      "utf8",
+    );
+    await writeFile(
+      join(evidenceDir, "playwright.meta.json"),
+      `${JSON.stringify({ version: 1, kind: "playwright", capture: { started: true, status: 0, timedOut: false } }, null, 2)}\n`,
+      "utf8",
+    );
+    evidencePaths.push(
+      `.legion-cli/qa/runs/${score.id}/playwright.json`,
+      `.legion-cli/qa/runs/${score.id}/playwright.meta.json`,
+    );
+  }
+  if (score.mode === "no-browser") {
+    const passedCriterionIds = score.criteria
+      .filter((criterion) => criterion.outcome === "passed")
+      .map((criterion) => criterion.id)
+      .sort();
+    await writeFile(
+      join(evidenceDir, "manual.json"),
+      `${JSON.stringify({ version: 1, kind: "manual", specId: state.activeSpecId, passedCriterionIds }, null, 2)}\n`,
+      "utf8",
+    );
+    evidencePaths.push(`.legion-cli/qa/runs/${score.id}/manual.json`);
+  }
+  score = {
+    ...score,
+    specId: state.activeSpecId,
+    evidencePaths,
+    specHash: qaSpecHash(spec.data, spec.body),
+    sourceHash: await projectSourceIdentity(store.projectRoot),
+  };
   const dir = join(store.paths.qaDir, "scores");
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, `${score.id}.json`), `${JSON.stringify(score, null, 2)}\n`, "utf8");
@@ -229,4 +308,15 @@ export async function seedPlanReady(store, opts = {}) {
     currentTaskId: opts.currentTaskId ?? null,
   });
   return { spec, task };
+}
+
+/** Positive review evidence: what a reviewer that really ran leaves behind (the engine then copies it to qa/review.md). */
+export const REVIEW_NOTES_ARTIFACT = {
+  path: ".legion-cli/cache/runs/<id>/review.md",
+  content: "# Review\n\nRead the spec and every task; the slice meets the acceptance criteria.\n",
+};
+
+/** Engine options for a reviewer that wrote notes. Do not share with execute: an artifact outside its contract blocks the task. */
+export function withReviewNotes(options = {}) {
+  return { ...options, fakeArtifacts: [...(options.fakeArtifacts ?? []), REVIEW_NOTES_ARTIFACT] };
 }

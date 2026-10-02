@@ -11,7 +11,8 @@ function tty(): boolean {
 function rl(): Interface {
   shared ??= createInterface({
     input: process.stdin,
-    output: process.stdout,
+    // stdout is reserved for the one JSON document produced by --json commands.
+    output: process.stderr,
     terminal: tty(),
   });
   return shared;
