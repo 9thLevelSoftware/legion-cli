@@ -1,4 +1,4 @@
-import { toPosixPath } from "@9thlevelsoftware/legion-cli-persist";
+import { overlapsEngineProtectedPath, toPosixPath } from "@9thlevelsoftware/legion-cli-persist";
 import type { FileContract } from "@9thlevelsoftware/legion-cli-schema";
 
 function posixify(path: string): string {
@@ -45,6 +45,7 @@ export function isForbiddenSpawnPath(path: string, contract?: FileContract): boo
   if (looksLikeSshKey(posix) || looksLikeSshKey(raw.replaceAll("\\", "/"))) return true;
   if (looksLikeEnv(posix)) return true;
   if (looksLikeIndexOrConfig(posix)) return true;
+  if (overlapsEngineProtectedPath(posix)) return true;
 
   if (contract) {
     const allowed = new Set([...contract.filesAllowed, ...contract.expectedArtifacts]);

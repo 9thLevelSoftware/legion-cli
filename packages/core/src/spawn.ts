@@ -49,6 +49,7 @@ import {
   openEngineCommand,
   recordLiveRunAgent,
   RestoreRefusedError,
+  canonicalJson,
   type LegionReader,
   type LiveRunMarker,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -64,6 +65,7 @@ import {
   ResumeFileSchema,
   SCHEMA_VERSION,
   type CurrentResumeFile,
+  type AssurancePlan,
   type AdapterId,
   type FileContract,
   type LegionConfig,
@@ -72,6 +74,7 @@ import {
   type SkillId,
 } from "@9thlevelsoftware/legion-cli-schema";
 import {
+  assembleGovernedMcpArguments,
   LegionMcpClientPool,
   MCP_CONNECT_TIMEOUT_MS,
   MCP_POOL_MAX,
@@ -79,7 +82,14 @@ import {
   MCP_TOOL_TIMEOUT_MS,
   stableHash,
 } from "@9thlevelsoftware/legion-cli-http";
-import type { HttpToolHost } from "@9thlevelsoftware/legion-cli-http";
+import type { ApprovedHttpAssuranceContext, HttpToolHost } from "@9thlevelsoftware/legion-cli-http";
+import {
+  createGovernedHttpCapability,
+  type CreateGovernedHttpCapabilityOptions,
+  type CreateGovernedHttpCapabilityResult,
+} from "./assurance-flow.js";
+import type { LegionStore } from "@9thlevelsoftware/legion-cli-persist";
+import type { GovernedMcpDescriptor } from "./assurance-flow.js";
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
@@ -323,8 +333,33 @@ export type SkillSpawnOpts = {
   allowNoSandbox?: boolean;
   /** Test-only resource owned by this spawn; governed MCP uses the same lifecycle slot. */
   resourceCleanup?: () => Promise<void>;
+  governed?: Omit<
+    CreateGovernedHttpCapabilityOptions,
+    | "store"
+    | "withLock"
+    | "runId"
+    | "skillId"
+    | "sourceFingerprint"
+    | "jailFingerprint"
+    | "jailRoot"
+    | "allowedWrites"
+    | "filesForbidden"
+    | "artifactPaths"
+    | "resolveCurrentContext"
+  > & {
+    store: LegionStore;
+    withLock: <T>(runId: string, callback: () => Promise<T>) => Promise<T>;
+    resolveCurrentContext: (identity: {
+      runId: string;
+      sourceFingerprint: string;
+      jailFingerprint: string;
+      jailRoot: string;
+      allowedWrites: readonly string[];
+      filesForbidden: readonly string[];
+      artifactPaths: readonly string[];
+    }) => Promise<ApprovedHttpAssuranceContext>;
+  };
 };
-
 type SpawnRevertCtx = {
   projectRoot: string;
   preSpawnRef: string | null;
@@ -474,6 +509,99 @@ async function governedMcpBridge(config: LegionConfig): Promise<GovernedMcpBridg
     close: () => pool.closeAll(),
   };
 }
+function reviewRunContract(value: unknown, runId: string): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const contract = value as Record<string, unknown>;
+  if (typeof contract.artifact !== "string" || !contract.artifact.includes("<runId>")) return undefined;
+  return { ...contract, artifact: contract.artifact.replaceAll("<runId>", runId) };
+}
+
+async function governedHttpMcpCapability(
+  config: LegionConfig,
+  plan: AssurancePlan,
+): Promise<{
+  externalTools: GovernedMcpDescriptor[];
+  assembleMcpArguments: NonNullable<CreateGovernedHttpCapabilityOptions["assembleMcpArguments"]>;
+  dispatchMcp: NonNullable<CreateGovernedHttpCapabilityOptions["dispatchMcp"]>;
+  close: () => Promise<void>;
+}> {
+  const grants = plan.security.externalCalls.filter((grant) => grant.effect === "http-mcp");
+  if (grants.length === 0) {
+    const refuse = () => { throw new Error("policy-denied"); };
+    return { externalTools: [], assembleMcpArguments: refuse, dispatchMcp: async () => refuse(), close: async () => undefined };
+  }
+  const allowlist = config.mcpHttpToolAllowlist;
+  const pool = new LegionMcpClientPool(config.mcpServers ?? {}, { governedHttpToolAllowlist: allowlist });
+  try {
+    const listed = await pool.listAllTools();
+    const allowedTools = listed.filter((tool) => tool.readOnly && allowlist.includes(tool.name));
+    const schemaFingerprint = governedMcpToolContractIdentity(allowedTools);
+    const externalTools: GovernedMcpDescriptor[] = [];
+    const toolsByGrant = new Map<string, { name: string; inputSchema: Record<string, unknown>; authority: Readonly<Record<string, unknown>> }>();
+    for (const grant of grants) {
+      if (!grant.tool || !grant.authority || typeof grant.authority !== "object" || Array.isArray(grant.authority)) {
+        throw new Error(`approved MCP grant ${grant.id} has no fixed tool authority`);
+      }
+      const tool = allowedTools.find((candidate) => candidate.name === grant.tool);
+      if (!tool) throw new Error(`approved MCP grant ${grant.id} has no approved read-only HTTP tool`);
+      const server = config.mcpServers?.[tool.serverName];
+      if (!server || server.transport !== "streamable-http") {
+        throw new Error(`approved MCP grant ${grant.id} does not resolve to streamable HTTP`);
+      }
+      externalTools.push({
+        grantId: grant.id,
+        tool: grant.tool,
+        transport: "streamable-http",
+        transportFingerprint: stableHash({
+          transport: server.transport,
+          url: server.url,
+          allowLoopback: server.allowLoopback,
+          authTokenEnv: server.authTokenEnv ?? null,
+        }),
+        schemaFingerprint,
+        fixedAuthority: grant.authority as Readonly<Record<string, unknown>>,
+      });
+      toolsByGrant.set(grant.id, { name: tool.name, inputSchema: tool.inputSchema, authority: grant.authority as Readonly<Record<string, unknown>> });
+    }
+    const toolFor = (descriptor: GovernedMcpDescriptor) => {
+      const tool = toolsByGrant.get(descriptor.grantId);
+      if (!tool) throw new Error("policy-denied");
+      if (descriptor.schemaFingerprint !== schemaFingerprint) throw new Error("stale-authority");
+      return tool;
+    };
+    return {
+      externalTools,
+      assembleMcpArguments(descriptor, data) {
+        const tool = toolFor(descriptor);
+        if (canonicalJson(descriptor.fixedAuthority) !== canonicalJson(tool.authority)) throw new Error("policy-denied");
+        return assembleGovernedMcpArguments(tool.inputSchema, tool.authority, data);
+      },
+      async dispatchMcp(descriptor, args, signal) {
+        const tool = toolFor(descriptor);
+        const capture = await pool.callGovernedHttpToolCaptured(tool.name, { ...args }, descriptor.schemaFingerprint, signal);
+        if (!capture) throw new Error("transport-failure");
+        if (capture.result?.isError) {
+          return {
+            failureCode: "transport-failure",
+            responseBytes: capture.responseBytes,
+            responseDigest: capture.responseDigest,
+          };
+        }
+        if (!capture.result) throw new Error("transport-failure");
+        return {
+          content: new TextEncoder().encode(canonicalJson(capture.result)),
+          responseBytes: capture.responseBytes,
+          responseDigest: capture.responseDigest,
+        };
+      },
+      close: () => pool.closeAll(),
+    };
+  } catch (err) {
+    await pool.closeAll().catch(() => undefined);
+    throw err;
+  }
+}
+
 
 export type ResumeOwnerStatus = "live" | "stale" | "unknown" | "terminal";
 export type RunRecoveryStatus = {
@@ -770,6 +898,9 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     taskProfile: opts.taskProfile,
     cliProfile: opts.cliProfile,
   });
+  if (opts.governed && resolution.id !== "http") {
+    refuse(`information-flow execution requires HTTP transport; resolved ${resolution.id}`, HINT.doctor);
+  }
   const effectiveConfig = resolution.profileConfig ? applyProfileArgs(opts.config, {
     adapterId: resolution.id,
     source: resolution.source,
@@ -783,51 +914,55 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     ...(resolution.profileConfig ? { config: resolution.profileConfig } : {}),
   });
 
-  if (!(await isResolvedAdapterSpawnable(effectiveConfig, resolution.id))) {
+  if (!opts.governed && !(await isResolvedAdapterSpawnable(effectiveConfig, resolution.id))) {
     if (opts.required) {
       refuse(spawnableAdapterRefuseMessage(opts.skillId, resolution), HINT.doctor);
     }
     return { spawned: false, runId, resolution };
   }
 
-  const skillsDir = opts.skillsDir ?? findSkillsDir();
-  const required = Boolean(opts.required) || isRequiredSkillId(opts.skillId);
-  const resolved = await resolveSkillDir({
-    projectRoot: opts.projectRoot,
-    skillId: opts.skillId,
-    packagedSkillsDir: skillsDir,
-  });
-  if (!resolved.ok) {
-    if (required || resolved.pinned) {
-      refuse(resolved.reason, skillMissingHint(opts.skillId));
+  let skillsDir: string | undefined;
+  let skillDir: string | undefined;
+  if (!opts.governed) {
+    skillsDir = opts.skillsDir ?? findSkillsDir();
+    const required = Boolean(opts.required) || isRequiredSkillId(opts.skillId);
+    const resolved = await resolveSkillDir({
+      projectRoot: opts.projectRoot,
+      skillId: opts.skillId,
+      packagedSkillsDir: skillsDir,
+    });
+    if (!resolved.ok) {
+      if (required || resolved.pinned) {
+        refuse(resolved.reason, skillMissingHint(opts.skillId));
+      }
+      return { spawned: false, runId, resolution };
     }
-    return { spawned: false, runId, resolution };
-  }
-  const skillDir = resolved.skillDir;
-  const skillMd = join(skillDir, "SKILL.md");
-  let skillRaw: string;
-  try {
-    skillRaw = await readFile(skillMd, "utf8");
-  } catch {
-    if (required || resolved.source === "overlay") {
-      refuse(
-        resolved.source === "overlay"
-          ? `${opts.skillId} overlay is missing SKILL.md`
-          : `${opts.skillId} requires skills/${opts.skillId}/SKILL.md`,
-        skillMissingHint(opts.skillId),
-      );
+    skillDir = resolved.skillDir;
+    const skillMd = join(skillDir, "SKILL.md");
+    let skillRaw: string;
+    try {
+      skillRaw = await readFile(skillMd, "utf8");
+    } catch {
+      if (required || resolved.source === "overlay") {
+        refuse(
+          resolved.source === "overlay"
+            ? `${opts.skillId} overlay is missing SKILL.md`
+            : `${opts.skillId} requires skills/${opts.skillId}/SKILL.md`,
+          skillMissingHint(opts.skillId),
+        );
+      }
+      return { spawned: false, runId, resolution };
     }
-    return { spawned: false, runId, resolution };
-  }
-  const parsed = parseSkillFrontmatter(skillRaw, skillCatalogPath(opts.skillId, resolved.source));
-  if (!parsed.ok) {
-    if (required || resolved.source === "overlay") {
-      refuse(
-        `${opts.skillId} requires valid ${skillCatalogPath(opts.skillId, resolved.source)} frontmatter (${parsed.reason})`,
-        skillMissingHint(opts.skillId),
-      );
+    const parsed = parseSkillFrontmatter(skillRaw, skillCatalogPath(opts.skillId, resolved.source));
+    if (!parsed.ok) {
+      if (required || resolved.source === "overlay") {
+        refuse(
+          `${opts.skillId} requires valid ${skillCatalogPath(opts.skillId, resolved.source)} frontmatter (${parsed.reason})`,
+          skillMissingHint(opts.skillId),
+        );
+      }
+      return { spawned: false, runId, resolution };
     }
-    return { spawned: false, runId, resolution };
   }
 
   const adapter = resolveAdapter(effectiveConfig, {
@@ -854,32 +989,34 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   const filesForbidden = opts.filesForbidden ?? opts.fileContract?.filesForbidden;
   const allowedRoots = [...contract.allowedRoots, ...extraAllowedRoots];
 
-  await stageSkill({
-    projectRoot: opts.projectRoot,
-    runId,
-    skillDir,
-    craftDir: existsSync(join(opts.projectRoot, ".legion-cli", "design", "craft"))
-      ? join(opts.projectRoot, ".legion-cli", "design", "craft")
-      : undefined,
-  });
-  const assembled = await assembleSpawnPrompt({
-    projectRoot: opts.projectRoot,
-    runId,
-    skillId: opts.skillId,
-    skillDir,
-    skillsDir,
-    // the run id is only known here; prompts name run-cache paths with a literal <id>
-    promptBody: opts.promptBody.replaceAll("<id>", runId),
-    allowedRoots,
-    fileContract: opts.fileContract,
-    store: opts.store,
-  });
-  const promptPath = await writeRunPrompt({
-    projectRoot: opts.projectRoot,
-    runId,
-    body: assembled.body,
-    skipDesignAppend: assembled.skipDesignAppend,
-  });
+  let promptPath: string | undefined;
+  if (!opts.governed) {
+    await stageSkill({
+      projectRoot: opts.projectRoot,
+      runId,
+      skillDir: skillDir!,
+      craftDir: existsSync(join(opts.projectRoot, ".legion-cli", "design", "craft"))
+        ? join(opts.projectRoot, ".legion-cli", "design", "craft")
+        : undefined,
+    });
+    const assembled = await assembleSpawnPrompt({
+      projectRoot: opts.projectRoot,
+      runId,
+      skillId: opts.skillId,
+      skillDir: skillDir!,
+      skillsDir,
+      promptBody: opts.promptBody.replaceAll("<id>", runId),
+      allowedRoots,
+      fileContract: opts.fileContract,
+      store: opts.store,
+    });
+    promptPath = await writeRunPrompt({
+      projectRoot: opts.projectRoot,
+      runId,
+      body: assembled.body,
+      skipDesignAppend: assembled.skipDesignAppend,
+    });
+  }
   const preSpawnRef = recordPreSpawnRef(opts.projectRoot);
   const extraRoots = allowedRoots.filter((root) => root.startsWith(".legion-cli/"));
   await openEngineCommand(opts.projectRoot, runId, { extraRoots });
@@ -928,8 +1065,13 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
 
   let sandbox: SandboxHandle | undefined;
   let allowedWrites: string[] = [];
+  let governedMcp: Awaited<ReturnType<typeof governedHttpMcpCapability>> | undefined;
   let mcpBridge: GovernedMcpBridge | undefined;
   const jailed = isJailedSpawn(opts.skillId, opts.config.sandbox.skills, resolution.id);
+  if (opts.governed && !jailed) {
+    refuse("information-flow execution requires a sandboxed HTTP jail", HINT.allowNoSandbox);
+  }
+  let governedCapability: CreateGovernedHttpCapabilityResult | undefined;
   if (jailed) {
     try {
       try {
@@ -939,13 +1081,18 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         throw err;
       }
       const filtered = filterSpawnEnv(process.env, adapter.id, adapter.binary);
-      allowedWrites = await sandboxAllowedWrites({
-        projectRoot: opts.projectRoot,
-        runId,
-        skillId: opts.skillId,
-        specId: opts.specId,
-        contract: opts.fileContract,
-      });
+      allowedWrites = opts.governed && opts.skillId === "review"
+        ? [`.legion-cli/cache/runs/${runId}/review.md`]
+        : await sandboxAllowedWrites({
+            projectRoot: opts.projectRoot,
+            runId,
+            skillId: opts.skillId,
+            specId: opts.specId,
+            contract: opts.fileContract,
+          });
+      const governedAllowedWrites = opts.skillId === "review" && opts.governed
+        ? allowedWrites
+        : [...(opts.fileContract?.filesAllowed ?? [])];
       const readSet = opts.skillId === "spec-challenge"
         ? await challengeReadableFiles(opts.projectRoot, [
             `.legion-cli/cache/skills/${runId}`,
@@ -977,7 +1124,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
           !opts.config.sandbox.requireHardened,
         credentialKeys: Object.keys(filtered),
       });
-      mcpBridge = resolution.id === "http" ? await governedMcpBridge(effectiveConfig) : undefined;
+      mcpBridge = resolution.id === "http" && !opts.governed ? await governedMcpBridge(effectiveConfig) : undefined;
       resume = {
         ...resume,
         jailIdentity: sandbox.identity,
@@ -989,13 +1136,53 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
           governedMcpConfig: mcpBridge?.configIdentity ?? null,
           governedMcpTools: mcpBridge?.toolContractIdentity ?? null,
         }),
-        ...(resolution.id === "http"
+        ...(!opts.governed && resolution.id === "http"
           ? { checkpointPath: `.legion-cli/cache/runs/${runId}/http-checkpoint.json` }
           : {}),
       };
-      await writeResumeRecord(opts.projectRoot, resume);
+      if (opts.governed) {
+        if (resolution.id !== "http" || !sandbox) {
+          refuse("information-flow capability requires a sandboxed HTTP spawn", HINT.allowNoSandbox);
+        }
+        governedMcp = await governedHttpMcpCapability(effectiveConfig, opts.governed.plan);
+        const { store, withLock, resolveCurrentContext, ...governed } = opts.governed;
+        const reviewContract = opts.skillId === "review"
+          ? reviewRunContract(governed.reviewContract, runId)
+          : undefined;
+        if (opts.skillId === "review" && !reviewContract) throw new Error("information-flow review requires its fixed run-specific artifact contract");
+        const boundGoverned = reviewContract
+          ? { ...governed, reviewContract, contractFingerprint: stableHash(reviewContract) }
+          : governed;
+        const runtimeIdentity = {
+          runId,
+          sourceFingerprint: sourceIdentity,
+          jailFingerprint: sandbox.identity,
+          jailRoot: sandbox.jailRoot,
+          allowedWrites: governedAllowedWrites,
+          filesForbidden: filesForbidden ?? [],
+          artifactPaths: opts.fileContract?.expectedArtifacts ?? [],
+        };
+        governedCapability = await createGovernedHttpCapability({
+          ...boundGoverned,
+          store,
+          withLock: (callback) => withLock(runId, callback),
+          resolveCurrentContext: () => resolveCurrentContext(runtimeIdentity),
+          externalTools: governedMcp.externalTools,
+          assembleMcpArguments: governedMcp.assembleMcpArguments,
+          dispatchMcp: governedMcp.dispatchMcp,
+          runId,
+          skillId: opts.skillId,
+          sourceFingerprint: sourceIdentity,
+          jailFingerprint: sandbox.identity,
+          jailRoot: sandbox.jailRoot,
+          allowedWrites: governedAllowedWrites,
+          filesForbidden: filesForbidden ?? [],
+          artifactPaths: opts.fileContract?.expectedArtifacts ?? [],
+        });
+      }
     } catch (err) {
       await mcpBridge?.close().catch(() => undefined);
+      await governedMcp?.close().catch(() => undefined);
       await sandbox?.destroy().catch(() => undefined);
       await updateResumeStage(opts.projectRoot, runId, "interrupted", {
         pid: null,
@@ -1019,6 +1206,8 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       taskId: opts.taskId ?? null,
     });
   } catch (err) {
+    await mcpBridge?.close().catch(() => undefined);
+    await governedMcp?.close().catch(() => undefined);
     await sandbox?.destroy().catch(() => undefined);
     throw err;
   }
@@ -1028,11 +1217,9 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     const env: Record<string, string> = spawnOpts
       ? Object.fromEntries(Object.entries(spawnOpts.env).filter((entry): entry is [string, string] => entry[1] !== undefined))
       : filterSpawnEnv(process.env, adapter.id, adapter.binary);
-    handle = await adapter.spawn({
+    const commonJob = {
       runId,
       skillId: opts.skillId,
-      promptPath,
-      pointerPrompt: buildPointerPrompt(runId, opts.skillId),
       cwd: spawnOpts?.cwd ?? opts.projectRoot,
       timeoutMs: DEFAULT_TIMEOUT_MS,
       env,
@@ -1062,23 +1249,38 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         : {}),
       expectedArtifacts: opts.fakeArtifacts,
       ...(spawnOpts?.wrapper ? { wrapper: spawnOpts.wrapper } : {}),
-      ...(sandbox && resolution.id === "http"
-        ? {
-            httpHost: createHttpToolHost({
-              jailRoot: sandbox.jailRoot,
-              allowedWrites: httpAllowedWrites(allowedWrites),
-              filesForbidden,
-              hardened: sandbox.hardened,
-              spawnOpts: spawnOpts ?? { cwd: sandbox.jailRoot, env },
-              ...(mcpBridge
-                ? { externalTools: mcpBridge.externalTools, callExternalTool: mcpBridge.callExternalTool }
-                : {}),
-            }),
-          }
-        : {}),
-    });
+    };
+    if (governedCapability) {
+      handle = await adapter.spawn({
+        ...commonJob,
+        assuranceContext: governedCapability.assuranceContext,
+        effectHost: governedCapability.effectHost,
+      });
+    } else {
+      if (!promptPath) throw new Error("legacy spawn requires a prepared prompt");
+      handle = await adapter.spawn({
+        ...commonJob,
+        promptPath,
+        pointerPrompt: buildPointerPrompt(runId, opts.skillId),
+        ...(sandbox && resolution.id === "http"
+          ? {
+              httpHost: createHttpToolHost({
+                jailRoot: sandbox.jailRoot,
+                allowedWrites: httpAllowedWrites(allowedWrites),
+                filesForbidden,
+                hardened: sandbox.hardened,
+                spawnOpts: spawnOpts ?? { cwd: sandbox.jailRoot, env },
+                ...(mcpBridge
+                  ? { externalTools: mcpBridge.externalTools, callExternalTool: mcpBridge.callExternalTool }
+                  : {}),
+              }),
+            }
+          : {}),
+      });
+    }
   } catch (err) {
     await mcpBridge?.close().catch(() => undefined);
+    await governedMcp?.close().catch(() => undefined);
     await sandbox?.destroy().catch(() => undefined);
     await updateResumeStage(opts.projectRoot, runId, "interrupted", {
       pid: null,
@@ -1140,11 +1342,12 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     binary: tmpl.binary,
     argvSummary,
     sandbox,
-    ...(mcpBridge || opts.resourceCleanup
+    ...(mcpBridge || governedMcp || opts.resourceCleanup
       ? {
           resourceCleanup: async () => {
             await Promise.all([
               ...(mcpBridge ? [mcpBridge.close()] : []),
+              ...(governedMcp ? [governedMcp.close()] : []),
               ...(opts.resourceCleanup ? [opts.resourceCleanup()] : []),
             ]);
           },
@@ -1195,7 +1398,7 @@ export async function resumeHttpSkillSpawn(
     resume.skillId !== "execute" ||
     resume.adapterId !== "http" ||
     resume.taskId !== opts.taskId ||
-    !resume.checkpointPath ||
+    (opts.governed ? resume.checkpointPath !== undefined : !resume.checkpointPath) ||
     !resume.sourceIdentity ||
     !resume.contractIdentity ||
     !resume.jailIdentity ||
@@ -1242,6 +1445,7 @@ export async function resumeHttpSkillSpawn(
     specId: opts.specId,
     contract: opts.fileContract,
   });
+  const governedAllowedWrites = [...(opts.fileContract?.filesAllowed ?? [])];
   const adapter = resolveAdapter(effectiveConfig, { id: "http" });
   const tmpl = templateArgv("http", effectiveConfig);
   const filtered = filterSpawnEnv(process.env, adapter.id, adapter.binary);
@@ -1270,9 +1474,11 @@ export async function resumeHttpSkillSpawn(
   const chatSessions = await snapshotChatSessions(opts.projectRoot);
   let handle: AgentHandle;
   let mcpBridge: GovernedMcpBridge | undefined;
+  let governedCapability: CreateGovernedHttpCapabilityResult | undefined;
+  let governedMcp: Awaited<ReturnType<typeof governedHttpMcpCapability>> | undefined;
   let liveMarker: LiveRunMarker | undefined;
   try {
-    mcpBridge = await governedMcpBridge(effectiveConfig);
+    mcpBridge = opts.governed ? undefined : await governedMcpBridge(effectiveConfig);
     const contractIdentity = stableHash({
       skillId: opts.skillId,
       allowedWrites,
@@ -1284,21 +1490,48 @@ export async function resumeHttpSkillSpawn(
     if (contractIdentity !== resume.contractIdentity) {
       refuse(`execute resume ${opts.runId} refused because the task or governed MCP contract changed`, HINT.status);
     }
+    if (opts.governed) {
+      governedMcp = await governedHttpMcpCapability(effectiveConfig, opts.governed.plan);
+      const { store, withLock, resolveCurrentContext, ...governed } = opts.governed;
+      const runtimeIdentity = {
+        runId: opts.runId,
+        sourceFingerprint: sourceIdentity,
+        jailFingerprint: sandbox.identity,
+        jailRoot: sandbox.jailRoot,
+        allowedWrites: governedAllowedWrites,
+        filesForbidden: filesForbidden ?? [],
+        artifactPaths: opts.fileContract?.expectedArtifacts ?? [],
+      };
+      governedCapability = await createGovernedHttpCapability({
+        ...governed,
+        store,
+        withLock: (callback) => withLock(opts.runId, callback),
+        resolveCurrentContext: () => resolveCurrentContext(runtimeIdentity),
+        externalTools: governedMcp.externalTools,
+        assembleMcpArguments: governedMcp.assembleMcpArguments,
+        dispatchMcp: governedMcp.dispatchMcp,
+        runId: opts.runId,
+        skillId: opts.skillId,
+        sourceFingerprint: sourceIdentity,
+        jailFingerprint: sandbox.identity,
+        jailRoot: sandbox.jailRoot,
+        allowedWrites: governedAllowedWrites,
+        filesForbidden: filesForbidden ?? [],
+        artifactPaths: opts.fileContract?.expectedArtifacts ?? [],
+      });
+    }
     liveMarker = await createLiveRun(opts.projectRoot, {
       runId: opts.runId,
       skillId: opts.skillId,
       taskId: opts.taskId ?? null,
     });
-    handle = await adapter.spawn({
+    const commonJob = {
       runId: opts.runId,
       skillId: opts.skillId,
-      promptPath,
-      pointerPrompt: buildPointerPrompt(opts.runId, opts.skillId),
       cwd: spawnOpts.cwd,
       timeoutMs: DEFAULT_TIMEOUT_MS,
       env,
       resume: true,
-      checkpointRoot: opts.projectRoot,
       sourceIdentity,
       contractIdentity,
       ...(mcpBridge ? { externalConfigIdentity: mcpBridge.configIdentity } : {}),
@@ -1312,19 +1545,32 @@ export async function resumeHttpSkillSpawn(
         ? { maxEstimatedCostUsd: resolution.profileConfig.limits.maxEstimatedCostUsd }
         : {}),
       ...(resolution.profileConfig?.pricing ? { pricing: resolution.profileConfig.pricing } : {}),
-      httpHost: createHttpToolHost({
-        jailRoot: sandbox.jailRoot,
-        allowedWrites: httpAllowedWrites(allowedWrites),
-        filesForbidden,
-        hardened: sandbox.hardened,
-        spawnOpts,
-        ...(mcpBridge
-          ? { externalTools: mcpBridge.externalTools, callExternalTool: mcpBridge.callExternalTool }
-          : {}),
-      }),
-    });
+    };
+    handle = governedCapability
+      ? await adapter.spawn({
+          ...commonJob,
+          assuranceContext: governedCapability.assuranceContext,
+          effectHost: governedCapability.effectHost,
+        })
+      : await adapter.spawn({
+          ...commonJob,
+          checkpointRoot: opts.projectRoot,
+          promptPath,
+          pointerPrompt: buildPointerPrompt(opts.runId, opts.skillId),
+          httpHost: createHttpToolHost({
+            jailRoot: sandbox.jailRoot,
+            allowedWrites: httpAllowedWrites(allowedWrites),
+            filesForbidden,
+            hardened: sandbox.hardened,
+            spawnOpts,
+            ...(mcpBridge
+              ? { externalTools: mcpBridge.externalTools, callExternalTool: mcpBridge.callExternalTool }
+              : {}),
+          }),
+        });
   } catch (err) {
     await mcpBridge?.close().catch(() => undefined);
+    await governedMcp?.close().catch(() => undefined);
     if (liveMarker) await clearLiveRun(opts.projectRoot, opts.runId).catch(() => undefined);
     // The retained jail remains available after a failed resume attempt.
     throw err;
@@ -1349,6 +1595,8 @@ export async function resumeHttpSkillSpawn(
     }
     await writeLiveSpawnMarker(opts.projectRoot, opts.skillId, opts.runId);
   } catch (err) {
+    await mcpBridge?.close().catch(() => undefined);
+    await governedMcp?.close().catch(() => undefined);
     await handle.abort().catch(() => undefined);
     await clearLiveRun(opts.projectRoot, opts.runId).catch(() => undefined);
     await clearLiveSpawnMarker(opts.projectRoot, opts.runId).catch(() => undefined);
@@ -1384,7 +1632,14 @@ export async function resumeHttpSkillSpawn(
     binary: tmpl.binary,
     argvSummary: `POST /chat/completions model=${effectiveConfig.adapter.http?.model ?? ""}`,
     sandbox,
-    ...(mcpBridge ? { resourceCleanup: mcpBridge.close } : {}),
+    ...(mcpBridge || governedMcp
+      ? { resourceCleanup: async () => {
+          await Promise.all([
+            ...(mcpBridge ? [mcpBridge.close()] : []),
+            ...(governedMcp ? [governedMcp.close()] : []),
+          ]);
+        } }
+      : {}),
   };
 }
 

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdir, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { materializeJail } from "@9thlevelsoftware/legion-cli-sandbox";
-import type { AdapterProfile, LegionConfig } from "@9thlevelsoftware/legion-cli-schema";
+import { assertAgentPathAllowed, assertNoLinkInPath, atomicWriteFile, canonicalJson, overlapsEngineProtectedPath, parseStrictJson } from "@9thlevelsoftware/legion-cli-persist";
+import { materializeJail, runComponentValidator, snapshotComponentFiles, type ComponentValidationResult } from "@9thlevelsoftware/legion-cli-sandbox";
+import { ComponentInputSchema, ComponentInvocationSchema, JsonContractConfigurationSchema, jsonContractFiles, validateComponentInvocation, type AdapterProfile, type ComponentInput, type ComponentInvocation, type LegionConfig } from "@9thlevelsoftware/legion-cli-schema";
 import type { HttpToolHost } from "@9thlevelsoftware/legion-cli-http";
 import { AgentError } from "./errors.js";
 import { filterSpawnEnv } from "./env.js";
@@ -50,6 +51,7 @@ export type GovernedExtensionResult = {
   stdoutPath: string;
   stderrPath: string;
   summaryPath?: string;
+  componentResults?: { projectCheckId: string; result: ComponentValidationResult }[];
 };
 
 export function createExtensionRunId(extensionId: string, now = Date.now(), uuid = randomUUID()): string {
@@ -69,6 +71,7 @@ function readRoot(pattern: string): string | undefined {
   if (!posix || /[?*\[]/.test(posix) || posix.startsWith("/") || /^[A-Za-z]:/.test(posix) || posix.split("/").includes("..")) return undefined;
   const root = posix.replace(/\/+$/, "");
   if (!root || root === "." || root === ".git" || root.startsWith(".git/") || root === ".env" || root.startsWith(".env.")) return undefined;
+  if (overlapsEngineProtectedPath(root)) return undefined;
   return root;
 }
 
@@ -194,9 +197,142 @@ export function extensionReadSet(manifest: ExtensionManifest, runId: string): st
   ]);
   for (const permission of manifest.permissions.read) {
     const root = readRoot(permission);
-    if (root) readSet.add(root);
+    if (!root) throw new AgentError(`extension read permission is unsafe: ${permission}`);
+    readSet.add(root);
   }
   return [...readSet];
+}
+
+export async function readComponentInvocation(path: string): Promise<ComponentInvocation> {
+  const file = await open(path, "r");
+  try {
+    if (!(await file.stat()).isFile()) throw new AgentError("validator input must be a regular JSON file");
+    const bytes = Buffer.alloc(1024 * 1024 + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const read = await file.read(bytes, length, bytes.length - length, null);
+      if (!read.bytesRead) break;
+      length += read.bytesRead;
+    }
+    if (length > 1024 * 1024) throw new AgentError("validator input exceeds 1 MiB");
+    return ComponentInvocationSchema.parse(parseStrictJson(bytes.subarray(0, length), { maxBytes: 1024 * 1024, maxDepth: 32 }));
+  } finally {
+    await file.close();
+  }
+}
+
+async function runComponentExtension(opts: {
+  projectRoot: string;
+  extensionDir: string;
+  manifest: ExtensionManifest;
+  profile?: string;
+  componentInvocation?: ComponentInvocation;
+  approvedComponentInputs?: readonly ComponentInput[];
+}): Promise<GovernedExtensionResult> {
+  const runtime = opts.manifest.runtime!;
+  if (opts.profile !== undefined) throw new AgentError("--profile is not supported for component runtimes");
+  if (opts.manifest.permissions.commands.length || opts.manifest.requiredTools.length ||
+      opts.manifest.allowedTools.some((tool) => tool !== "Read") ||
+      opts.manifest.permissions.write.some((path) => path !== ".legion-cli/extensions/runs/**")) {
+    throw new AgentError("component runtimes cannot declare commands, host tools, or product writes");
+  }
+  if (opts.componentInvocation && opts.approvedComponentInputs) {
+    throw new AgentError("standalone invocation and approved component inputs are mutually exclusive");
+  }
+  if (!opts.componentInvocation && !opts.approvedComponentInputs) {
+    throw new AgentError("component runtimes require --validator-input");
+  }
+  const roots = opts.manifest.permissions.read.map((permission) => {
+    const root = readRoot(permission);
+    if (!root) throw new AgentError(`extension read permission is unsafe: ${permission}`);
+    return root;
+  });
+  const inputs: ComponentInput[] = [];
+  if (opts.componentInvocation) {
+    const invocation = ComponentInvocationSchema.parse(opts.componentInvocation);
+    validateComponentInvocation(invocation, opts.manifest.requiredChecks);
+    for (const id of opts.manifest.requiredChecks) {
+      const check = invocation.checks.find((entry) => entry.id === id)!;
+      for (const path of check.files) {
+        if (!roots.some((root) => path === root || path.startsWith(`${root}/`))) {
+          throw new AgentError(`component input is outside permissions.read: ${path}`);
+        }
+        await assertAgentPathAllowed(opts.projectRoot, path);
+      }
+      inputs.push(ComponentInputSchema.parse({
+        abi: runtime.abi, projectCheckId: id, extensionCheckId: id, acceptanceIds: [], unitIds: [],
+        configuration: check.configuration, files: await snapshotComponentFiles(opts.projectRoot, check.files), units: [],
+      }));
+    }
+  } else {
+    if (!opts.approvedComponentInputs!.length || opts.approvedComponentInputs!.length > 256) {
+      throw new AgentError("approved component inputs require 1–256 selected checks");
+    }
+    for (const packet of opts.approvedComponentInputs!) inputs.push(ComponentInputSchema.parse(packet));
+  }
+  const selected = new Set<string>();
+  const selectedExtensionChecks = new Set<string>();
+  for (const input of inputs) {
+    if (!opts.manifest.requiredChecks.includes(input.extensionCheckId) || selected.has(input.projectCheckId) || selectedExtensionChecks.has(input.extensionCheckId)) {
+      throw new AgentError("component inputs require declared checks and distinct project and extension check IDs");
+    }
+    selected.add(input.projectCheckId);
+    selectedExtensionChecks.add(input.extensionCheckId);
+    for (const record of [...input.files, ...input.units]) {
+      if (!roots.some((root) => record.path === root || record.path.startsWith(`${root}/`))) {
+        throw new AgentError(`component input is outside permissions.read: ${record.path}`);
+      }
+      await assertAgentPathAllowed(opts.projectRoot, record.path);
+      await assertNoLinkInPath(join(opts.projectRoot, ...record.path.split("/")), { root: opts.projectRoot });
+    }
+    if (opts.manifest.extensionId === "json-contract") {
+      const configuration = JsonContractConfigurationSchema.parse(input.configuration);
+      const declared = new Set(input.files.map((file) => file.path));
+      for (const assertion of configuration.assertions) {
+        for (const path of jsonContractFiles(assertion.predicate)) {
+          if (!declared.has(path)) throw new AgentError(`JSON-contract predicate references undeclared raw input: ${path}`);
+        }
+      }
+    }
+  }
+  const runId = createExtensionRunId(opts.manifest.extensionId);
+  const evidenceRoot = `.legion-cli/extensions/runs/${runId}`;
+  const directory = join(opts.projectRoot, ...evidenceRoot.split("/"));
+  await assertNoLinkInPath(directory, { root: opts.projectRoot });
+  await mkdir(directory, { recursive: true });
+  await assertNoLinkInPath(directory, { root: opts.projectRoot });
+  const checks: ExtensionCheck[] = [];
+  const recommendations: ExtensionRecommendation[] = [];
+  const componentResults: { projectCheckId: string; result: ComponentValidationResult }[] = [];
+  for (const input of inputs) {
+    const result = await runComponentValidator(input, {
+      componentPath: join(opts.extensionDir, ...runtime.component.split("/")),
+      componentSha256: runtime.sha256,
+    });
+    componentResults.push({ projectCheckId: input.projectCheckId, result });
+    checks.push({
+      id: input.extensionCheckId, status: result.status,
+      detail: result.output ? canonicalJson(result.output.observations) : result.reason ?? "Component runtime unavailable",
+    });
+    if (result.output?.recommendations) recommendations.push(...result.output.recommendations);
+  }
+  const evidence = parseEvidence(canonicalJson({ schemaVersion: "legion-cli-extension-evidence/v1", extension: opts.manifest.ref, checks }), opts.manifest.ref, inputs.map((input) => input.extensionCheckId), []);
+  const evidencePath = `${evidenceRoot}/evidence.json`;
+  await atomicWriteFile(join(directory, "evidence.json"), canonicalJson(evidence), { root: opts.projectRoot });
+  const boundedRecommendations = recommendations.slice(0, 32);
+  const copied = [evidencePath];
+  if (boundedRecommendations.length) {
+    await atomicWriteFile(join(directory, "recommendations.json"), canonicalJson({ recommendations: boundedRecommendations }), { root: opts.projectRoot });
+    copied.push(`${evidenceRoot}/recommendations.json`);
+  }
+  await atomicWriteFile(join(directory, "stdout.log"), canonicalJson(componentResults.map((entry) => entry.result.output)), { root: opts.projectRoot });
+  await atomicWriteFile(join(directory, "stderr.log"), canonicalJson(componentResults.map((entry) => entry.result.reason)), { root: opts.projectRoot });
+  return {
+    runId, status: checks.every((check) => check.status === "passed") ? "complete" : "failed",
+    adapterId: "wasi-component", backend: "wasi-component", evidencePath, evidence,
+    recommendations: boundedRecommendations, componentResults, copied, dropped: [],
+    stdoutPath: `${evidenceRoot}/stdout.log`, stderrPath: `${evidenceRoot}/stderr.log`,
+  };
 }
 
 export async function runGovernedExtension(opts: {
@@ -205,6 +341,8 @@ export async function runGovernedExtension(opts: {
   manifest: ExtensionManifest;
   config: Pick<LegionConfig, "adapter" | "sandbox">;
   profile?: string;
+  componentInvocation?: ComponentInvocation;
+  approvedComponentInputs?: readonly ComponentInput[];
   fakeArtifacts?: FakeArtifact[];
   adapterOptions?: Omit<AdapterCreateOptions, "artifacts">;
   createHttpToolHost?: (opts: {
@@ -216,7 +354,14 @@ export async function runGovernedExtension(opts: {
   }) => HttpToolHost;
 }): Promise<GovernedExtensionResult> {
   await validateExtensionResources(opts.extensionDir, opts.manifest);
+  if (opts.manifest.runtime) return runComponentExtension(opts);
+  if (opts.componentInvocation || opts.approvedComponentInputs) {
+    throw new AgentError("--validator-input and approved component inputs are only supported for component runtimes");
+  }
   const runId = createExtensionRunId(opts.manifest.extensionId);
+  for (const root of extensionReadSet(opts.manifest, runId)) {
+    await assertAgentPathAllowed(opts.projectRoot, root);
+  }
   const selected = resolveAgentProfile(opts.config, {
     skillId: "execute",
     ...(opts.profile ? { cliProfile: opts.profile } : {}),

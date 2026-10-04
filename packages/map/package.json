@@ -46,6 +46,7 @@
   ],
   "dependencies": {
     "@9thlevelsoftware/legion-cli-persist": "workspace:*",
-    "@9thlevelsoftware/legion-cli-schema": "workspace:*"
+    "@9thlevelsoftware/legion-cli-schema": "workspace:*",
+    "typescript": "5.8.3"
   }
 }

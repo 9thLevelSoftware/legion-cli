@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[a-zA-Z0-9.-]+)?$"
+    },
+    "abi": {
+      "type": "string",
+      "const": "legion-validator/v1"
+    },
+    "target": {
+      "type": "string",
+      "enum": [
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin"
+      ]
+    },
+    "settingsDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "guard": {
+      "type": "string",
+      "enum": [
+        "windows-job-committed",
+        "unix-address-space"
+      ]
+    },
+    "guardVerified": {
+      "type": "boolean",
+      "const": true
+    }
+  },
+  "required": [
+    "version",
+    "abi",
+    "target",
+    "settingsDigest",
+    "guard",
+    "guardVerified"
+  ],
+  "additionalProperties": false
+}

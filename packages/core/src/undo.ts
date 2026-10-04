@@ -18,8 +18,9 @@ import {
 } from "@9thlevelsoftware/legion-cli-persist";
 import { HINT, LegionRefuseError, refuse } from "./errors.js";
 import { assertCanTransition, assertCanUndoTransition } from "./phases.js";
+import { statusAfterUndoDependency } from "@9thlevelsoftware/legion-cli-schema";
+import { assertTaskStatusTransition } from "./tasks.js";
 import { SHIP_COMMIT_PREFIX } from "./ship.js";
-import { assertTaskStatusTransition, statusAfterUndoDependency } from "./tasks.js";
 
 export type UndoResult = {
   taskId: string | null;

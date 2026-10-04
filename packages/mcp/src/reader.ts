@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { findSkillsDir, listResolvedSkillCatalog } from "@9thlevelsoftware/legion-cli-agents";
+import { loadWorkflowProjection } from "@9thlevelsoftware/legion-cli-dashboard";
 import { isTaskReady } from "@9thlevelsoftware/legion-cli-graph";
 import {
   createLegionStore,
@@ -217,6 +218,7 @@ export async function readStatus(store: LegionReader) {
       blockers.push({ kind: "task", id: task.id, detail: `${task.id} blocked  ${task.title}` });
     }
   }
+  const workflowProjection = await loadWorkflowProjection(store, state.phase, config);
   return {
     name: project?.name ?? null,
     mode: project?.mode ?? null,
@@ -229,6 +231,7 @@ export async function readStatus(store: LegionReader) {
     next: nextCommand(state, slice, project?.mode, config?.control_mode),
     blockers,
     viewer: viewerUrl(config),
+    ...workflowProjection,
   };
 }
 

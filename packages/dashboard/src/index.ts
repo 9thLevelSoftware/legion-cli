@@ -18,8 +18,8 @@ export {
 export { startDashboard, resolveDashboardListen, readLiveServe } from "./server.js";
 export type { DashboardHandle, DashboardOptions, McpHttpHandler } from "./server.js";
 export { ENGINE_WRITE_METHODS } from "./write.js";
-export { loadSnapshot, LIFECYCLE_PATH, KANBAN_COLUMNS } from "./snapshot.js";
-export type { DashboardSnapshot } from "./snapshot.js";
+export { loadSnapshot, loadWorkflowProjection, LIFECYCLE_PATH, KANBAN_COLUMNS } from "./snapshot.js";
+export type { DashboardSnapshot, DashboardWorkflow } from "./snapshot.js";
 export {
   WEBMCP_SCRIPT,
   WEBMCP_SCRIPT_PATH,

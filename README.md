@@ -257,6 +257,7 @@ See `legion-cli help --all` for the full rows. One sentence each:
 - `control-mode` — show or set `guarded|advisory` (refuses `autonomous`; `surgical` is removed — migrate to `guarded`).
 - `brownfield …` — effort 1–5 audit bookkeeping (separate from `init --mode brownfield`).
 - `context compact` — manual compaction of done tasks.
+- `context trace [validate]` — read-only governance epoch/trace inspection; `validate` exits 1 unless the current epoch is valid or not adopted.
 - `garden` — stale wiki, orphans, duplicates.
 - `packet new|respond` — PM/designer packets that spawn tickets, not execute.
 

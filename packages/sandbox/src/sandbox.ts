@@ -1,10 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { copyFile, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, dirname, join, relative, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
+  assertAgentControlPathAllowed,
+  assertAgentPathAllowed,
+  isEngineProtectedPath,
+  overlapsEngineProtectedPath,
   PathEscapeError,
   legionPaths,
   toFsPath,
@@ -281,6 +285,88 @@ export type VerificationWrapper = {
   argvPrefix: string[];
   translateInvoke?: (invoke: string) => string;
 };
+export type VerificationInformationFlow = {
+  /** Engine package roots hidden from verification (unreadable and unwritable). */
+  installedEnginePaths: readonly string[];
+  /**
+   * Realpaths of the engine's transitive runtime module closure. Roots inside the project are mounted
+   * read-only so product tests can import shared dependencies but never rewrite code the engine loads later.
+   * Roots outside the project are already unwritable (only the project root is writable).
+   */
+  readOnlyEnginePaths?: readonly string[];
+};
+
+export type VerificationWrapperOptions = {
+  informationFlow?: VerificationInformationFlow;
+};
+function protectedVerificationPaths(projectRoot: string, informationFlow?: VerificationInformationFlow): string[] {
+  if (!informationFlow) return [];
+  const root = resolve(projectRoot);
+  const enginePaths = informationFlow.installedEnginePaths.map((path) => {
+    if (!isAbsolute(path)) throw new SandboxError("information-flow engine paths must be absolute");
+    return resolve(path);
+  });
+  const candidates = [
+    ...VERIFY_READONLY_RELS.filter((rel) => existsSync(join(root, rel))).map((rel) => join(root, rel)),
+    ...enginePaths,
+  ];
+  const unique = [...new Set(candidates)];
+  for (const path of unique) {
+    if (!existsSync(path)) throw new SandboxError("information-flow verification protected path is unavailable");
+    if (!samePath(realpathSync(path), path)) throw new SandboxError("information-flow verification protected path is aliased");
+    const projectRelative = relative(path, root);
+    if (projectRelative === "" || (!projectRelative.startsWith("..") && !isAbsolute(projectRelative))) {
+      throw new SandboxError("information-flow engine exclusion cannot contain the project root");
+    }
+  }
+  return unique.filter((path) => !unique.some((parent) => {
+    const nested = relative(parent, path);
+    return parent !== path && nested !== "" && !nested.startsWith("..") && !isAbsolute(nested);
+  }));
+}
+
+function isWithin(parent: string, path: string): boolean {
+  const nested = relative(parent, path);
+  return nested === "" || (!nested.startsWith("..") && !isAbsolute(nested));
+}
+
+/**
+ * In-sandbox read-only mounts covering every project-local engine runtime root. A root below a project
+ * `node_modules` is covered by the outermost such directory, not by its own package directory: a writable parent
+ * would let verification rename it or a resolution symlink (pnpm) aside and plant a replacement that the engine
+ * resolves later. Product tests can still import from it. Closure realpaths are re-rooted when the project root is
+ * reached through a symlink. Roots outside the project are omitted: verification can write only below the project.
+ */
+function readOnlyEngineMounts(projectRoot: string, informationFlow: VerificationInformationFlow | undefined, hidden: readonly string[]): string[] {
+  if (!informationFlow?.readOnlyEnginePaths?.length) return [];
+  const root = resolve(projectRoot);
+  const rootReal = realpathSync(root);
+  const mounts = new Set<string>();
+  for (const input of informationFlow.readOnlyEnginePaths) {
+    if (!isAbsolute(input)) throw new SandboxError("information-flow engine paths must be absolute");
+    const path = resolve(input);
+    if (!existsSync(path)) throw new SandboxError("information-flow verification protected path is unavailable");
+    if (!samePath(realpathSync(path), path)) throw new SandboxError("information-flow verification protected path is aliased");
+    if (isWithin(path, rootReal)) throw new SandboxError("information-flow engine exclusion cannot contain the project root");
+    if (!isWithin(rootReal, path)) continue;
+    const segments = relative(rootReal, path).split(sep);
+    const modules = segments.indexOf("node_modules");
+    const mount = join(root, ...(modules >= 0 ? segments.slice(0, modules + 1) : segments));
+    if (hidden.some((parent) => isWithin(parent, mount))) continue;
+    mounts.add(mount);
+  }
+  const unique = [...mounts];
+  return unique.filter((path) => !unique.some((parent) => parent !== path && isWithin(parent, path))).sort();
+}
+
+function bwrapHidePathArgs(paths: readonly string[]): string[] {
+  const args: string[] = [];
+  for (const path of paths) {
+    if (statSync(path).isDirectory()) args.push("--tmpfs", path);
+    else args.push("--ro-bind", "/dev/null", path);
+  }
+  return args;
+}
 
 export const ALLOWLIST_TRUST_TIER_NOTE =
   "trust-tier: allowlist — verificationCommands run with your privileges (argv-only, shell-refused, scrubbed env); not a sandbox. Agent-authored verification is not a trust boundary.";
@@ -407,7 +493,10 @@ export function verificationReadOnlyRels(projectRoot: string): string[] {
   return VERIFY_READONLY_RELS.filter((rel) => existsSync(join(root, rel)));
 }
 
-export function verificationBwrapArgvPrefix(projectRoot: string): string[] {
+export function verificationBwrapArgvPrefix(
+  projectRoot: string,
+  options: VerificationWrapperOptions = {},
+): string[] {
   const root = resolve(projectRoot);
   const args = [
     "--die-with-parent",
@@ -415,6 +504,7 @@ export function verificationBwrapArgvPrefix(projectRoot: string): string[] {
     "--unshare-pid",
     "--unshare-uts",
     "--unshare-ipc",
+    ...(options.informationFlow ? ["--unshare-net"] : []),
     "--dev",
     "/dev",
   ];
@@ -429,11 +519,14 @@ export function verificationBwrapArgvPrefix(projectRoot: string): string[] {
     if (!isUnsafeDirname(dir, root)) args.push("--ro-bind", dir, dir);
   }
   args.push("--bind", root, root);
-  // Later mounts win: re-bind the sensitive subtrees read-only over the writable project bind.
-  // bwrap fails on a missing source, so only bind what exists.
   for (const rel of verificationReadOnlyRels(root)) {
     const path = join(root, rel);
     args.push("--ro-bind", path, path);
+  }
+  if (options.informationFlow) {
+    const hidden = protectedVerificationPaths(root, options.informationFlow);
+    for (const path of readOnlyEngineMounts(root, options.informationFlow, hidden)) args.push("--ro-bind", path, path);
+    args.push(...bwrapHidePathArgs(hidden));
   }
   args.push("--chdir", root, "--");
   return args;
@@ -450,7 +543,10 @@ function verificationExecReadPaths(projectRoot: string): string[] {
   return paths;
 }
 
-export function verificationSeatbeltProfile(projectRoot: string): string {
+export function verificationSeatbeltProfile(
+  projectRoot: string,
+  options: VerificationWrapperOptions = {},
+): string {
   const root = resolve(projectRoot);
   const rootJson = JSON.stringify(root);
   const reads = [
@@ -458,16 +554,24 @@ export function verificationSeatbeltProfile(projectRoot: string): string {
     ...SYSTEM_RO_BINDS.filter((path) => existsSync(path)).map((path) => JSON.stringify(path)),
     ...verificationExecReadPaths(root).map((path) => JSON.stringify(path)),
   ];
+  const protectedPaths = options.informationFlow
+    ? protectedVerificationPaths(root, options.informationFlow)
+    : VERIFY_READONLY_RELS.map((rel) => join(root, rel));
+  const readOnlyPaths = options.informationFlow
+    ? [...new Set(readOnlyEngineMounts(root, options.informationFlow, protectedPaths).flatMap((path) => [path, realpathSync(path)]))]
+    : [];
   return [
     "(version 1)",
     "(deny default)",
     "(allow process*)",
     "(allow sysctl-read)",
-    "(allow network*)",
+    ...(options.informationFlow ? [] : ["(allow network*)"]),
     `(allow file-read* ${reads.map((path) => `(subpath ${path})`).join(" ")})`,
     `(allow file-write* (subpath ${rootJson}))`,
-    // Last match wins: deny writes to git internals and engine state (F-039).
-    `(deny file-write* ${VERIFY_READONLY_RELS.map((rel) => `(subpath ${JSON.stringify(join(root, rel))})`).join(" ")})`,
+    ...(options.informationFlow
+      ? [`(deny file-read* ${protectedPaths.map((path) => `(subpath ${JSON.stringify(path)})`).join(" ")})`]
+      : []),
+    `(deny file-write* ${[...protectedPaths, ...readOnlyPaths].map((path) => `(subpath ${JSON.stringify(path)})`).join(" ")})`,
     `(allow file-ioctl (subpath ${rootJson}))`,
     "",
   ].join("\n");
@@ -478,20 +582,37 @@ export async function prepareVerificationWrapper(
   projectRoot: string,
   runId: string,
   posture: VerificationTrustPosture,
+  options: VerificationWrapperOptions = {},
 ): Promise<VerificationWrapper | undefined> {
   const root = resolve(projectRoot);
   if (posture.backend === "host" || posture.error) return undefined;
+  if (options.informationFlow && posture.backend === "copy") return undefined;
   if (posture.backend === "bwrap") {
     const bin = findRunnableBwrap();
     if (!bin) return undefined;
-    return { bin, argvPrefix: verificationBwrapArgvPrefix(root) };
+    return { bin, argvPrefix: verificationBwrapArgvPrefix(root, options) };
   }
   if (posture.backend === "docker") {
     const bin = findRunnableDocker();
     if (!bin) return undefined;
+    const hiddenPaths = options.informationFlow ? protectedVerificationPaths(root, options.informationFlow) : [];
+    const hiddenRels = hiddenPaths.map((path) => relative(root, path));
+    if (hiddenRels.some((rel) => rel.startsWith("..") || isAbsolute(rel))) {
+      throw new SandboxError("information-flow Docker verification cannot hide external engine paths");
+    }
+    if (hiddenPaths.some((path) => !statSync(path).isDirectory())) {
+      throw new SandboxError("information-flow Docker verification can hide directories only");
+    }
+    const readOnlyEngineRels = options.informationFlow
+      ? readOnlyEngineMounts(root, options.informationFlow, hiddenPaths).map((path) => relative(root, path).split(sep).join("/"))
+      : [];
     return {
       bin,
-      argvPrefix: dockerArgvPrefix({ jailRoot: root, readOnlyRels: verificationReadOnlyRels(root) }),
+      argvPrefix: dockerArgvPrefix({
+        jailRoot: root,
+        readOnlyRels: [...verificationReadOnlyRels(root), ...readOnlyEngineRels],
+        ...(options.informationFlow ? { hiddenRels } : {}),
+      }),
       translateInvoke: (invoke: string) => translateHostPathToDocker(invoke, root),
     };
   }
@@ -502,18 +623,17 @@ export async function prepareVerificationWrapper(
   await mkdir(dirname(profilePath), { recursive: true });
   try {
     const st = await lstat(profilePath);
-    if (st.isSymbolicLink() || !st.isFile()) {
-      throw new SandboxError("sandbox profile path is unsafe");
-    }
+    if (st.isSymbolicLink() || !st.isFile()) throw new SandboxError("sandbox profile path is unsafe");
     await rm(profilePath);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-  await writeFile(profilePath, verificationSeatbeltProfile(root), { encoding: "utf8", flag: "wx" });
+  await writeFile(profilePath, verificationSeatbeltProfile(root, options), { encoding: "utf8", flag: "wx" });
   return { bin, argvPrefix: ["-f", profilePath, "--"] };
 }
 
 function assertPolicyPath(posix: string): string {
+  if (overlapsEngineProtectedPath(posix)) throw new PathEscapeError(posix);
   if (posix.includes("*")) {
     const placeholder = posix.replaceAll("*", "x");
     if (!isConcretePosixRepoRelativePath(placeholder) || isBlockedRel(placeholder)) {
@@ -551,7 +671,7 @@ function isBlockedName(name: string): boolean {
 }
 
 function isBlockedRel(posix: string): boolean {
-  return posix.split("/").some((part) => isBlockedName(part));
+  return isEngineProtectedPath(posix) || posix.split("/").some((part) => isBlockedName(part));
 }
 
 const JAIL_HOME_REL = ".legion-cli/sandbox-home";
@@ -794,6 +914,12 @@ async function copyTree(
   }
   const visitedDest = seenDest ?? new Set<string>();
   const walkSrc = srcStack ?? new Set<string>();
+  try {
+    await assertAgentPathAllowed(projectRoot, toProjectRelativePosix(projectRoot, src));
+  } catch (err) {
+    if (err instanceof PathEscapeError) return;
+    throw err;
+  }
   let st;
   try {
     st = await lstat(src);
@@ -883,6 +1009,7 @@ async function copySparsePath(
 ): Promise<void> {
   assertPolicyPath(posix);
   if (isBlockedRel(posix)) return;
+  await assertAgentControlPathAllowed(projectRoot, posix);
   const src = toFsPath(projectRoot, posix);
   const dest = toFsPath(jailRoot, posix);
   if (lexicalRel(jailRoot, dest) === undefined) throw new PathEscapeError(dest);
@@ -1182,6 +1309,7 @@ async function applyOutputWrites(
     seen.add(rel);
     let dest: string;
     try {
+      await assertAgentPathAllowed(projectRoot, rel);
       dest = toFsPath(projectRoot, rel);
     } catch {
       dropped.push(rel);
@@ -1323,6 +1451,12 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
   const runId = assertSafeRunId(policy.runId);
   const allowedWrites = unique(policy.allowedWrites.map(assertPolicyPath));
   const readSet = unique(policy.readSet.map(assertPolicyPath));
+  for (const path of [...readSet, ...allowedWrites]) {
+    const parts = path.split("/");
+    const wildcard = parts.findIndex((part) => part.includes("*"));
+    const concrete = (wildcard < 0 ? parts : parts.slice(0, wildcard)).join("/");
+    await assertAgentControlPathAllowed(projectRoot, concrete);
+  }
 
   const jailRoot = toFsPath(projectRoot, `.legion-cli/sandbox/${runId}`);
   const sandboxDir = legionPaths(projectRoot).sandboxDir;
@@ -1495,6 +1629,13 @@ export async function reopenJail(policy: SandboxPolicy): Promise<SandboxHandle> 
   const projectRoot = resolve(policy.projectRoot);
   const runId = assertSafeRunId(policy.runId);
   const allowedWrites = unique(policy.allowedWrites.map(assertPolicyPath));
+  const readSet = unique(policy.readSet.map(assertPolicyPath));
+  for (const path of [...readSet, ...allowedWrites]) {
+    const parts = path.split("/");
+    const wildcard = parts.findIndex((part) => part.includes("*"));
+    const concrete = (wildcard < 0 ? parts : parts.slice(0, wildcard)).join("/");
+    await assertAgentControlPathAllowed(projectRoot, concrete);
+  }
   let record: SandboxResumeRecord;
   try {
     record = JSON.parse(await readFile(sandboxResumePath(projectRoot, runId), "utf8")) as SandboxResumeRecord;

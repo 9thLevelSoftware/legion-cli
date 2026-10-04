@@ -506,3 +506,23 @@ test("a pre-existing untracked junction the spawn did not touch is left alone", 
     assert.equal(existsSync(join(link, "data.txt")), true);
   });
 });
+
+test("revertExtras preserves append-only engine audit records for their validators", async () => {
+  await withEngine(async ({ dir }) => {
+    await writeFile(join(dir, "README.md"), "seed\n", "utf8");
+    initGitRepo(dir);
+    const pre = gitHead(dir);
+    const snapshot = await snapshotPaths(dir);
+    const record = join(dir, ".legion-cli", "audit", "governance", "segment", "2.json");
+    await mkdir(dirname(record), { recursive: true });
+    await writeFile(record, "{\"digest\":\"engine-appended\"}\n", "utf8");
+    const result = await revertExtras({
+      projectRoot: dir,
+      preSpawnRef: pre,
+      allowedRoots: ["src/main.ts"],
+      snapshot,
+    });
+    assert.deepEqual(result.extrasReverted, []);
+    assert.equal(await readFile(record, "utf8"), "{\"digest\":\"engine-appended\"}\n");
+  });
+});

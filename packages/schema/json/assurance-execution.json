@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-assurance-execution/v1"
+    },
+    "executionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "approvalId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "manifestDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "productFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "environmentFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "checks": {
+      "maxItems": 256,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "checkId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "receiptDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "executionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "result": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed",
+              "unavailable"
+            ]
+          },
+          "reuse": {
+            "type": "string",
+            "enum": [
+              "executed",
+              "reused"
+            ]
+          }
+        },
+        "required": [
+          "checkId",
+          "receiptDigest",
+          "executionId",
+          "result",
+          "reuse"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "policyStatus": {
+      "type": "string",
+      "enum": [
+        "enforced",
+        "not-enforced",
+        "blocked"
+      ]
+    },
+    "traceStatus": {
+      "type": "string",
+      "enum": [
+        "valid",
+        "incomplete",
+        "invalid"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "blocked"
+      ]
+    },
+    "blocker": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recordedAt": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "executionId",
+    "approvalId",
+    "manifestDigest",
+    "productFingerprint",
+    "environmentFingerprint",
+    "checks",
+    "policyStatus",
+    "traceStatus",
+    "status",
+    "blocker",
+    "recordedAt"
+  ],
+  "additionalProperties": false
+}

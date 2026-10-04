@@ -235,3 +235,25 @@ export type {
 
 export { JSON_SCHEMA_FILES, legionJsonSchemas, toLegionJsonSchema } from "./json-schema.js";
 export type { JsonSchemaFileName } from "./json-schema.js";
+
+export {
+  AssuranceIdSchema,
+  OpaqueIdSchema,
+  AssuranceSha256Schema,
+  UtcTimestampSchema,
+  AssurancePathSchema,
+  JsonPointerSchema,
+  AssuranceJsonValueSchema,
+  AssuranceConfigurationSchema,
+  AssuranceDetailSchema,
+  validateAssuranceJson,
+} from "./assurance-primitives.js";
+export type { AssuranceJsonValue } from "./assurance-primitives.js";
+export * from "./assurance.js";
+export { ProvenanceLabelSchema } from "./assurance.js";
+export type { ProvenanceLabel } from "./assurance.js";
+export * from "./component.js";
+export * from "./governed-records.js";
+export * from "./governance-records.js";
+export * from "./delivery-records.js";
+export * from "./governance.js";

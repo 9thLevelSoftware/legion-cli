@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -549,6 +549,28 @@ test("copy-in is sparse: no node_modules, nested node_modules, or operator .git"
       assert.equal(existsSync(join(handle.jailRoot, "node_modules")), false);
       assert.equal(existsSync(join(handle.jailRoot, "src", "vendor", "node_modules")), false);
       assert.equal(existsSync(join(handle.jailRoot, ".git", "hooks", "keep")), false);
+      assert.equal(await readFile(join(handle.jailRoot, "src", "read.ts"), "utf8"), "export const read = 1;\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("recursive jail staging omits authority hardlinks while preserving ordinary product hardlinks", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await mkdir(join(dir, "src", "nested"));
+    await mkdir(join(dir, ".legion-cli", "audit", "http-governed", "run"), { recursive: true });
+    const authority = join(dir, ".legion-cli", "audit", "http-governed", "run", "authority.json");
+    await writeFile(authority, '{"controlCanary":"engine-only"}\n');
+    await link(authority, join(dir, "src", "nested", "control.txt"));
+    await writeFile(join(dir, "src", "nested", "product.txt"), "ordinary product\n");
+    await link(join(dir, "src", "nested", "product.txt"), join(dir, "src", "nested", "product-copy.txt"));
+    const handle = await materializeJail(policy(dir, { readSet: ["src"] }));
+    try {
+      assert.equal(existsSync(join(handle.jailRoot, "src", "nested", "control.txt")), false);
+      assert.equal(await readFile(join(handle.jailRoot, "src", "nested", "product.txt"), "utf8"), "ordinary product\n");
+      assert.equal(await readFile(join(handle.jailRoot, "src", "nested", "product-copy.txt"), "utf8"), "ordinary product\n");
       assert.equal(await readFile(join(handle.jailRoot, "src", "read.ts"), "utf8"), "export const read = 1;\n");
     } finally {
       await handle.destroy();
@@ -1230,4 +1252,141 @@ test("docker jail runs as the host user so cap-drop ALL can write owned files", 
   }
   assert.deepEqual(prefix.slice(prefix.indexOf("--user"), prefix.indexOf("--user") + 2), user);
   assert.equal(prefix.at(-1), DOCKER_PINNED_IMAGE);
+});
+
+test("sandbox admission rejects control grants and their ancestors for both read and write policies", async () => {
+  await withTempDir(async (dir) => {
+    for (const path of [
+      ".legion-cli/workflow/assurance.yaml",
+      ".LEGION-CLI/WORKFLOW/assurance.yaml",
+      ".legion-cli/audit/governance",
+      ".legion-cli/audit/http-governed",
+      ".legion-cli/audit/delivery",
+      ".legion-cli/audit/delivery-export",
+      ".legion-cli/audit/raw-logs",
+      ".legion-cli/audit",
+      ".legion-cli/**",
+    ]) {
+      await assert.rejects(materializeJail(policy(dir, { backend: "copy", readSet: [path] })), PathEscapeError);
+      await assert.rejects(materializeJail(policy(dir, { backend: "copy", allowedWrites: [path] })), PathEscapeError);
+    }
+  });
+});
+
+test("sandbox admission rejects direct workflow junction aliases", async (t) => {
+  await withTempDir(async (dir) => {
+    const workflow = join(dir, ".legion-cli", "workflow");
+    await mkdir(workflow, { recursive: true });
+    await writeFile(join(workflow, "assurance.yaml"), "authority\n");
+    const alias = join(dir, "inputs");
+    if (!(await trySymlink(workflow, alias, process.platform === "win32" ? "junction" : "dir"))) {
+      t.skip("directory links unavailable");
+      return;
+    }
+    await assert.rejects(materializeJail(policy(dir, { backend: "copy", readSet: ["inputs"] })), PathEscapeError);
+    await assert.rejects(materializeJail(policy(dir, { backend: "copy", allowedWrites: ["inputs/future.yaml"] })), PathEscapeError);
+  });
+});
+
+test("staging a legitimate source tree omits nested control aliases", async (t) => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const workflow = join(dir, ".legion-cli", "workflow");
+    await mkdir(workflow, { recursive: true });
+    await writeFile(join(workflow, "assurance.yaml"), "sealed authority\n");
+    if (!(await trySymlink(workflow, join(dir, "src", "control"), process.platform === "win32" ? "junction" : "dir"))) {
+      t.skip("directory links unavailable");
+      return;
+    }
+    const handle = await materializeJail(policy(dir, { backend: "copy", readSet: ["src"] }));
+    try {
+      assert.equal(await readFile(join(handle.jailRoot, "src", "read.ts"), "utf8"), "export const read = 1;\n");
+      assert.equal(existsSync(join(handle.jailRoot, "src", "control", "assurance.yaml")), false);
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("recursive staging omits physical workflow aliases while preserving ordinary aliases", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const control = join(dir, "private-control");
+    const ordinary = join(dir, "ordinary-product");
+    await mkdir(control);
+    await mkdir(ordinary);
+    await mkdir(join(dir, ".legion-cli"), { recursive: true });
+    await writeFile(join(control, "assurance.yaml"), "sealed authority\n");
+    await writeFile(join(ordinary, "data.json"), '{"ordinary":true}\n');
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+    await symlink(control, join(dir, ".legion-cli", "workflow"), linkType);
+    await symlink(control, join(dir, "src", "control"), linkType);
+    await symlink(ordinary, join(dir, "src", "ordinary"), linkType);
+    const missing = join(dir, "missing-product");
+    await mkdir(missing);
+    await symlink(missing, join(dir, "src", "missing"), linkType);
+    await rm(missing, { recursive: true });
+    const handle = await materializeJail(policy(dir, { backend: "copy", readSet: ["src"] }));
+    try {
+      assert.equal(await readFile(join(handle.jailRoot, "src", "read.ts"), "utf8"), "export const read = 1;\n");
+      assert.equal(await readFile(join(handle.jailRoot, "src", "ordinary", "data.json"), "utf8"), '{"ordinary":true}\n');
+      assert.equal(existsSync(join(handle.jailRoot, "src", "control")), false);
+      assert.equal(existsSync(join(handle.jailRoot, "src", "missing")), false);
+      assert.equal(await readFile(join(control, "assurance.yaml"), "utf8"), "sealed authority\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("copy-out rejects a granted destination retargeted to protected controls after staging", async (t) => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, "output"));
+    const workflow = join(dir, ".legion-cli", "workflow");
+    await mkdir(workflow, { recursive: true });
+    await writeFile(join(workflow, "assurance.yaml"), "original authority\n");
+    const handle = await materializeJail(policy(dir, { backend: "copy", allowedWrites: ["output"], readSet: [] }));
+    try {
+      await mkdir(join(handle.jailRoot, "output"), { recursive: true });
+      await writeFile(join(handle.jailRoot, "output", "assurance.yaml"), "forged authority\n");
+      const output = await handle.inspectOutput();
+      await rm(join(dir, "output"), { recursive: true });
+      if (!(await trySymlink(workflow, join(dir, "output"), process.platform === "win32" ? "junction" : "dir"))) {
+        t.skip("directory links unavailable");
+        return;
+      }
+      const applied = await handle.applyOutput(output);
+      assert.deepEqual(applied.copied, []);
+      assert.equal(applied.dropped.includes("output/assurance.yaml"), true);
+      assert.equal(await readFile(join(workflow, "assurance.yaml"), "utf8"), "original authority\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("copy-out rechecks a protected-root junction retargeted into a legitimate output tree", async (t) => {
+  await withTempDir(async (dir) => {
+    const destination = join(dir, "output");
+    await mkdir(destination);
+    await writeFile(join(destination, "assurance.yaml"), "original authority\n");
+    const workflow = join(dir, ".legion-cli", "workflow");
+    await mkdir(workflow, { recursive: true });
+    const handle = await materializeJail(policy(dir, { backend: "copy", allowedWrites: ["output"], readSet: [] }));
+    try {
+      await writeFile(join(handle.jailRoot, "output", "assurance.yaml"), "forged authority\n");
+      const output = await handle.inspectOutput();
+      await rm(workflow, { recursive: true });
+      if (!(await trySymlink(destination, workflow, process.platform === "win32" ? "junction" : "dir"))) {
+        t.skip("directory links unavailable");
+        return;
+      }
+      const applied = await handle.applyOutput(output);
+      assert.deepEqual(applied.copied, []);
+      assert.equal(applied.dropped.includes("output/assurance.yaml"), true);
+      assert.equal(await readFile(join(workflow, "assurance.yaml"), "utf8"), "original authority\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
 });

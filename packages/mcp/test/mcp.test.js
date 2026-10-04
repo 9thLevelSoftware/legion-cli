@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
 import { hashSkillTree, overlaySkillDir } from "@9thlevelsoftware/legion-cli-agents";
+// Test-only seeding of an adopted fixture; the MCP package itself must not depend on core.
+import { createLegionEngine } from "../../core/dist/index.js";
 import { INDEX_DB_BASENAME, LOCK_BASENAME } from "@9thlevelsoftware/legion-cli-persist";
 import { MCP_TOOLS } from "../dist/index.js";
 import {
@@ -55,6 +57,9 @@ test("status, current task, task graph, brief, show, search, backlinks", async (
       assert.equal(status.json.name, "Checkin");
       assert.equal(status.json.currentTaskId, "TSK-0002");
       assert.equal(status.json.activeSpecId, "spec-checkin");
+      // Legacy executing projects (no focused profile, no adopted assurance) have no workflow projection, as in `legion-cli status`.
+      assert.equal(status.json.workflow, null);
+      assert.equal(status.json.workflowError, null);
 
       const current = parseTool(await client.callTool({ name: "legion_cli_current_task", arguments: {} }));
       assert.equal(current.isError, false, current.text);
@@ -474,3 +479,84 @@ test("prebuilt index is not rewritten and lock is not taken", async () => {
   });
 });
 
+async function withFakeAdapter(fn) {
+  const previous = process.env.LEGION_CLI_ADAPTER;
+  process.env.LEGION_CLI_ADAPTER = "fake";
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env.LEGION_CLI_ADAPTER;
+    else process.env.LEGION_CLI_ADAPTER = previous;
+  }
+}
+
+async function seedAdoptedProject(dir) {
+  const engine = createLegionEngine(dir);
+  await engine.init({ name: "Checkin", adapter: "fake", workflowProfile: "focused" });
+  await engine.store.writeSpec({
+    schemaVersion: "legion-cli-spec/v1", id: "spec-checkin", title: "Office check-in", status: "frozen",
+    mustBeTrue: ["People can tap in or out on their phone in under five seconds"], mustNotChange: ["auth"], outOfScope: ["payroll"],
+    acceptance: [{ id: "AC-01", statement: "Tap in or out on a phone completes in under five seconds", kind: "behavior", priority: "P0" }],
+    personas: ["teammates"], happyPath: "Open the board, tap In.", frozenAt: "2026-09-01T12:00:00.000Z", frozenBy: "tester",
+  }, "Spec body.\n");
+  const project = await engine.store.readProject();
+  await engine.store.writeProject({ ...project.data, activeSpecId: "spec-checkin" }, project.body);
+  await engine.store.writeTask({
+    schemaVersion: "legion-cli-task/v1", id: "TSK-0001", title: "in/out button", status: "ready", type: "feature", priority: "P0",
+    specId: "spec-checkin", blockedBy: [], blocks: [], assignee: "agent", notes: "",
+    contract: { filesAllowed: ["src/main.ts"], filesForbidden: [".git/**"], expectedArtifacts: ["src/main.ts"], verificationCommands: ["pnpm test"], maxFilesTouched: 20 },
+  }, "Implement the in/out button.\n");
+  const state = await engine.store.readState();
+  await engine.store.writeState({ ...state.data, phase: "plan_ready", activeSpecId: "spec-checkin", lastReadiness: "PASS" }, state.body);
+  await mkdir(join(dir, ".legion-cli/plans"), { recursive: true });
+  await writeFile(join(dir, ".legion-cli/plans/spec-checkin.md"), "# Reviewed plan\n\nImplement the approved task.\n");
+  await mkdir(join(dir, "src"), { recursive: true });
+  await writeFile(join(dir, "src/main.ts"), "export const value = 1;\n");
+  const draft = join(dir, "assurance-draft.json");
+  await writeFile(draft, JSON.stringify({
+    schemaVersion: "legion-cli-assurance-plan/v1", specId: "spec-checkin", acceptanceIds: ["AC-01"], taskIds: ["TSK-0001"],
+    security: {
+      mode: "adapter-default", sources: [{ id: "main", path: "src/main.ts", classification: "workspace" }],
+      sinks: [], transformations: [], tasks: [{ taskId: "TSK-0001", readPaths: ["src/main.ts"], transformationIds: [] }], externalCalls: [],
+    },
+    knowledge: [], validators: [], delivery: { artifacts: [] },
+  }));
+  await withFakeAdapter(() => engine.approvePlan({ id: "operator" }, { assuranceManifestPath: draft }));
+  return engine;
+}
+
+async function legionFiles(dir) {
+  const files = new Map();
+  for (const entry of await readdir(join(dir, ".legion-cli"), { recursive: true, withFileTypes: true })) {
+    if (entry.isFile()) files.set(join(entry.parentPath, entry.name), await readFile(join(entry.parentPath, entry.name)));
+  }
+  return files;
+}
+
+test("status projects adopted assurance read-only and reports null assurance after adoption is removed", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedAdoptedProject(dir);
+    const before = await legionFiles(dir);
+    await withClient(dir, async (client) => {
+      const status = parseTool(await client.callTool({ name: "legion_cli_status", arguments: {} }));
+      assert.equal(status.isError, false, status.text);
+      assert.equal(status.json.workflowError, null);
+      assert.equal(status.json.workflow.assurance.mode, "adapter-default");
+      assert.equal(status.json.workflow.assurance.status, "valid");
+      // No checks cover AC-01, so coverage is unknown and the trace is never projected as valid.
+      assert.equal(status.json.workflow.assurance.coverage[0].status, "unknown");
+      assert.equal(status.json.workflow.assurance.traceStatus, "incomplete");
+      assert.equal(typeof status.json.workflow.next, "string");
+    });
+    assert.deepEqual(await legionFiles(dir), before);
+
+    await withFakeAdapter(() => engine.approvePlan({ id: "operator" }, { assuranceOff: true }));
+    await withClient(dir, async (client) => {
+      const status = parseTool(await client.callTool({ name: "legion_cli_status", arguments: {} }));
+      assert.equal(status.isError, false, status.text);
+      assert.equal(status.json.workflowError, null);
+      assert.notEqual(status.json.workflow, null);
+      assert.equal(status.json.workflow.assurance, null);
+    });
+  });
+});

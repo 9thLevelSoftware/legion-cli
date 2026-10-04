@@ -32,7 +32,7 @@ import { runServe } from "./serve.js";
 import { runDiscuss } from "./discuss.js";
 import { runControlMode } from "./control-mode.js";
 import { runDoctor } from "./doctor.js";
-import { runExecute } from "./execute.js";
+import { runApproveAction, runExecute } from "./execute.js";
 import { runFix } from "./fix.js";
 import { formatHelpLayer1, printHelpAll, printHelpLayer1 } from "./help-all.js";
 import { runIndexRebuild } from "./index-rebuild.js";
@@ -50,19 +50,21 @@ import {
 import { runMcp } from "./mcp.js";
 import { runNextTasks } from "./next-tasks.js";
 import { runPacketNew, runPacketRespond } from "./packet.js";
-import { runPlan, runPlanAcceptance, runPlanApprove } from "./plan.js";
+import { runPlan, runPlanAcceptance, runPlanApprove, runPlanEvidence, runPlanImpact } from "./plan.js";
 import { runPromote } from "./run.js";
 import { runQa, runQaChecklist } from "./qa.js";
 import { runReview } from "./review.js";
 import { runSearch } from "./search.js";
-import { runShip } from "./ship.js";
+import { runShip, runShipExport } from "./ship.js";
 import { runShow } from "./show.js";
+import { runShipSign } from "./ship-sign.js";
+import { runShipVerify } from "./ship-verify.js";
 import { runSpecApprove, runSpecDraft, runSpecNew, runSpecShow } from "./spec.js";
 import { runStatus } from "./status.js";
 import { runTaskAmend } from "./task.js";
 import { runTicketCreate } from "./ticket.js";
 import { runVerify } from "./verify.js";
-import { runContextCompact } from "./context.js";
+import { runContextCompact, runContextTrace, runContextTraceValidate } from "./context.js";
 import { runGarden } from "./garden.js";
 import { runWikiTrust } from "./wiki.js";
 import { runSkillsInstall, runSkillsList, runSkillsRun, runSkillsShow } from "./skills.js";
@@ -362,10 +364,12 @@ export function createProgram(): Command {
 
   addGlobalOptions(plan.command("approve").description("Approve the plan before execution"))
     .option("--check <command...>", "required integration or verification command")
+    .option("--assurance <yaml-file>", "adopt or replace an assurance manifest")
+    .option("--assurance-off", "remove assurance through a new approval epoch")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { check?: string[] };
-      process.exitCode = await runPlanApprove(resolveOpts(cmd), { checks: flags.check });
+      const flags = opts as { check?: string[]; assurance?: string; assuranceOff?: boolean };
+      process.exitCode = await runPlanApprove(resolveOpts(cmd), { checks: flags.check, assurance: flags.assurance, assuranceOff: flags.assuranceOff });
     });
 
   addGlobalOptions(plan.command("acceptance").description("Record manual acceptance evidence"))
@@ -379,6 +383,17 @@ export function createProgram(): Command {
       process.exitCode = await runPlanAcceptance(resolveOpts(cmd), flags);
     });
 
+  addGlobalOptions(plan.command("evidence").description("Inspect requirement coverage and current component evidence"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      process.exitCode = await runPlanEvidence(resolveOpts(cmd));
+    });
+  addGlobalOptions(plan.command("impact").description("Inspect changed knowledge bindings and exact component rerun/reuse reasons"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      process.exitCode = await runPlanImpact(resolveOpts(cmd));
+    });
+
   addGlobalOptions(program.command("next").description("What is unblocked?"))
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
@@ -386,8 +401,8 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("execute").description("Run approved work to completion or a blocker"))
-    .argument("[id]", "task id")
+  const executeCommand = program.command("execute").description("Run approved work to completion or a blocker");
+  addGlobalOptions(executeCommand.argument("[id]", "task id"))
     .option("--resume <runId>", "resume a compatible interrupted HTTP run")
     .option("--until-blocked", "loop until no ready task remains or one blocks")
     .option("--step", "run one task, then return a resumable checkpoint")
@@ -414,6 +429,22 @@ export function createProgram(): Command {
       });
       process.exitCode = code;
     });
+  executeCommand.command("approve-action")
+    .requiredOption("--run <runId>", "governed run id")
+    .requiredOption("--action <actionId>", "exact pending action id")
+    .requiredOption("--value-digest <sha256>", "exact value digest")
+    .requiredOption("--sink <sinkId>", "approved sink id")
+    .requiredOption("--reason <reason>", "why this exact action is approved")
+    .allowExcessArguments(false)
+    .action(async (flags, cmd: Command) => {
+      process.exitCode = await runApproveAction(resolveOpts(cmd), {
+        runId: flags.run,
+        actionId: flags.action,
+        valueDigest: flags.valueDigest,
+        sinkId: flags.sink,
+      }, flags.reason);
+    });
+
 
 
   addGlobalOptions(program.command("verify").description("Optional agent walkthrough (not a ship gate; notes not retained yet)"))
@@ -469,15 +500,44 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("ship").description("Final human review; stage diff"))
+  const shipCommand = addGlobalOptions(program.command("ship").description("Final human review; stage diff"))
     .option("--allow-degraded-qa", "ship after no-browser QA")
     .option("--pr", "create a GitHub PR with gh (requires --commit)")
     .option("--commit", "create the git commit after an explicit y")
+    .option("--bundle <directory>", "export the completed delivery snapshot locally")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { allowDegradedQa?: boolean; pr?: boolean; commit?: boolean };
+      const flags = opts as { allowDegradedQa?: boolean; pr?: boolean; commit?: boolean; bundle?: string };
       const code = await runShip(resolveOpts(cmd), flags);
       process.exitCode = code;
+    });
+  const shipExport = shipCommand.command("export")
+    .description("Export a completed historical delivery snapshot locally")
+    .requiredOption("--snapshot <id>", "completed delivery snapshot ID")
+    .requiredOption("--out <directory>", "local delivery bundle directory")
+    .allowExcessArguments(false);
+  addGlobalOptions(shipExport).action(async (flags: { snapshot: string; out: string }, cmd: Command) => {
+    process.exitCode = await runShipExport(resolveOpts(cmd), flags);
+  });
+  shipCommand.command("verify")
+    .description("Verify a persisted delivery bundle without project state")
+    .argument("<bundle>", "delivery bundle directory")
+    .option("--require <integrity|local-key|ci-oidc>", "verification requirement (default integrity)", "integrity")
+    .option("--trust-policy <path>", "external trust policy JSON")
+    .option("--source <dir>", "supplied source directory")
+    .option("--artifacts <dir>", "supplied artifacts directory")
+    .option("--expect-approval <id>", "expected approval claim")
+    .allowExcessArguments(false)
+    .action(async (directory: string, flags, cmd: Command) => {
+      process.exitCode = await runShipVerify(resolveOpts(cmd), directory, flags);
+    });
+  shipCommand.command("sign")
+    .description("Sign a prepared delivery bundle with an external local Ed25519 key")
+    .argument("<bundle>", "delivery bundle directory")
+    .requiredOption("--key <path>", "external Ed25519 PKCS8 key file; encrypted keys require a hidden TTY passphrase")
+    .allowExcessArguments(false)
+    .action(async (directory: string, flags: { key: string }, cmd: Command) => {
+      process.exitCode = await runShipSign(resolveOpts(cmd), directory, flags);
     });
 
   addGlobalOptions(program.command("abandon").description("Stop this spec without shipping"))
@@ -890,19 +950,30 @@ export function createProgram(): Command {
   addGlobalOptions(skills.command("run").description("Run a governed extension evidence job"))
     .argument("<extension-ref>", "extension:<id>")
     .option("--profile <name>", "named adapter profile")
+    .option("--validator-input <json-file>", "bounded declared raw-file invocation for a component runtime")
     .allowExcessArguments(false)
     .action(async (ref: string, opts, cmd: Command) => {
-      const flags = opts as { profile?: string };
+      const flags = opts as { profile?: string; validatorInput?: string };
       process.exitCode = await runSkillsRun(resolveOpts(cmd), ref, flags);
     });
 
   const context = addGlobalOptions(program.command("context").description("Session context"));
-  context.allowExcessArguments(false).action(requireSub("context", "compact", "legion-cli context compact"));
+  context.allowExcessArguments(false).action(requireSub("context", "compact or trace", "legion-cli context compact"));
   addGlobalOptions(context.command("compact").description("Compact done tasks"))
     .allowExcessArguments(false)
     .action(async (_opts, cmd: Command) => {
       const code = await runContextCompact(resolveOpts(cmd));
       process.exitCode = code;
+    });
+  const trace = addGlobalOptions(context.command("trace").description("Governance epochs and trace status"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      process.exitCode = await runContextTrace(resolveOpts(cmd));
+    });
+  addGlobalOptions(trace.command("validate").description("Validate the governance trace (exit 1 unless valid or not adopted)"))
+    .allowExcessArguments(false)
+    .action(async (_opts, cmd: Command) => {
+      process.exitCode = await runContextTraceValidate(resolveOpts(cmd));
     });
 
   addGlobalOptions(program.command("undo").description("Revert last completed task or Legion commit"))

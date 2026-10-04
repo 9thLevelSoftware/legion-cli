@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import { HttpAdapterError } from "./errors.js";
@@ -41,12 +42,15 @@ export async function postJsonPinned(opts: {
   url: URL;
   apiKey: string;
   extraHeaders?: Record<string, string>;
-  body: unknown;
+  body?: unknown;
+  serializedBody?: Uint8Array;
   timeoutMs?: number;
   signal?: AbortSignal;
   allowLoopback: boolean;
   lookup?: SsrfLookup;
-}): Promise<{ status: number; json: unknown }> {
+  captureStatus?: boolean;
+  rawResponse?: boolean;
+}): Promise<{ status: number; json: unknown; responseBytes: Uint8Array; responseDigest: string }> {
   if (opts.signal?.aborted) {
     throw new HttpAdapterError("adapter.http request aborted");
   }
@@ -55,7 +59,7 @@ export async function postJsonPinned(opts: {
   if (opts.signal?.aborted) {
     throw new HttpAdapterError("adapter.http request aborted");
   }
-  const payload = Buffer.from(JSON.stringify(opts.body), "utf8");
+  const payload = opts.serializedBody === undefined ? Buffer.from(JSON.stringify(opts.body), "utf8") : Buffer.from(opts.serializedBody);
   const headers: Record<string, string> = {
     Host: opts.url.host,
     Authorization: `Bearer ${opts.apiKey}`,
@@ -111,13 +115,19 @@ export async function postJsonPinned(opts: {
           }
         });
         res.on("end", () => {
-          const raw = Buffer.concat(chunks).toString("utf8");
-          if (status < 200 || status >= 300) {
+          const bytes = Buffer.concat(chunks);
+          if (!opts.captureStatus && (status < 200 || status >= 300)) {
             reject(new HttpAdapterError(`adapter.http returned HTTP ${status}`));
             return;
           }
+          const responseDigest = createHash("sha256").update(bytes).digest("hex");
+          if (opts.rawResponse) {
+            resolve({ status, json: null, responseBytes: bytes, responseDigest });
+            return;
+          }
+          const raw = bytes.toString("utf8");
           try {
-            resolve({ status, json: raw ? JSON.parse(raw) : {} });
+            resolve({ status, json: raw ? JSON.parse(raw) : {}, responseBytes: bytes, responseDigest });
           } catch (err) {
             reject(new HttpAdapterError("adapter.http response is not JSON", { cause: err }));
           }

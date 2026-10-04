@@ -1,4 +1,6 @@
 export { HINT, LegionRefuseError, refuse, refuseKind } from "./errors.js";
+export { ASSURANCE_PLAN_PATH, ASSURANCE_APPROVAL_PATH, ASSURANCE_EXECUTION_PATH, ASSURANCE_TRACE_PREREQUISITE, assuranceManifestDigest, assuranceUnitClosure, assuranceImpact, readAssuranceDraft, resolveAssuranceHost, prepareAssuranceCheck, runAssuranceChecks, readAssuranceExecution, inspectAssuranceEvidence } from "./assurance.js";
+export type { AssuranceState, AssuranceStatus, AssuranceCheckDecision, AssuranceCriterionEvidence, AssuranceUnitEvidence, AssuranceEvidenceReport, AssuranceImpactReport } from "./assurance.js";
 export {
   SKILL_CONTRACTS,
   executeAllowedRoots,
@@ -133,16 +135,12 @@ export {
   uniqueScreenPages,
 } from "./wireframes.js";
 export { SKIP_WIREFRAMES_NOTE, buildSpecFromIntent, specMarkdownBody, quoteDecision } from "./spec-build.js";
+export { assertCanTransition, assertCanUndoTransition, assertLegalPhase, hintForIllegalTransition, PHASES } from "./phases.js";
 export {
-  assertCanTransition,
-  assertCanUndoTransition,
-  UNDO_ONLY_PHASE_TRANSITIONS,
-  assertLegalPhase,
   canTransition,
-  hintForIllegalTransition,
   LEGAL_PHASE_TRANSITIONS,
-  PHASES,
-} from "./phases.js";
+  UNDO_ONLY_PHASE_TRANSITIONS,
+} from "@9thlevelsoftware/legion-cli-schema";
 export {
   evaluateReadiness,
   expectedArtifactsFailsPlan,
@@ -153,6 +151,24 @@ export type { ReadinessReport } from "./readiness.js";
 export { isSliceTerminal, p0TasksNotDone, sliceHasOpenWork, sliceTasks } from "./slice.js";
 export { createHttpToolHost, engineSotRefuseReason, httpAllowedWrites } from "./http-host.js";
 export type { HttpHostOpts } from "./http-host.js";
+
+export {
+  approveGovernedAction,
+  buildApprovedHttpAssuranceContext,
+  createGovernedHttpCapability,
+  governedBootstrapProgramFingerprint,
+  inspectGovernedRun,
+  recordAppliedFileProvenance,
+} from "./assurance-flow.js";
+export type {
+  ApproveGovernedActionOptions,
+  CreateGovernedHttpCapabilityOptions,
+  BuildGovernedHttpAssuranceContextOptions,
+  CreateGovernedHttpCapabilityResult,
+  GovernedMcpDescriptor,
+  InspectGovernedRunOptions,
+  RecordAppliedFileProvenanceOptions,
+} from "./assurance-flow.js";
 export {
   displayStagedRoots,
   isShipAllowedPath,
@@ -164,14 +180,14 @@ export {
   unrelatedDirty,
   unionDoneFilesAllowed,
 } from "./ship.js";
+export { assertTaskStatusTransition } from "./tasks.js";
 export {
-  assertTaskStatusTransition,
   canTransitionTaskStatus,
   isTerminalTaskStatus,
   LEGAL_TASK_TRANSITIONS,
   OPEN_TASK_STATUSES,
   statusAfterUndoDependency,
-} from "./tasks.js";
+} from "@9thlevelsoftware/legion-cli-schema";
 export * from "./brownfield/index.js";
 export type {
   Actor,
@@ -215,6 +231,8 @@ export type {
   TicketSource,
   FileContract,
   GardenReport,
+  GovernanceFaultPoint,
+  GovernanceInspection,
   IngestOpts,
   IngestReceipt,
   IngestResult,
@@ -243,6 +261,9 @@ export type {
   ShipOptions,
   ShipPreview,
   ShipReceipt,
+  ShipBundleStatus,
+  ShipDeliverySnapshotStatus,
+  ShipExportResult,
   SkippedCompactTask,
   Spec,
   Task,

@@ -129,6 +129,30 @@ function alertFor(snapshot: DashboardSnapshot): string | undefined {
   return undefined;
 }
 
+const INFORMATION_FLOW_LABELS = {
+  "not-enforced": "not enforced",
+  pending: "pending governed execution evidence",
+  partial: "partial",
+  enforced: "enforced",
+} as const;
+
+function assuranceSection(snapshot: DashboardSnapshot): string {
+  if (snapshot.workflowError) return `<p>Workflow status unavailable: ${escapeHtml(snapshot.workflowError)}</p>`;
+  const assurance = snapshot.workflow?.assurance;
+  if (!assurance) return `<p class="muted">Assurance not adopted.</p>`;
+  const coverage = new Map<string, number>();
+  for (const criterion of assurance.coverage ?? []) coverage.set(criterion.status, (coverage.get(criterion.status) ?? 0) + 1);
+  const checks = assurance.checks ?? [];
+  const checkList = checks.length === 0
+    ? `<p class="muted">No component checks.</p>`
+    : `<ul>${checks.map((check) => `<li data-check="${escapeHtml(check.checkId)}">${escapeHtml(check.checkId)}: ${escapeHtml(check.result)} · ${escapeHtml(check.decision)} — ${escapeHtml(check.reason)}</li>`).join("")}</ul>`;
+  return `<p>Approval: <strong>${escapeHtml(assurance.status)}</strong> · mode: <strong>${escapeHtml(assurance.mode ?? "unknown")}</strong> · information-flow: ${escapeHtml(INFORMATION_FLOW_LABELS[assurance.informationFlow])}</p>
+      <p>Trace: <strong>${escapeHtml(assurance.traceStatus ?? "unknown")}</strong> · policy: ${escapeHtml(assurance.policyStatus ?? "unknown")}</p>
+      <p class="muted">Coverage: ${coverage.get("covered") ?? 0} covered · ${coverage.get("failed") ?? 0} failed · ${coverage.get("unknown") ?? 0} unknown</p>
+      ${assurance.blocker ? `<p>Blocker: ${escapeHtml(assurance.blocker)}</p>` : ""}
+      ${checkList}`;
+}
+
 export function renderKanban(snapshot: DashboardSnapshot, webmcp = false, live = true): string {
   const name = snapshot.project?.name ?? "(uninitialized)";
   const current = snapshot.currentTask
@@ -173,6 +197,7 @@ export function renderKanban(snapshot: DashboardSnapshot, webmcp = false, live =
       ${snapshot.qaEvidence.staleReason ? `<p class="muted">Stale: ${escapeHtml(snapshot.qaEvidence.staleReason)}</p>` : ""}
       <p class="muted">Criteria: ${snapshot.qaEvidence.criteria.passed}/${snapshot.qaEvidence.criteria.total} passed · Missing: ${escapeHtml(snapshot.qaEvidence.missing.join(", ") || "none")} · Failed: ${escapeHtml(snapshot.qaEvidence.failed.join(", ") || "none")} · Skipped: ${escapeHtml(snapshot.qaEvidence.skipped.join(", ") || "none")}</p>`
     : `<p class="muted">No QA evidence recorded.</p>`;
+  const assurancePanel = assuranceSection(snapshot);
   const controls = live
     ? `<div class="live-controls"><button type="button" data-manual-refresh>Refresh</button><button type="button" data-copy-command="${escapeHtml(snapshot.nextCommand)}">Copy next command</button><code id="dashboard-next">${escapeHtml(snapshot.nextCommand)}</code><span id="dashboard-freshness" class="muted">Live updates connecting…</span></div>`
     : `<p class="muted">Snapshot (read-only): <code id="dashboard-next">${escapeHtml(snapshot.nextCommand)}</code></p>`;
@@ -193,6 +218,8 @@ ${cols}
     ${runPanel}
     <h2>QA evidence</h2>
     ${qaPanel}
+    <h2 id="assurance">Assurance</h2>
+    <div id="dashboard-assurance">${assurancePanel}</div>
     <h2 id="timeline">Timeline</h2>
     ${timeline}
 `;

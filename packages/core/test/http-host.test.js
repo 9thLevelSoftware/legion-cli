@@ -4,10 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { dispatchToolCall, MAX_RUN_COMMAND_BYTES, RUN_COMMAND_DENIED_BINS, toolsForJob } from "@9thlevelsoftware/legion-cli-http";
+import { assembleGovernedMcpArguments, dispatchToolCall, MAX_RUN_COMMAND_BYTES, RUN_COMMAND_DENIED_BINS, toolsForJob } from "@9thlevelsoftware/legion-cli-http";
+import { createHttpToolHost, engineSotRefuseReason, governedMcpConfigIdentity, governedMcpToolContractIdentity, httpAllowedWrites } from "../dist/index.js";
 import { materializeJail } from "@9thlevelsoftware/legion-cli-sandbox";
-import { createHttpToolHost, engineSotRefuseReason, httpAllowedWrites } from "../dist/http-host.js";
-import { governedMcpConfigIdentity, governedMcpToolContractIdentity } from "../dist/index.js";
 
 async function withTemp(fn) {
   const dir = await mkdtemp(join(tmpdir(), "legion-http-host-"));
@@ -96,6 +95,70 @@ test("governed MCP resume identities bind transport and exact tool schema withou
     governedMcpToolContractIdentity([{ ...tool, readOnly: false }]),
   );
 });
+test("governed MCP arguments start from the fixed authority and place data only at declared schema pointers", () => {
+  const inputSchema = {
+    type: "object",
+    properties: {
+      account: { type: "string" },
+      scope: { type: "object", properties: { tenant: { type: "string" }, label: { type: "string" } } },
+      tags: { type: "array", items: { type: "string" } },
+      filter: {
+        type: "object",
+        properties: {
+          groups: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                levels: { type: "array", items: { type: "number" } },
+              },
+            },
+          },
+        },
+      },
+    },
+    required: ["account"],
+  };
+  const authority = { account: "fixed-account", scope: { tenant: "fixed-tenant" }, tags: ["fixed"] };
+  const encode = (pointer, value) => ({ pointer, content: new TextEncoder().encode(value) });
+  const data = [
+    ["/filter/groups/0/name", '"alpha"'],
+    ["/filter/groups/0/levels/0", "2"],
+    ["/filter/groups/0/levels/1", "4"],
+    ["/filter/groups/1/name", '"beta"'],
+    ["/filter/groups/1/levels/0", "7"],
+    ["/scope/label", '"data label"'],
+  ].map(([pointer, value]) => encode(pointer, value));
+  assert.deepEqual(assembleGovernedMcpArguments(inputSchema, authority, data), {
+    account: "fixed-account",
+    scope: { tenant: "fixed-tenant", label: "data label" },
+    tags: ["fixed"],
+    filter: {
+      groups: [
+        { name: "alpha", levels: [2, 4] },
+        { name: "beta", levels: [7] },
+      ],
+    },
+  });
+  assert.deepEqual(authority, { account: "fixed-account", scope: { tenant: "fixed-tenant" }, tags: ["fixed"] });
+  for (const pointer of ["/account", "/scope", "/scope/tenant", "/tags/0", "/tags/1"]) {
+    assert.throws(() => assembleGovernedMcpArguments(inputSchema, authority, [encode(pointer, '"injected"')]), /overlaps fixed authority/, pointer);
+  }
+  assert.throws(
+    () => assembleGovernedMcpArguments(inputSchema, {}, [encode("/filter/groups/1/name", '"sparse"')]),
+    /sparse MCP array pointer/,
+  );
+  assert.throws(
+    () => assembleGovernedMcpArguments(inputSchema, {}, [encode("/filter/groups/0/name", '"alpha"')]),
+    /do not satisfy the tool input schema/,
+  );
+  assert.throws(
+    () => assembleGovernedMcpArguments(inputSchema, authority, [encode("/scope/label", "42")]),
+    /do not satisfy the tool input schema/,
+  );
+});
+
 
 test("read_file and write_file refuse .env and .ENV", async () => {
   await withTemp(async (dir) => {

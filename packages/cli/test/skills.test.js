@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -237,3 +238,57 @@ test("a github: install downloads without engine.lock and writes under it", asyn
 });
 
 
+
+test("skills run refuses component-only input on a legacy extension before decoding it", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const result = runCli(["skills", "run", "extension:accessibility", "--project", dir, "--validator-input", join(dir, "absent.json")]);
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /validator-input.*only supported for component/);
+    assert.doesNotMatch(normalize(result.stderr), /ENOENT|evidence\.json/);
+  });
+});
+
+test("component CLI admission needs bounded declared inputs and refuses model profiles before launch", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const source = join(dir, "validator-fixture");
+    const module = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]);
+    await mkdir(join(source, "assets"), { recursive: true });
+    await writeFile(join(source, "assets", "validator.wasm"), module);
+    await writeFile(join(source, "SKILL.md"), [
+      "---",
+      JSON.stringify({
+        name: "validator-fixture", description: "Data-only validation fixture", compatibility: "Legion CLI >=0.0.0",
+        "allowed-tools": "Read",
+        metadata: { legion: {
+          extensionId: "validator-fixture", version: "1.0.0", requiredTools: [], checks: ["validate"],
+          resources: { assets: ["assets/validator.wasm"] },
+          permissions: { read: ["data"], write: [], commands: [] },
+          runtime: { kind: "wasi-component", abi: "legion-validator/v1", component: "assets/validator.wasm", sha256: createHash("sha256").update(module).digest("hex") },
+        } },
+      }),
+      "---",
+      "Only declared inputs are visible.",
+    ].join("\n"));
+    const installed = runCli(["skills", "install", source, "--extension", "validator-fixture", "--unsigned", "--project", dir]);
+    assert.equal(installed.status, 0, installed.stderr);
+    const path = join(dir, "invocation.json");
+    for (const [args, document, pattern] of [
+      [[], undefined, /require.*validator-input/],
+      [["--profile", "missing", "--validator-input", path], undefined, /profile.*not supported/],
+      [["--validator-input", path], '{"schemaVersion":"legion-cli-component-invocation/v1","checks":[],"checks":[]}', /Duplicate|duplicate/],
+      [["--validator-input", path], JSON.stringify({ schemaVersion: "legion-cli-component-invocation/v1", checks: [{ id: "other", configuration: {}, files: ["data/value.json"] }] }), /each required/],
+      [["--validator-input", path], JSON.stringify({ schemaVersion: "legion-cli-component-invocation/v1", checks: [{ id: "validate", configuration: {}, files: ["secret.json"] }] }), /outside permissions/],
+    ]) {
+      if (document !== undefined) await writeFile(path, document);
+      const result = runCli(["skills", "run", "extension:validator-fixture", "--project", dir, ...args]);
+      assert.equal(result.status, 1);
+      assert.match(normalize(result.stderr), pattern);
+      assert.doesNotMatch(normalize(result.stderr), /native.*manifest|evidence\.json|ENOENT/);
+      await assert.rejects(readFile(join(dir, ".legion-cli", "extensions", "runs"), "utf8"), /ENOENT/);
+    }
+  });
+});

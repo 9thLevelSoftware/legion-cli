@@ -56,6 +56,15 @@ amendment may be approved from `executing`; it refreshes the approval and the
 affected evidence. `ship` requires human approval and never performs a commit,
 PR, merge, or deployment implicitly.
 
+Assurance is separately opt-in: `plan approve --assurance <yaml-file>` validates
+the reviewed manifest and binds an immutable engine-owned copy to a new approval
+epoch. Reapproval without that option preserves adoption; a replacement requires
+the option again. `plan approve --assurance-off` removes adoption through a fresh
+epoch, and cannot be combined with `--assurance`. A missing, changed, or mismatched
+assurance approval sidecar blocks execution until explicit reapproval. Unadopted
+projects retain their existing plan identity and behavior. `adapter-default`
+adoption does not enforce information flow; status reports that distinction.
+
 Wireframes are opt-in through `spec --wireframes`. Stories, wireframes, pnpm,
 Playwright, and browser checks are required only when the approved work needs
 them.
@@ -111,7 +120,10 @@ runs with credentials scrubbed under bwrap/seatbelt where available, explicitly
 selected Docker, or the named host allowlist tier. An explicitly selected hardened
 backend that is unavailable fails closed. Verification never uses a copy jail
 or requires `--allow-no-sandbox`; filtering is not a trust boundary. QA unit
-commands always run on the host. bwrap/seatbelt permit network egress.
+commands always run on the host. bwrap/seatbelt permit network egress for
+ordinary verification; an adopted `information-flow` assurance plan instead
+requires a hardened backend and runs checks with the network denied and the
+engine's runtime closure read-only.
 
 The ship gate evaluates requirement-level evidence:
 
@@ -138,6 +150,68 @@ Hashing overlaps at most twelve selected paths at a time, preserves their
 original record order and waits for started reads to finish before reporting
 an I/O failure. This changes throughput, not fingerprint identities or reuse
 eligibility; it does not make a filesystem snapshot atomic.
+
+Assurance-adopted plans run the approved argv checks first, component checks in
+manifest order next, and independent review last. Components receive only their
+declared raw files, selected knowledge projections, declared dependency-unit
+closure and configuration. TS/JS selectors use the pinned TypeScript 5.8.3 syntax
+parser; ambiguous, renamed, deleted or unparsable bindings remain unknown.
+Bindings without selectors use whole-file bytes, not inferred language semantics.
+
+Only these import-free component checks support selective reuse. A passed check
+must match the approval epoch, manifest/check/configuration, canonical packet,
+unit modes, parser, module, native host/settings and platform identities.
+Comment-only syntax changes or unrelated edits can reuse that original execution;
+raw-byte or declared dependency changes cannot. An unchanged failed check stays
+blocked unless explicitly retried. Admission failures retain their diagnostic
+without inventing a guest packet digest. Whole-product before/after checks still
+guard execution and reuse, and product changes stale aggregate review and manual
+acceptance even when a component is reusable.
+The adopted trace is a durable, hash-linked record of governance transitions,
+not a transcript of model or tool content. An unmatched begin/end, write failure,
+stale head, or interrupted transition leaves it incomplete or invalid and blocks
+assured shipping/export. Reapproval establishes a new approval-bound baseline;
+it does not erase prior history. Unadopted projects use an explicit
+`not-adopted` trace and retain legacy delivery behavior.
+
+Assurance does not add a lifecycle command. At ship, the operator may request a
+local bundle with `ship --bundle <directory>`; a completed immutable snapshot can
+later be exported with `ship export --snapshot <id> --out <directory>`. Local
+offline signing is a separate explicit action:
+`ship sign <bundle> --key <external-pkcs8-path>`. Stateless verification is
+`ship verify <bundle>`; integrity is the default requirement, while
+`--require local-key` or `--require ci-oidc` requires that exact trust mode.
+Trust policy, source/artifact content, and expected approval are supplied
+separately with `--trust-policy`, `--source`, `--artifacts`, and
+`--expect-approval`. A signature authenticates signed bytes under supplied
+trust; it does not prove the truth of check, approval, or model claims.
+Public CI attestation is not automatic: it discloses the selected predicate and
+manifest digest to GitHub/transparency services and requires explicit operator
+consent. No public signing or attestation is implied by local evidence.
+
+See [Assurance integration](assurance-integration.md) for schema identities,
+trust boundaries and current verification scope.
+
+Advanced `plan evidence --json` reports covered/failed/unknown criteria,
+observations and exact execution/reuse/block reasons. `plan impact --json` follows
+declared reverse dependencies for changed bindings and includes the input paths
+of checks requiring work. These relations are authored dependencies, not proof of
+complete runtime reads; coverage never automatically passes manual acceptance.
+Current-epoch durable trace validation is an additional adopted ship prerequisite.
+`context trace [--json]` lists every governance epoch (approval identity,
+adoption, trace status, frame count, last boundary) without reconciling or
+writing anything; `context trace validate [--json]` also prints each epoch's
+semantic violations and exits 0 only when the current epoch is `valid` or
+`not-adopted`. A typed refusal that leaves the governed projection unchanged is
+recorded as outcome `refused` and does not block later work; a failed or
+interrupted boundary, or an approval identity that disagrees with the latest
+epoch anchor (an interrupted reapproval), blocks every writer until
+`plan approve` opens the next epoch.
+
+Engine-control admission excludes canonical path aliases and regular-file
+hard links sharing an engine-owned file identity. Ordinary product hard links
+remain supported. Multiply-linked file admission inspects the protected inventory
+with bounded, fail-closed traversal; it is not an atomic filesystem snapshot.
 
 Focused `fix --profile <name>` and `fix --adapter <id>` retain the selected task
 routing on the proposed amendment; they do not execute it. Unknown or conflicting

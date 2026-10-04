@@ -103,6 +103,8 @@ export function dockerArgvPrefix(opts: {
   env?: Record<string, string>;
   /** Project-relative paths mounted read-only over the writable project mount (must exist). */
   readOnlyRels?: readonly string[];
+  /** Project-relative directories hidden by an isolated tmpfs mount. */
+  hiddenRels?: readonly string[];
 }): string[] {
   const image = pinImage(opts.image);
   return [
@@ -123,6 +125,7 @@ export function dockerArgvPrefix(opts: {
     "-v",
     `${opts.jailRoot}:${DOCKER_WORKDIR}:rw`,
     ...(opts.readOnlyRels ?? []).flatMap((rel) => ["-v", `${join(opts.jailRoot, rel)}:${DOCKER_WORKDIR}/${rel}:ro`]),
+    ...(opts.hiddenRels ?? []).flatMap((rel) => ["--tmpfs", `${DOCKER_WORKDIR}/${rel}:rw,noexec,nosuid,size=16m`]),
     "-w",
     DOCKER_WORKDIR,
     ...dockerRunUser(),

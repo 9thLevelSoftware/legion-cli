@@ -1,0 +1,192 @@
+name: Delivery Attestation
+
+on:
+  workflow_call:
+    inputs:
+      bundle-artifact-name:
+        description: Actions artifact whose root contains the completed delivery bundle.
+        required: true
+        type: string
+      bundle-run-id:
+        description: >-
+          Workflow run ID in this repository that uploaded the bundle artifact. Empty means the
+          calling run.
+        required: false
+        type: string
+        default: ''
+      predicate-sha256:
+        description: >-
+          Lowercase hex SHA-256 of the exact predicate.json bytes the discloser reviewed and
+          approved (printed by `legion-cli ship export` and `legion-cli ship verify`). The
+          workflow refuses to attest any other predicate.
+        required: true
+        type: string
+      public-disclosure-consent:
+        description: >-
+          Required explicit consent to download the delivery artifact and publicly disclose the
+          manifest subject name and digest, the entire redacted predicate identified by
+          predicate-sha256, and the attestation in GitHub's public transparency log. This workflow
+          retains manifest.json, predicate.json, ci.sigstore.json, and the full delivery bundle
+          composed with ci.sigstore.json (artifact attested-delivery-bundle) as GitHub Actions
+          artifacts. Set true only when these disclosures are approved.
+        required: true
+        type: boolean
+
+permissions: {}
+
+jobs:
+  verify:
+    if: ${{ inputs.public-disclosure-consent == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout the pinned reusable-workflow source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: legion-source
+
+      - name: Download delivery bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.bundle-artifact-name }}
+          path: delivery-bundle
+          run-id: ${{ inputs.bundle-run-id || github.run_id }}
+          github-token: ${{ inputs.bundle-run-id != '' && github.token || '' }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: legion-source/pnpm-lock.yaml
+
+      - name: Build independent bundle verifier
+        working-directory: legion-source
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @9thlevelsoftware/legion-cli-schema run build
+          pnpm --filter @9thlevelsoftware/legion-cli-persist run build
+
+      - name: Verify bundle integrity and the consented predicate digest
+        working-directory: legion-source
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          EXPECTED_PREDICATE_SHA256: ${{ inputs.predicate-sha256 }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHash } from "node:crypto";
+          import { resolve } from "node:path";
+          import { mkdir, copyFile, readFile } from "node:fs/promises";
+          import { verifyDeliveryBundle } from "./packages/persist/dist/delivery.js";
+          const expected = process.env.EXPECTED_PREDICATE_SHA256 ?? "";
+          if (!/^[a-f0-9]{64}$/.test(expected)) throw new Error("predicate-sha256 must be 64 lowercase hex characters");
+          const workspace = process.env.GITHUB_WORKSPACE;
+          const bundle = resolve(workspace, "delivery-bundle");
+          const result = await verifyDeliveryBundle(bundle);
+          if (result.integrity.status !== "valid" || result.authenticity.status === "invalid") {
+            throw new Error("Delivery bundle verification failed");
+          }
+          if (result.predicate?.sha256 !== expected) {
+            throw new Error(`predicate.json SHA-256 ${result.predicate?.sha256 ?? "(unavailable)"} does not match the consented ${expected}`);
+          }
+          const publicFiles = resolve(workspace, "public-delivery");
+          await mkdir(publicFiles, { recursive: false });
+          await copyFile(resolve(bundle, "manifest.json"), resolve(publicFiles, "manifest.json"));
+          await copyFile(resolve(bundle, "predicate.json"), resolve(publicFiles, "predicate.json"));
+          const copied = createHash("sha256").update(await readFile(resolve(publicFiles, "predicate.json"))).digest("hex");
+          if (copied !== expected) throw new Error("Retained predicate.json does not match the consented SHA-256");
+          NODE
+
+      - name: Retain verified public attestation inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: public-delivery-subject
+          path: |
+            public-delivery/manifest.json
+            public-delivery/predicate.json
+          if-no-files-found: error
+
+  attest:
+    if: ${{ inputs.public-disclosure-consent == true }}
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download verified public attestation inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: public-delivery-subject
+          path: public-delivery
+
+      - name: Download delivery bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.bundle-artifact-name }}
+          path: delivery-bundle
+          run-id: ${{ inputs.bundle-run-id || github.run_id }}
+          github-token: ${{ inputs.bundle-run-id != '' && github.token || '' }}
+
+      - name: Re-check the consented predicate and bundle identity
+        env:
+          EXPECTED_PREDICATE_SHA256: ${{ inputs.predicate-sha256 }}
+        run: |
+          set -euo pipefail
+          actual="$(sha256sum public-delivery/predicate.json | cut -d' ' -f1)"
+          if [ "$actual" != "$EXPECTED_PREDICATE_SHA256" ]; then
+            echo "::error::predicate.json SHA-256 $actual does not match the consented predicate-sha256"
+            exit 1
+          fi
+          cmp -- public-delivery/manifest.json delivery-bundle/manifest.json
+          cmp -- public-delivery/predicate.json delivery-bundle/predicate.json
+          for existing in ci.sigstore.json signature.dsse.json; do
+            if [ -e "delivery-bundle/$existing" ]; then
+              echo "::error::delivery bundle already contains $existing; a second signature mechanism is not accepted"
+              exit 1
+            fi
+          done
+
+      - name: Attest manifest with public disclosure
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: public-delivery/manifest.json
+          predicate-type: https://github.com/9thLevelSoftware/product-engineer-helper/blob/main/docs/design/assurance-integration.md#delivery-v1
+          predicate-path: public-delivery/predicate.json
+          show-summary: false
+          push-to-registry: false
+
+      - name: Save offline attestation bundle and compose the attested delivery bundle
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          test -s "$ATTESTATION_BUNDLE"
+          cp -- "$ATTESTATION_BUNDLE" ci.sigstore.json
+          cp -- ci.sigstore.json delivery-bundle/ci.sigstore.json
+
+      - name: Retain offline attestation bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-sigstore-bundle
+          path: ci.sigstore.json
+          if-no-files-found: error
+
+      - name: Retain attested delivery bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: attested-delivery-bundle
+          path: delivery-bundle/
+          if-no-files-found: error

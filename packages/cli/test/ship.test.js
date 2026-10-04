@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -366,5 +367,56 @@ test("ship in a non-git project does not claim changes are staged", async () => 
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     assert.match(normalize(result.stdout), /Ship receipt written/);
     assert.doesNotMatch(normalize(result.stdout), /staged \(not committed\)/);
+  });
+});
+test("ship --bundle still requires explicit human confirmation", async () => {
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    const target = join(dir, "bundle");
+    const result = runCli(["ship", "--project", dir, "--bundle", target], { input: "n\n" });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(`${result.stdout}\n${result.stderr}`), /cancelled/);
+    assert.doesNotMatch(normalize(result.stdout), /Delivery bundle exported/);
+  });
+});
+
+test("ship --bundle rejects an empty destination rather than ignoring the export option", async () => {
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    const result = runCli(["ship", "--project", dir, "--bundle", ""]);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(normalize(`${result.stdout}\n${result.stderr}`), /--bundle requires a non-empty directory/);
+  });
+});
+
+test("ship --bundle reports the exported path and ship export prints the exact predicate SHA-256", async () => {
+  await withTempDir(async (dir) => {
+    await seedReadyToShip(dir);
+    const target = join(dir, "bundle");
+    const shipped = runCli(["ship", "--project", dir, "--bundle", target, "--json"], { input: "y\n" });
+    assert.equal(shipped.status, 0, `${shipped.stdout}\n${shipped.stderr}`);
+    const { receipt } = JSON.parse(shipped.stdout);
+    assert.equal(receipt.bundle.status, "exported", JSON.stringify(receipt.bundle));
+    assert.equal(receipt.bundle.path, target);
+    const copy = join(dir, "bundle-again");
+    const exported = runCli(["ship", "export", "--project", dir, "--snapshot", receipt.snapshotId, "--out", copy]);
+    assert.equal(exported.status, 0, `${exported.stdout}\n${exported.stderr}`);
+    const predicateSha256 = createHash("sha256").update(await readFile(join(copy, "predicate.json"))).digest("hex");
+    assert.ok(exported.stdout.includes(`Public predicate SHA-256: ${predicateSha256} (predicate.json)`), exported.stdout);
+  });
+});
+
+test("ship export uses explicit snapshot arguments and reports JSON refusal for unavailable snapshots", async () => {
+  await withTempDir(async (dir) => {
+    const engine = createLegionEngine(dir);
+    await engine.init({ name: "Export refusal", adapter: "fake" });
+    const target = join(dir, "bundle");
+    const result = runCli([
+      "ship", "export", "--project", dir, "--json",
+      "--snapshot", "missing-snapshot", "--out", target,
+    ]);
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /"error"/);
+    assert.doesNotMatch(result.stdout, /"receipt"/);
   });
 });

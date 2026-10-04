@@ -212,8 +212,7 @@ for (const raced of ["abandoned", "shipped"]) test(`the state write refuses a ph
       // A writer that bypasses the engine abandons the project while the agent runs unlocked.
       await patchState(store, { phase: raced });
       await writeFile(releasePath, "go\n");
-      const result = await pending;
-      assert.match(JSON.stringify(result), new RegExp(`cannot transition from ${raced} to executing`));
+      await assert.rejects(() => pending, LegionRefuseError);
       assert.equal((await store.readState()).data.phase, raced, "the run must not resurrect the phase");
     });
   });
@@ -767,7 +766,7 @@ test("cross-module: no second phase-order table", async () => {
   }
   assert.deepEqual(phaseOrderHits, [], `PHASE_ORDER must not exist: ${phaseOrderHits.join(", ")}`);
   assert.equal(tableAssignments.length, 1, `LEGAL_PHASE_TRANSITIONS assigned in ${tableAssignments.join(", ")}`);
-  assert.match(tableAssignments[0].replaceAll("\\", "/"), /packages\/core\/src\/phases\.ts$/);
+  assert.match(tableAssignments[0].replaceAll("\\", "/"), /packages\/schema\/src\/governance\.ts$/);
   assert.equal(LEGAL_PHASE_TRANSITIONS.abandoned.includes("intent_draft"), true);
   assert.equal(LEGAL_PHASE_TRANSITIONS.abandoned.includes("executing"), false);
   assert.equal(canTransitionBrownfield("complete", "intent"), false);

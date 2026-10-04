@@ -102,11 +102,12 @@ export {
 } from "./extensions.js";
 export type {
   ExtensionManifest,
+  ExtensionComponentRuntime,
   ExtensionPermissions,
   ExtensionPin,
   ParsedExtension,
 } from "./extensions.js";
-export { createExtensionRunId, extensionCommandSpawnOpts, extensionReadSet, runGovernedExtension } from "./extension-run.js";
+export { createExtensionRunId, extensionCommandSpawnOpts, extensionReadSet, readComponentInvocation, runGovernedExtension } from "./extension-run.js";
 export type {
   ExtensionCheck,
   ExtensionEvidence,

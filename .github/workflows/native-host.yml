@@ -1,0 +1,162 @@
+name: Native component host
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  native-host:
+    name: Native host (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: legion-wasi-host.exe
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: legion-wasi-host
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: legion-wasi-host
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            binary: legion-wasi-host
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            binary: legion-wasi-host
+          - runner: macos-26-intel
+            target: x86_64-apple-darwin
+            binary: legion-wasi-host
+          - runner: macos-26
+            target: aarch64-apple-darwin
+            binary: legion-wasi-host
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      BINARY: ${{ matrix.binary }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --target "$TARGET" --target wasm32-unknown-unknown
+
+      - name: Install musl C toolchain
+        if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build native host
+        run: node scripts/build-wasi-host.mjs --target "$TARGET"
+
+      - name: Guest component reproducibility gate
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: git diff --exit-code extensions/json-contract
+
+      - name: JSON-contract guest tests
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        working-directory: packages/sandbox/native
+        run: cargo +1.96.0 test --locked -p legion-json-contract
+
+      - name: Restore committed guest component
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
+        run: git checkout -- extensions/json-contract
+
+      - name: Sandbox tests
+        run: pnpm --filter @9thlevelsoftware/legion-cli-sandbox test
+
+      - name: Native host smoke
+        if: "!endsWith(matrix.target, '-musl')"
+        run: node scripts/native-host-smoke.mjs --expect-target "$TARGET" --out "native-out/$TARGET/smoke.json"
+
+      - name: Native host smoke (musl in Alpine)
+        if: endsWith(matrix.target, '-musl')
+        run: |
+          mkdir -p "$RUNNER_TEMP/smoke-out"
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/w:ro" -v "$RUNNER_TEMP/smoke-out:/out" -w /w node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 node scripts/native-host-smoke.mjs --expect-target "$TARGET" --out /out/smoke.json
+          mkdir -p "native-out/$TARGET"
+          cp -- "$RUNNER_TEMP/smoke-out/smoke.json" "native-out/$TARGET/smoke.json"
+
+      - name: Stage host artifact
+        run: cp -- "packages/sandbox/dist/native/$TARGET/$BINARY" "native-out/$TARGET/$BINARY"
+
+      - name: Upload host artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: legion-wasi-host-${{ matrix.target }}
+          path: native-out/
+          if-no-files-found: error
+
+  native-assemble:
+    name: Native release assembly
+    needs: native-host
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Download host artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: legion-wasi-host-*
+          merge-multiple: true
+          path: native-artifacts
+
+      - name: Install and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Assemble seven-target release
+        run: node scripts/build-wasi-host.mjs --assemble native-artifacts
+
+      - name: Record assembled host digests
+        run: find packages/sandbox/dist/native -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/assembled-native.sha256"
+
+      - name: Upload native release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: legion-native-release
+          path: packages/sandbox/dist/native/
+          if-no-files-found: error
+
+      - name: Release smoke (host glibc selects gnu)
+        run: node scripts/native-host-smoke.mjs --expect-target x86_64-unknown-linux-gnu --out "$RUNNER_TEMP/assembled-smoke/gnu.json"
+
+      - name: Release smoke (bullseye glibc 2.31 selects musl)
+        run: |
+          mkdir -p "$RUNNER_TEMP/assembled-smoke"
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/w:ro" -v "$RUNNER_TEMP/assembled-smoke:/out" -w /w node:22-bullseye@sha256:959fa6e5c12f4b08f58808f953c7a6a05f1f72629b57ef3a648b8809362fdad9 node scripts/native-host-smoke.mjs --expect-target x86_64-unknown-linux-musl --out /out/bullseye.json
+
+      - name: Release smoke (Alpine selects musl)
+        run: docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/w:ro" -v "$RUNNER_TEMP/assembled-smoke:/out" -w /w node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 node scripts/native-host-smoke.mjs --expect-target x86_64-unknown-linux-musl --out /out/alpine.json
+
+      - name: Verify assembled hosts unchanged by smokes
+        run: sha256sum --check --strict "$RUNNER_TEMP/assembled-native.sha256"

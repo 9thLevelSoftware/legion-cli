@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import { runVerificationCommands, verificationFailureReason } from "../dist/index.js";
 import { quoteArg, withEngine } from "./helpers.js";
 
@@ -50,6 +52,58 @@ test("2 MiB of verification output passes and lands in the run log", async () =>
     assert.equal(runs[0].logPath, ".legion-cli/cache/runs/big-output/verify-1.log");
     const log = await readFile(join(dir, ".legion-cli", "cache", "runs", "big-output", "verify-1.log"), "utf8");
     assert.equal(log.length, 2 * 1024 * 1024);
+  });
+});
+
+test("Linux information-flow verification persists protected logs outside the child view", async (t) => {
+  const detected = detectSandbox();
+  if (process.platform !== "linux" || detected.backend !== "bwrap" || !detected.hardened) {
+    t.skip(`requires Linux with hardened bwrap (detected ${process.platform}/${detected.backend})`);
+    return;
+  }
+
+  await withEngine(async ({ dir }) => {
+    const runId = "information-flow-protected-log-test";
+    const runHash = createHash("sha256").update(runId, "utf8").digest("hex");
+    const logPath = `.legion-cli/audit/raw-logs/${runHash}/verify-1.log`;
+    const protectedLogDirectory = join(dir, ".legion-cli", "audit", "raw-logs", runHash);
+    const protectedCanary = join(protectedLogDirectory, "existing-private-log.log");
+    const visibilityPath = join(dir, "visibility.json");
+    const controlPath = join(dir, ".legion-cli", "STATE.md");
+    await mkdir(protectedLogDirectory, { recursive: true });
+    await writeFile(protectedCanary, "private verification log");
+    await writeFile(controlPath, "private-control");
+
+    const script = [
+      "const fs=require('node:fs');",
+      "const canRead=(path)=>{try{fs.readFileSync(path,'utf8');return true}catch{return false}};",
+      "process.stdout.write('consumer-visible-output\\n');",
+      `fs.writeFileSync('visibility.json',JSON.stringify({rawLog:canRead(${JSON.stringify(protectedCanary)}),control:canRead('.legion-cli/STATE.md')}));`,
+    ].join("");
+    const command = `${quoteArg(process.execPath)} -e ${quoteArg(script)}`;
+    const runs = await runVerificationCommands(dir, [command], {
+      runId,
+      informationFlow: {
+        label: { origins: ["file-verification-test"], integrity: "approved", confidentiality: "workspace" },
+        installedEnginePaths: [],
+        readOnlyEnginePaths: [],
+      },
+    });
+
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]?.ok, true, JSON.stringify(runs));
+    assert.equal(runs[0]?.logPath, logPath);
+    assert.deepEqual(runs[0]?.informationFlow && {
+      origins: runs[0].informationFlow.origins,
+      integrity: runs[0].informationFlow.integrity,
+      confidentiality: runs[0].informationFlow.confidentiality,
+    }, {
+      origins: ["file-verification-test"],
+      integrity: "approved",
+      confidentiality: "workspace",
+    });
+    assert.equal(await readFile(join(dir, ...logPath.split("/")), "utf8"), "consumer-visible-output\n");
+    assert.deepEqual(JSON.parse(await readFile(visibilityPath, "utf8")), { rawLog: false, control: false });
   });
 });
 

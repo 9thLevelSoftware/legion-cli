@@ -80,6 +80,7 @@ export function createWorkflowPlanSnapshot(input: {
   config: LegionConfig;
   project: ProjectFile;
   discoveryContext?: string | null;
+  assuranceFingerprint?: string;
 }): WorkflowPlanSnapshot {
   const tasks = input.tasks
     .filter((entry) => entry.data.specId === input.spec.data.id)
@@ -103,6 +104,7 @@ export function createWorkflowPlanSnapshot(input: {
     configFingerprint,
     planBody: input.planBody,
     discoveryContext: input.discoveryContext ?? null,
+    ...(input.assuranceFingerprint !== undefined ? { assuranceFingerprint: input.assuranceFingerprint } : {}),
   });
   return {
     specId: input.spec.data.id,
@@ -213,18 +215,19 @@ async function nonGitProductPaths(projectRoot: string): Promise<string[]> {
   await walk(root);
   return out;
 }
-
-/** Snapshot product inputs and outputs while excluding Legion's own receipts and generated dependency/build trees. */
-export async function workflowProductFingerprint(projectRoot: string, _tasks: readonly Task[]): Promise<string> {
-  let paths: string[];
+export async function workflowProductPaths(projectRoot: string): Promise<string[]> {
   if (isGitRepo(projectRoot)) {
     const tracked = gitPaths(projectRoot, ["ls-files", "-z"]).filter((path) => !excludedProductPath(path, false));
     const untracked = gitPaths(projectRoot, ["ls-files", "-z", "--others", "--exclude-standard"])
       .filter((path) => !excludedProductPath(path, true));
-    paths = [...new Set([...tracked, ...untracked])].sort((left, right) => left.localeCompare(right));
-  } else {
-    paths = await nonGitProductPaths(projectRoot);
+    return [...new Set([...tracked, ...untracked])].sort((left, right) => left.localeCompare(right));
   }
+  return nonGitProductPaths(projectRoot);
+}
+
+/** Snapshot product inputs and outputs while excluding Legion's own receipts and generated dependency/build trees. */
+export async function workflowProductFingerprint(projectRoot: string, _tasks: readonly Task[]): Promise<string> {
+  const paths = await workflowProductPaths(projectRoot);
   const values = new Array<unknown>(paths.length);
   let nextPath = 0;
   let failed = false;

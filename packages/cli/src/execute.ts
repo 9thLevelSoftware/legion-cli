@@ -124,3 +124,19 @@ export async function runExecute(
     closePrompt();
   }
 }
+
+export async function runApproveAction(
+  opts: CliOpts,
+  request: { runId: string; actionId: string; valueDigest: string; sinkId: string },
+  reason: string,
+): Promise<number> {
+  const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
+  const approval = await engine.approveAction({
+    ...request,
+    operatorId: "user",
+    reason,
+  });
+  if (opts.json) writeJson({ ok: true, approval });
+  else writeOut(`Approved exact governed action ${approval.actionId} for sink ${approval.sinkId}.`);
+  return 0;
+}
