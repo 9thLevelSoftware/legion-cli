@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AssuranceApprovalSchema } from "../packages/schema/dist/index.js";
+import { AssuranceApprovalSchema, governanceOutcomeBlocks } from "../packages/schema/dist/index.js";
 import { inspectGovernanceTrace } from "../packages/persist/dist/index.js";
 import { stableHash } from "../packages/http/dist/index.js";
 import { ASSURANCE_APPROVAL_PATH, LegionRefuseError } from "../packages/core/dist/index.js";
@@ -101,7 +101,7 @@ function usage() {
     "the stage outcome from those notes. interruptTask SIGKILLs scripts/governance-replay-child.mjs while the provider holds",
     "task 0's request and then runs engine crash recovery.",
     "After every ship action and at the end of every trace, inspectGovernanceTrace must report a valid trace with no semantic",
-    "violations for the current approval; at the end, every approval epoch the trace visited must be valid.",
+    "violations and no failed or incomplete operation for the current approval; at the end, every visited approval epoch must too.",
     "Parallelism is bounded by --jobs (default 8); each trace runs in an isolated project with a local loopback provider.",
   ].join("\n");
 }
@@ -423,9 +423,14 @@ async function governanceModelDigest(engine) {
 
 async function requireValidGovernance(engine, approvalId, label) {
   const { trace, violations } = await inspectGovernanceTrace(engine.store, approvalId, await governanceModelDigest(engine));
-  if (trace.status !== "valid" || violations.length !== 0) {
-    const detail = violations.map((violation) => `${violation.sequence}:${violation.code} ${violation.detail}`).join("; ");
-    throw new Error(`${label}: governance trace for approval ${approvalId} is ${trace.status}${detail ? `; violations: ${detail}` : ""}`);
+  // A chain-valid trace can still record a failed or incomplete operation, which blocks the epoch.
+  const blocking = trace.frames.filter((frame) => frame.boundary === "end" && governanceOutcomeBlocks(frame.outcome));
+  if (trace.status !== "valid" || violations.length !== 0 || blocking.length !== 0) {
+    const detail = [
+      ...violations.map((violation) => `${violation.sequence}:${violation.code} ${violation.detail}`),
+      ...blocking.map((frame) => `${frame.sequence}:${frame.action} ended ${frame.outcome}`),
+    ].join("; ");
+    throw new Error(`${label}: governance trace for approval ${approvalId} is ${trace.status}${detail ? `; ${detail}` : ""}`);
   }
   return trace;
 }

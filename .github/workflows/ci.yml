@@ -48,6 +48,16 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --target wasm32-unknown-unknown
+
+      - name: Build native component host for the packed consumer
+        shell: bash
+        run: |
+          node scripts/build-wasi-host.mjs
+          # Keep the committed, CI-reproduced guest; only the local host binary is needed here.
+          git checkout -- extensions/json-contract
+
       - name: Clean consumer smoke
         run: pnpm smoke:consumer
 

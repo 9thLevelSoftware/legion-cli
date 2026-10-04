@@ -9,8 +9,9 @@ module governance {
   //   commands. The replay approves one fixed command that checks every task output; done tasks
   //   always wrote the approved output, so integration passes and never blocks a task. A task's
   //   outcome (its contract verification command) acts only when that task runs.
-  // - amendTask promotes every todo task to ready (promoteReadyTasks), not only the amended one,
-  //   and changes the plan fingerprint, so the approval and all evidence become stale.
+  // - amendTask and unblockTask promote every todo task to ready (promoteReadyTasks), not only the
+  //   task they touch (calibrated against replay). amendTask also changes the plan fingerprint, so
+  //   the approval and all evidence become stale; unblock leaves the approval current.
   // - A failed review leaves the workflow blocked at review; only `execute --retry` reruns it.
   // - interruptTask: SIGKILL while the provider holds task 0's request leaves its HTTP checkpoint
   //   dispatching; crash recovery classifies that as manual and blocks the task.
@@ -194,7 +195,7 @@ module governance {
 
   action unblockTask(t: int): bool = all {
     phase == "executing", approvalFresh, taskStatus.get(t) == "blocked",
-    taskStatus' = taskStatus.set(t, "ready"),
+    taskStatus' = Tasks.mapBy(u => if (u == t or taskStatus.get(u) == "todo") "ready" else taskStatus.get(u)),
     phase' = phase, advisory' = advisory, approvalId' = approvalId, approvalFresh' = approvalFresh,
     keepPlan, keepEvidence, keepShip,
   }

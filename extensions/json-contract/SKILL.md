@@ -36,7 +36,7 @@
         "kind": "wasi-component",
         "abi": "legion-validator/v1",
         "component": "assets/json-contract.wasm",
-        "sha256": "05da5e9ad6650f60ea4b7ff54a1e2ed96d559bf93f6ed62074c5b7065936a719"
+        "sha256": "32b51a1486ea078d8ec3941a52b0d6f7f2b8e6b095c702af60ce1c809ba58e87"
       }
     }
   }

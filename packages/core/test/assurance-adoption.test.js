@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -397,6 +398,35 @@ test("an adopted parallel batch after a failed task is not an implicit integrati
     await engine.unblockTask("TSK-0001");
     assert.equal((await engine.listSliceTasks()).find((item) => item.id === "TSK-0001").status, "ready");
   });
+});
+test("a dead claim holder's reused PID projects as dead, so the takeover is not a duplicate claim", async () => {
+  const foreign = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+  try {
+    await fixture(async ({ engine, store, draft }) => {
+      const approved = await engine.approvePlan({ id: "operator" }, { assuranceManifestPath: draft });
+      // A killed workflow's claim whose PID now belongs to an unrelated, later-started process.
+      await store.writeYaml(".legion-cli/workflow/run-claim.yaml", {
+        schemaVersion: "legion-cli-workflow-claim/v1",
+        token: randomUUID(),
+        pid: foreign.pid,
+        processStartedAt: 1,
+        claimedAt: "2026-01-01T00:00:00.000Z",
+      });
+      await engine.executeWorkflow();
+      const config = await store.readConfig();
+      const modelDigest = stableHash({
+        adapter: config.adapter ?? null,
+        profiles: config.adapter.profiles ?? null,
+        skillProfiles: config.adapter.skillProfiles ?? null,
+      });
+      const trace = await readGovernanceTrace(store, approved.approvalId, modelDigest);
+      assert.equal(trace.status, "valid");
+      const takeover = trace.frames.find((frame) => frame.boundary === "begin" && frame.action === "claim-acquire");
+      assert.equal(takeover.before.claim.liveness, "dead");
+    });
+  } finally {
+    foreign.kill();
+  }
 });
 test("adopted workflow review, execution, acceptance, and confirmed ship are projected and traced", async () => {
   await fixture(async ({ engine, store, dir, draft }) => {

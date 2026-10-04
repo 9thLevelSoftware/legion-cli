@@ -54,6 +54,7 @@ import type { ProductBytesLabelInput } from "./assurance-flow-labels.js";
 
 const ROOT = ".legion-cli/audit/http-governed";
 const CHECKPOINT_FILE = "http-governed-checkpoint.json";
+const POLICY_FILE = "governed-policy.json";
 const MAX_CHECKPOINT_BYTES = 80 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
 const MAX_FILE_PROVENANCE_BYTES = 64 * 1024 * 1024;
@@ -904,6 +905,8 @@ export async function createDurableGovernedHost(
             createdAt: new Date().toISOString(),
           }) as HttpRunAuthority & { stage: "bootstrap" };
           await writeImmutable(bootstrapPath, projectRoot, record);
+          // The exact granted policy, whose digest is identities.policyFingerprint; reapproval compares against it.
+          await writeImmutable(recordPath(projectRoot, context.runId, POLICY_FILE), projectRoot, context.policy);
           bootstrap = record;
         } else if (!sameContext(bootstrap, context) || bootstrap.manifestDigest !== context.manifestDigest ||
                    bootstrap.plannerInputDigest !== canonicalDigest("legion-cli-http-planner-input/v1", context.plannerInput) ||
@@ -1733,6 +1736,33 @@ export async function inspectProtectedGovernedRun(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
+}
+
+/**
+ * MCP tool-schema identities (grant ID → schema fingerprint) from a run's recorded governed policy, or null when the
+ * record is missing or does not hash to the run's `policyFingerprint`.
+ */
+export async function readGovernedRunSchemaIdentities(store: LegionStore, runId: string, policyFingerprint: string): Promise<Map<string, string> | null> {
+  if (!ID.test(runId)) throw new Error("policy-denied");
+  let policy: unknown;
+  try {
+    policy = await readJson(recordPath(store.projectRoot, runId, POLICY_FILE), store.projectRoot, 2 * 1024 * 1024);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (sha256(`legion-cli-governed-policy/v1\0${canonicalJson(policy)}`) !== policyFingerprint) return null;
+  const identities = new Map<string, string>();
+  const calls = policy && typeof policy === "object" && "externalCalls" in policy ? policy.externalCalls : null;
+  if (!Array.isArray(calls)) return null;
+  for (const call of calls) {
+    if (!call || typeof call !== "object" || !("id" in call) || typeof call.id !== "string" || !("transport" in call)) return null;
+    const transport = call.transport;
+    if (transport && typeof transport === "object" && "schemaFingerprint" in transport && typeof transport.schemaFingerprint === "string") {
+      identities.set(call.id, transport.schemaFingerprint);
+    }
+  }
+  return identities;
 }
 
 export async function recordOpaqueVerificationFileProvenance(options: {

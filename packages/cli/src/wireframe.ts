@@ -4,7 +4,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createLegionEngine, findSkillsDir, refuse } from "@9thlevelsoftware/legion-cli-core";
-import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
+import { fakeArtifactsFromEnv } from "./fake-artifacts.js";
 import { assertNoLinkInPath, atomicWriteFile } from "@9thlevelsoftware/legion-cli-persist";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
@@ -17,19 +17,6 @@ export type WireframeFlags = {
   adapter?: string;
   profile?: string;
 };
-
-/** Test seam: fake adapter artifacts when LEGION_CLI_ADAPTER=fake. */
-function wireframeFakeArtifacts(): FakeArtifact[] | undefined {
-  if (process.env.LEGION_CLI_ADAPTER !== "fake") return undefined;
-  const raw = process.env.LEGION_CLI_FAKE_ARTIFACTS?.trim();
-  if (!raw) return undefined;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as FakeArtifact[]) : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 async function readAuthoredHeadings(wireframes: string, projectRoot: string, specId: string): Promise<Map<string, string>> {
   const headings = new Map<string, string>();
@@ -68,7 +55,7 @@ export async function runWireframe(opts: CliOpts, flags: WireframeFlags): Promis
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, {
     skillsDir: findSkillsDir(),
-    fakeArtifacts: wireframeFakeArtifacts(),
+    fakeArtifacts: fakeArtifactsFromEnv(),
   });
   const restyleState = flags.restyle ? await engine.getState() : null;
   const authoredHeadings = flags.restyle && restyleState?.activeSpecId

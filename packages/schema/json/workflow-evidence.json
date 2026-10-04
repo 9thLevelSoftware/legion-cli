@@ -85,6 +85,46 @@
           "trustTierNote": {
             "type": "string",
             "minLength": 1
+          },
+          "informationFlow": {
+            "type": "object",
+            "properties": {
+              "confidentiality": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "workspace",
+                  "sealed"
+                ]
+              },
+              "integrity": {
+                "type": "string",
+                "enum": [
+                  "approved",
+                  "untrusted"
+                ]
+              },
+              "origins": {
+                "maxItems": 256,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                }
+              },
+              "joinDigest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "confidentiality",
+              "integrity",
+              "origins",
+              "joinDigest"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [

@@ -236,8 +236,10 @@ import {
 import {
   approveGovernedAction,
   buildVerificationInformationFlow,
+  currentGovernedTaskPolicyFingerprint,
   type GovernedMcpDescriptor,
   inspectGovernedRun,
+  readGovernedRunSchemaIdentities,
   recordOpaqueVerificationOutputProvenance,
 } from "./assurance-flow.js";
 import {
@@ -400,6 +402,7 @@ import {
   writeWorkflowEvidence,
   writeWorkflowReviewReport,
   releaseWorkflowClaim,
+  workflowClaimHolderLive,
   type WorkflowPlanSnapshot,
 } from "./workflow.js";
 import { assertDiscoverySelection } from "./discovery.js";
@@ -2470,8 +2473,14 @@ export class LegionEngine {
         next: "legion-cli plan approve",
       };
     }
-    const informationFlowPosture = await this.#componentPolicyPosture(context.assurance, context.tasks);
+    const governedExecution = await this.#governedExecutionEvidence(context.assurance, context.tasks);
+    const informationFlowPosture = governedExecution.posture;
     if (assurance?.mode === "information-flow") assurance = { ...assurance, informationFlow: informationFlowPosture };
+    // Done work whose governed run was granted different authority must re-run; undo returns it to todo.
+    const staleGovernedTask = context.tasks.find((task) => task.status === "done" && governedExecution.staleTaskIds.includes(task.id));
+    const staleGovernedBlocker = staleGovernedTask
+      ? `governed execution evidence for ${governedExecution.staleTaskIds.join(", ")} was not produced under the current approved authority; re-run with legion-cli undo --task ${staleGovernedTask.id}, then legion-cli plan approve and legion-cli execute`
+      : null;
     const assuranceEvidence = context.assurance.manifest
       ? await inspectAssuranceEvidence(
         this.store,
@@ -2541,6 +2550,7 @@ export class LegionEngine {
       );
     const blockedTask = context.tasks.find((task) => task.status === "blocked");
     const blocker = assuranceEvidence?.units.find((unit) => unit.status === "unknown")?.reason ??
+      staleGovernedBlocker ??
       assuranceEvidence?.checks.find((check) => check.decision === "blocked")?.reason ??
       (execution === "stale"
         ? "workflow evidence is stale"
@@ -2568,6 +2578,8 @@ export class LegionEngine {
         ? "legion-cli ship"
         : assuranceEvidence?.units.some((unit) => unit.status === "unknown")
           ? "legion-cli plan impact"
+        : staleGovernedTask
+          ? `legion-cli undo --task ${staleGovernedTask.id}`
         : execution === "complete" && acceptance.failed.length > 0
           ? `legion-cli plan acceptance --pass ${acceptance.failed[0]}`
         : execution === "complete" && acceptance.pending.length > 0
@@ -7254,7 +7266,9 @@ export class LegionEngine {
     let claim: { owner: string | null; liveness: "none" | "live" | "dead" | "unknown" } = { owner: null, liveness: "none" };
     try {
       const active = await this.store.readYaml(WORKFLOW_CLAIM_PATH, WorkflowClaimSchema);
-      claim = { owner: active.token, liveness: isPidAlive(active.pid) ? "live" : "dead" };
+      // Identity-checked like acquisition: a dead holder's reused PID must not read as a live claim,
+      // or a takeover looks like a duplicate claim and a refusal looks like a state change.
+      claim = { owner: active.token, liveness: await workflowClaimHolderLive(active) ? "live" : "dead" };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -7387,38 +7401,70 @@ export class LegionEngine {
     }
   }
 
-  async #informationFlowPosture(
+  /**
+   * Information-flow posture plus the completed tasks whose latest governed execute run is not current. A run is
+   * current when it completed under the current approval, or under a predecessor approval whose recorded authority is
+   * exactly what the current approval would grant (same manifest, policy, contract, prompt, configuration, provider).
+   */
+  async #governedExecutionEvidence(
+    assurance: AssuranceState,
     tasks: readonly Task[],
-    approvalId: string | undefined,
-    manifestDigest: string | undefined,
-  ): Promise<NonNullable<AssuranceState["status"]>["informationFlow"]> {
-    if (!approvalId || !manifestDigest) return "pending";
+  ): Promise<{ posture: NonNullable<AssuranceState["status"]>["informationFlow"]; staleTaskIds: string[] }> {
+    const plan = assurance.manifest;
+    if (plan?.security.mode !== "information-flow") return { posture: "not-enforced", staleTaskIds: [] };
+    const approval = assurance.approval;
+    const manifestDigest = assurance.fingerprint;
+    if (!approval || !manifestDigest) return { posture: "pending", staleTaskIds: [] };
     const completed = tasks.filter((task) => task.status === "done" || task.status === "compacted");
-    if (completed.length === 0) return "pending";
+    if (completed.length === 0) return { posture: "pending", staleTaskIds: [] };
+    const config = await this.#readConfig();
     const resumes = await listCacheResumes(this.projectRoot);
-    let governedCount = 0;
+    const staleTaskIds: string[] = [];
     for (const task of completed) {
       const resume = resumes
         .filter((item) => item.taskId === task.id && item.skillId === "execute")
         .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
-      if (!resume || resume.schemaVersion !== SCHEMA_VERSION.resume || resume.adapterId !== "http") continue;
-      const governed = await inspectGovernedRun({ store: this.store, runId: resume.runId, manifestDigest }).catch(() => null);
-      if (governed?.checkpoint.status === "complete" &&
-          governed.checkpoint.phase === "program" &&
-          governed.checkpoint.identities.approvalId === approvalId) {
-        governedCount += 1;
+      const governed = resume && resume.schemaVersion === SCHEMA_VERSION.resume && resume.adapterId === "http"
+        ? await inspectGovernedRun({ store: this.store, runId: resume.runId, manifestDigest }).catch(() => null)
+        : null;
+      if (!resume || governed?.checkpoint.status !== "complete" || governed.checkpoint.phase !== "program") {
+        staleTaskIds.push(task.id);
+        continue;
       }
+      const identities = governed.checkpoint.identities;
+      if (identities.approvalId === approval.approvalId) continue;
+      const resolution = resolveAdapterId({ config, skillId: "execute", taskAdapter: task.adapter, taskProfile: task.profile });
+      const effectiveConfig = resolution.profileConfig
+        ? applyProfileArgs(config, {
+            adapterId: resolution.id,
+            source: resolution.source,
+            ...(resolution.profile ? { profile: resolution.profile } : {}),
+            config: resolution.profileConfig,
+          })
+        : config;
+      const http = effectiveConfig.adapter.http;
+      const profile = resolution.profile ?? "default";
+      const provider = http ? { endpoint: http.baseUrl, model: http.model, profile } : null;
+      const schemaIdentities = await readGovernedRunSchemaIdentities(this.store, resume.runId, identities.policyFingerprint).catch(() => null);
+      const current = resolution.id === "http" && provider !== null && schemaIdentities !== null &&
+        canonicalJson(identities.provider) === canonicalJson(provider) &&
+        identities.configurationFingerprint === governedConfigurationFingerprint(effectiveConfig, profile, resolution.profileConfig) &&
+        identities.contractFingerprint === stableHash(task.contract) &&
+        identities.promptFingerprint === stableHash("legion-cli-approved-task-planner/v1") &&
+        identities.policyFingerprint === currentGovernedTaskPolicyFingerprint({
+          plan, approval, task, provider, manifestDigest, config: effectiveConfig, recordedSchemaFingerprints: schemaIdentities,
+        });
+      if (!current) staleTaskIds.push(task.id);
     }
-    if (governedCount === completed.length) {
-      return completed.length === tasks.length ? "enforced" : "pending";
-    }
-    return governedCount > 0 ? "partial" : "not-enforced";
+    const posture = staleTaskIds.length === 0
+      ? completed.length === tasks.length ? "enforced" : "pending"
+      : staleTaskIds.length < completed.length ? "partial" : "not-enforced";
+    return { posture, staleTaskIds };
   }
 
   /** Posture driving component-stage policy status; adapter-default manifests are never information-flow enforced. */
   async #componentPolicyPosture(assurance: AssuranceState, tasks: readonly Task[]): Promise<NonNullable<AssuranceState["status"]>["informationFlow"]> {
-    if (assurance.manifest?.security.mode !== "information-flow") return "not-enforced";
-    return this.#informationFlowPosture(tasks, assurance.approval?.approvalId, assurance.fingerprint);
+    return (await this.#governedExecutionEvidence(assurance, tasks)).posture;
   }
 
   #workflowAcceptanceStatus(spec: Spec, receipt: AcceptanceReceipt | null): WorkflowStatus["acceptance"] {

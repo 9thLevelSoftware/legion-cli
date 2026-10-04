@@ -10,7 +10,7 @@ import {
   type VerificationTrustPosture,
   type VerificationWrapper,
 } from "@9thlevelsoftware/legion-cli-sandbox";
-import { ProvenanceLabelSchema, SandboxConfigSchema, type ProvenanceLabel, type SandboxConfig } from "@9thlevelsoftware/legion-cli-schema";
+import { ProvenanceLabelSchema, SandboxConfigSchema, type ProvenanceLabel, type SandboxConfig, type WorkflowCommandEvidence } from "@9thlevelsoftware/legion-cli-schema";
 
 export { splitCommand };
 export { resolveVerificationTrustTier };
@@ -29,12 +29,8 @@ export function resetVerificationWork(): void {
   verificationWork.copyBytes = 0;
 }
 
-export type VerificationOutputProvenance = {
-  confidentiality: ProvenanceLabel["confidentiality"];
-  integrity: ProvenanceLabel["integrity"];
-  origins: readonly string[];
-  joinDigest: string;
-};
+/** Persisted with the run as workflow integration evidence (`WorkflowCommandEvidenceSchema`). */
+export type VerificationOutputProvenance = NonNullable<WorkflowCommandEvidence["informationFlow"]>;
 
 export type VerificationRun = {
   command: string;

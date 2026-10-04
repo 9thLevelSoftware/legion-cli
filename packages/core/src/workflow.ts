@@ -272,14 +272,18 @@ export function readAcceptanceReceipt(store: LegionStore): Promise<AcceptanceRec
   return readOptional(store, WORKFLOW_ACCEPTANCE_PATH, AcceptanceReceiptSchema);
 }
 
+/** A claim's holder is live while its PID runs with the recorded start time; an unknown identity counts as live. */
+export async function workflowClaimHolderLive(claim: WorkflowClaim): Promise<boolean> {
+  if (!isPidAlive(claim.pid)) return false;
+  const actualStartedAt = await processIdentity(claim.pid);
+  return actualStartedAt === null || sameProcessStart(actualStartedAt, claim.processStartedAt);
+}
+
 export async function acquireWorkflowClaim(store: LegionStore): Promise<WorkflowClaim> {
   return store.withLock(async () => {
     const existing = await readOptional(store, WORKFLOW_CLAIM_PATH, WorkflowClaimSchema);
-    if (existing && isPidAlive(existing.pid)) {
-      const actualStartedAt = await processIdentity(existing.pid);
-      if (actualStartedAt === null || sameProcessStart(actualStartedAt, existing.processStartedAt)) {
-        throw new Error(`another focused workflow is running (pid ${existing.pid})`);
-      }
+    if (existing && await workflowClaimHolderLive(existing)) {
+      throw new Error(`another focused workflow is running (pid ${existing.pid})`);
     }
     const claim = WorkflowClaimSchema.parse({
       schemaVersion: "legion-cli-workflow-claim/v1",

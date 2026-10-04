@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import {
@@ -122,10 +122,14 @@ test("seatbelt profiles name canonical paths when the project is reached through
       assert.ok(denyWrite.includes(`(subpath ${q(join(dir, rel))})`), `canonical write deny for ${rel}`);
     }
     assert.ok(denyWrite.includes(`(subpath ${q(modules)})`) && denyWrite.includes(`(subpath ${q(join(alias, "node_modules"))})`), "closure mount denied in both spellings");
-    const metadata = lines.find((line) => line.startsWith("(allow file-read-metadata (literal") && line.includes(`(literal ${q(alias)})`));
+    // The kernel names a stat'ed link node by its canonical parent plus its own name: under a macOS /var tmpdir the
+    // alias node is /private/var/.../project, not the /var/... spelling the test created it with.
+    const holderNode = realpathSync(linked.holder);
+    const aliasNode = join(holderNode, "project");
+    const metadata = lines.find((line) => line.startsWith("(allow file-read-metadata (literal") && line.includes(`(literal ${q(aliasNode)})`));
     assert.ok(metadata, "the alias link node itself is stat-able");
-    assert.ok(metadata.includes(`(literal ${q(join(dir, ".."))})`), "canonical ancestors are traversable");
-    assert.ok(metadata.includes(`(literal ${q(linked.holder)})`), "given ancestors are traversable");
+    assert.ok(metadata.includes(`(literal ${q(join(dir, ".."))})`), "canonical ancestors of the target are traversable");
+    assert.ok(metadata.includes(`(literal ${q(holderNode)})`), "canonical ancestors of the alias are traversable");
     assert.equal(metadata.includes("(subpath"), false, "ancestor grants are single nodes, never subtrees");
     await mkdir(join(dir, "real-engine"));
     await symlink(join(dir, "real-engine"), join(dir, "linked-engine"), process.platform === "win32" ? "junction" : "dir");
@@ -141,7 +145,7 @@ test("seatbelt profiles name canonical paths when the project is reached through
     const jailRead = jailLines.find((line) => line.startsWith(`(allow file-read* (subpath ${q(jailReal)})`));
     assert.ok(jailRead?.includes(`(subpath ${q(realpathSync(process.execPath))})`), jailRead);
     assert.equal(jailLines.some((line) => line.includes(`(subpath ${q(alias)}`)), false, "jail access rules never name the alias");
-    assert.ok(jailLines.some((line) => line.startsWith("(allow file-read-metadata") && line.includes(`(literal ${q(alias)})`)), "the alias link node itself is stat-able");
+    assert.ok(jailLines.some((line) => line.startsWith("(allow file-read-metadata") && line.includes(`(literal ${q(aliasNode)})`)), "the alias link node itself is stat-able");
   } finally {
     if (linked) await rm(linked.holder, { recursive: true, force: true });
     await rm(dir, { recursive: true, force: true });
@@ -159,8 +163,14 @@ test("seatbelt profiles grant the macOS runtime node needs without project-exter
       assert.ok(lines.includes('(allow file-read* file-test-existence file-write-data (literal "/dev/null") (literal "/dev/zero"))'));
       assert.ok(lines.some((line) => line.includes('(literal "/dev/urandom")')));
       assert.ok(lines.some((line) => line.startsWith("(allow mach-lookup") && line.includes('"com.apple.system.opendirectoryd.libinfo"')));
+      assert.ok(lines.includes('(allow file-read* (subpath "/System/Library/OpenSSL"))'), "node's OpenSSL config is readable");
       assert.equal(lines.some((line) => /\(allow file-read\*\)|\(allow default\)|\(subpath "\/Users"\)|\(subpath "\/"\)/.test(line)), false, "no global or home-wide read grant");
     }
+    // A <prefix>/bin/node toolchain (setup-node, Homebrew) exposes its prefix so node-bundled npm resolves.
+    const execDir = dirname(realpathSync(process.execPath));
+    const readLine = verificationSeatbeltProfile(dir).split("\n").find((line) => line.startsWith(`(allow file-read* (subpath ${JSON.stringify(realpathSync(dir))})`));
+    assert.ok(readLine.includes(`(subpath ${JSON.stringify(execDir)})`));
+    if (basename(execDir) === "bin") assert.ok(readLine.includes(`(subpath ${JSON.stringify(dirname(execDir))})`), readLine);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

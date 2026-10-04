@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
 import { canonicalJson } from "@9thlevelsoftware/legion-cli-persist";
-import { assembleGovernedMcpArguments } from "@9thlevelsoftware/legion-cli-http";
+import { assembleGovernedMcpArguments, HttpAdapter } from "@9thlevelsoftware/legion-cli-http";
 import { createDurableGovernedHost } from "../dist/assurance-flow-host.js";
 import { approveGovernedAction, buildApprovedHttpAssuranceContext, buildVerificationInformationFlow, joinLabels, namespacedOrigin, remoteResponseLabel } from "../dist/assurance-flow.js";
 import { deriveBootstrapFingerprint, newApproval, persistProtectedActionApproval, recordOpaqueVerificationFileProvenance } from "../dist/assurance-flow-host.js";
@@ -669,6 +670,73 @@ test("source bytes changed after approval read as a sealed unexplained change un
     assert.equal(admission.kind, "ready");
   } finally {
     await reapprovedFixture.cleanup();
+  }
+});
+
+test("the governed HTTP controller's derive request is the exact request the durable host admits", async () => {
+  const program = {
+    operations: [
+      { kind: "read", id: "read-one", path: "src/input.txt" },
+      { kind: "derive", id: "derive-one", transformationId: "summarize", inputs: ["read-one"] },
+      { kind: "finish", id: "finish" },
+    ],
+  };
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      requests.push(body);
+      const planner = body.messages[0].content.startsWith("Produce one strict governed JSON program.");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: planner ? JSON.stringify(program) : "derived summary" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+      }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}/v1`;
+  const projectRoot = await mkdtemp(join(os.tmpdir(), "legion-assurance-flow-controller-"));
+  try {
+    const sourceBytes = new TextEncoder().encode("approved source\n");
+    await mkdir(join(projectRoot, "src"), { recursive: true });
+    await writeFile(join(projectRoot, "src", "input.txt"), sourceBytes);
+    const base = durableContext(projectRoot, sourceBytes, false, {}, {
+      sinks: [{ id: "planner", origin: endpoint, classifications: ["workspace"] }],
+      transformations: [{ id: "summarize", instruction: "Summarize the approved input" }],
+    });
+    const context = { ...base, identities: { ...base.identities, provider: { ...base.identities.provider, endpoint } } };
+    const host = await createDurableGovernedHost({
+      store: { projectRoot },
+      withLock: async (callback) => callback(),
+      resolveCurrentContext: async () => context,
+      jailRoot: projectRoot,
+    }, context);
+    const adapter = new HttpAdapter({ baseUrl: endpoint, model: context.identities.provider.model, apiKeyEnv: "GOVERNED_FLOW_KEY", allowLoopback: true });
+    const handle = await adapter.spawn({
+      runId: context.runId, skillId: "execute", cwd: projectRoot, timeoutMs: 30_000,
+      env: { GOVERNED_FLOW_KEY: "governed-flow-key-not-a-secret" }, assuranceContext: context, effectHost: host,
+    });
+    const result = await handle.wait();
+    assert.equal(result.exitCode, 0, JSON.stringify(result));
+    const state = await host.open(context, true);
+    assert.equal(state.checkpoint.status, "complete");
+    const call = state.checkpoint.providerCalls.find((entry) => entry.purpose.kind === "derive");
+    assert.equal(call.state, "completed");
+    assert.equal(call.outcome.kind, "success");
+    const derived = state.checkpoint.values.find((value) => value.id === "derive-one");
+    assert.equal(derived.producer.kind, "derive");
+    assert.deepEqual(derived.retained, { encoding: "utf8", content: "derived summary" });
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].messages[0].content, "Produce only the requested governed transformation result. No tools or commands.");
+    assert.deepEqual(JSON.parse(requests[1].messages[1].content).inputs, [
+      { id: "read-one", digest: sha256(sourceBytes), encoding: "utf8", content: "approved source\n" },
+    ]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(projectRoot, { recursive: true, force: true });
   }
 });
 

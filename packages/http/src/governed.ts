@@ -55,6 +55,32 @@ const canonical = (value: unknown): string => {
   return `{${Object.keys(value as object).sort().map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`;
 };
 
+/**
+ * The exact quarantined transformation request the effect host re-derives and admits (`providerMessages`,
+ * `expectedProviderBody`, `expectedProviderValueDigest` and `expectedProviderRequestDigest` in core's governed host).
+ */
+function transformationRequest(
+  job: GovernedHttpAgentJob,
+  kind: "derive" | "rederive",
+  operation: { id: string; transformationId: string },
+  instruction: string,
+  inputs: ReadonlyArray<{ record: GovernedValueRecord; content: Uint8Array }>,
+): { requestBody: Uint8Array; bodyDigest: string; valueDigest: string; requestDigest: string } {
+  const provider = job.assuranceContext.identities.provider;
+  const messages = [
+    { role: "system", content: "Produce only the requested governed transformation result. No tools or commands." },
+    { role: "user", content: canonical({ transformationId: operation.transformationId, instruction, inputs: inputs.map(({ record, content }) => ({ id: record.id, digest: record.digest, ...retainedValue(content) })) }) },
+  ];
+  const requestBody = new TextEncoder().encode(JSON.stringify({ model: provider.model, messages, temperature: 0, stream: false }));
+  const bodyDigest = digest(requestBody);
+  return {
+    requestBody,
+    bodyDigest,
+    valueDigest: digest(new TextEncoder().encode(canonical(messages))),
+    requestDigest: digest(new TextEncoder().encode(canonical({ version: 1, kind, endpoint: provider.endpoint, model: provider.model, profile: provider.profile, operationId: operation.id, valueDigests: inputs.map(({ record }) => record.digest), bodyDigest }))),
+  };
+}
+
 function parseStrictJson(bytes: Uint8Array): unknown {
   const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   let at = 0;
@@ -318,12 +344,8 @@ export async function runGovernedHttp(job: GovernedHttpAgentJob, signal: AbortSi
       if (!content) return null;
       inputs.push({ record: inputRecord, content });
     }
-    const packet = { transformationId: operation.transformationId, instruction: transformation.instruction, inputs: inputs.map(({ record: input, content }) => ({ id: input.id, digest: input.digest, value: retainedValue(content) })) };
-    const valueDigest = digest(new TextEncoder().encode(canonical(packet)));
-    const requestBody = new TextEncoder().encode(JSON.stringify({ model: job.assuranceContext.identities.provider.model, messages: [{ role: "system", content: "Apply exactly the approved transformation and return only its output. No tools or commands." }, { role: "user", content: canonical(packet) }], temperature: 0, stream: false }));
+    const { requestBody, bodyDigest, valueDigest, requestDigest } = transformationRequest(job, "rederive", operation, transformation.instruction, inputs);
     if (requestBody.byteLength > MAX_REQUEST_BYTES) return null;
-    const bodyDigest = digest(requestBody);
-    const requestDigest = digest(new TextEncoder().encode(canonical({ version: 1, kind: "rederive", endpoint: config.baseUrl, model: config.model, profile: job.assuranceContext.identities.provider.profile, operationId: operation.id, transformationId: operation.transformationId, originalCallId: producer.originalCallId, bodyDigest })));
     const prior = checkpoint.providerCalls.find((call) => call.state === "awaiting-approval" && call.purpose.kind === "rederive" && call.purpose.operationId === operation.id && call.purpose.originalCallId === producer.originalCallId && call.requestDigest === requestDigest && call.bodyDigest === bodyDigest && call.valueDigest === valueDigest);
     const actionId = prior?.actionId ?? governedActionId();
     const authority: EffectIntent["authority"] = { programKind: "governed", authorityDigest: checkpoint.programAuthorityDigest, programFingerprint: checkpoint.programFingerprint };
@@ -333,7 +355,7 @@ export async function runGovernedHttp(job: GovernedHttpAgentJob, signal: AbortSi
     const confidentiality: GovernedValueRecord["label"]["confidentiality"] = labels.some((item) => item.confidentiality === "sealed") ? "sealed" : labels.some((item) => item.confidentiality === "workspace") ? "workspace" : "public";
     const label = { origins, integrity: "untrusted" as const, confidentiality };
     if (canonical(label) !== canonical(record.label)) return null;
-    const intent: EffectIntent = { kind: "provider", actionId, authority, sinkId, requestDigest, valueDigest, inputs: inputs.map(({ record: input }) => ({ id: input.id, digest: input.digest, bytes: input.bytes, label: input.label })), role: "quarantined", purpose: { kind: "rederive", operationId: operation.id, originalCallId: producer.originalCallId }, endpoint: config.baseUrl, model: config.model, bodyDigest, requestBytes: requestBody.byteLength, requestBody, inputValues: inputs.map(({ record: input, content }) => ({ evidence: { id: input.id, digest: input.digest, bytes: input.bytes, label: input.label }, content })), label, usage: { requestCharge: 0, inputTokens: null, outputTokens: null, totalTokens: null, tokenLowerBound: 0, costUsd: null, tokenAccounting: "incomplete", costAccounting: "incomplete" } };
+    const intent: EffectIntent = { kind: "provider", actionId, authority, sinkId, requestDigest, valueDigest, inputs: inputs.map(({ record: input }) => ({ id: input.id, digest: input.digest, bytes: input.bytes, label: input.label })), role: "quarantined", purpose: { kind: "rederive", operationId: operation.id, originalCallId: producer.originalCallId }, endpoint: job.assuranceContext.identities.provider.endpoint, model: job.assuranceContext.identities.provider.model, bodyDigest, requestBytes: requestBody.byteLength, requestBody, inputValues: inputs.map(({ record: input, content }) => ({ evidence: { id: input.id, digest: input.digest, bytes: input.bytes, label: input.label }, content })), label, usage: { requestCharge: 0, inputTokens: null, outputTokens: null, totalTokens: null, tokenLowerBound: 0, costUsd: null, tokenAccounting: "incomplete", costAccounting: "incomplete" } };
     const admission = await job.effectHost.prepareEffect(state.revision, intent);
     if (admission.kind !== "ready") return null;
     let received: { responseDigest: string; responseBytes: Uint8Array; status: number } | undefined;
@@ -399,13 +421,8 @@ export async function runGovernedHttp(job: GovernedHttpAgentJob, signal: AbortSi
         data.push({ record, content });
       }
       const inputValues = data.map(({ record, content }) => ({ evidence: { id: record.id, digest: record.digest, bytes: record.bytes, label: record.label }, content }));
-      const packet = { transformationId: operation.transformationId, instruction: transformation.instruction, inputs: data.map(({ record, content }) => ({ id: record.id, digest: record.digest, value: retainedValue(content) })) };
-      const valueDigest = digest(new TextEncoder().encode(canonical(packet)));
-      const bodyObject = { model: job.assuranceContext.identities.provider.model, messages: [{ role: "system", content: "Apply exactly the approved transformation and return only its output. No tools or commands." }, { role: "user", content: canonical(packet) }], temperature: 0, stream: false };
-      const requestBody = new TextEncoder().encode(JSON.stringify(bodyObject));
+      const { requestBody, bodyDigest, valueDigest, requestDigest } = transformationRequest(job, "derive", operation, transformation.instruction, data);
       if (requestBody.byteLength > MAX_REQUEST_BYTES) return blocked("resource-limit");
-      const bodyDigest = digest(requestBody);
-      const requestDigest = digest(new TextEncoder().encode(canonical({ version: 1, kind: "derive", endpoint: config.baseUrl, model: config.model, profile: job.assuranceContext.identities.provider.profile, operationId: operation.id, transformationId: operation.transformationId, bodyDigest })));
       const prior = checkpoint.providerCalls.find((call) => call.state === "awaiting-approval" && call.purpose.kind === "derive" && call.purpose.operationId === operation.id && call.requestDigest === requestDigest && call.bodyDigest === bodyDigest && call.valueDigest === valueDigest);
       const actionId = prior?.actionId ?? governedActionId();
       const origins = [...new Set([...job.assuranceContext.plannerInput.label.origins, ...data.flatMap(({ record }) => record.label.origins)])].sort();
@@ -414,7 +431,7 @@ export async function runGovernedHttp(job: GovernedHttpAgentJob, signal: AbortSi
       const confidentiality: GovernedValueRecord["label"]["confidentiality"] = labels.some((item) => item.confidentiality === "sealed") ? "sealed" : labels.some((item) => item.confidentiality === "workspace") ? "workspace" : "public";
       const label = { origins, integrity: "untrusted" as const, confidentiality };
       const authority: EffectIntent["authority"] = { programKind: "governed", authorityDigest: checkpoint.programAuthorityDigest, programFingerprint: checkpoint.programFingerprint };
-      const intent: EffectIntent = { kind: "provider", actionId, authority, sinkId, requestDigest, valueDigest, inputs: data.map(({ record }) => ({ id: record.id, digest: record.digest, bytes: record.bytes, label: record.label })), role: "quarantined", purpose: { kind: "derive", operationId: operation.id }, endpoint: config.baseUrl, model: config.model, bodyDigest, requestBytes: requestBody.byteLength, requestBody, inputValues, label, usage: { requestCharge: 0, inputTokens: null, outputTokens: null, totalTokens: null, tokenLowerBound: 0, costUsd: null, tokenAccounting: "incomplete", costAccounting: "incomplete" } };
+      const intent: EffectIntent = { kind: "provider", actionId, authority, sinkId, requestDigest, valueDigest, inputs: data.map(({ record }) => ({ id: record.id, digest: record.digest, bytes: record.bytes, label: record.label })), role: "quarantined", purpose: { kind: "derive", operationId: operation.id }, endpoint: job.assuranceContext.identities.provider.endpoint, model: job.assuranceContext.identities.provider.model, bodyDigest, requestBytes: requestBody.byteLength, requestBody, inputValues, label, usage: { requestCharge: 0, inputTokens: null, outputTokens: null, totalTokens: null, tokenLowerBound: 0, costUsd: null, tokenAccounting: "incomplete", costAccounting: "incomplete" } };
       const admission = await job.effectHost.prepareEffect(state.revision, intent);
       if (admission.kind !== "ready") return blocked(admission.code);
       let received: { responseDigest: string; responseBytes: Uint8Array; status: number } | undefined;

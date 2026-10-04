@@ -115,13 +115,14 @@ test("a failing verification ends blocked, never done", async () => {
   });
 });
 
+// A failed exec under bwrap exits 1; sandbox-exec reports it as EX_OSERR (71).
 for (const [label, command, pattern] of [
   [
     "a missing binary",
     "legion-no-such-binary-xyz --version",
-    /verification command (?:did not start: .*not found on PATH|failed with exit 1: legion-no-such-binary-xyz --version)/,
+    (task) => new RegExp(`verification command (?:did not start: .*not found on PATH|failed with exit ${task.trustTierNote?.includes("hardened-seatbelt") ? 71 : 1}: legion-no-such-binary-xyz --version)`),
   ],
-  ["a shell operator", `${passingVerificationCommand()} && ${passingVerificationCommand()}`, /verificationCommands are argv-only; split it into separate commands/],
+  ["a shell operator", `${passingVerificationCommand()} && ${passingVerificationCommand()}`, () => /verificationCommands are argv-only; split it into separate commands/],
 ]) {
   test(`verification with ${label} blocks with a reason instead of wedging in verifying`, async () => {
     await withFakeAdapter(async () => {
@@ -131,7 +132,7 @@ for (const [label, command, pattern] of [
         initGitRepo(dir);
         const result = await engine.execute("auto");
         assert.equal(result.status, "blocked");
-        assert.match(result.tasks[0].reason, pattern);
+        assert.match(result.tasks[0].reason, pattern(result.tasks[0]));
         assert.equal((await store.readTask("TSK-0001")).data.status, "blocked");
         const jsonl = await readFile(join(dir, ".legion-cli", "audit", "events.jsonl"), "utf8");
         assert.match(jsonl, /"reason":"verification command/);

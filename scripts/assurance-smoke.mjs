@@ -18,7 +18,7 @@ import { installPackedConsumer } from "./lib/packed-consumer.mjs";
 const HARDENED_REQUIRED = "assurance smoke requires a hardened sandbox (bwrap/seatbelt/docker)";
 const USAGE = "usage: node scripts/assurance-smoke.mjs [--evidence <file>] [--demo-bundle-out <dir>]";
 const PLANNER_SYSTEM = "Produce one strict governed JSON program. Only use the supplied approved metadata and contract. No tools or commands.";
-const DERIVE_SYSTEM = "Apply exactly the approved transformation and return only its output. No tools or commands.";
+const DERIVE_SYSTEM = "Produce only the requested governed transformation result. No tools or commands.";
 const SPEC_ID = "spec-assurance-smoke";
 const TASK_ID = "TSK-0001";
 const ACCEPTANCE_ID = "AC-01";

@@ -6,7 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { stringify } from "yaml";
 
-import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
+import { detectSandbox, resolveVerificationTrustTier } from "@9thlevelsoftware/legion-cli-sandbox";
+import { SandboxConfigSchema } from "@9thlevelsoftware/legion-cli-schema";
 import { initGitRepo, initProject, makeTask, passingVerificationCommand, seedPlanReady, withEngine, withFakeAdapter } from "./helpers.js";
 
 const KEY_ENV = "GOVERNED_TEST_KEY";
@@ -31,10 +32,16 @@ async function withProvider(program, fn) {
   }
 }
 
+/**
+ * Governed execution needs a hardened execute jail and an information-flow verification posture: the same
+ * resolver `runVerificationCommands` uses for the fixtures' default sandbox config, which refuses host/copy
+ * postures and unavailable backends (Docker is opt-in for verification, so `auto` never selects it).
+ */
 function skipWithoutHardenedVerification(t) {
   const detected = detectSandbox();
-  if (detected.hardened && ["bwrap", "seatbelt", "docker"].includes(detected.backend)) return false;
-  t.skip(`requires a hardened verification backend (detected ${process.platform}/${detected.backend})`);
+  const posture = resolveVerificationTrustTier(SandboxConfigSchema.parse({}));
+  if (detected.hardened && !posture.error && posture.backend !== "host" && posture.backend !== "copy") return false;
+  t.skip(`requires a hardened execute jail and verification backend (detected ${process.platform}/${detected.backend}; verification ${posture.tier})`);
   return true;
 }
 
@@ -192,6 +199,91 @@ test("engine approveAction binds exact pending action, consumes once, and stales
     await assert.rejects(() => engine.approveAction(request), /stale-authority/);
   }));
 });
+test("reapproval keeps governed evidence current only for identical authority; a stale run names an undo that re-runs it", async (t) => {
+  if (skipWithoutHardenedVerification(t)) return;
+  const program = { operations: [{ kind: "read", id: "read-one", path: "src/main.ts" }, { kind: "finish", id: "finish" }] };
+  await withProvider(program, (baseUrl) => withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src/main.ts"), "approved source\n");
+    await writeFile(join(dir, "src/result.txt"), "result\n");
+    await seedPlanReady(store, {
+      task: {
+        adapter: "http",
+        contract: {
+          filesAllowed: ["src/result.txt"],
+          filesForbidden: [".git/**"],
+          expectedArtifacts: ["src/result.txt"],
+          verificationCommands: [passingVerificationCommand()],
+          maxFilesTouched: 1,
+        },
+      },
+    });
+    await writePlanDocument(dir);
+    initGitRepo(dir);
+    const config = await store.readConfig();
+    await store.writeConfig({
+      ...config,
+      adapter: { ...config.adapter, default: "http", http: { baseUrl, model: "fixture", apiKeyEnv: KEY_ENV, allowLoopback: true } },
+    });
+    const draft = join(dir, "assurance-draft.yaml");
+    await writeFile(draft, stringify({
+      schemaVersion: "legion-cli-assurance-plan/v1",
+      specId: "spec-checkin",
+      acceptanceIds: ["AC-01"],
+      taskIds: ["TSK-0001"],
+      security: {
+        mode: "information-flow",
+        sources: [{ id: "main", path: "src/main.ts", classification: "workspace" }],
+        sinks: [{ id: "planner", origin: baseUrl, classifications: ["workspace"] }],
+        transformations: [],
+        tasks: [{ taskId: "TSK-0001", readPaths: ["src/main.ts"], transformationIds: [] }],
+        externalCalls: [],
+      },
+      knowledge: [{
+        id: "checkin-task",
+        statement: "Implement the approved check-in acceptance criterion.",
+        source: { path: "src/main.ts" },
+        acceptanceIds: ["AC-01"],
+        taskIds: ["TSK-0001"],
+        dependsOn: [],
+        checkIds: [],
+      }],
+      validators: [],
+      delivery: { artifacts: [] },
+    }));
+    await engine.approvePlan({ id: "operator" }, { assuranceManifestPath: draft });
+    const first = await engine.execute("TSK-0001");
+    assert.equal(first.status, "done", JSON.stringify(first));
+    assert.equal((await engine.getWorkflowStatus()).assurance.informationFlow, "enforced");
+
+    await engine.approvePlan({ id: "operator" });
+    const preserved = await engine.getWorkflowStatus();
+    assert.equal(preserved.assurance.informationFlow, "enforced", "identical authority keeps the predecessor run current");
+    assert.doesNotMatch(preserved.blocker ?? "", /current approved authority/);
+
+    // A changed declared source changes the approved baseline, hence the granted policy.
+    await writeFile(join(dir, "src/main.ts"), "changed approved source\n");
+    await engine.approvePlan({ id: "operator" });
+    const stale = await engine.getWorkflowStatus();
+    assert.equal(stale.assurance.informationFlow, "not-enforced");
+    assert.match(stale.blocker, /governed execution evidence for TSK-0001 was not produced under the current approved authority; re-run with legion-cli undo --task TSK-0001, then legion-cli plan approve and legion-cli execute/);
+    assert.equal(stale.next, "legion-cli undo --task TSK-0001");
+
+    await engine.undoLastTask({ taskId: "TSK-0001" });
+    assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
+    const undone = await engine.getWorkflowStatus();
+    assert.equal(undone.planApproval, "stale");
+    assert.equal(undone.next, "legion-cli plan approve");
+    await engine.approvePlan({ id: "operator" });
+    const rerun = await engine.execute("TSK-0001");
+    assert.equal(rerun.status, "done", JSON.stringify(rerun));
+    const recovered = await engine.getWorkflowStatus();
+    assert.equal(recovered.assurance.informationFlow, "enforced");
+    assert.doesNotMatch(recovered.blocker ?? "", /current approved authority/);
+  }));
+});
+
 test("approved governed MCP dispatch sends schema-shaped nested array arguments to the loopback tool", async (t) => {
   if (skipWithoutHardenedVerification(t)) return;
   const inputSchema = {

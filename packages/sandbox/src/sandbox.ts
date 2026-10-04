@@ -236,6 +236,8 @@ const SEATBELT_DARWIN_RUNTIME_RULES = [
   `(allow file-read* file-test-existence file-write-data file-ioctl (literal "/dev/dtracehelper"))`,
   `(allow file-read* (subpath "/private/etc"))`,
   `(allow file-read* file-test-existence (literal "/System/Library/CoreServices") (literal "/System/Library/CoreServices/.SystemVersionPlatform.plist") (literal "/System/Library/CoreServices/SystemVersion.plist"))`,
+  // Node's bundled OpenSSL opens OPENSSLDIR/openssl.cnf at startup; EPERM there is fatal (ENOENT is not).
+  `(allow file-read* (subpath "/System/Library/OpenSSL"))`,
   `(allow file-read-metadata (subpath "/var"))`,
   `(allow file-read-metadata (subpath "/private/var"))`,
   `(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))`,
@@ -625,6 +627,12 @@ export function verificationBwrapArgvPrefix(
   return args;
 }
 
+/**
+ * The verification runtime: the node binary, its directory, and on seatbelt its installation prefix (`<prefix>/bin/node`
+ * → `<prefix>`), so node-bundled tools such as `npm` (`bin/npm` → `lib/node_modules/npm`) resolve. Each directory is
+ * omitted when it is the filesystem root, a home directory, the project, or inside the project; the prefix is also
+ * omitted when it contains a home directory.
+ */
 function verificationExecReadPaths(projectRoot: string): string[] {
   const root = resolve(projectRoot);
   const paths: string[] = [];
@@ -632,7 +640,12 @@ function verificationExecReadPaths(projectRoot: string): string[] {
   if (!execReal) return paths;
   paths.push(execReal);
   const dir = dirname(execReal);
-  if (!isUnsafeDirname(dir, root)) paths.push(dir);
+  if (isUnsafeDirname(dir, root)) return paths;
+  paths.push(dir);
+  const prefix = dirname(dir);
+  if (basename(dir) === "bin" && !isUnsafeDirname(prefix, root) && !homeRealpaths().some((home) => isWithin(prefix, home))) {
+    paths.push(prefix);
+  }
   return paths;
 }
 

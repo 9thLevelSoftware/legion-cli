@@ -1,29 +1,16 @@
 import { createLegionEngine, findSkillsDir, refuse } from "@9thlevelsoftware/legion-cli-core";
-import type { FakeArtifact } from "@9thlevelsoftware/legion-cli-agents";
+import { fakeArtifactsFromEnv } from "./fake-artifacts.js";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { ticketVerificationLine, writeJson, writeOut } from "./io.js";
 import { nextCommand } from "./next.js";
-
-/** Test seam: fake adapter artifacts when LEGION_CLI_ADAPTER=fake. */
-function reviewFakeArtifacts(): FakeArtifact[] | undefined {
-  if (process.env.LEGION_CLI_ADAPTER !== "fake") return undefined;
-  const raw = process.env.LEGION_CLI_FAKE_ARTIFACTS?.trim();
-  if (!raw) return undefined;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as FakeArtifact[]) : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 export async function runReview(opts: CliOpts, flags: { adapter?: string; profile?: string } = {}): Promise<number> {
   if (flags.adapter && flags.profile) refuse("review --adapter and --profile are mutually exclusive", "legion-cli review --profile <name>");
   const adapter = parseAdapterFlag(flags.adapter);
   const engine = createLegionEngine(opts.project, {
     skillsDir: findSkillsDir(),
-    fakeArtifacts: reviewFakeArtifacts(),
+    fakeArtifacts: fakeArtifactsFromEnv(),
   });
   const result = await engine.review({ ...(adapter ? { adapter } : {}), ...(flags.profile ? { profile: flags.profile } : {}) });
   const state = await engine.getState();

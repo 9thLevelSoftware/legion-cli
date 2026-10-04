@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
+import { SCHEMA_VERSION, WorkflowEvidenceReceiptSchema } from "@9thlevelsoftware/legion-cli-schema";
 import { runVerificationCommands, verificationFailureReason } from "../dist/index.js";
 import { quoteArg, withEngine } from "./helpers.js";
 
@@ -106,6 +107,36 @@ test("Linux information-flow verification persists protected logs outside the ch
     });
     assert.equal(await readFile(join(dir, ...logPath.split("/")), "utf8"), "consumer-visible-output\n");
     assert.deepEqual(JSON.parse(await readFile(visibilityPath, "utf8")), { rawLog: false, control: false });
+  });
+});
+
+test("information-flow verification runs, refused or executed, persist as workflow integration evidence", async () => {
+  await withEngine(async ({ dir }) => {
+    const runs = await runVerificationCommands(dir, [`${quoteArg(process.execPath)} -e process.exit(0)`], {
+      runId: "information-flow-evidence-shape",
+      informationFlow: {
+        label: { origins: ["file-verification-test"], integrity: "untrusted", confidentiality: "sealed" },
+        installedEnginePaths: [],
+        readOnlyEnginePaths: [],
+      },
+    });
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].informationFlow?.confidentiality, "sealed", JSON.stringify(runs));
+    const receipt = WorkflowEvidenceReceiptSchema.parse({
+      schemaVersion: SCHEMA_VERSION.workflowEvidence,
+      specId: "spec-checkin",
+      planFingerprint: "a".repeat(64),
+      approvalId: "approval-1",
+      productFingerprint: "b".repeat(64),
+      environmentFingerprint: "c".repeat(64),
+      status: "running",
+      completedTaskIds: ["TSK-0001"],
+      integration: runs,
+      review: null,
+      blocker: null,
+      updatedAt: "2026-10-04T00:00:00.000Z",
+    });
+    assert.deepEqual(receipt.integration[0].informationFlow, runs[0].informationFlow);
   });
 });
 

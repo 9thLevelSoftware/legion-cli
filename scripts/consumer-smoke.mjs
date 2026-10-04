@@ -53,7 +53,6 @@ try {
     assert.ok(activeSpecId, "spec command must set the active spec through the public store");
     const spec = await store.readSpec(activeSpecId);
     assert.ok(spec.data.acceptance.length > 0, "active spec must provide acceptance criteria");
-    const acceptanceId = spec.data.acceptance[0].id;
     const challenge = JSON.parse(runOk(process.execPath, [bin, "spec", "--json", "--project", project], consumer));
     if (challenge.challenge.status === "manual_required") {
       runOk(process.execPath, [bin, "spec", "--manual-review", "--project", project], consumer, [
@@ -89,18 +88,26 @@ try {
       },
     }, "Implement the approved check-in behavior.\n");
     await store.writeMarkdown(`.legion-cli/plans/${activeSpecId}.md`, {}, "# Consumer plan\n\nImplement the check-in behavior.\n");
+    // The fixture carries the check-in module the task contract names: the fake adapter writes only the artifacts
+    // it is given, and this smoke proves lifecycle wiring, not generated code.
+    await mkdir(join(project, "src"));
+    await writeFile(join(project, "src", "main.js"), "export function checkIn(name) {\n  return `${name} checked in`;\n}\n");
     await initGitRepo(project);
     const plan = JSON.parse(runOk(process.execPath, [bin, "plan", "--project", project, "--json"], consumer));
     assert.notEqual(plan.readiness, "FAIL", JSON.stringify(plan));
     runOk(process.execPath, [
       bin, "plan", "approve", "--project", project, "--check", 'node -e "process.exit(0)"',
     ], consumer);
-    const execution = JSON.parse(runOk(process.execPath, [bin, "execute", "--step", "--project", project, "--json"], consumer));
-    assert.equal(execution.ok, true, JSON.stringify(execution));
-    assert.equal(execution.completedTaskIds.includes(taskId), true);
-    runOk(process.execPath, [bin, "review", "--project", project], consumer);
-    runOk(process.execPath, [bin, "qa", "checklist", "--tick", acceptanceId, "--project", project], consumer);
-    runOk(process.execPath, [bin, "qa", "--mode", "no-browser", "--project", project], consumer);
+    // Focused execute runs the task, its planned checks and the independent review in one call. The installed
+    // CLI's fake-adapter seam supplies the reviewer's explicit run-cache notes.
+    const reviewNotes = JSON.stringify([
+      { path: ".legion-cli/cache/runs/<id>/review.md", content: "# Independent review\n\nThe check-in task meets the approved spec.\n\nVerdict: PASS\n" },
+    ]);
+    const execution = runRefused(process.execPath, [bin, "execute", "--project", project, "--json"], consumer,
+      /"status": "blocked"[\s\S]*"blocker": "acceptance evidence pending/, { LEGION_CLI_FAKE_ARTIFACTS: reviewNotes });
+    assert.match(execution, new RegExp(`"completedTaskIds": \\[\\s*"${taskId}"`), execution);
+    const acceptanceIds = (await store.readSpec(activeSpecId)).data.acceptance.map((criterion) => criterion.id);
+    runOk(process.execPath, [bin, "plan", "acceptance", "--pass", ...acceptanceIds, "--note", "Consumer smoke manual acceptance", "--project", project], consumer);
     const shipped = runOk(process.execPath, [bin, "ship", "--project", project], consumer, "y\n");
     assert.match(shipped, /Ship receipt written/);
     assert.ok((await readFile(join(project, "src", "main.js"), "utf8")).length > 0);

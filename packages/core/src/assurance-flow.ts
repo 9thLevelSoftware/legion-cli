@@ -588,6 +588,59 @@ function policyProjection(plan: AssurancePlan, approval: AssuranceApproval, task
   return projection;
 }
 
+function governedPolicyFingerprint(policy: Record<string, unknown>): string {
+  return sha256(`legion-cli-governed-policy/v1\0${canonicalJson(policy)}`);
+}
+
+/** Transport identity of an approved streamable-HTTP MCP server, as bound into governed MCP grants. */
+export function governedMcpTransportFingerprint(server: { transport: string; url: string; allowLoopback?: boolean; authTokenEnv?: string }): string {
+  return stableHash({
+    transport: server.transport,
+    url: server.url,
+    allowLoopback: server.allowLoopback,
+    authTokenEnv: server.authTokenEnv ?? null,
+  });
+}
+
+/**
+ * The policy fingerprint the current approval would grant an execute run of `task`. MCP tool-schema identities are
+ * observed from the server at run time, so they are taken from the run's recorded policy; transport identities are
+ * recomputed from the current configuration. Returns null when the current authority cannot grant this task a run.
+ */
+export function currentGovernedTaskPolicyFingerprint(options: {
+  plan: AssurancePlan;
+  approval: AssuranceApproval;
+  task: Task;
+  provider: GovernedIdentities["provider"];
+  manifestDigest: string;
+  config: LegionConfig;
+  /** grant ID → MCP tool-schema identity recorded in the run's governed policy. */
+  recordedSchemaFingerprints: ReadonlyMap<string, string>;
+}): string | null {
+  const externalTools: GovernedMcpDescriptor[] = [];
+  for (const grant of options.plan.security.externalCalls) {
+    if (grant.effect !== "http-mcp" || !grant.taskIds.includes(options.task.id)) continue;
+    const schemaFingerprint = options.recordedSchemaFingerprints.get(grant.id);
+    const server = options.config.mcpServers?.[grant.tool.slice(0, grant.tool.indexOf(":"))];
+    const authority = grant.authority;
+    if (!schemaFingerprint || !server || server.transport !== "streamable-http" ||
+        !authority || typeof authority !== "object" || Array.isArray(authority)) return null;
+    externalTools.push({
+      grantId: grant.id,
+      tool: grant.tool,
+      transport: "streamable-http",
+      transportFingerprint: governedMcpTransportFingerprint(server),
+      schemaFingerprint,
+      fixedAuthority: authority,
+    });
+  }
+  try {
+    return governedPolicyFingerprint(policyProjection(options.plan, options.approval, options.task, options.provider, options.manifestDigest, externalTools, undefined));
+  } catch {
+    return null;
+  }
+}
+
 function contextLabel(metadata: unknown, contract: unknown, manifestDigest: string): ApprovedHttpAssuranceContext["plannerInput"]["label"] {
   const origins = [
     namespacedOrigin("file", { sourceId: "engine-approved-metadata", digest: sha256(canonicalJson(metadata)) }),
@@ -613,7 +666,7 @@ export async function buildApprovedHttpAssuranceContext(options: BuildGovernedHt
   assertNoSecretMaterial({ policy, externalTools: options.externalTools ?? [] });
   const metadata = approvedMetadata(options.spec, options.task, policy, options.plan);
   const taskContract = approvedTaskContract(options.task, options.allowedWrites, options.artifactPaths, options.reviewContract);
-  const policyFingerprint = sha256(`legion-cli-governed-policy/v1\0${canonicalJson(policy)}`);
+  const policyFingerprint = governedPolicyFingerprint(policy);
   const identities = checkedIdentity({
     promptFingerprint: options.promptFingerprint,
     configurationFingerprint: options.configurationFingerprint,
@@ -700,4 +753,5 @@ export async function recordAppliedFileProvenance(options: RecordAppliedFileProv
 }
 
 export { RUN_ROOT as GOVERNED_HTTP_RUN_ROOT };
+export { readGovernedRunSchemaIdentities } from "./assurance-flow-host.js";
 export { canonicalDigest, disclosureLabel, isSealed, joinLabels, namespacedOrigin, remoteResponseLabel, sha256 } from "./assurance-flow-labels.js";

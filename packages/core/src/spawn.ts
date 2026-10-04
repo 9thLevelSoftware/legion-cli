@@ -85,6 +85,7 @@ import {
 import type { ApprovedHttpAssuranceContext, HttpToolHost } from "@9thlevelsoftware/legion-cli-http";
 import {
   createGovernedHttpCapability,
+  governedMcpTransportFingerprint,
   type CreateGovernedHttpCapabilityOptions,
   type CreateGovernedHttpCapabilityResult,
 } from "./assurance-flow.js";
@@ -558,12 +559,7 @@ async function governedHttpMcpCapability(
         grantId: grant.id,
         tool: grant.tool,
         transport: "streamable-http",
-        transportFingerprint: stableHash({
-          transport: server.transport,
-          url: server.url,
-          allowLoopback: server.allowLoopback,
-          authTokenEnv: server.authTokenEnv ?? null,
-        }),
+        transportFingerprint: governedMcpTransportFingerprint(server),
         schemaFingerprint,
         fixedAuthority: grant.authority as Readonly<Record<string, unknown>>,
       });
