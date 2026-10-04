@@ -261,7 +261,13 @@ test("an in-process adapter extension run uses the detected hardened jail instea
     });
     assert.equal(result.status, "complete");
     assert.equal(result.backend, detected.backend);
-    assert.deepEqual(result.evidence.checks.map((check) => check.status), ["passed", "passed"]);
+    const required = result.evidence.checks.filter((check) => !check.id.startsWith("tool:"));
+    assert.deepEqual(required.map((check) => [check.id, check.status]), [["axe", "passed"], ["keyboard", "passed"]]);
+    // Declared tools missing from this host's PATH are recorded as unavailable rather than dropped.
+    for (const check of result.evidence.checks.filter((entry) => entry.id.startsWith("tool:"))) {
+      assert.equal(check.status, "unavailable", JSON.stringify(check));
+      assert.match(check.detail, /is not available on PATH$/);
+    }
   });
 });
 
