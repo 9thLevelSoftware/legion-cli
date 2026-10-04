@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readdir, readFile, readlink, rm } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import {
   AcceptanceReceiptSchema,
@@ -20,6 +20,7 @@ import {
 import {
   isGitRepo,
   isPidAlive,
+  journaledRemove,
   runGit,
   ownProcessStartedAt,
   processIdentity,
@@ -296,7 +297,9 @@ export async function releaseWorkflowClaim(store: LegionStore, token: string): P
   await store.withLock(async () => {
     const existing = await readOptional(store, WORKFLOW_CLAIM_PATH, WorkflowClaimSchema);
     if (!existing || existing.token !== token) return;
-    await rm(toFsPath(store.projectRoot, WORKFLOW_CLAIM_PATH), { force: true });
+    // Journaled like the claim's write: an unjournaled delete reads as tampering to a later restore of a
+    // dead run's command, which would resurrect this released claim and block the next workflow.
+    await journaledRemove(store.projectRoot, toFsPath(store.projectRoot, WORKFLOW_CLAIM_PATH));
   });
 }
 

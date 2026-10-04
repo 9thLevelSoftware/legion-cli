@@ -68,24 +68,25 @@ export type ProductBytesLabelInput = {
 };
 
 /**
- * Labels exact product bytes: declared sources carry their policy classification joined with any generated
- * provenance; undeclared paths whose bytes exactly match generated provenance carry that provenance label;
- * other undeclared paths are sealed/untrusted; bytes matching neither the approval baseline nor generated
- * provenance are additionally sealed/untrusted as an unexplained change.
+ * Labels exact product bytes. Repository bytes are always `untrusted` integrity (only operator-approved controller
+ * metadata is `approved`); the baseline match governs only classification. Declared sources carry their policy
+ * classification joined with any generated provenance; undeclared paths whose bytes exactly match generated
+ * provenance carry that provenance label; other undeclared paths are sealed; bytes matching neither the approval
+ * baseline nor generated provenance are additionally sealed as an unexplained change.
  */
 export function labelProductBytes(input: ProductBytesLabelInput): ProvenanceLabel {
   const key = normalizePathKey(input.path);
   const policy = input.policySources.find((source) => normalizePathKey(source.path) === key);
   const generatedMatches = input.generated !== undefined && input.generated.sha256 === input.digest;
   const labels: ProvenanceLabel[] = [];
-  if (policy) labels.push({ origins: [namespacedOrigin("file", { sourceId: policy.id, path: input.path })], integrity: "approved", confidentiality: policy.classification });
+  if (policy) labels.push({ origins: [namespacedOrigin("file", { sourceId: policy.id, path: input.path })], integrity: "untrusted", confidentiality: policy.classification });
   else if (!generatedMatches) labels.push({ origins: [namespacedOrigin("file", { sourceId: "unclassified", path: input.path })], integrity: "untrusted", confidentiality: "sealed" });
   if (input.generated) labels.push(input.generated.label);
   const baseline = input.baselineSources.find((source) => normalizePathKey(source.path) === key);
   if (baseline?.sha256 !== input.digest && !generatedMatches) {
     labels.push({ origins: [namespacedOrigin("file", { sourceId: "unexplained-change", path: input.path })], integrity: "untrusted", confidentiality: "sealed" });
   }
-  return joinLabels(labels);
+  return { ...joinLabels(labels), integrity: "untrusted" };
 }
 
 export function isSealed(label: ProvenanceLabel): boolean {

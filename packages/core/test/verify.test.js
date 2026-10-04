@@ -37,7 +37,9 @@ test("verification never throws: a missing binary is a failed run that did not s
     assert.equal(runs[0].ok, false);
     const reason = verificationFailureReason(runs);
     if (runs[0].started) {
-      assert.match(reason, /verification command failed with exit 1: legion-no-such-binary-xyz --version/);
+      // The isolation wrapper reports the failed exec: bwrap exits 1; sandbox-exec exits EX_OSERR (71).
+      const exit = runs[0].trustTier === "hardened-seatbelt" ? 71 : 1;
+      assert.match(reason, new RegExp(`^verification command failed with exit ${exit}: legion-no-such-binary-xyz --version`));
     } else {
       assert.match(reason, /^verification command did not start: legion-no-such-binary-xyz --version: /);
     }

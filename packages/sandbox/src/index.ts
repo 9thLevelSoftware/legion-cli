@@ -7,6 +7,7 @@ export {
   assertExecuteSandbox,
   detectSandbox,
   hardenedSandboxAvailable,
+  jailSeatbeltProfile,
   materializeJail,
   retainedJailIdentity,
   reopenJail,

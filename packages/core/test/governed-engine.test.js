@@ -9,7 +9,11 @@ import { stringify } from "yaml";
 import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import { initGitRepo, initProject, makeTask, passingVerificationCommand, seedPlanReady, withEngine, withFakeAdapter } from "./helpers.js";
 
+const KEY_ENV = "GOVERNED_TEST_KEY";
+
 async function withProvider(program, fn) {
+  const previousKey = process.env[KEY_ENV];
+  process.env[KEY_ENV] = "governed-test-key-not-a-secret";
   const server = http.createServer((_req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({
@@ -21,6 +25,8 @@ async function withProvider(program, fn) {
   try {
     return await fn(`http://127.0.0.1:${server.address().port}/v1`);
   } finally {
+    if (previousKey === undefined) delete process.env[KEY_ENV];
+    else process.env[KEY_ENV] = previousKey;
     await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
   }
 }

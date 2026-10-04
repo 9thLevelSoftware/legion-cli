@@ -210,6 +210,8 @@ export function validateGovernanceFrames(frames: readonly GovernanceFrame[]): Go
       const from = priorStatus.get(task.id);
       if (from === undefined || from === task.status || canTransitionTaskStatus(from, task.status)) continue;
       if (action === "undo" && statusAfterUndoDependency(from) === task.status) continue;
+      // Starting an eligible todo task walks todo -> ready -> in_progress inside one task-start boundary.
+      if (action === "task-start" && from === "todo" && task.status === "in_progress") continue;
       add("illegal-task-transition", `${action} moved ${task.id} ${from} -> ${task.status}`);
     }
 

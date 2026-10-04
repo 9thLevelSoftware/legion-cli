@@ -314,6 +314,23 @@ test("task completion that skips verification is a completion violation", async 
   });
 });
 
+test("task-start may start an eligible todo task through ready; no other action may skip ready", async () => {
+  const todo = state({ ...planned, tasks: [task("T1", "todo"), task("T2", "ready")] });
+  const running = state({ ...todo, phase: "executing", tasks: [task("T1", "in_progress"), task("T2", "ready")] });
+  await withTempDir(async (root) => {
+    const store = createLegionStore(root);
+    await step(store, "task-start", todo, running);
+    const { trace, violations } = await inspect(store);
+    assert.deepEqual(violations, []);
+    assert.equal(trace.status, "valid");
+  });
+  await withTempDir(async (root) => {
+    const store = createLegionStore(root);
+    await step(store, "unblock", todo, running);
+    assert.deepEqual((await inspect(store)).violations.map((v) => v.code), ["illegal-task-transition"]);
+  });
+});
+
 test("ship-confirm or ship-complete without a prepared preview is a preview mismatch once the trace prepares ships", async () => {
   await withTempDir(async (root) => {
     const store = createLegionStore(root);

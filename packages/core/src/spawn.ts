@@ -260,9 +260,13 @@ export function refuseIfLiveRun(
   );
 }
 
-/** Treat a resume.json as a run marker: same identity check, keyed on the run's recorded start. */
+/**
+ * Treat a resume.json as a run marker: same identity check, keyed on the run's recorded start. Once the command
+ * released engine ownership (as `inspectResumeOwner` also honors), only a surviving agent keeps the run live.
+ */
 export async function resumeAsLiveRun(resume: ResumeFile): Promise<LiveRunMarker | null> {
-  const marker = liveRunFromResume(resume);
+  const released = "engineOwnershipReleasedAt" in resume && Boolean(resume.engineOwnershipReleasedAt);
+  const marker = liveRunFromResume(released ? { ...resume, enginePid: null } : resume);
   return (await liveRunState(marker)).live ? marker : null;
 }
 
@@ -357,6 +361,8 @@ export type SkillSpawnOpts = {
       allowedWrites: readonly string[];
       filesForbidden: readonly string[];
       artifactPaths: readonly string[];
+      /** MCP tool descriptors this run was started with (listed live at spawn/resume). */
+      externalTools: readonly GovernedMcpDescriptor[];
     }) => Promise<ApprovedHttpAssuranceContext>;
   };
 };
@@ -599,6 +605,19 @@ async function governedHttpMcpCapability(
   } catch (err) {
     await pool.closeAll().catch(() => undefined);
     throw err;
+  }
+}
+
+/** Live-listed MCP descriptors for the plan's HTTP-MCP grants, for authority checks made outside a running spawn. */
+export async function currentGovernedMcpDescriptors(
+  config: LegionConfig,
+  plan: AssurancePlan,
+): Promise<GovernedMcpDescriptor[]> {
+  const capability = await governedHttpMcpCapability(config, plan);
+  try {
+    return capability.externalTools;
+  } finally {
+    await capability.close();
   }
 }
 
@@ -1161,6 +1180,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
           allowedWrites: governedAllowedWrites,
           filesForbidden: filesForbidden ?? [],
           artifactPaths: opts.fileContract?.expectedArtifacts ?? [],
+          externalTools: governedMcp.externalTools,
         };
         governedCapability = await createGovernedHttpCapability({
           ...boundGoverned,
@@ -1501,6 +1521,7 @@ export async function resumeHttpSkillSpawn(
         allowedWrites: governedAllowedWrites,
         filesForbidden: filesForbidden ?? [],
         artifactPaths: opts.fileContract?.expectedArtifacts ?? [],
+        externalTools: governedMcp.externalTools,
       };
       governedCapability = await createGovernedHttpCapability({
         ...governed,
@@ -1669,6 +1690,7 @@ export async function waitStartedSpawn(started: Extract<StartedSkillSpawn, { spa
     if (timedOut) error = new AgentError("spawn timed out");
     else if (agentResult.aborted) error = new AgentError("spawn aborted");
     else if (limitReason) error = new AgentError(limitReason);
+    else if (agentResult.governedBlock) error = new AgentError(`governed run stopped: ${agentResult.governedBlock}`);
     else if (started.skillId === "spec-challenge" && agentResult.exitCode !== 0) {
       error = new AgentError(`spawn exited ${String(agentResult.exitCode)}`);
     }

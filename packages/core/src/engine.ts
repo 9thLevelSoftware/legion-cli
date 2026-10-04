@@ -236,10 +236,12 @@ import {
 import {
   approveGovernedAction,
   buildVerificationInformationFlow,
+  type GovernedMcpDescriptor,
   inspectGovernedRun,
   recordOpaqueVerificationOutputProvenance,
 } from "./assurance-flow.js";
 import {
+  currentGovernedMcpDescriptors,
   findLatestTaskResume,
   findSkillsDir,
   finishStartedSpawn,
@@ -2611,7 +2613,11 @@ export class LegionEngine {
         }
         let governed;
         try {
-          governed = await this.#governedExecuteSpawnOptions(task, current.config, { profile: checkpoint.identities.provider.profile });
+          // "default" in the run identity is the no-profile sentinel unless a profile is literally named "default".
+          const recordedProfile = checkpoint.identities.provider.profile;
+          governed = await this.#governedExecuteSpawnOptions(task, current.config, {
+            profile: recordedProfile === "default" && !current.config.adapter.profiles?.[recordedProfile] ? undefined : recordedProfile,
+          });
           if (!governed) continue;
           const context = await governed.resolveCurrentContext({
             runId: checkpoint.runId,
@@ -2803,8 +2809,11 @@ export class LegionEngine {
     }
     const task = (await this.store.readTask(resume.taskId!)).data;
     const current = await this.#requireCurrentPlanApproval();
-    const selectedProfile = state.checkpoint.identities.provider.profile;
-    const governed = await this.#governedExecuteSpawnOptions(task, current.config, { profile: selectedProfile });
+    // "default" in the run identity is the no-profile sentinel unless a profile is literally named "default".
+    const recordedProfile = state.checkpoint.identities.provider.profile;
+    const governed = await this.#governedExecuteSpawnOptions(task, current.config, {
+      profile: recordedProfile === "default" && !current.config.adapter.profiles?.[recordedProfile] ? undefined : recordedProfile,
+    });
     if (!governed) refuse("information-flow authority is no longer approved", "legion-cli plan approve");
     const identity = state.checkpoint.identities;
     return approveGovernedAction({
@@ -3528,7 +3537,17 @@ export class LegionEngine {
             cliProfile: opts.profile,
             taskProfile: task.profile,
             allowNoSandbox: opts.allowNoSandbox,
-            ...(governed ? { governed } : {}),
+            ...(governed ? {
+              governed: {
+                ...governed,
+                // Batch siblings run concurrently by design; a child's governed lock entry must not refuse on their
+                // live markers. Children enter only after the setup lock releases, when every started member is known.
+                withLock: <T>(runId: string, callback: () => Promise<T>) => this.#withLockOrRefuse(callback, {
+                  ownRunId: runId,
+                  ownRunIds: startedMembers.map((member) => member.started.runId),
+                }),
+              },
+            } : {}),
           });
           if (!started.spawned || !started.sandbox) {
             if (started.spawned) await cleanupStartedSpawnResources(started);
@@ -3958,6 +3977,9 @@ export class LegionEngine {
     }, { ownRunIds });
     } finally {
       await Promise.all(setup.map((member) => cleanupStartedSpawnResources(member.started)));
+      // As in #relock: however the batch ended, its runs are over, so their markers must not make this
+      // engine's next lock entry refuse its own finished workers (a still-alive agent keeps its marker).
+      for (const member of setup) await this.#dropRunMarkerById(member.started.runId);
     }
   }
 
@@ -7203,7 +7225,9 @@ export class LegionEngine {
           : receipt.status === "running" && receipt.integration.length < integrationCount ? "running" as const
             : integrationCount === 0 && receipt.status !== "running" ? "passed" as const
               : receipt.integration.length > 0 && receipt.integration.length >= integrationCount ? "passed" as const
-                : receipt.status === "blocked" && receipt.integration.length < integrationCount ? "failed" as const : "not-run" as const;
+                // Only a recorded failing command is a failed integration (the stage execute --retry gates);
+                // a receipt blocked before integration ran (a task failure or an interrupted command) is not.
+                : "not-run" as const;
     const assuranceExecution = await readAssuranceExecution(this.store);
     const assuranceApproval = context.assurance.approval;
     const assuranceExecutionCurrent = Boolean(
@@ -8095,6 +8119,8 @@ export class LegionEngine {
         allowedWrites: readonly string[];
         filesForbidden: readonly string[];
         artifactPaths: readonly string[];
+        /** The running spawn's descriptors; omitted outside a run, where the current tools are listed live. */
+        externalTools?: readonly GovernedMcpDescriptor[];
       }) => {
         const refreshed = await this.#requireCurrentPlanApproval();
         const refreshedPlan = refreshed.assurance.manifest;
@@ -8143,6 +8169,7 @@ export class LegionEngine {
           allowedWrites: identity.allowedWrites,
           filesForbidden: identity.filesForbidden,
           artifactPaths: identity.artifactPaths,
+          externalTools: identity.externalTools ?? await currentGovernedMcpDescriptors(currentConfig, refreshedPlan),
           manifestDigest: refreshed.assurance.fingerprint ?? assuranceManifestDigest(refreshedPlan),
         });
       },
@@ -8211,6 +8238,7 @@ export class LegionEngine {
     const resolveCurrentContext = async (identity: {
       runId: string; sourceFingerprint: string; jailFingerprint: string; jailRoot: string;
       allowedWrites: readonly string[]; filesForbidden: readonly string[]; artifactPaths: readonly string[];
+      externalTools?: readonly GovernedMcpDescriptor[];
     }) => {
       const refreshed = await this.#requireCurrentPlanApproval();
       const refreshedPlan = refreshed.assurance.manifest;
@@ -8252,6 +8280,7 @@ export class LegionEngine {
         allowedWrites: identity.allowedWrites,
         filesForbidden: identity.filesForbidden,
         artifactPaths: identity.artifactPaths,
+        externalTools: identity.externalTools ?? await currentGovernedMcpDescriptors(currentConfig, refreshedPlan),
         manifestDigest: refreshed.assurance.fingerprint ?? assuranceManifestDigest(refreshedPlan),
       });
     };
@@ -8377,6 +8406,10 @@ export class LegionEngine {
       if (!resume && !isCurrent) continue;
       const httpRecovery = await classifyHttpCrashRecovery(this.projectRoot, task, resume);
       if (httpRecovery.kind === "safe" && resume?.schemaVersion === SCHEMA_VERSION.resume) {
+        // Already preserved for `execute --resume` (released ownership, resume hint recorded): nothing to recover,
+        // and a read-only entry must not re-run a governed mutation for it.
+        if (resume.stage === "interrupted" && resume.engineOwnershipReleasedAt &&
+            resume.recoveryCommand === `legion-cli execute --resume ${resume.runId}`) continue;
         await this.#governanceMutation("recover", async () => {
           await updateResumeStage(this.projectRoot, resume.runId, "interrupted", {
             pid: null,

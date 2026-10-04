@@ -340,6 +340,64 @@ test("adopted parallel execution traces each real sandbox application", async ()
     },
   });
 });
+test("an adopted parallel batch after a failed task is not an implicit integration retry and leaves no run markers", async () => {
+  await fixture(async ({ engine, store, dir, draft }) => {
+    const task = await store.readTask("TSK-0001");
+    await store.writeTask({
+      ...task.data,
+      contract: {
+        filesAllowed: ["src/main.ts"],
+        expectedArtifacts: ["src/main.ts"],
+        filesForbidden: [],
+        verificationCommands: [failingVerificationCommand()],
+      },
+    }, task.body);
+    await store.writeTask({
+      ...task.data,
+      id: "TSK-0002",
+      title: "Second governed task",
+      status: "ready",
+      contract: {
+        filesAllowed: ["src/board.ts"],
+        expectedArtifacts: ["src/board.ts"],
+        filesForbidden: [],
+        verificationCommands: [passingVerificationCommand()],
+      },
+    }, task.body);
+    await writeFile(join(dir, "src/board.ts"), "export const board = 0;\n");
+    const plan = manifest();
+    plan.taskIds.push("TSK-0002");
+    plan.security.tasks.push({ taskId: "TSK-0002", readPaths: ["src/main.ts"], transformationIds: [] });
+    await writeFile(draft, stringify(plan));
+    initGitRepo(dir);
+    const approved = await engine.approvePlan({ id: "operator" }, {
+      assuranceManifestPath: draft,
+      verificationCommands: [passingVerificationCommand()],
+    });
+    const first = await engine.executeWorkflow({ jobs: 2, untilBlocked: true });
+    assert.equal(first.status, "blocked");
+    assert.deepEqual((await engine.listSliceTasks()).map((item) => [item.id, item.status]), [["TSK-0001", "blocked"], ["TSK-0002", "done"]]);
+
+    await engine.unblockTask("TSK-0001");
+    const second = await engine.executeWorkflow({ jobs: 2, untilBlocked: true });
+    assert.equal(second.status, "blocked");
+    assert.match(second.blocker, /^verification command failed/);
+
+    const config = await store.readConfig();
+    const modelDigest = stableHash({
+      adapter: config.adapter ?? null,
+      profiles: config.adapter.profiles ?? null,
+      skillProfiles: config.adapter.skillProfiles ?? null,
+    });
+    const trace = await readGovernanceTrace(store, approved.approvalId, modelDigest);
+    assert.equal(trace.status, "valid");
+    const retried = trace.frames.filter((frame) => frame.boundary === "begin" && frame.action === "integration-start");
+    assert.ok(retried.length >= 1);
+    assert.ok(retried.every((frame) => frame.before.integration !== "failed"), "a task failure is not a failed integration");
+    await engine.unblockTask("TSK-0001");
+    assert.equal((await engine.listSliceTasks()).find((item) => item.id === "TSK-0001").status, "ready");
+  });
+});
 test("adopted workflow review, execution, acceptance, and confirmed ship are projected and traced", async () => {
   await fixture(async ({ engine, store, dir, draft }) => {
     const task = await store.readTask("TSK-0001");

@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { lstat, mkdtemp, open, readdir, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, parse as parsePath, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse as parsePath, relative, resolve, sep } from "node:path";
 import {
   DELIVERY_PREDICATE_TYPE,
   DeliveryArtifactsSchema,
@@ -145,7 +145,7 @@ async function runGhCiVerification(
   ciBundlePath: string,
   trust: NonNullable<DeliveryTrust["ci"]>,
 ): Promise<number> {
-  const root = await readStableFile(trust.trustedRootPath, CI_ROOT_MAX_BYTES, true);
+  const root = await readStableFile(await canonicalAncestors(trust.trustedRootPath), CI_ROOT_MAX_BYTES, true);
   if (root.sha256 !== trust.trustedRootSha256) throw new DeliveryRefusalError("External trusted-root digest does not match policy");
   const capturedAt = Date.parse(trust.trustedRootCapturedAt);
   const rootAgeMs = Date.now() - capturedAt;
@@ -220,6 +220,16 @@ async function assertNoLinks(path: string, message: string): Promise<void> {
     const stat = await lstat(cursor);
     if (stat.isSymbolicLink()) throw new DeliveryRefusalError(message);
   }
+}
+/**
+ * Resolve the existing ancestors of a caller-named path (system aliases such as macOS /var → /private/var)
+ * while keeping its final component unresolved, so assertNoLinks still refuses a link at the named path
+ * and any later swap of a canonical component into a link.
+ */
+async function canonicalAncestors(path: string): Promise<string> {
+  const absolute = resolve(path);
+  const parent = dirname(absolute);
+  return parent === absolute ? absolute : join(await realpath(parent), basename(absolute));
 }
 function sha256(bytes: Uint8Array): string { return createHash("sha256").update(bytes).digest("hex"); }
 function pae(payloadType: string, payload: Uint8Array): Buffer {
@@ -373,7 +383,7 @@ async function assertBundleState(directory: string, rootIdentity: string, initia
   }
 }
 async function safeRoot(root: string): Promise<string> {
-  const abs = resolve(root);
+  const abs = await canonicalAncestors(root);
   await assertNoLinks(abs, "content root traverses a link");
   const before = await lstat(abs, { bigint: true }) as FileStat;
   if (!before.isDirectory() || before.isSymbolicLink()) throw new DeliveryRefusalError(`Content root is not a regular directory: ${root}`);
@@ -455,7 +465,7 @@ export async function verifyDeliveryBundle(directory: string, options: DeliveryV
   let dir: string;
   let predicateDigest: { sha256: string } | null = null;
   try {
-    dir = resolve(directory);
+    dir = await canonicalAncestors(directory);
     await assertNoLinks(dir, "bundle path traverses a link");
     const rootStat = await lstat(dir, { bigint: true }) as FileStat;
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new DeliveryRefusalError("Bundle path must be a regular directory, not a link");
@@ -587,7 +597,7 @@ export async function verifyDeliveryBundle(directory: string, options: DeliveryV
 
 /** Sign or append one local signature, requiring the exact existing statement payload. */
 export async function signDeliveryBundle(directory: string, privateKeyPath: string, options: { projectRoot: string; projectRoots?: string[]; passphrase?: string }): Promise<DsseEnvelope> {
-  const dir = resolve(directory);
+  const dir = await canonicalAncestors(directory);
   const checked = await verifyDeliveryBundle(dir);
   if (checked.integrity.status !== "valid") throw new DeliveryRefusalError(`Refusing to sign invalid delivery bundle: ${checked.integrity.reason}`);
   await assertNoLinks(dir, "bundle path traverses a link");
@@ -597,9 +607,10 @@ export async function signDeliveryBundle(directory: string, privateKeyPath: stri
   if (initialNames.includes("ci.sigstore.json")) throw new DeliveryRefusalError("A CI signature already exists; refusing a second signature mechanism");
   const projectRoot = await safeRoot(options.projectRoot);
   const projectRoots = [projectRoot, ...(options.projectRoots ?? [])];
-  await assertDeliverySigningKeyOutsideRoots(privateKeyPath, dir, projectRoots);
-  const keyBytes = await readRegular(resolve(privateKeyPath), 64 * 1024);
-  await assertDeliverySigningKeyOutsideRoots(privateKeyPath, dir, projectRoots);
+  const keyPath = await canonicalAncestors(privateKeyPath);
+  await assertDeliverySigningKeyOutsideRoots(keyPath, dir, projectRoots);
+  const keyBytes = await readRegular(keyPath, 64 * 1024);
+  await assertDeliverySigningKeyOutsideRoots(keyPath, dir, projectRoots);
   const manifestBytes = await readRegular(resolve(dir, "manifest.json"), 1024 * 1024);
   const manifestValue = parseStrictJson(manifestBytes, { maxBytes: 1024 * 1024, maxDepth: 32 });
   if (canonicalJson(manifestValue) !== manifestBytes.toString("utf8")) throw new DeliveryRefusalError("manifest.json is not canonical JSON");
@@ -652,8 +663,9 @@ export async function signDeliveryBundle(directory: string, privateKeyPath: stri
 
 /** Refuse an external signing key located within the bundle or an explicitly discovered project root. */
 export async function assertDeliverySigningKeyOutsideRoots(keyPath: string, bundleDirectory: string, projectRoots: string[] = []): Promise<void> {
-  await assertNoLinks(resolve(keyPath), "signing key path traverses a link");
-  const key = await realpath(resolve(keyPath));
+  const keyFile = await canonicalAncestors(keyPath);
+  await assertNoLinks(keyFile, "signing key path traverses a link");
+  const key = await realpath(keyFile);
   for (const rootPath of [bundleDirectory, ...projectRoots]) {
     let root: string;
     try { root = await realpath(resolve(rootPath)); } catch { continue; }

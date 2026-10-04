@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { canonicalJson, exportDeliveryBundle } from "../dist/index.js";
+import { canonicalJson, exportDeliveryBundle, verifyDeliveryBundle } from "../dist/index.js";
 import { SCHEMA_VERSION } from "@9thlevelsoftware/legion-cli-schema";
 
 const hash = (value) => createHash("sha256").update(value, "utf8").digest("hex");
@@ -189,4 +189,44 @@ test("concurrent exporters cannot replace a destination reserved by the other", 
   assert.equal(results.filter((result) => result.status === "rejected").length, 1);
   assert.deepEqual((await readdir(destination)).sort(), ["artifacts.json", "evidence.json", "manifest.json", "predicate.json", "product.json", "trace.json"]);
   assert.deepEqual(await readdir(root), ["bundle"]);
+});
+
+async function directoryLink(t, target, path) {
+  try {
+    await symlink(target, path, process.platform === "win32" ? "junction" : "dir");
+    return true;
+  } catch (error) {
+    if (!["EPERM", "EACCES", "ENOSYS"].includes(error.code)) throw error;
+    t.skip(`platform refused a directory link (${error.code})`);
+    return false;
+  }
+}
+
+test("an aliased existing ancestor (macOS /var → /private/var) is resolved, not refused", async (t) => {
+  const root = await temporaryDirectory(t);
+  const real = join(root, "real");
+  await mkdir(real);
+  const alias = join(root, "alias");
+  if (!(await directoryLink(t, real, alias))) return;
+  const destination = join(alias, "created", "bundle");
+  await exportDeliveryBundle(completeSnapshot(), destination);
+  assert.deepEqual((await readdir(join(real, "created", "bundle"))).sort(), ["artifacts.json", "evidence.json", "manifest.json", "predicate.json", "product.json", "trace.json"]);
+  assert.equal((await verifyDeliveryBundle(destination)).integrity.status, "valid");
+});
+
+test("a link at the bundle destination is refused and its target stays untouched", async (t) => {
+  const root = await temporaryDirectory(t);
+  const elsewhere = join(root, "elsewhere");
+  await mkdir(elsewhere);
+  const destination = join(root, "bundle");
+  if (!(await directoryLink(t, elsewhere, destination))) return;
+  await assert.rejects(exportDeliveryBundle(completeSnapshot(), destination), /traverses a link/);
+  assert.deepEqual(await readdir(elsewhere), []);
+  const exported = join(root, "exported");
+  await exportDeliveryBundle(completeSnapshot(), exported);
+  const linked = join(root, "linked-bundle");
+  await directoryLink(t, exported, linked);
+  const report = await verifyDeliveryBundle(linked);
+  assert.equal(report.integrity.status, "invalid");
+  assert.match(report.integrity.reason, /bundle path traverses a link|must be a regular directory/);
 });

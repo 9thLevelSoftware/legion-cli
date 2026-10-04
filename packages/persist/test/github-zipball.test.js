@@ -247,6 +247,24 @@ test("unzipZipball refuses a destDir or child directory that is a symlink", asyn
   });
 });
 
+test("unzipZipball resolves an aliased ancestor of destDir (macOS /var → /private/var)", async (t) => {
+  await withTempDir(async (dir) => {
+    const real = join(dir, "real");
+    await mkdir(real);
+    const alias = join(dir, "alias");
+    try {
+      await symlink(real, alias, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (!["EPERM", "EACCES", "ENOSYS"].includes(error.code)) throw error;
+      t.skip(`platform refused a directory link (${error.code})`);
+      return;
+    }
+    const zip = makeZip([{ name: "brand-v1/README.md", data: "hello\n" }, { name: "brand-v1/src/a.ts", data: "export {}\n" }]);
+    assert.deepEqual((await unzipZipball(zip, join(alias, "out"))).sort(), ["README.md", "src/a.ts"]);
+    assert.equal(await readFile(join(real, "out", "src", "a.ts"), "utf8"), "export {}\n");
+  });
+});
+
 test("unzipZipball allows POSIX colon names", { skip: process.platform === "win32" && "Windows file names cannot contain ':'" }, async () => {
   await withTempDir(async (dir) => {
     const dest = join(dir, "out");

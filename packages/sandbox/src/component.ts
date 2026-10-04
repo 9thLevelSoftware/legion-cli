@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { release, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -317,8 +317,11 @@ export async function runComponentValidator(input: ComponentInput, options: {
       if (sha256(content) !== record.sha256) throw new Error("Component input content digest mismatch");
     }
     AssuranceSha256Schema.parse(moduleSha256);
+    // The caller-selected directory is the trust anchor; canonicalize it so 8.3 short names
+    // (Windows TEMP) and symlinked ancestors (macOS /var) compare against the file's realpath.
     const componentPath = resolve(options.componentPath);
-    const module = await readBoundedFile(componentPath, dirname(componentPath), MAX_COMPONENT);
+    const componentRoot = await realpath(dirname(componentPath));
+    const module = await readBoundedFile(join(componentRoot, basename(componentPath)), componentRoot, MAX_COMPONENT);
     if (sha256(module) !== moduleSha256) throw new Error("Component module hash mismatch");
     host = await resolveHost(deadline);
     runtime = host.identity;

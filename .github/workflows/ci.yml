@@ -201,8 +201,9 @@ jobs:
           echo "93fef2f381d30465eff906a2d6afa3358cb2c9adf6a8aad3bec0ded4f45432bb  $archive" | sha256sum --check
           quint_home="${QUINT_HOME:-$HOME/.quint}"
           install_dir="$quint_home/apalache-dist-0.62.1"
-          mkdir -p "$install_dir"
-          tar -xzf "$archive" -C "$install_dir"
+          # The release archive's top directory is apalache-0.62.1/; Quint expects apalache-dist-<v>/apalache/.
+          mkdir -p "$install_dir/apalache"
+          tar -xzf "$archive" -C "$install_dir/apalache" --strip-components=1
           test -x "$install_dir/apalache/bin/apalache-mc"
 
       - name: Verify bounded Safety invariants

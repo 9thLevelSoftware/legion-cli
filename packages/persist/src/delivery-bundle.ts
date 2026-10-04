@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, realpath, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import {
   DELIVERY_PREDICATE_TYPE,
@@ -82,6 +82,35 @@ async function assertNoLinkedPath(path: string): Promise<void> {
   }
 }
 
+/**
+ * Canonicalize the deepest existing ancestor of `path` (resolving system aliases such as macOS
+ * /var → /private/var) and append the components still to be created. Links at or beneath the
+ * returned path, including the parents created for publication, remain refused by assertNoLinkedPath.
+ */
+async function canonicalPublicationPath(path: string): Promise<string> {
+  const missing: string[] = [];
+  let cursor = resolve(path);
+  for (;;) {
+    try {
+      await lstat(cursor);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = dirname(cursor);
+      if (parent === cursor) throw error;
+      missing.unshift(basename(cursor));
+      cursor = parent;
+    }
+  }
+  let existing: string;
+  try {
+    existing = await realpath(cursor);
+  } catch {
+    throw new TypeError("Bundle path traverses a link or non-directory");
+  }
+  return join(existing, ...missing);
+}
+
 async function writeNewFile(directory: string, name: string, bytes: Buffer): Promise<void> {
   const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL |
     (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0);
@@ -145,11 +174,13 @@ export async function exportDeliveryBundle(
   });
   canonicalBytes(statement);
 
-  const target = resolve(directory);
-  const parent = dirname(target);
+  const requested = resolve(directory);
+  const parent = await canonicalPublicationPath(dirname(requested));
+  const target = join(parent, basename(requested));
   const publicationLock = join(parent, `.${basename(target)}.publish-lock`);
   await assertNoLinkedPath(parent);
   await mkdir(parent, { recursive: true });
+  await assertNoLinkedPath(parent);
   await assertNoLinkedPath(target);
   const staging = await mkdtemp(join(parent, `.${basename(target)}.tmp-`));
   let lockIdentity: string | undefined;

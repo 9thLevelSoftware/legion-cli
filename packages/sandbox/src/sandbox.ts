@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { copyFile, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   assertAgentControlPathAllowed,
   assertAgentPathAllowed,
@@ -163,6 +163,95 @@ function samePath(a: string, b: string): boolean {
   return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
+/**
+ * Realpath of the deepest existing ancestor of `path` with the missing tail appended. Seatbelt matches the
+ * kernel's resolved vnode path, so a rule naming `/var/folders/...` never matches; it must name `/private/var/...`.
+ */
+function canonicalPathSync(path: string): string {
+  const absolute = resolve(path);
+  const tail: string[] = [];
+  let cursor = absolute;
+  for (;;) {
+    const real = tryRealpath(cursor);
+    if (real) return join(real, ...tail.reverse());
+    const parent = dirname(cursor);
+    if (parent === cursor) return absolute;
+    tail.push(relative(parent, cursor));
+    cursor = parent;
+  }
+}
+
+/** The given and canonical spellings of a path, for deny rules that must hold under either name. */
+function seatbeltSpellings(path: string): string[] {
+  const given = resolve(path);
+  return [...new Set([given, canonicalPathSync(given)])];
+}
+
+function seatbeltSubpaths(paths: readonly string[]): string {
+  return [...new Set(paths)].map((path) => `(subpath ${JSON.stringify(path)})`).join(" ");
+}
+
+/**
+ * Path resolution (realpath, module loading, getcwd) stats every ancestor of a readable root. The kernel names
+ * each stat'ed node by its canonical parent plus its own name, so an alias component (macOS `/var`, a linked
+ * project directory) is granted as that link node and its target directories in canonical form. Metadata only:
+ * no file data or directory listing.
+ */
+function seatbeltAncestorMetadataRule(roots: readonly string[]): string {
+  const nodes = new Set<string>();
+  for (const root of roots) {
+    let cursor = resolve(root);
+    for (;;) {
+      const parent = dirname(cursor);
+      const canonical = canonicalPathSync(cursor);
+      const linkNode = parent === cursor ? cursor : join(canonicalPathSync(parent), basename(cursor));
+      if (linkNode !== canonical) nodes.add(linkNode);
+      if (cursor !== resolve(root)) nodes.add(canonical);
+      if (parent === cursor) break;
+      cursor = parent;
+    }
+  }
+  return `(allow file-read-metadata ${[...nodes].sort().map((path) => `(literal ${JSON.stringify(path)})`).join(" ")})`;
+}
+
+/**
+ * macOS runtime a `(deny default)` profile must grant before node or a CLI tool can start: dyld/libSystem
+ * framework reads and executable mappings, standard system aliases, devices, libinfo/logging services.
+ * Adapted from OpenAI Codex's tested `:minimal` Seatbelt platform defaults
+ * (codex-rs/sandboxing/src/seatbelt_read_only_platform_defaults.sbpl). System locations only: no user home,
+ * project, or temporary-directory data is readable through these rules.
+ */
+const SEATBELT_DARWIN_RUNTIME_RULES = [
+  `(allow file-read* file-test-existence (subpath "/Library/Apple") (subpath "/Library/Filesystems/NetFSPlugins") (subpath "/Library/Preferences/Logging") (subpath "/private/var/db/timezone") (subpath "/usr/lib") (subpath "/usr/share") (subpath "/Library/Preferences") (subpath "/private/var/db"))`,
+  `(allow file-map-executable (subpath "/Library/Apple/System/Library/Frameworks") (subpath "/Library/Apple/System/Library/PrivateFrameworks") (subpath "/Library/Apple/usr/lib") (subpath "/System/Library/Extensions") (subpath "/System/Library/Frameworks") (subpath "/System/Library/PrivateFrameworks") (subpath "/System/Library/SubFrameworks") (subpath "/usr/lib"))`,
+  `(allow file-read* file-test-existence (subpath "/Library/Apple/System/Library/Frameworks") (subpath "/Library/Apple/System/Library/PrivateFrameworks") (subpath "/Library/Apple/usr/lib") (subpath "/System/Library/Frameworks") (subpath "/System/Library/PrivateFrameworks") (subpath "/System/Library/SubFrameworks") (subpath "/usr/lib"))`,
+  `(allow system-mac-syscall (mac-policy-name "vnguard"))`,
+  `(allow system-mac-syscall (require-all (mac-policy-name "Sandbox") (mac-syscall-number 67)))`,
+  `(allow file-read-metadata file-test-existence (literal "/etc") (literal "/tmp") (literal "/var") (literal "/private/etc/localtime"))`,
+  `(allow file-read-metadata file-test-existence (path-ancestors "/System/Volumes/Data/private"))`,
+  `(allow file-read* file-test-existence (literal "/"))`,
+  `(allow file-read* file-test-existence (literal "/dev/autofs_nowait") (literal "/dev/random") (literal "/dev/urandom") (literal "/private/etc/master.passwd") (literal "/private/etc/passwd") (literal "/private/etc/protocols") (literal "/private/etc/services"))`,
+  `(allow file-read* file-test-existence file-write-data (literal "/dev/null") (literal "/dev/zero"))`,
+  `(allow file-read-data file-test-existence file-write-data (subpath "/dev/fd"))`,
+  `(allow file-read* file-test-existence file-write-data file-ioctl (literal "/dev/dtracehelper"))`,
+  `(allow file-read* (subpath "/private/etc"))`,
+  `(allow file-read* file-test-existence (literal "/System/Library/CoreServices") (literal "/System/Library/CoreServices/.SystemVersionPlatform.plist") (literal "/System/Library/CoreServices/SystemVersion.plist"))`,
+  `(allow file-read-metadata (subpath "/var"))`,
+  `(allow file-read-metadata (subpath "/private/var"))`,
+  `(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))`,
+  `(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo") (global-name "com.apple.system.DirectoryService.libinfo_v1") (global-name "com.apple.system.opendirectoryd.membership") (global-name "com.apple.bsd.dirhelper") (global-name "com.apple.system.logger") (global-name "com.apple.logd") (global-name "com.apple.logd.events") (global-name "com.apple.diagnosticd") (global-name "com.apple.system.notification_center") (global-name "com.apple.secinitd") (global-name "com.apple.trustd") (global-name "com.apple.trustd.agent") (global-name "com.apple.analyticsd") (global-name "com.apple.analyticsd.messagetracer") (global-name "com.apple.PowerManagement.control"))`,
+  `(allow ipc-posix-shm-read* (ipc-posix-name "apple.shm.notification_center"))`,
+  `(allow file-read-data file-read-metadata (subpath "/bin") (subpath "/sbin") (subpath "/usr/bin") (subpath "/usr/sbin") (subpath "/usr/libexec"))`,
+  `(allow file-read* (subpath "/opt/homebrew/lib") (subpath "/usr/local/lib"))`,
+  `(allow file-read* (regex "^/dev/fd/(0|1|2)$"))`,
+  `(allow file-write* (regex "^/dev/fd/(1|2)$"))`,
+  `(allow file-read* file-write* (literal "/dev/null") (literal "/dev/tty"))`,
+  `(allow file-read-metadata (literal "/dev") (regex "^/dev/.*$"))`,
+  `(allow file-read-metadata (literal "/System/Volumes") (vnode-type DIRECTORY))`,
+  `(allow file-read-metadata (literal "/System/Volumes/Data") (vnode-type DIRECTORY))`,
+  `(allow file-read-metadata (literal "/System/Volumes/Data/Users") (vnode-type DIRECTORY))`,
+] as const;
+
 export function findOnPath(name: string, rejectStubs = false): string | undefined {
   const pathVal = process.env.PATH ?? process.env.Path ?? "";
   const pathExt = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM") : "";
@@ -299,9 +388,14 @@ export type VerificationInformationFlow = {
 export type VerificationWrapperOptions = {
   informationFlow?: VerificationInformationFlow;
 };
+/**
+ * Paths verification may neither read nor write, spelled under the given project root. The root itself may be
+ * reached through an alias (macOS /var → /private/var), but a protected path must not be a link or sit beneath one.
+ */
 function protectedVerificationPaths(projectRoot: string, informationFlow?: VerificationInformationFlow): string[] {
   if (!informationFlow) return [];
   const root = resolve(projectRoot);
+  const rootReal = realpathSync(root);
   const enginePaths = informationFlow.installedEnginePaths.map((path) => {
     if (!isAbsolute(path)) throw new SandboxError("information-flow engine paths must be absolute");
     return resolve(path);
@@ -310,15 +404,14 @@ function protectedVerificationPaths(projectRoot: string, informationFlow?: Verif
     ...VERIFY_READONLY_RELS.filter((rel) => existsSync(join(root, rel))).map((rel) => join(root, rel)),
     ...enginePaths,
   ];
-  const unique = [...new Set(candidates)];
-  for (const path of unique) {
+  const unique = [...new Set(candidates.map((path) => {
     if (!existsSync(path)) throw new SandboxError("information-flow verification protected path is unavailable");
-    if (!samePath(realpathSync(path), path)) throw new SandboxError("information-flow verification protected path is aliased");
-    const projectRelative = relative(path, root);
-    if (projectRelative === "" || (!projectRelative.startsWith("..") && !isAbsolute(projectRelative))) {
-      throw new SandboxError("information-flow engine exclusion cannot contain the project root");
-    }
-  }
+    const real = realpathSync(path);
+    const viaRootAlias = isWithin(root, path) && samePath(real, join(rootReal, relative(root, path)));
+    if (!samePath(real, path) && !viaRootAlias) throw new SandboxError("information-flow verification protected path is aliased");
+    if (isWithin(real, rootReal)) throw new SandboxError("information-flow engine exclusion cannot contain the project root");
+    return isWithin(rootReal, real) ? join(root, relative(rootReal, real)) : real;
+  }))];
   return unique.filter((path) => !unique.some((parent) => {
     const nested = relative(parent, path);
     return parent !== path && nested !== "" && !nested.startsWith("..") && !isAbsolute(nested);
@@ -548,31 +641,29 @@ export function verificationSeatbeltProfile(
   options: VerificationWrapperOptions = {},
 ): string {
   const root = resolve(projectRoot);
-  const rootJson = JSON.stringify(root);
-  const reads = [
-    rootJson,
-    ...SYSTEM_RO_BINDS.filter((path) => existsSync(path)).map((path) => JSON.stringify(path)),
-    ...verificationExecReadPaths(root).map((path) => JSON.stringify(path)),
-  ];
+  const rootReal = canonicalPathSync(root);
+  const execReads = verificationExecReadPaths(root).map((path) => canonicalPathSync(path));
+  // Seatbelt matches canonical spellings (macOS /etc → /private/etc).
+  const reads = [rootReal, ...SYSTEM_RO_BINDS.filter((path) => existsSync(path)).map(canonicalPathSync), ...execReads];
   const protectedPaths = options.informationFlow
     ? protectedVerificationPaths(root, options.informationFlow)
     : VERIFY_READONLY_RELS.map((rel) => join(root, rel));
-  const readOnlyPaths = options.informationFlow
-    ? [...new Set(readOnlyEngineMounts(root, options.informationFlow, protectedPaths).flatMap((path) => [path, realpathSync(path)]))]
-    : [];
+  const readOnlyPaths = options.informationFlow ? readOnlyEngineMounts(root, options.informationFlow, protectedPaths) : [];
+  const deniedReads = protectedPaths.flatMap(seatbeltSpellings);
+  const deniedWrites = [...protectedPaths, ...readOnlyPaths].flatMap(seatbeltSpellings);
   return [
     "(version 1)",
     "(deny default)",
     "(allow process*)",
     "(allow sysctl-read)",
+    ...SEATBELT_DARWIN_RUNTIME_RULES,
     ...(options.informationFlow ? [] : ["(allow network*)"]),
-    `(allow file-read* ${reads.map((path) => `(subpath ${path})`).join(" ")})`,
-    `(allow file-write* (subpath ${rootJson}))`,
-    ...(options.informationFlow
-      ? [`(deny file-read* ${protectedPaths.map((path) => `(subpath ${JSON.stringify(path)})`).join(" ")})`]
-      : []),
-    `(deny file-write* ${[...protectedPaths, ...readOnlyPaths].map((path) => `(subpath ${JSON.stringify(path)})`).join(" ")})`,
-    `(allow file-ioctl (subpath ${rootJson}))`,
+    seatbeltAncestorMetadataRule([root, ...reads]),
+    `(allow file-read* ${seatbeltSubpaths(reads)})`,
+    `(allow file-write* (subpath ${JSON.stringify(rootReal)}))`,
+    ...(options.informationFlow && deniedReads.length > 0 ? [`(deny file-read* ${seatbeltSubpaths(deniedReads)})`] : []),
+    ...(deniedWrites.length > 0 ? [`(deny file-write* ${seatbeltSubpaths(deniedWrites)})`] : []),
+    `(allow file-ioctl (subpath ${JSON.stringify(rootReal)}))`,
     "",
   ].join("\n");
 }
@@ -881,22 +972,25 @@ function bwrapArgvPrefix(opts: {
   return args;
 }
 
-function seatbeltProfile(jailRoot: string, extraReads: readonly string[] = []): string {
-  const sub = JSON.stringify(jailRoot);
-  const reads = [
-    sub,
-    ...SYSTEM_RO_BINDS.filter((path) => existsSync(path)).map((path) => JSON.stringify(path)),
-    ...extraReads.filter((path) => existsSync(path)).map((path) => JSON.stringify(path)),
-  ];
+/**
+ * Execute-jail seatbelt profile: read/write only the jail, read the adapter binaries and auth sources, plus the
+ * macOS runtime. Every path is emitted in the canonical spelling the kernel matches (macOS /var → /private/var).
+ */
+export function jailSeatbeltProfile(jailRoot: string, readPaths: readonly string[] = []): string {
+  const jailReal = canonicalPathSync(jailRoot);
+  const jail = JSON.stringify(jailReal);
+  const reads = [jailReal, ...[...SYSTEM_RO_BINDS, ...readPaths].filter((path) => existsSync(path)).map(canonicalPathSync)];
   return [
     "(version 1)",
     "(deny default)",
     "(allow process*)",
     "(allow sysctl-read)",
+    ...SEATBELT_DARWIN_RUNTIME_RULES,
     "(allow network*)",
-    `(allow file-read* ${reads.map((path) => `(subpath ${path})`).join(" ")})`,
-    `(allow file-write* (subpath ${sub}))`,
-    `(allow file-ioctl (subpath ${sub}))`,
+    seatbeltAncestorMetadataRule([jailRoot, ...reads]),
+    `(allow file-read* ${seatbeltSubpaths(reads)})`,
+    `(allow file-write* (subpath ${jail}))`,
+    `(allow file-ioctl (subpath ${jail}))`,
     "",
   ].join("\n");
 }
@@ -1570,7 +1664,13 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
         }
-        await writeFile(profilePath, seatbeltProfile(jailRoot, authBinds.map((bind) => bind.src)), {
+        // Mirrors the bwrap binds: adapter binaries, their non-sensitive directories, and auth sources.
+        const readPaths = [
+          ...binds.paths,
+          ...binds.paths.map((path) => dirname(path)).filter((dir) => !isUnsafeDirname(dir, projectRoot)),
+          ...authBinds.map((bind) => bind.src),
+        ];
+        await writeFile(profilePath, jailSeatbeltProfile(jailRoot, readPaths), {
           encoding: "utf8",
           flag: "wx",
         });

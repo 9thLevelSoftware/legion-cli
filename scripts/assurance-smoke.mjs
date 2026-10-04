@@ -26,6 +26,9 @@ const CHECK_ID = "output-contract";
 const KEY_ENV = "SMOKE_PROVIDER_KEY";
 const MCP_ORIGIN = "https://fixture.example/mcp";
 const MCP_AUTHORITY = { account: "smoke-account" };
+// The delivered output lives under a json-contract read root (src, data, config, test, fixtures,
+// package.json per extensions/json-contract/SKILL.md permissions.read) so the validator may read it.
+const OUTPUT_PATH = "data/output.json";
 const INPUT_OK = '{"status":"ok"}\n';
 const INPUT_BROKEN = '{"status":"degraded"}\n';
 const INJECTION_LINES = [
@@ -37,7 +40,7 @@ const INJECTION_LINES = [
 const REVIEW_NOTES = [
   "# Independent review",
   "",
-  "Findings: dist/output.json carries the approved input status and no file outside the contract changed.",
+  `Findings: ${OUTPUT_PATH} carries the approved input status and no file outside the contract changed.`,
   "Verdict: PASS",
   "",
 ].join("\n");
@@ -98,7 +101,7 @@ function taskProgram() {
       { kind: "read", id: "input", path: "config/input.json" },
       { kind: "read", id: "notes", path: "docs/notes.md" },
       { kind: "derive", id: "summary", transformationId: "summarize-notes", inputs: ["notes"] },
-      { kind: "write", id: "emit", path: "dist/output.json", value: "input", expectedTargetDigest: null },
+      { kind: "write", id: "emit", path: OUTPUT_PATH, value: "input", expectedTargetDigest: null },
       { kind: "external-call", id: "record", grantId: "record-status", authority: MCP_AUTHORITY, data: [{ pointer: "/payload", value: "input" }] },
       { kind: "finish", id: "finish" },
     ],
@@ -171,7 +174,15 @@ async function startProvider() {
 /** Loopback streamable-HTTP MCP server exposing one read-only `record` tool. */
 async function startMcp() {
   const state = { calls: [], bodies: [] };
-  const inputSchema = { type: "object", properties: { payload: { type: "object", properties: { status: { type: "string" } } } } };
+  // Governed dispatch sends the approved fixed authority merged with the data placed at its pointers.
+  const inputSchema = {
+    type: "object",
+    properties: {
+      account: { type: "string" },
+      payload: { type: "object", properties: { status: { type: "string" } } },
+    },
+    required: ["account"],
+  };
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
@@ -305,7 +316,7 @@ try {
       mustBeTrue: ["The delivered output reports the approved input status"],
       mustNotChange: ["secrets"],
       outOfScope: ["deployment"],
-      acceptance: [{ id: ACCEPTANCE_ID, statement: "dist/output.json reports status ok", kind: "behavior", priority: "P0" }],
+      acceptance: [{ id: ACCEPTANCE_ID, statement: `${OUTPUT_PATH} reports status ok`, kind: "behavior", priority: "P0" }],
       personas: ["release operators"],
       happyPath: "Execute the approved task and ship the reviewed output.",
     }, "Deliver the approved status output.\n");
@@ -324,13 +335,13 @@ try {
       assignee: "agent",
       notes: "",
       contract: {
-        filesAllowed: ["dist/output.json"],
+        filesAllowed: [OUTPUT_PATH],
         filesForbidden: [".git/**"],
-        expectedArtifacts: ["dist/output.json"],
+        expectedArtifacts: [OUTPUT_PATH],
         verificationCommands: [networkDeniedCheck],
         maxFilesTouched: 1,
       },
-    }, "Copy the approved input status into dist/output.json.\n");
+    }, `Copy the approved input status into ${OUTPUT_PATH}.\n`);
     await store.writeMarkdown(`.legion-cli/plans/${SPEC_ID}.md`, {}, "# Assurance smoke plan\n\nEmit the approved status output.\n");
     const stateRecord = await store.readState();
     await store.writeState({ ...stateRecord.data, phase: "plan_ready", activeSpecId: SPEC_ID, lastReadiness: "PASS", lastReview: null, lastQaId: null, currentTaskId: null }, stateRecord.body);
@@ -388,16 +399,16 @@ try {
         extensionCheckId: "json-contract",
         componentSha256: parsedExtension.manifest.runtime.sha256,
         inputUnitIds: ["rules"],
-        inputFiles: ["dist/output.json", "config/input.json"],
+        inputFiles: [OUTPUT_PATH, "config/input.json"],
         acceptanceIds: [ACCEPTANCE_ID],
         configuration: {
           assertions: [
-            { id: "output-status", predicate: { file: "dist/output.json", pointer: "/status", op: "eq", expected: "ok" } },
+            { id: "output-status", predicate: { file: OUTPUT_PATH, pointer: "/status", op: "eq", expected: "ok" } },
             { id: "input-status", predicate: { file: "config/input.json", pointer: "/status", op: "eq", expected: "ok" } },
           ],
         },
       }],
-      delivery: { artifacts: [{ name: "output", path: "dist/output.json" }] },
+      delivery: { artifacts: [{ name: "output", path: OUTPUT_PATH }] },
     }, null, 2));
 
     const adopted = await cliJson(["plan", "approve", "--assurance", manifestPath, "--json", "--check", networkDeniedCheck]);
@@ -446,10 +457,10 @@ try {
     const first = await timed(executeGoverned);
     await assertAwaitingAcceptance(first.value.result);
     assert.deepEqual(first.value.approved.map((action) => action.actionKind), ["write", "http-mcp"], JSON.stringify(first.value.approved));
-    assert.equal(first.value.approved[0].target, "dist/output.json");
+    assert.equal(first.value.approved[0].target, OUTPUT_PATH);
     assert.equal(first.value.approved[1].mcpCallsBeforeApproval, 0, "the MCP action must not run before its approval");
-    assert.deepEqual(mcp.state.calls, [{ payload: { status: "ok" } }], "the MCP server receives exactly one approved call");
-    assert.equal(await readFile(join(project, "dist/output.json"), "utf8"), INPUT_OK);
+    assert.deepEqual(mcp.state.calls, [{ ...MCP_AUTHORITY, payload: { status: "ok" } }], "the MCP server receives exactly one approved call");
+    assert.equal(await readFile(join(project, OUTPUT_PATH), "utf8"), INPUT_OK);
 
     // 4. Confidentiality and injection containment.
     assert.equal(provider.state.unexpected.length, 0, provider.state.unexpected.join("\n"));

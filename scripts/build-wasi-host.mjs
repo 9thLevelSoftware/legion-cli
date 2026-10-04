@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, open, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NATIVE_SMOKE_CASES, nativeGuardKind } from "./lib/native-smoke.mjs";
@@ -119,11 +120,15 @@ if (assemble) {
   const localTarget = compiler.stdout.match(/^host: (\S+)$/m)?.[1];
   if (!targets.includes(localTarget)) throw new Error(`Pinned Rust host target is unsupported: ${localTarget}`);
   const target = flags[1] ?? localTarget;
-  for (const args of [
-    ["+1.96.0", "build", "--locked", "--release", "--package", "legion-wasi-host", "--target", target],
-    ["+1.96.0", "build", "--locked", "--release", "--package", "legion-json-contract", "--target", "wasm32-unknown-unknown"],
-    ["+1.96.0", "build", "--locked", "--release", "--package", "legion-pack-component", "--target", localTarget],
-  ]) command("cargo", args);
+  // Panic locations embed source paths in the guest; remap the checkout and Cargo home so the
+  // committed component hash does not depend on where or by whom it was built.
+  const cargoHome = process.env.CARGO_HOME ? resolve(process.env.CARGO_HOME) : join(homedir(), ".cargo");
+  const guestEnv = { ...process.env, CARGO_ENCODED_RUSTFLAGS: [`--remap-path-prefix=${native}=/legion-native`, `--remap-path-prefix=${cargoHome}=/cargo`].join("\x1f") };
+  for (const [args, options] of [
+    [["+1.96.0", "build", "--locked", "--release", "--package", "legion-wasi-host", "--target", target], {}],
+    [["+1.96.0", "build", "--locked", "--release", "--package", "legion-json-contract", "--target", "wasm32-unknown-unknown"], { env: guestEnv }],
+    [["+1.96.0", "build", "--locked", "--release", "--package", "legion-pack-component", "--target", localTarget], {}],
+  ]) command("cargo", args, options);
   const binaryName = hostName(target);
   const hostPath = `${target}/${binaryName}`;
   await mkdir(join(installed, target), { recursive: true });

@@ -182,10 +182,13 @@ function approvedProviderSink(policy: unknown, endpoint: string): string | null 
 
 export async function runGovernedHttp(job: GovernedHttpAgentJob, signal: AbortSignal, config: HttpAdapterConfig | undefined, lookup?: SsrfLookup): Promise<HttpAgentResult> {
   const result = unavailableResult(job);
-  const blocked = (code: FailureCode) => ({ ...result, governedBlock: code });
+  // Only a pending explicit approval is resumable as-is (`execute --resume` after approve-action); every other stop
+  // needs operator review of the recorded checkpoint.
+  const blocked = (code: FailureCode) => ({ ...result, recovery: code === "approval-required" ? "resume" as const : "manual" as const, governedBlock: code });
   if (!config || !job.assuranceContext || !job.effectHost) return blocked("policy-denied");
   if (config.model !== job.assuranceContext.identities.provider.model || config.baseUrl.replace(/\/$/, "") !== job.assuranceContext.identities.provider.endpoint.replace(/\/$/, "")) return blocked("stale-authority");
-  const apiKey = (job.env[config.apiKeyEnv] ?? "").trim();
+  // The controller runs in the engine process; the jail env never carries a configured custom apiKeyEnv.
+  const apiKey = (job.env[config.apiKeyEnv] ?? process.env[config.apiKeyEnv] ?? "").trim();
   if (!apiKey || signal.aborted) return blocked("transport-failure");
   let state: GovernedState;
   try { state = await job.effectHost.open(job.assuranceContext, Boolean(job.resume)); } catch { return blocked("stale-authority"); }
@@ -263,7 +266,7 @@ export async function runGovernedHttp(job: GovernedHttpAgentJob, signal: AbortSi
         const validated = GovernedProgramSchema.safeParse(programValue);
         if (!validated.success) throw new Error("invalid-program");
         candidate = validated.data;
-        await job.effectHost.completeEffect(admission.permit, { outcome: { kind: "success", resultDigest: digest(new TextEncoder().encode(canonical(candidate))) }, providerUsage: receivedUsage, candidateProgram: candidate, producedValue: null, producedBytes: null, responseDigest: response.responseDigest, responseBytes: response.responseBytes.byteLength });
+        await job.effectHost.completeEffect(admission.permit, { outcome: { kind: "success", resultDigest: canonicalDigest("legion-cli-governed-program/v1", candidate) }, providerUsage: receivedUsage, candidateProgram: candidate, producedValue: null, producedBytes: null, responseDigest: response.responseDigest, responseBytes: response.responseBytes.byteLength });
       } catch (err) {
         const code = err instanceof Error && ["invalid-output", "invalid-program", "resource-limit", "transport-failure"].includes(err.message) ? err.message as FailureCode : "transport-failure";
         if (received) {

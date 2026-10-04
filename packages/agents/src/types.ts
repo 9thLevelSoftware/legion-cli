@@ -119,6 +119,8 @@ export interface AgentResult {
   recovery?: "resume" | "manual" | "none";
   /** Spawn failure message (for example ENOENT) when the process never ran. */
   errorMessage?: string;
+  /** Governed HTTP controller stop code: the run did not complete, so its result can never certify the task. */
+  governedBlock?: string;
 }
 
 export type GenericAdapterConfig = {

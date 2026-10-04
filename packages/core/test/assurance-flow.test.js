@@ -659,7 +659,7 @@ test("source bytes changed after approval read as a sealed unexplained change un
   try {
     const frozen = await freezeReadProgram(reapprovedFixture, program);
     const source = await reapprovedFixture.host.readSource("src/input.txt");
-    assert.deepEqual(source.evidence.label, { origins: [sourceOrigin], integrity: "approved", confidentiality: "workspace" });
+    assert.deepEqual(source.evidence.label, { origins: [sourceOrigin], integrity: "untrusted", confidentiality: "workspace" });
     const state = await reapprovedFixture.host.saveProgress(frozen.revision, {
       ...frozen.checkpoint,
       cursor: 1,
@@ -818,7 +818,7 @@ test("a governed review context reads approved task inputs and expected artifact
     const host = await createDurableGovernedHost({ ...options, withLock: async (callback) => callback(), resolveCurrentContext: async () => context }, context);
     await host.open(context, false);
     const input = await host.readSource("src/input.txt");
-    assert.deepEqual(input.evidence.label, { origins: [namespacedOrigin("file", { sourceId: "source", path: "src/input.txt" })], integrity: "approved", confidentiality: "workspace" });
+    assert.deepEqual(input.evidence.label, { origins: [namespacedOrigin("file", { sourceId: "source", path: "src/input.txt" })], integrity: "untrusted", confidentiality: "workspace" });
     const deliverable = await host.readSource("out.txt");
     assert.equal(new TextDecoder().decode(deliverable.content), "task deliverable\n");
     assert.equal(deliverable.evidence.label.confidentiality, "sealed");

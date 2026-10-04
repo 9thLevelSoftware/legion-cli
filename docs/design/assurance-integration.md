@@ -62,4 +62,6 @@ The packaged Wasmtime 49.0.2 host uses ABI `legion-validator/v1`, export `valida
 
 With the pinned json-contract guest at ~14 instructions per input byte, the 20 million fuel budget bounds practical validated input to roughly 1.4 MiB; beyond that the check reports unavailable (fail closed) rather than passing. The native release smoke records both sides: a 1 MiB input passes and a 2 MiB input is refused at the guest resource bound.
 
+The committed `json-contract.wasm` and its `SKILL.md` pin are the `x86_64-unknown-linux-gnu` CI build. The guest build remaps the checkout and Cargo home out of embedded panic locations, so any Linux build of the pinned toolchain reproduces the same bytes regardless of checkout path or user; the CI gate runs `git diff --exit-code extensions/json-contract` on that target. Windows builds embed backslash-separated relative paths and therefore produce a different, unpinned guest; other native jobs restore the committed guest before testing.
+
 The current host environment is Windows. Linux-Docker and macOS acceptance is unavailable; do not infer platform acceptance from local Windows evidence. Native target manifests/artifacts require target-specific smoke evidence, and local-target coverage is not complete release coverage.

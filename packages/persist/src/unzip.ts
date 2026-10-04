@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { PathEscapeError, PersistError } from "./errors.js";
 import { MAX_ZIPBALL_BYTES, MAX_ZIPBALL_ENTRIES } from "./layout.js";
 import { assertResolvedInside, toFsPath } from "./paths.js";
@@ -226,7 +226,11 @@ export async function unzipZipball(zip: Buffer, destDir: string, opts?: UnzipZip
   const prefix = singleTopLevelPrefix(entries.map((entry) => entry.fileName));
   const written: string[] = [];
   await mkdir(destDir, { recursive: true });
-  await assertNoSymlinkAncestors(destDir, destDir);
+  // Resolve system aliases above the destination (macOS /var → /private/var) so the per-component
+  // checks below refuse only links at or beneath it. JS realpathSync keeps 8.3 names, matching them.
+  const absDest = resolve(destDir);
+  const dest = join(realpathSync(dirname(absDest)), basename(absDest));
+  await assertNoSymlinkAncestors(dest, dest);
 
   for (const entry of entries) {
     let rel = entry.fileName;
@@ -235,15 +239,15 @@ export async function unzipZipball(zip: Buffer, destDir: string, opts?: UnzipZip
     if (zipNameHasEscape(rel)) {
       throw new PathEscapeError(rel);
     }
-    const abs = assertResolvedInside(destDir, toFsPath(destDir, rel), rel);
-    await assertNoSymlinkAncestors(destDir, abs);
+    const abs = assertResolvedInside(dest, toFsPath(dest, rel), rel);
+    await assertNoSymlinkAncestors(dest, abs);
     if (entry.isDir) {
       await mkdir(abs, { recursive: true });
-      await assertNoSymlinkAncestors(destDir, abs);
+      await assertNoSymlinkAncestors(dest, abs);
       continue;
     }
     await mkdir(dirname(abs), { recursive: true });
-    await assertNoSymlinkAncestors(destDir, abs);
+    await assertNoSymlinkAncestors(dest, abs);
     try {
       const st = await lstat(abs);
       if (!st.isFile() || st.nlink > 1) throw new PathEscapeError(rel);
