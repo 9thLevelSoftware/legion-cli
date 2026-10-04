@@ -428,7 +428,8 @@ export async function runGovernedExtension(opts: {
     runId,
     allowedWrites: [evidenceRoot, `.legion-cli/cache/runs/${runId}`],
     readSet,
-    adapterBinary: adapter.binary,
+    // In-process adapters (`(http)`, `(in-process)`) have no executable to bind, as in core's skill spawn.
+    adapterBinary: adapter.binary.startsWith("(") ? undefined : adapter.binary,
     backend: opts.config.sandbox.backend,
     allowDegradedCopy: opts.config.sandbox.allowCopyJail,
     credentialKeys: CREDENTIALS[adapter.id] ?? [],

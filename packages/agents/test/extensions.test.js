@@ -5,6 +5,7 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
   findExtensionsDir,
   installExtensionOverlay,
@@ -222,6 +223,45 @@ test("governed extension run only copies evidence outputs and preserves unavaila
     assert.deepEqual(result.recommendations, [{ title: "Add visible focus styles", priority: "P1" }]);
     assert.equal(result.copied.some((path) => path.endsWith("evidence.json")), true);
     await assert.rejects(() => readFile(join(dir, "src", "escape.ts"), "utf8"), /ENOENT/);
+  });
+});
+
+test("an in-process adapter extension run uses the detected hardened jail instead of refusing as copy", async (t) => {
+  const detected = detectSandbox();
+  if (!detected.hardened) {
+    t.skip(`requires a hardened jail backend (detected ${process.platform}/${detected.backend})`);
+    return;
+  }
+  await withTempDir(async (dir) => {
+    const extensionDir = join(dir, "extensions", "accessibility");
+    await mkdir(join(extensionDir, "references"), { recursive: true });
+    await writeFile(join(extensionDir, "EXTENSION.md"), extensionMarkdown(), "utf8");
+    await writeFile(join(extensionDir, "references", "checklist.md"), "# Checklist\n", "utf8");
+    const parsed = parseExtensionFrontmatter(extensionMarkdown(), "extensions/accessibility/EXTENSION.md");
+    assert.equal(parsed.ok, true);
+    const result = await runGovernedExtension({
+      projectRoot: dir,
+      extensionDir,
+      manifest: parsed.manifest,
+      config: {
+        adapter: { default: "fake" },
+        sandbox: { backend: "auto", allowCopyJail: false, requireHardened: true },
+      },
+      fakeArtifacts: [{
+        path: ".legion-cli/extensions/runs/<id>/evidence.json",
+        content: JSON.stringify({
+          schemaVersion: "legion-cli-extension-evidence/v1",
+          extension: "extension:accessibility",
+          checks: [
+            { id: "axe", status: "passed", detail: "no violations" },
+            { id: "keyboard", status: "passed", detail: "tab order captured" },
+          ],
+        }),
+      }],
+    });
+    assert.equal(result.status, "complete");
+    assert.equal(result.backend, detected.backend);
+    assert.deepEqual(result.evidence.checks.map((check) => check.status), ["passed", "passed"]);
   });
 });
 

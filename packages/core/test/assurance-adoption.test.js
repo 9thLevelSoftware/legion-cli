@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { stringify } from "yaml";
@@ -9,7 +9,7 @@ import { AssuranceApprovalSchema, PlanApprovalReceiptSchema } from "@9thlevelsof
 import { appendGovernanceBegin, readGovernanceEpochs, readGovernanceTrace, governanceTraceDirectory } from "@9thlevelsoftware/legion-cli-persist";
 import { stableHash } from "@9thlevelsoftware/legion-cli-http";
 import { ASSURANCE_APPROVAL_PATH, ASSURANCE_PLAN_PATH, assuranceManifestDigest } from "../dist/index.js";
-import { failingVerificationCommand, initGitRepo, initProject, passingVerificationCommand, seedPlanReady, withEngine, withFakeAdapter } from "./helpers.js";
+import { failingVerificationCommand, initGitRepo, initProject, listJailRunIds, passingVerificationCommand, seedPlanReady, withEngine, withFakeAdapter } from "./helpers.js";
 
 function manifest() {
   return {
@@ -327,7 +327,7 @@ test("adopted parallel execution traces each real sandbox application", async ()
       arrivals += 1;
       if (arrivals === 2) {
         const roots = join(projectDir, ".legion-cli", "sandbox");
-        for (const runId of await readdir(roots)) {
+        for (const runId of await listJailRunIds(projectDir)) {
           const root = join(roots, runId);
           const prompt = await readFile(join(root, ".legion-cli", "cache", "runs", runId, "prompt.md"), "utf8");
           const file = prompt.includes("Task: TSK-0002") ? "board.ts" : "main.ts";

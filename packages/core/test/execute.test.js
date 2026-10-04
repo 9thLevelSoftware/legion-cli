@@ -26,6 +26,7 @@ import {
   initProject,
   makeTask,
   failingVerificationCommand,
+  listJailRunIds,
   passingVerificationCommand,
   quoteArg,
   readLatestRunPrompt,
@@ -1242,8 +1243,7 @@ test("execute jail cwd exists during spawn and extra writes are dropped", async 
           { path: ".legion-cli/specs/spec-checkin/SPEC.md", content: "pwned\n" },
         ],
         fakeOnWait: async () => {
-          const names = await readdir(join(projectDir, ".legion-cli", "sandbox"));
-          jailSeen = names.some((name) => name.startsWith("execute-"));
+          jailSeen = (await listJailRunIds(projectDir)).some((name) => name.startsWith("execute-"));
         },
       },
     );
@@ -1271,8 +1271,7 @@ test("execute stays jailed when sandbox.skills omits execute", async () => {
       },
       {
         fakeOnWait: async () => {
-          const names = await readdir(join(projectDir, ".legion-cli", "sandbox"));
-          jailSeen = names.some((name) => name.startsWith("execute-"));
+          jailSeen = (await listJailRunIds(projectDir)).some((name) => name.startsWith("execute-"));
         },
       },
     );
@@ -1423,7 +1422,7 @@ test("parallel execution discards a nonzero member, retains its sibling, and cle
           arrivals += 1;
           if (arrivals !== 2) return;
           const jailDir = join(projectDir, ".legion-cli", "sandbox");
-          for (const runId of (await readdir(jailDir)).sort()) {
+          for (const runId of await listJailRunIds(projectDir)) {
             const root = join(jailDir, runId);
             const prompt = await readFile(join(root, ".legion-cli", "cache", "runs", runId, "prompt.md"), "utf8");
             const rel = prompt.includes("Task: TSK-0002") ? "board.ts" : "main.ts";
@@ -1480,7 +1479,7 @@ test("parallel integration preserves a successful sibling when another path conf
           arrivals += 1;
           if (arrivals === 2) {
             const jailDir = join(projectDir, ".legion-cli", "sandbox");
-            const runIds = (await readdir(jailDir)).sort();
+            const runIds = await listJailRunIds(projectDir);
             for (const runId of runIds) {
               const root = join(jailDir, runId);
               const prompt = await readFile(join(root, ".legion-cli", "cache", "runs", runId, "prompt.md"), "utf8");
@@ -1539,7 +1538,7 @@ test("parallel integration blocks remaining siblings when HEAD moves between app
           arrivals += 1;
           if (arrivals !== 2) return;
           const jailDir = join(projectDir, ".legion-cli", "sandbox");
-          for (const runId of (await readdir(jailDir)).sort()) {
+          for (const runId of await listJailRunIds(projectDir)) {
             const root = join(jailDir, runId);
             const prompt = await readFile(join(root, ".legion-cli", "cache", "runs", runId, "prompt.md"), "utf8");
             const rel = prompt.includes("Task: TSK-0002") ? "board.ts" : "main.ts";
@@ -1628,7 +1627,7 @@ test("parallel interruption aborts children and preserves their jails for recove
         await assert.rejects(() => engine.execute("auto", { untilBlocked: true, jobs: 2 }), /interrupted/i);
         const state = await engine.getState();
         assert.deepEqual(state.activeTaskIds, ["TSK-0001", "TSK-0002"]);
-        assert.equal((await readdir(join(dir, ".legion-cli", "sandbox"))).length, 2);
+        assert.equal((await listJailRunIds(dir)).length, 2);
         const recoveries = await listRunRecoveryStatuses(dir);
         assert.deepEqual(recoveries.map((run) => [run.taskId, run.ownerStatus, run.recoveryCommand]).sort(), [
           ["TSK-0001", "stale", "legion-cli task amend TSK-0001 --unblock"],
@@ -1696,7 +1695,7 @@ test("parallel interruption during partial startup aborts the child that already
           /interrupted during batch startup.*legion-cli task amend TSK-0002 --unblock/i,
         );
 
-        assert.equal((await readdir(join(dir, ".legion-cli", "sandbox"))).length, 1);
+        assert.equal((await listJailRunIds(dir)).length, 1);
         assert.deepEqual((await engine.getState()).activeTaskIds, ["TSK-0001"]);
         assert.equal((await store.readTask("TSK-0001")).data.status, "in_progress");
         assert.equal((await store.readTask("TSK-0002")).data.status, "blocked");
