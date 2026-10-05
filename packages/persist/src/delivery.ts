@@ -68,7 +68,7 @@ function requireString(record: Record<string, unknown>, description: string, ...
 }
 
 function validateCiResult(output: Buffer, manifestBytes: Buffer, predicateBytes: Buffer, trust: NonNullable<DeliveryTrust["ci"]>): void {
-  const results = parseStrictJson(output, { maxBytes: CI_GH_OUTPUT_MAX_BYTES, maxDepth: 64 });
+  const results = parseStrictJson(output, { maxBytes: CI_GH_OUTPUT_MAX_BYTES, maxDepth: 32 });
   if (!Array.isArray(results) || results.length === 0) throw new DeliveryRefusalError("gh returned no verified attestations");
   for (const item of results) {
     const entry = objectRecord(item);
@@ -81,7 +81,7 @@ function validateCiResult(output: Buffer, manifestBytes: Buffer, predicateBytes:
     }
     const san = requireString(certificate, "certificate SAN", "SubjectAlternativeName", "subjectAlternativeName", "subject_alternative_name");
     const issuer = requireString(certificate, "OIDC issuer", "OIDCIssuer", "oidcIssuer", "issuer");
-    const repository = requireString(certificate, "source repository", "SourceRepository", "sourceRepository", "source_repository");
+    const repository = requireString(certificate, "source repository", "SourceRepositoryURI", "sourceRepositoryURI", "SourceRepository", "sourceRepository", "source_repository");
     const signerWorkflow = requireString(certificate, "signer workflow", "BuildSignerURI", "buildSignerURI", "buildSignerUri", "build_signer_uri");
     const signerDigest = requireString(certificate, "signer digest", "BuildSignerDigest", "buildSignerDigest", "build_signer_digest");
     const sourceDigest = requireString(certificate, "source digest", "SourceRepositoryDigest", "sourceRepositoryDigest", "source_repository_digest");
@@ -171,7 +171,8 @@ async function runGhCiVerification(
       "--repo", trust.repository,
       "--cert-identity", trust.certificateSan,
       "--cert-oidc-issuer", trust.issuer,
-      "--signer-workflow", trust.signerWorkflow,
+      // gh rejects --signer-workflow together with --cert-identity; the exact SAN pins the
+      // reusable signer workflow and validateCiResult checks the certificate's BuildSignerURI.
       "--signer-digest", trust.signerDigest,
       "--source-digest", trust.sourceDigest,
       "--predicate-type", DELIVERY_PREDICATE_TYPE,

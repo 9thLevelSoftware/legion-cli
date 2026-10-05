@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { assertDeliverySigningKeyOutsideRoots, canonicalJson, signDeliveryBundle, signDeliveryDsse, verifyDeliveryBundle } from "../dist/index.js";
 import { SCHEMA_VERSION, DELIVERY_PREDICATE_TYPE } from "@9thlevelsoftware/legion-cli-schema";
@@ -387,4 +388,68 @@ test("CI-OIDC verification refuses a Windows gh script shim instead of running i
   assert.equal(result.authenticity.status, "invalid");
   assert.match(result.authenticity.reason, /only a script shim was found/);
   await assert.rejects(readFile(marker), { code: "ENOENT" });
+});
+
+const CI_ATTESTATION_FIXTURE = new URL("./fixtures/ci-attestation/", import.meta.url);
+const CI_ATTESTATION_SAN = "https://github.com/9thLevelSoftware/legion-cli/.github/workflows/delivery-attest.yml@refs/heads/assurance-integration";
+const CI_ATTESTATION_COMMIT = "c317162ef40a394686d5a006770f8eff2a825253";
+
+async function ghOnPath() {
+  const windows = process.platform === "win32";
+  const pathValue = (windows ? process.env.Path ?? process.env.PATH : process.env.PATH) ?? "";
+  for (const entry of pathValue.split(windows ? ";" : ":")) {
+    if (!entry || !isAbsolute(entry)) continue;
+    for (const name of windows ? ["gh.exe", "gh.com"] : ["gh"]) {
+      try {
+        if ((await stat(join(entry, name))).isFile()) return true;
+      } catch {
+        continue;
+      }
+    }
+  }
+  return false;
+}
+
+async function recordedCiPolicy(t, certificateSan) {
+  const rootPath = join(fileURLToPath(CI_ATTESTATION_FIXTURE), "trusted_root.jsonl");
+  const dir = await mkdtemp(join(tmpdir(), "delivery-recorded-ci-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const bundleDir = join(dir, "bundle");
+  await cp(join(fileURLToPath(CI_ATTESTATION_FIXTURE), "bundle"), bundleDir, { recursive: true });
+  const trustPolicy = {
+    schemaVersion: SCHEMA_VERSION.deliveryTrust,
+    localKeys: [],
+    ci: {
+      repository: "9thLevelSoftware/legion-cli",
+      certificateSan,
+      issuer: "https://token.actions.githubusercontent.com",
+      signerWorkflow: "9thLevelSoftware/legion-cli/.github/workflows/delivery-attest.yml",
+      signerDigest: CI_ATTESTATION_COMMIT,
+      sourceDigest: CI_ATTESTATION_COMMIT,
+      trustedRootPath: rootPath,
+      trustedRootSha256: digest(await readFile(rootPath)),
+      // The recorded root snapshot is pinned by digest; the age guard is the operator's freshness policy.
+      trustedRootCapturedAt: new Date().toISOString(),
+    },
+  };
+  return { bundleDir, trustPolicy };
+}
+
+test("recorded public CI attestation verifies offline against its recorded trusted root and refuses a wrong SAN", async (t) => {
+  if (!(await ghOnPath())) {
+    t.skip("operator-installed gh is not on PATH");
+    return;
+  }
+  const positive = await recordedCiPolicy(t, CI_ATTESTATION_SAN);
+  const verified = await verifyDeliveryBundle(positive.bundleDir, { require: "ci-oidc", trustPolicy: positive.trustPolicy });
+  assert.equal(verified.integrity.status, "valid");
+  assert.equal(verified.authenticity.status, "verified", verified.authenticity.reason ?? "");
+  assert.equal(verified.passed, true);
+  assert.equal(verified.predicate?.sha256, "07a0721f90c2bdd9b6a1abbb89436b5319685201d6619ea47791a410e17fcb9b");
+
+  const wrongSan = await recordedCiPolicy(t, CI_ATTESTATION_SAN.replace("delivery-attest.yml", "delivery-attest-demo.yml"));
+  const refused = await verifyDeliveryBundle(wrongSan.bundleDir, { require: "ci-oidc", trustPolicy: wrongSan.trustPolicy });
+  assert.equal(refused.passed, false);
+  assert.equal(refused.authenticity.status, "invalid");
+  assert.match(refused.authenticity.reason, /gh attestation verification refused \(exit 1\)/);
 });
