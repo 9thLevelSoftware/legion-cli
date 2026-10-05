@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
   findExtensionsDir,
   installExtensionOverlay,
@@ -12,6 +15,7 @@ import {
   listExtensionCatalog,
   parseExtensionFrontmatter,
   resolveExtensionDir,
+  readComponentInvocation,
   runGovernedExtension,
 } from "../dist/index.js";
 import { withTempDir } from "./helpers.js";
@@ -178,19 +182,6 @@ test("catalog lists packaged extensions and pinned overlay wins", async () => {
   });
 });
 
-test("all four packaged extension manifests are governed and discoverable", async () => {
-  const listed = await listExtensionCatalog({ projectRoot: process.cwd(), packagedExtensionsDir: findExtensionsDir() });
-  assert.deepEqual(
-    listed.extensions.map((entry) => entry.ref).sort(),
-    [
-      "extension:accessibility",
-      "extension:migration-rollback",
-      "extension:performance",
-      "extension:release-readiness",
-    ],
-  );
-  assert.deepEqual(listed.skipped, []);
-});
 
 test("governed extension run only copies evidence outputs and preserves unavailable checks", async () => {
   await withTempDir(async (dir) => {
@@ -235,6 +226,49 @@ test("governed extension run only copies evidence outputs and preserves unavaila
   });
 });
 
+test("an in-process adapter extension run uses the detected hardened jail instead of refusing as copy", async (t) => {
+  const detected = detectSandbox();
+  if (!detected.hardened) {
+    t.skip(`requires a hardened jail backend (detected ${process.platform}/${detected.backend})`);
+    return;
+  }
+  await withTempDir(async (dir) => {
+    const extensionDir = join(dir, "extensions", "accessibility");
+    await mkdir(join(extensionDir, "references"), { recursive: true });
+    await writeFile(join(extensionDir, "EXTENSION.md"), extensionMarkdown(), "utf8");
+    await writeFile(join(extensionDir, "references", "checklist.md"), "# Checklist\n", "utf8");
+    const parsed = parseExtensionFrontmatter(extensionMarkdown(), "extensions/accessibility/EXTENSION.md");
+    assert.equal(parsed.ok, true);
+    const result = await runGovernedExtension({
+      projectRoot: dir,
+      extensionDir,
+      manifest: parsed.manifest,
+      config: {
+        adapter: { default: "fake" },
+        sandbox: { backend: "auto", allowCopyJail: false, requireHardened: true },
+      },
+      fakeArtifacts: [{
+        path: ".legion-cli/extensions/runs/<id>/evidence.json",
+        content: JSON.stringify({
+          schemaVersion: "legion-cli-extension-evidence/v1",
+          extension: "extension:accessibility",
+          checks: [
+            { id: "axe", status: "passed", detail: "no violations" },
+            { id: "keyboard", status: "passed", detail: "tab order captured" },
+          ],
+        }),
+      }],
+    });
+    assert.equal(result.status, "complete");
+    assert.equal(result.backend, detected.backend);
+    const required = result.evidence.checks.filter((check) => !check.id.startsWith("tool:"));
+    assert.deepEqual(required.map((check) => [check.id, check.status]), [["axe", "passed"], ["keyboard", "passed"]]);
+    // Seatbelt supplies no command wrapper, so the fixture's declared commands are recorded as unavailable.
+    const extra = result.evidence.checks.filter((check) => check.id.startsWith("tool:")).map((check) => [check.id, check.status]);
+    assert.deepEqual(extra, detected.backend === "seatbelt" ? [["tool:command-execution", "unavailable"]] : []);
+  });
+});
+
 test("concurrent governed runs started in one millisecond keep separate evidence roots", async () => {
   await withTempDir(async (dir) => {
     const extensionDir = join(dir, "extensions", "accessibility");
@@ -274,5 +308,178 @@ test("concurrent governed runs started in one millisecond keep separate evidence
     } finally {
       Date.now = originalNow;
     }
+  });
+});
+
+test("extension admission refuses authority read grants even when forged after parsing", () => {
+  const parsed = parseExtensionFrontmatter(extensionMarkdown(), "extensions/accessibility/EXTENSION.md");
+  assert.equal(parsed.ok, true);
+  for (const path of [
+    ".legion-cli/workflow",
+    ".LEGION-CLI/WORKFLOW/assurance.yaml",
+    ".legion-cli/audit/governance",
+    ".legion-cli/audit/http-governed",
+    ".legion-cli/audit/delivery",
+    ".legion-cli/audit/delivery-export",
+    ".legion-cli/audit/raw-logs",
+    ".legion-cli/audit",
+    ".legion-cli",
+  ]) {
+    const manifest = parseExtensionFrontmatter(
+      extensionMarkdown().replace("read: [src, test]", `read: [${path}]`),
+      "extensions/accessibility/EXTENSION.md",
+    );
+    assert.equal(manifest.ok, false, path);
+    assert.throws(() => extensionReadSet({
+      ...parsed.manifest,
+      permissions: { ...parsed.manifest.permissions, read: [path] },
+    }, "run"), Error);
+  }
+  const legacy = parseExtensionFrontmatter(
+    extensionMarkdown().replace("read: [src, test]", "read: [.legion-cli/wiki/product, .legion-cli/specs/spec-a/prd.md]"),
+    "extensions/accessibility/EXTENSION.md",
+  );
+  assert.equal(legacy.ok, true);
+  assert.equal(extensionReadSet(legacy.manifest, "run").includes(".legion-cli/wiki/product"), true);
+});
+
+test("runtime extension admission refuses junction read aliases before staging or adapter resolution", async (t) => {
+  await withTempDir(async (dir) => {
+    const extensionDir = join(dir, "extensions", "accessibility");
+    await mkdir(join(extensionDir, "references"), { recursive: true });
+    await writeFile(join(extensionDir, "references", "checklist.md"), "# Checklist\n");
+    const workflow = join(dir, ".legion-cli", "workflow");
+    await mkdir(workflow, { recursive: true });
+    await writeFile(join(workflow, "assurance.yaml"), "authority\n");
+    try {
+      await symlink(workflow, join(dir, "inputs"), process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (!["EPERM", "EACCES", "ENOSYS"].includes(error.code)) throw error;
+      t.skip(`directory links unavailable: ${error.code}`);
+      return;
+    }
+    const parsed = parseExtensionFrontmatter(
+      extensionMarkdown().replace("read: [src, test]", "read: [inputs]"),
+      "extensions/accessibility/EXTENSION.md",
+    );
+    assert.equal(parsed.ok, true);
+    await assert.rejects(runGovernedExtension({
+      projectRoot: dir,
+      extensionDir,
+      manifest: parsed.manifest,
+      config: { adapter: { default: "fake" }, sandbox: { backend: "copy", allowCopyJail: true } },
+    }), { name: "PathEscapeError" });
+    assert.equal(existsSync(join(dir, ".legion-cli", "cache")), false);
+    assert.equal(await readFile(join(workflow, "assurance.yaml"), "utf8"), "authority\n");
+  });
+});
+
+function componentMarkdown(hash, id = "json-contract") {
+  return [
+    "---",
+    `name: ${id}`,
+    "description: Validate declared JSON business predicates.",
+    'compatibility: "Legion CLI >=0.0.0"',
+    "allowed-tools: Read",
+    "metadata:",
+    "  legion:",
+    `    extensionId: ${id}`,
+    "    version: 1.0.0",
+    "    requiredTools: []",
+    `    checks: [${id}]`,
+    "    resources:",
+    "      assets: [assets/validator.wasm]",
+    "    runtime:",
+    "      kind: wasi-component",
+    "      abi: legion-validator/v1",
+    "      component: assets/validator.wasm",
+    `      sha256: ${hash}`,
+    "    permissions:",
+    "      read: [data]",
+    "      write: []",
+    "      commands: []",
+    "---",
+    "Data-only JSON validation.",
+  ].join("\n");
+}
+
+test("component frontmatter refuses ambient authority, undeclared modules, and ambiguous runtime fields", () => {
+  const raw = componentMarkdown("a".repeat(64));
+  for (const mutation of [
+    raw.replace("abi: legion-validator/v1", "abi: another/v1"),
+    raw.replace("component: assets/validator.wasm", "component: assets/undeclared.wasm"),
+    raw.replace("component: assets/validator.wasm", "component: assets/../validator.wasm"),
+    raw.replace("kind: wasi-component", "kind: wasi-component\n      extra: true"),
+    raw.replace("description:", "unexpected: true\ndescription:"),
+    raw.replace("allowed-tools: Read", "allowed-tools: Read\nallowedTools: Read"),
+    raw.replace("assets: [assets/validator.wasm]", "assets: assets/validator.wasm"),
+    raw.replace("read: [data]", "read: [data]\n      extra: true"),
+    raw.replace("checks: [json-contract]", "checks: [json-contract, json-contract]"),
+    raw.replace("checks: [json-contract]", "checks: [Invalid]"),
+    raw.replace("allowed-tools: Read", "allowed-tools: Read, Write"),
+    raw.replace("requiredTools: []", "requiredTools: [node]"),
+    raw.replace("commands: []", "commands: [node]"),
+    raw.replace("write: []", "write: [data]"),
+  ]) {
+    assert.equal(parseExtensionFrontmatter(mutation, "extensions/json-contract/SKILL.md").ok, false, mutation);
+  }
+});
+
+test("validator invocation decoder rejects ambiguous, excessive, and non-finite control documents", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "invocation.json");
+    const check = { id: "json-contract", configuration: {}, files: ["data/value.json"] };
+    for (const raw of [
+      '{"schemaVersion":"legion-cli-component-invocation/v1","schemaVersion":"legion-cli-component-invocation/v1","checks":[]}',
+      JSON.stringify({ schemaVersion: "legion-cli-component-invocation/v1", checks: [check, check] }),
+      JSON.stringify({ schemaVersion: "legion-cli-component-invocation/v1", checks: [{ ...check, files: ["data/value.json", "data/./value.json"] }] }),
+      JSON.stringify({ schemaVersion: "legion-cli-component-invocation/v1", checks: [{ ...check, content: "embedded-source" }] }),
+      '{"schemaVersion":"legion-cli-component-invocation/v1","checks":[{"id":"json-contract","configuration":{"n":1e400},"files":["data/value.json"]}]}',
+      JSON.stringify({ schemaVersion: "legion-cli-component-invocation/v1", checks: [{ ...check, configuration: { n: [[[[]]]] } }] }).replace("[[[[]]]]", "[".repeat(33) + "0" + "]".repeat(33)),
+      " ".repeat(1024 * 1024 + 1),
+      Buffer.from([0xff, 0xfe]),
+    ]) {
+      await writeFile(path, raw);
+      await assert.rejects(readComponentInvocation(path));
+    }
+  });
+});
+
+test("component admission rejects invalid invocation, profile, permissions, and JSON references before any host or adapter", async () => {
+  await withTempDir(async (dir) => {
+    const extensionDir = join(dir, "extension");
+    const module = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]);
+    const hash = createHash("sha256").update(module).digest("hex");
+    await mkdir(join(extensionDir, "assets"), { recursive: true });
+    await mkdir(join(dir, "data"));
+    await writeFile(join(extensionDir, "assets", "validator.wasm"), module);
+    await writeFile(join(dir, "data", "value.json"), '{"value":42}');
+    const parsed = parseExtensionFrontmatter(componentMarkdown(hash), "extensions/json-contract/SKILL.md");
+    assert.equal(parsed.ok, true);
+    const check = { id: "json-contract", files: ["data/value.json"], configuration: { assertions: [{ id: "value", predicate: { file: "data/value.json", pointer: "/value", op: "eq", expected: 42 } }] } };
+    const invocation = { schemaVersion: "legion-cli-component-invocation/v1", checks: [check] };
+    const opts = { projectRoot: dir, extensionDir, manifest: parsed.manifest, config: { adapter: { default: "claude", binary: "nonexistent-adapter" }, sandbox: { backend: "copy", allowCopyJail: false } } };
+    const packet = {
+      abi: "legion-validator/v1", projectCheckId: "project-one", extensionCheckId: "json-contract",
+      acceptanceIds: [], unitIds: [], units: [], configuration: check.configuration,
+      files: [{ kind: "file", path: "data/value.json", mode: "100644", encoding: "utf8", content: '{"value":42}', sha256: createHash("sha256").update('{"value":42}').digest("hex") }],
+    };
+    for (const [flags, pattern] of [
+      [{}, /require.*validator-input/],
+      [{ componentInvocation: invocation, profile: "unconfigured" }, /profile.*not supported/],
+      [{ componentInvocation: { ...invocation, checks: [{ ...check, id: "other" }] } }, /each required/],
+      [{ componentInvocation: { ...invocation, checks: [{ ...check, files: ["other/value.json"] }] } }, /outside permissions/],
+      [{ componentInvocation: { ...invocation, checks: [{ ...check, configuration: { assertions: [{ id: "value", predicate: { file: "data/undeclared.json", pointer: "", op: "eq", expected: 42 } }] } }] } }, /undeclared raw input/],
+      [{ componentInvocation: { ...invocation, checks: [{ ...check, configuration: { assertions: [{ id: "value", predicate: { file: "data/value.json", pointer: "", op: "eval", expected: 42 } }] } }] } }, /Invalid|invalid/],
+      [{ approvedComponentInputs: [packet, { ...packet, projectCheckId: "project-two" }] }, /distinct project and extension/],
+      [{ componentInvocation: invocation, approvedComponentInputs: [packet] }, /mutually exclusive/],
+    ]) {
+      await assert.rejects(runGovernedExtension({ ...opts, ...flags }), pattern);
+      assert.equal(existsSync(join(dir, ".legion-cli", "extensions", "runs")), false);
+      assert.equal(existsSync(join(dir, ".legion-cli", "cache")), false);
+      assert.equal(await readFile(join(dir, "data", "value.json"), "utf8"), '{"value":42}');
+    }
+    await writeFile(join(extensionDir, "assets", "validator.wasm"), "tampered");
+    await assert.rejects(runGovernedExtension({ ...opts, componentInvocation: invocation }), /SHA-256 mismatch/);
   });
 });

@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "scope": {
+      "type": "string",
+      "enum": [
+        "git-index",
+        "host-native-product"
+      ]
+    },
+    "subjectDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "entries": {
+      "maxItems": 1000000,
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "blob"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "100644",
+                  "100755",
+                  "120000"
+                ]
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "kind",
+              "path",
+              "mode",
+              "sha256",
+              "size"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "gitlink"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+              },
+              "mode": {
+                "type": "string",
+                "const": "160000"
+              },
+              "oid": {
+                "type": "string",
+                "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
+              },
+              "scope": {
+                "type": "string",
+                "const": "referenced-commit-only"
+              }
+            },
+            "required": [
+              "kind",
+              "path",
+              "mode",
+              "oid",
+              "scope"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "native-file"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+              },
+              "mode": {
+                "type": "string",
+                "pattern": "^native:[0-7]{3,6}$"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "kind",
+              "path",
+              "mode",
+              "sha256",
+              "size"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "scope",
+    "subjectDigest",
+    "entries"
+  ],
+  "additionalProperties": false
+}

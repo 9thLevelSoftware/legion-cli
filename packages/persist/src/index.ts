@@ -1,4 +1,15 @@
 export {
+  assertAgentControlPathAllowed,
+  assertAgentPathAllowed,
+  ENGINE_PROTECTED_PATHS,
+  isEngineProtectedPath,
+  overlapsEngineProtectedPath,
+} from "./protected-paths.js";
+export { canonicalJson, MAX_JSON_DEPTH } from "./canonical-json.js";
+export type { CanonicalJsonOptions } from "./canonical-json.js";
+export { DEFAULT_STRICT_JSON_MAX_BYTES, parseStrictJson } from "./strict-json.js";
+export type { StrictJsonOptions } from "./strict-json.js";
+export {
   AuditTamperError,
   EngineLockedError,
   MinisignError,
@@ -251,7 +262,50 @@ export type {
   ExperimentalVectorUnavailable,
 } from "./experimental-vector-index.js";
 export { createLegionStore, LegionStore } from "./store.js";
+export {
+  appendGovernanceBegin,
+  appendGovernanceEnd,
+  appendGovernanceEpoch,
+  governanceTraceDirectory,
+  GovernanceEpochError,
+  GOVERNANCE_TRACE_MAX_FRAME_BYTES,
+  GOVERNANCE_TRACE_MAX_FRAMES,
+  inspectGovernanceTrace,
+  readGovernanceEpochs,
+  readGovernanceTrace,
+  reconcileGovernanceTrace,
+} from "./governance-trace.js";
+export type {
+  GovernanceBeginInput,
+  GovernanceEndInput,
+  GovernanceEpoch,
+  GovernanceEpochInput,
+  GovernanceEpochs,
+  GovernanceFaults,
+  GovernanceLockOwnership,
+  GovernanceAction,
+  GovernanceFrame,
+  GovernanceHead,
+  GovernanceProjection,
+  GovernanceTrace,
+  GovernanceViolation,
+} from "./governance-trace.js";
 export type { LegionReader, LegionStoreOptions, LockClock } from "./store.js";
+export {
+  abortDeliverySnapshot,
+  completeDeliverySnapshot,
+  deliverySnapshotDirectory,
+  prepareDeliverySnapshot,
+  readDeliveryExportAttempts,
+  readDeliveryOutcome,
+  readDeliverySnapshot,
+  recordDeliveryExportAttempt,
+  recordDeliveryOutcome,
+  DELIVERY_EXPORT_MAX_ATTEMPTS,
+  DELIVERY_SNAPSHOT_MAX_BYTES,
+} from "./delivery-snapshot.js";
+export type { DeliveryExport, DeliveryOutcome, DeliverySnapshot, DeliverySnapshotLockOwnership, PreparedDeliverySnapshot } from "./delivery-snapshot.js";
+export { exportDeliveryBundle, type DeliveryBundleExport } from "./delivery-bundle.js";
 export {
   DECISION_FILE_SCHEMA_VERSION,
   DecisionFileSchema,
@@ -261,3 +315,14 @@ export {
   WikiPageSchema,
 } from "./wiki-page.js";
 export type { DecisionFile, WikiPage } from "./wiki-page.js";
+export {
+  assertDeliverySigningKeyOutsideRoots,
+  deliveryDssePae,
+  signDeliveryDsse,
+  signDeliveryBundle,
+  verifyDeliveryBundle,
+  DeliveryRefusalError,
+  DELIVERY_MAX_BUNDLE_BYTES,
+  DELIVERY_MAX_MEMBER_BYTES,
+} from "./delivery.js";
+export type { DeliveryRequirement, DeliveryVerificationOptions, DeliveryVerificationReport } from "./delivery.js";

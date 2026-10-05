@@ -1,3 +1,6 @@
+import type { FailureCode } from "./governed-types.js";
+import type { ApprovedHttpAssuranceContext, GovernedEffectHost, GovernedHttpJobFields } from "./governed-types.js";
+
 export type HttpToolHost = {
   jailRoot: string;
   readFile(posix: string): Promise<string>;
@@ -13,22 +16,16 @@ export type HttpToolHost = {
   callExternalTool?(callName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
 };
 
-export type HttpAgentJob = {
+export type HttpAgentJobBase = {
   runId: string;
   skillId: string;
-  promptPath: string;
-  pointerPrompt: string;
   cwd: string;
   timeoutMs: number;
   env: Record<string, string>;
-  httpHost?: HttpToolHost;
-  /** Engine-owned project root for durable checkpoints; never the disposable jail root. */
   checkpointRoot?: string;
-  /** Resume only when all engine-owned identities still match the checkpoint. */
   resume?: boolean;
   sourceIdentity?: string;
   contractIdentity?: string;
-  /** Secret-free identity of external transports used by the governed tool surface. */
   externalConfigIdentity?: string;
   jailIdentity?: string;
   profile?: string;
@@ -37,12 +34,21 @@ export type HttpAgentJob = {
   maxToolRounds?: number;
   maxReportedTokens?: number;
   maxEstimatedCostUsd?: number;
-  pricing?: {
-    inputPerMillionUsd?: number;
-    outputPerMillionUsd?: number;
-    requestUsd?: number;
-  };
+  pricing?: { inputPerMillionUsd?: number; outputPerMillionUsd?: number; requestUsd?: number };
 };
+export type LegacyHttpAgentJob = HttpAgentJobBase & {
+  promptPath: string;
+  pointerPrompt: string;
+  httpHost?: HttpToolHost;
+  assuranceContext?: never;
+  effectHost?: never;
+};
+export type GovernedHttpAgentJob = HttpAgentJobBase & GovernedHttpJobFields & {
+  assuranceContext: ApprovedHttpAssuranceContext;
+  effectHost: GovernedEffectHost;
+};
+export type HttpAgentJob = LegacyHttpAgentJob | GovernedHttpAgentJob;
+
 
 export type HttpAgentUsage = {
   requests: number;
@@ -66,6 +72,7 @@ export type HttpAgentResult = {
   checkpointPath?: string;
   usage?: HttpAgentUsage;
   recovery?: "resume" | "manual" | "none";
+  governedBlock?: FailureCode;
 };
 
 export type HttpAgentHandle = {

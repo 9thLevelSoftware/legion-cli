@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-component-request/v1"
+    },
+    "abi": {
+      "type": "string",
+      "const": "legion-validator/v1"
+    },
+    "moduleSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "inputSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "componentBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16777216
+    },
+    "inputBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8388608
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "fuel": {
+          "type": "number",
+          "const": 20000000
+        },
+        "wasmStackBytes": {
+          "type": "number",
+          "const": 1048576
+        },
+        "instances": {
+          "type": "number",
+          "const": 32
+        },
+        "memories": {
+          "type": "number",
+          "const": 4
+        },
+        "memoryBytes": {
+          "type": "number",
+          "const": 67108864
+        },
+        "tables": {
+          "type": "number",
+          "const": 16
+        },
+        "tableElements": {
+          "type": "number",
+          "const": 100000
+        },
+        "deadlineMs": {
+          "type": "number",
+          "const": 20000
+        },
+        "outputBytes": {
+          "type": "number",
+          "const": 1048576
+        },
+        "nativeBudgetBytes": {
+          "type": "number",
+          "const": 2147483648
+        }
+      },
+      "required": [
+        "fuel",
+        "wasmStackBytes",
+        "instances",
+        "memories",
+        "memoryBytes",
+        "tables",
+        "tableElements",
+        "deadlineMs",
+        "outputBytes",
+        "nativeBudgetBytes"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "abi",
+    "moduleSha256",
+    "inputSha256",
+    "componentBytes",
+    "inputBytes",
+    "limits"
+  ],
+  "additionalProperties": false
+}

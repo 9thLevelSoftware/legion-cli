@@ -57,3 +57,18 @@ test("golden injection: ingest stays untrusted, brief omits body, spawn wraps, F
     assert.equal(isForbiddenSpawnPath(".git/hooks/pre-commit"), true);
   });
 });
+
+test("spawn path filtering refuses assurance controls despite an explicit contract grant", () => {
+  for (const path of [
+    ".LEGION-CLI/WORKFLOW/assurance.yaml",
+    ".legion-cli/audit/http-governed/run/authority.json",
+    ".legion-cli/audit/governance/epoch/head.json",
+    ".legion-cli/audit/delivery/snapshot/outcome.yaml",
+    ".legion-cli/audit/raw-logs/run/stdout.log",
+    ".legion-cli/audit",
+  ]) {
+    assert.equal(isForbiddenSpawnPath(path, { filesAllowed: [path], expectedArtifacts: [path] }), true, path);
+  }
+  assert.equal(isForbiddenSpawnPath("src/result.json", { filesAllowed: ["src/result.json"], expectedArtifacts: [] }), false);
+  assert.equal(isForbiddenSpawnPath(".legion-cli/wiki/product/overview.md"), false);
+});

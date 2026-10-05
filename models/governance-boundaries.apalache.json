@@ -1,0 +1,8 @@
+{
+  "checker": {
+    "discard-disabled": false,
+    "tuning": {
+      "search.invariant.mode": "after"
+    }
+  }
+}

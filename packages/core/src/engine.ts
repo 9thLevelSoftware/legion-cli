@@ -7,6 +7,7 @@ import {
   skillCatalogPath,
   type FakeArtifact,
 } from "@9thlevelsoftware/legion-cli-agents";
+import { applyProfileArgs } from "@9thlevelsoftware/legion-cli-agents";
 import {
   expectedArtifactsFailsPlan,
   filesAllowedFailsPlan,
@@ -26,14 +27,22 @@ import {
   renderArchitecture,
   writeMapFile,
 } from "@9thlevelsoftware/legion-cli-map";
-import { existsSync } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { isAbsolute, join, relative, sep } from "node:path";
+import { constants, existsSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, mkdir, open, readlink, readdir, readFile, realpath, rm } from "node:fs/promises";
 import {
   abandonReceiptBody,
   abandonReceiptPath,
   appendAuditEvent,
+  appendGovernanceBegin,
+  appendGovernanceEnd,
+  appendGovernanceEpoch,
+  inspectGovernanceTrace,
+  readGovernanceEpochs,
+  readGovernanceTrace,
+  reconcileGovernanceTrace,
   createLegionStore,
   DECISION_FILE_SCHEMA_VERSION,
   packetPath,
@@ -75,6 +84,22 @@ import {
   type LegionStore,
   type LiveRunMarker,
   type WikiPage,
+  assertNoLinkInPath,
+  abortDeliverySnapshot,
+  completeDeliverySnapshot,
+  canonicalJson,
+  exportDeliveryBundle,
+  gitIndexEntries,
+  prepareDeliverySnapshot,
+  readDeliverySnapshot,
+  recordDeliveryExportAttempt,
+  recordDeliveryOutcome,
+  readDeliveryOutcome,
+  type DeliveryBundleExport,
+  type DeliveryOutcome,
+  type PreparedDeliverySnapshot,
+  type GovernanceTrace,
+  GovernanceEpochError,
 } from "@9thlevelsoftware/legion-cli-persist";
 import {
   buildSessionBrief,
@@ -109,8 +134,14 @@ import {
   computeQaPass,
   SURGICAL_MIGRATION_HINT,
   SCHEMA_VERSION,
+  GovernanceProjectionSchema,
+  governanceOutcomeBlocks,
+  type GovernanceAction,
+  type GovernanceProjection,
+  type GovernanceEpochs,
   type AdapterId,
   type AcceptanceReceipt,
+  type AssurancePlan,
   type AnyQAScore,
   type Assumption,
   normalizePathKey,
@@ -136,10 +167,16 @@ import {
   type WorkflowEvidenceReceipt,
   type SpecChallengeReceipt,
   type SpecChallengeProposedChange,
+  ResumeFileSchema,
+  WorkflowClaimSchema,
+  CheckEvidenceSchema,
+  type ComponentRuntimeIdentity,
 } from "@9thlevelsoftware/legion-cli-schema";
 import type { WorkflowClaim } from "@9thlevelsoftware/legion-cli-schema";
 import { copyShippedCraft, isBrandViolationBlockingFreeze } from "@9thlevelsoftware/legion-cli-design-system";
-import { readHttpCheckpoint } from "@9thlevelsoftware/legion-cli-http";
+import { readHttpCheckpoint, stableHash } from "@9thlevelsoftware/legion-cli-http";
+import { recordAppliedFileProvenance } from "./assurance-flow.js";
+import { buildApprovedHttpAssuranceContext } from "./assurance-flow.js";
 import {
   assertExecuteSandbox,
   hardenedSandboxAvailable,
@@ -147,6 +184,27 @@ import {
   SandboxError,
 } from "@9thlevelsoftware/legion-cli-sandbox";
 import { HINT, LegionRefuseError, refuse, refuseKind } from "./errors.js";
+import {
+  assuranceManifestDigest,
+  assuranceImpact,
+  ASSURANCE_EXECUTION_PATH,
+  ASSURANCE_TRACE_PREREQUISITE,
+  bindAssuranceApproval,
+  inspectAssuranceEvidence,
+  loadAssurance,
+  prepareAssuranceApproval,
+  readAssuranceDraft,
+  readAssuranceExecution,
+  resolveAssuranceHost,
+  runAssuranceChecks,
+  validateAssuranceContext,
+  writeAssuranceApproval,
+  writeAssuranceCheck,
+  writeAssuranceManifest,
+  type AssuranceState,
+  type AssuranceEvidenceReport,
+  type AssuranceImpactReport,
+} from "./assurance.js";
 import { evaluateQaEvidenceFreshness, qaSourceHash, qaSpecHash } from "./qa-evidence.js";
 import { selectParallelTasks } from "./parallel.js";
 import {
@@ -176,6 +234,16 @@ import {
   type TaskFileSnapshot,
 } from "./revert.js";
 import {
+  approveGovernedAction,
+  buildVerificationInformationFlow,
+  currentGovernedTaskPolicyFingerprint,
+  type GovernedMcpDescriptor,
+  inspectGovernedRun,
+  readGovernedRunSchemaIdentities,
+  recordOpaqueVerificationOutputProvenance,
+} from "./assurance-flow.js";
+import {
+  currentGovernedMcpDescriptors,
   findLatestTaskResume,
   findSkillsDir,
   finishStartedSpawn,
@@ -201,7 +269,8 @@ import {
 import { buildSpecFromIntent, specMarkdownBody } from "./spec-build.js";
 import { compactTaskBody, outcomeFromTask } from "./compact.js";
 import { hybridSearch } from "./retrieval.js";
-import { assertTaskStatusTransition, canTransitionTaskStatus } from "./tasks.js";
+import { assertTaskStatusTransition } from "./tasks.js";
+import { canTransitionTaskStatus } from "@9thlevelsoftware/legion-cli-schema";
 import {
   ensureRegressionTest,
   fixFilesAllowed,
@@ -252,7 +321,9 @@ import type {
   ExecuteOptions,
   ExecuteProgress,
   ExecuteResult,
-  ExecuteWorkflowOptions,
+  GovernanceInspection,
+  GovernedActionApprovalOptions,
+  PendingGovernedAction,
   IngestOpts,
   IngestResult,
   ExecuteTaskResult,
@@ -273,6 +344,7 @@ import type {
   ShipOptions,
   ShipPreview,
   ShipReceipt,
+  ShipExportResult,
   VerifyResult,
   WorkflowExecutionResult,
   WorkflowStatus,
@@ -283,6 +355,7 @@ import type {
   SpecChallengeResult,
   WireframeOptions,
   WireframeResult,
+  ExecuteWorkflowOptions,
 } from "./types.js";
 import {
   applyManualReview,
@@ -308,6 +381,7 @@ import {
 import {
   acquireWorkflowClaim,
   WORKFLOW_APPROVAL_PATH,
+  WORKFLOW_CLAIM_PATH,
   WORKFLOW_REVIEW_PATH,
   createWorkflowPlanSnapshot,
   readAcceptanceReceipt,
@@ -320,6 +394,7 @@ import {
   workflowEnvironmentFingerprint,
   workflowFingerprint,
   workflowProductFingerprint,
+  workflowProductPaths,
   workflowReviewEvidenceFresh,
   writeAcceptanceReceipt,
   writePlanApproval,
@@ -327,6 +402,7 @@ import {
   writeWorkflowEvidence,
   writeWorkflowReviewReport,
   releaseWorkflowClaim,
+  workflowClaimHolderLive,
   type WorkflowPlanSnapshot,
 } from "./workflow.js";
 import { assertDiscoverySelection } from "./discovery.js";
@@ -352,16 +428,312 @@ import {
   type MapOptions,
   type MapResult,
 } from "./map.js";
-import { DEFAULT_VERIFICATION_TIMEOUT_MS, runVerificationCommands, verificationFailureReason } from "./verify.js";
+import {
+  DEFAULT_VERIFICATION_TIMEOUT_MS,
+  runVerificationCommands,
+  verificationFailureReason,
+  type VerificationInformationFlow,
+} from "./verify.js";
 import { palettePresent } from "./wireframes.js";
 import { finishWireframe, prepareWireframe, screenPagesFor, writeWireframeFiles } from "./wireframe-run.js";
+const MAX_VERIFICATION_INVENTORY_FILES = 8192;
+const MAX_VERIFICATION_INVENTORY_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_VERIFICATION_INVENTORY_BYTES = 256 * 1024 * 1024;
+const GOVERNED_HTTP_TIMEOUT_MS = 120_000;
 
+
+type DeliveryProduct = PreparedDeliverySnapshot["product"];
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function deliverySubjectDigest(scope: DeliveryProduct["scope"], entries: DeliveryProduct["entries"]): string {
+  return sha256Hex(Buffer.from(canonicalJson({ scope, entries }), "utf8"));
+}
+
+function gitBatchObjects(projectRoot: string, oids: readonly string[]): Map<string, Buffer> {
+  if (oids.length === 0) return new Map();
+  const result = spawnSync("git", ["cat-file", "--batch"], {
+    cwd: projectRoot,
+    input: `${oids.join("\n")}\n`,
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) throw new Error(`git cat-file --batch failed: ${result.error?.message ?? result.stderr?.toString("utf8").slice(0, 512)}`);
+  const bytes = result.stdout as Buffer;
+  const objects = new Map<string, Buffer>();
+  let offset = 0;
+  for (const expected of oids) {
+    const newline = bytes.indexOf(10, offset);
+    if (newline < 0) throw new Error("Malformed git cat-file --batch header");
+    const header = bytes.toString("ascii", offset, newline).split(" ");
+    const size = Number(header[2]);
+    if (header[0] !== expected || header[1] !== "blob" || !Number.isSafeInteger(size) || size < 0) throw new Error("Unexpected Git product object");
+    const start = newline + 1;
+    const end = start + size;
+    if (end >= bytes.length || bytes[end] !== 10) throw new Error("Truncated git cat-file --batch object");
+    objects.set(expected, bytes.subarray(start, end));
+    offset = end + 1;
+  }
+  if (offset !== bytes.length) throw new Error("Unexpected trailing git cat-file --batch output");
+  return objects;
+}
+
+function gitProductInventory(projectRoot: string): DeliveryProduct {
+  const parsed = gitIndexEntries(projectRoot).map((entry) => {
+    const tab = entry.indexOf("\t");
+    if (tab < 0) throw new Error("Malformed Git index entry");
+    const [mode, oid, stage] = entry.slice(0, tab).split(" ");
+    const path = entry.slice(tab + 1).replaceAll("\\", "/");
+    if (stage !== "0") throw new Error(`Unmerged Git index entry: ${path}`);
+    return { mode: mode!, oid: oid!, path };
+  }).filter((entry) => entry.path !== ".legion-cli" && !entry.path.startsWith(".legion-cli/")).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const blobs = gitBatchObjects(projectRoot, parsed.filter((entry) => entry.mode !== "160000").map((entry) => entry.oid));
+  const entries: DeliveryProduct["entries"] = parsed.map((entry) => {
+    if (entry.mode === "160000") return { kind: "gitlink", path: entry.path, mode: "160000", oid: entry.oid, scope: "referenced-commit-only" };
+    const body = blobs.get(entry.oid);
+    if (!body) throw new Error(`Missing Git object for ${entry.path}`);
+    if (entry.mode !== "100644" && entry.mode !== "100755" && entry.mode !== "120000") throw new Error(`Unsupported Git product mode ${entry.mode}`);
+    return { kind: "blob", path: entry.path, mode: entry.mode, sha256: sha256Hex(body), size: body.length };
+  });
+  const scope = "git-index" as const;
+  return { scope, entries, subjectDigest: deliverySubjectDigest(scope, entries) };
+}
+
+async function nativeProductInventory(projectRoot: string): Promise<DeliveryProduct> {
+  const entries: DeliveryProduct["entries"] = [];
+  const visit = async (directory: string, prefix: string): Promise<void> => {
+    const children = (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
+    for (const child of children) {
+      if (!prefix && child.name === ".legion-cli") continue;
+      const path = prefix ? `${prefix}/${child.name}` : child.name;
+      const absolute = join(directory, child.name);
+      const stats = await lstat(absolute);
+      if (stats.isDirectory()) {
+        await visit(absolute, path);
+        continue;
+      }
+      if (!stats.isSymbolicLink() && !stats.isFile()) {
+        throw new Error(`Unsupported filesystem object in native product inventory: ${path}`);
+      }
+      const content = stats.isSymbolicLink()
+        ? await readlink(absolute, { encoding: "buffer" })
+        : await readFile(absolute);
+      entries.push({
+        kind: "native-file",
+        path,
+        mode: `native:${(stats.mode & 0o7777).toString(8).padStart(4, "0")}`,
+        sha256: sha256Hex(content),
+        size: content.length,
+      });
+    }
+  };
+  await visit(projectRoot, "");
+  entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const scope = "host-native-product" as const;
+  return { scope, entries, subjectDigest: deliverySubjectDigest(scope, entries) };
+}
+
+function gitCommitProductInventory(projectRoot: string, commit: string): DeliveryProduct {
+  const tree = spawnSync("git", ["ls-tree", "-r", "-z", "--full-tree", commit], {
+    cwd: projectRoot,
+    encoding: "buffer",
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  if (tree.error || tree.status !== 0) throw new Error(`git ls-tree failed: ${tree.error?.message ?? tree.stderr?.toString("utf8").slice(0, 512)}`);
+  const records = (tree.stdout as Buffer).toString("utf8").split("\0").filter(Boolean).map((record) => {
+    const tab = record.indexOf("\t");
+    const [mode, , oid] = record.slice(0, tab).split(" ");
+    return { mode: mode!, oid: oid!, path: record.slice(tab + 1).replaceAll("\\", "/") };
+  }).filter((entry) => entry.path !== ".legion-cli" && !entry.path.startsWith(".legion-cli/")).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const blobs = gitBatchObjects(projectRoot, records.filter((item) => item.mode !== "160000").map((item) => item.oid));
+  const entries: DeliveryProduct["entries"] = records.map((item) => {
+    if (item.mode === "160000") return { kind: "gitlink", path: item.path, mode: "160000", oid: item.oid, scope: "referenced-commit-only" };
+    const body = blobs.get(item.oid);
+    if (!body) throw new Error(`Missing committed Git object for ${item.path}`);
+    if (item.mode !== "100644" && item.mode !== "100755" && item.mode !== "120000") throw new Error(`Unsupported committed Git mode ${item.mode}`);
+    return { kind: "blob", path: item.path, mode: item.mode, sha256: sha256Hex(body), size: body.length };
+  });
+  const scope = "git-index" as const;
+  return { scope, entries, subjectDigest: deliverySubjectDigest(scope, entries) };
+}
+
+async function deliveryProductInventory(projectRoot: string): Promise<DeliveryProduct> {
+  return isGitRepo(projectRoot) ? gitProductInventory(projectRoot) : nativeProductInventory(projectRoot);
+}
 /** Distill spawn is skipped when materialized source exceeds this many characters (64 KiB). */
 export const DISTILL_SOURCE_MAX_CHARS = 64 * 1024;
 
 function nowIso(): string {
   return new Date().toISOString();
 }
+
+async function readDeliveryCheckEvidence(
+  store: LegionStore,
+  approvalId: string,
+  checkId: string,
+  executionId: string | null,
+  nativeHost: ComponentRuntimeIdentity | null,
+): Promise<{ observationDigest: string | null; recordedAt: string | null; runtime: ComponentRuntimeIdentity | null }> {
+  if (!executionId) return { observationDigest: null, recordedAt: null, runtime: null };
+  const filename = createHash("sha256").update(executionId, "utf8").digest("hex");
+  const path = `.legion-cli/workflow/checks/${checkId}/${filename}.yaml`;
+  if (!await store.pathExists(path)) return { observationDigest: null, recordedAt: null, runtime: null };
+  await assertNoLinkInPath(toFsPath(store.projectRoot, path), { root: store.projectRoot });
+  const receipt = await store.readYaml(path, CheckEvidenceSchema);
+  if (receipt.approvalId !== approvalId || receipt.checkId !== checkId || receipt.executionId !== executionId) {
+    throw new Error(`Validator ${checkId} observation receipt identity mismatch`);
+  }
+  if (canonicalJson(receipt.runtime) !== canonicalJson(nativeHost)) {
+    throw new Error(`Validator ${checkId} runtime identity differs from the approved host`);
+  }
+  const expectedDigest = receipt.output
+    ? sha256Hex(Buffer.from(canonicalJson(receipt.output.observations), "utf8"))
+    : null;
+  if (receipt.observationDigest !== expectedDigest) throw new Error(`Validator ${checkId} observation digest mismatch`);
+  return { observationDigest: receipt.observationDigest, recordedAt: receipt.recordedAt, runtime: receipt.runtime };
+}
+
+type VerificationProductEntry = { kind: "file" | "symlink" | "directory" | "other" | "missing"; digest: string | null };
+
+type VerificationFileStat = { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; nlink: bigint; mode: bigint };
+function sameVerificationFileIdentity(left: VerificationFileStat, right: VerificationFileStat): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size &&
+    left.mtimeNs === right.mtimeNs && left.nlink === right.nlink && left.mode === right.mode;
+}
+
+function assertVerificationFileInsideRoot(root: string, absolute: string): Promise<string> {
+  return realpath(absolute).then((canonical) => {
+    const rel = relative(root, canonical);
+    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      throw new Error("verification product path resolves outside the project");
+    }
+    return canonical;
+  });
+}
+
+async function snapshotVerificationProduct(projectRoot: string): Promise<Map<string, VerificationProductEntry>> {
+  const paths = await workflowProductPaths(projectRoot);
+  if (paths.length > MAX_VERIFICATION_INVENTORY_FILES) throw new Error("verification product inventory exceeds its bounded file count");
+  const realRoot = await realpath(projectRoot);
+  const entries = new Map<string, VerificationProductEntry>();
+  let totalBytes = 0;
+  for (const path of paths) {
+    const absolute = toFsPath(projectRoot, path);
+    let namedBefore;
+    try {
+      namedBefore = await lstat(absolute, { bigint: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      entries.set(path, { kind: "missing", digest: null });
+      continue;
+    }
+    if (namedBefore.isSymbolicLink()) {
+      const target = await readlink(absolute);
+      const namedAfter = await lstat(absolute, { bigint: true });
+      if (!sameVerificationFileIdentity(namedBefore, namedAfter) || target !== await readlink(absolute)) {
+        throw new Error(`verification product changed while capturing symlink ${path}`);
+      }
+      entries.set(path, { kind: "symlink", digest: createHash("sha256").update(target).digest("hex") });
+      continue;
+    }
+    if (!namedBefore.isFile()) {
+      const namedAfter = await lstat(absolute, { bigint: true });
+      if (!sameVerificationFileIdentity(namedBefore, namedAfter)) throw new Error(`verification product changed while capturing ${path}`);
+      entries.set(path, { kind: namedBefore.isDirectory() ? "directory" : "other", digest: null });
+      continue;
+    }
+    if (namedBefore.size > BigInt(MAX_VERIFICATION_INVENTORY_FILE_BYTES)) {
+      throw new Error(`verification product inventory cannot safely capture ${path}`);
+    }
+    totalBytes += Number(namedBefore.size);
+    if (totalBytes > MAX_VERIFICATION_INVENTORY_BYTES) throw new Error("verification product inventory exceeds its bounded byte count");
+    const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+    const handle = await open(absolute, flags);
+    try {
+      const descriptorBefore = await handle.stat({ bigint: true });
+      if (!descriptorBefore.isFile() || !sameVerificationFileIdentity(namedBefore, descriptorBefore)) {
+        throw new Error(`verification product path changed while opening ${path}`);
+      }
+      const canonicalBefore = await assertVerificationFileInsideRoot(realRoot, absolute);
+      const hash = createHash("sha256");
+      let streamedBytes = 0;
+      const stream = handle.createReadStream({ autoClose: false });
+      for await (const chunk of stream) {
+        streamedBytes += chunk.length;
+        if (streamedBytes > Number(descriptorBefore.size) ||
+            streamedBytes > MAX_VERIFICATION_INVENTORY_FILE_BYTES ||
+            totalBytes - Number(descriptorBefore.size) + streamedBytes > MAX_VERIFICATION_INVENTORY_BYTES) {
+          stream.destroy();
+          throw new Error(`verification product exceeded its bounded capture while reading ${path}`);
+        }
+        hash.update(chunk);
+      }
+      const descriptorAfter = await handle.stat({ bigint: true });
+      const namedAfter = await lstat(absolute, { bigint: true });
+      const canonicalAfter = await assertVerificationFileInsideRoot(realRoot, absolute);
+      if (streamedBytes !== Number(descriptorBefore.size) ||
+          !sameVerificationFileIdentity(descriptorBefore, descriptorAfter) ||
+          !sameVerificationFileIdentity(namedBefore, namedAfter) ||
+          canonicalBefore !== canonicalAfter) {
+        throw new Error(`verification product changed while capturing ${path}`);
+      }
+      entries.set(path, { kind: "file", digest: hash.digest("hex") });
+    } finally {
+      await handle.close();
+    }
+  }
+  return entries;
+}
+
+function changedVerificationOutputs(
+  before: ReadonlyMap<string, VerificationProductEntry>,
+  after: ReadonlyMap<string, VerificationProductEntry>,
+  expectedArtifacts: readonly string[],
+): Array<{ path: string; beforeDigest: string | null; afterDigest: string }> {
+  const changes: Array<{ path: string; beforeDigest: string | null; afterDigest: string }> = [];
+  for (const path of new Set([...before.keys(), ...after.keys()])) {
+    const previous = before.get(path) ?? { kind: "missing", digest: null };
+    const current = after.get(path) ?? { kind: "missing", digest: null };
+    if (previous.kind === current.kind && previous.digest === current.digest) continue;
+    if (!expectedArtifacts.some((expected) => normalizePathKey(expected) === normalizePathKey(path))) {
+      throw new Error(`verification changed product outside expectedArtifacts: ${path}`);
+    }
+    if (current.kind === "missing") continue;
+    if (current.kind !== "file" || current.digest === null) {
+      throw new Error(`verification changed non-regular product path ${path}; output provenance cannot be recorded`);
+    }
+    changes.push({
+      path,
+      beforeDigest: previous.kind === "file" ? previous.digest : null,
+      afterDigest: current.digest,
+    });
+  }
+  return changes.sort((left, right) => left.path.localeCompare(right.path));
+}
+function governedConfigurationFingerprint(
+  config: LegionConfig,
+  profile: string,
+  profileConfig: unknown,
+): string {
+  const profileSettings = profileConfig && typeof profileConfig === "object"
+    ? profileConfig as { limits?: unknown; outputLimit?: unknown; pricing?: unknown }
+    : {};
+  const http = config.adapter.http;
+  return stableHash({
+    endpoint: http?.baseUrl ?? null,
+    model: http?.model ?? null,
+    apiKeyEnv: http?.apiKeyEnv ?? null,
+    allowLoopback: http?.allowLoopback ?? null,
+    headers: http?.headers ?? null,
+    profile,
+    timeoutMs: GOVERNED_HTTP_TIMEOUT_MS,
+    limits: profileSettings.limits ?? null,
+    outputLimit: profileSettings.outputLimit ?? null,
+    pricing: profileSettings.pricing ?? null,
+  });
+}
+
 
 type HttpCrashRecovery =
   | { kind: "safe" }
@@ -373,6 +745,33 @@ async function classifyHttpCrashRecovery(
   task: Task,
   resume: ResumeFile | undefined,
 ): Promise<HttpCrashRecovery> {
+  if (task.status === "in_progress" && resume?.schemaVersion === SCHEMA_VERSION.resume &&
+      resume.skillId === "execute" && resume.adapterId === "http" && !resume.checkpointPath) {
+    if (!["running", "agent-complete", "interrupted"].includes(resume.stage) ||
+        !resume.sourceIdentity || !resume.contractIdentity || !resume.jailIdentity) return { kind: "none" };
+    const jailPath = toFsPath(projectRoot, `.legion-cli/sandbox/${resume.runId}`);
+    const sandboxRecord = toFsPath(projectRoot, `.legion-cli/cache/runs/${resume.runId}/sandbox.json`);
+    if (!existsSync(jailPath) || !existsSync(sandboxRecord)) return { kind: "none" };
+    try {
+      if ((await retainedJailIdentity(projectRoot, resume.runId)) !== resume.jailIdentity) return { kind: "none" };
+      const governed = await inspectGovernedRun({ store: createLegionStore(projectRoot), runId: resume.runId });
+      if (!governed || governed.checkpoint.runId !== resume.runId ||
+          governed.checkpoint.identities.sourceFingerprint !== resume.sourceIdentity ||
+          governed.checkpoint.identities.jailFingerprint !== resume.jailIdentity) return { kind: "none" };
+      if (governed.checkpoint.effects.some((effect) => effect.state === "pending" || effect.state === "uncertain")) {
+        return { kind: "manual", reason: "governed external effect outcome is uncertain" };
+      }
+      if (governed.checkpoint.status === "complete") return { kind: "safe" };
+      if (governed.checkpoint.status === "blocked") {
+        return governed.checkpoint.blocker === "approval-required"
+          ? { kind: "safe" }
+          : { kind: "manual", reason: "governed run is blocked pending explicit authority" };
+      }
+      return { kind: "safe" };
+    } catch {
+      return { kind: "manual", reason: "governed recovery record could not be validated" };
+    }
+  }
   if (
     task.status !== "in_progress" ||
     !resume ||
@@ -527,11 +926,16 @@ async function listMarkdownFiles(dir: string): Promise<string[]> {
   return names.filter((name) => name.toLowerCase().endsWith(".md"));
 }
 
-/** `allowLive`: read-only entry. `ownRunId`: the run this entry finishes (exempt from the live-run guard). */
+/**
+ * `allowLive`: read-only entry. `ownRunId`: the run this entry finishes (exempt from the live-run guard).
+ * `allowInterruptedEpoch`: only plan approval, which opens the next governance epoch, may enter while the
+ * current approval identity disagrees with the latest epoch anchor.
+ */
 type LockEntryOptions = {
   timeoutMs?: number;
   nextHint?: string;
   allowLive?: boolean;
+  allowInterruptedEpoch?: boolean;
   ownRunId?: string;
   ownRunIds?: readonly string[];
 };
@@ -641,10 +1045,14 @@ export class LegionEngine {
   readonly #fakeAfterChallengeDraftWrite?: () => Promise<void>;
   readonly #fakeQaScoreInjection: boolean;
   readonly #fakeHandlePid?: number;
+  readonly #fakeGovernanceFault?: LegionEngineOptions["fakeGovernanceFault"];
   readonly #verificationTimeoutMs: number;
   #lastPlanReport: ReadinessReport | null = null;
   #lastQaWarnings: string[] = [];
   #reconciled = false;
+  #governanceBoundaryActive = false;
+  #shipProjection: GovernanceProjection["ship"] | null = null;
+  #reviewProjection: GovernanceProjection["review"] | null = null;
 
   constructor(projectRoot: string, store?: LegionStore, options?: LegionEngineOptions) {
     this.store = store ?? createLegionStore(projectRoot);
@@ -668,6 +1076,7 @@ export class LegionEngine {
     this.#fakeAfterChallengeDraftWrite = options?.fakeAfterChallengeDraftWrite;
     this.#fakeQaScoreInjection = Boolean(options?.fakeQaScoreInjection);
     this.#fakeHandlePid = options?.fakeHandlePid;
+    this.#fakeGovernanceFault = options?.fakeGovernanceFault;
     this.#verificationTimeoutMs = options?.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   }
 
@@ -1149,7 +1558,7 @@ export class LegionEngine {
 
   async compactContext(opts?: CompactOptions): Promise<CompactResult> {
     return this.#withLockOrRefuse(
-      async () => {
+      async () => this.#governanceMutation("compact", async () => {
         const state = await this.#readState();
         if (state.phase === "uninitialized") {
           refuse("context compact is refused until init", HINT.init);
@@ -1181,7 +1590,7 @@ export class LegionEngine {
         }
         await this.#refreshWikiCatalogLocked();
         return { compacted, skipped };
-      },
+      }),
       { timeoutMs: opts?.timeoutMs, nextHint: HINT.compact },
     );
   }
@@ -1445,6 +1854,9 @@ export class LegionEngine {
 
   async approvePlan(actor: Actor = { id: "user" }, opts: PlanApprovalOptions = {}): Promise<PlanApprovalReceipt> {
     return this.#mutate(async () => {
+      if (opts.assuranceManifestPath !== undefined && opts.assuranceOff) {
+        refuse("plan approve cannot adopt and remove assurance together", "legion-cli plan approve --assurance <yaml-file>");
+      }
       await assertDiscoverySelection(this);
       await this.#assertNoLiveInProgress("plan approve");
       const state = await this.#readState();
@@ -1463,7 +1875,24 @@ export class LegionEngine {
           };
       // Validate against the effective focused configuration before persisting it. A normal
       // approval refusal must leave a legacy project on its compatible legacy path.
-      const context = await this.#workflowPlanContext(approvalConfig);
+      const priorAssurance = await loadAssurance(this.store);
+      const assuranceManifest = opts.assuranceOff
+        ? null
+        : opts.assuranceManifestPath !== undefined
+          ? await readAssuranceDraft(opts.assuranceManifestPath)
+          : priorAssurance.manifest;
+      if (!opts.assuranceOff && opts.assuranceManifestPath === undefined && priorAssurance.status && !assuranceManifest) {
+        refuse(priorAssurance.status.blocker ?? "assurance manifest is invalid", "legion-cli plan approve --assurance <yaml-file>");
+      }
+      if (!opts.assuranceOff && opts.assuranceManifestPath === undefined && priorAssurance.approval &&
+          priorAssurance.fingerprint !== priorAssurance.approval.manifestDigest) {
+        refuse("adopted assurance manifest changed; replacement requires --assurance", "legion-cli plan approve --assurance <yaml-file>");
+      }
+      const context = await this.#workflowPlanContext(approvalConfig, assuranceManifest);
+      if (assuranceManifest) {
+        await validateAssuranceContext(assuranceManifest, { ...context, projectRoot: this.projectRoot });
+      }
+      const nativeHost = assuranceManifest ? await resolveAssuranceHost(assuranceManifest) : null;
       const readiness = evaluateReadiness({
         spec: context.spec,
         tasks: context.tasks,
@@ -1512,9 +1941,7 @@ export class LegionEngine {
           ...(opts.verificationCommands ?? []),
         ].map((command) => command.trim()).filter(Boolean)),
       ];
-      if (currentConfig.workflow?.profile !== "focused") {
-        await this.store.writeConfig(approvalConfig);
-      }
+      const configurationChanged = currentConfig.workflow?.profile !== "focused";
       const receipt = PlanApprovalReceiptSchema.parse({
         schemaVersion: SCHEMA_VERSION.planApproval,
         specId: context.snapshot.specId,
@@ -1529,14 +1956,38 @@ export class LegionEngine {
         acceptanceIds: context.snapshot.acceptanceIds,
         verificationCommands,
       });
-      await writePlanApproval(this.store, receipt);
-      await this.#audit("plan_approve", state.phase, actor.id, {
-        specId: receipt.specId,
-        planFingerprint: receipt.planFingerprint,
-        verificationCommands: receipt.verificationCommands,
-      });
+      const assuranceApproval = assuranceManifest
+        ? await prepareAssuranceApproval(assuranceManifest, receipt, this.projectRoot, nativeHost)
+        : null;
+      const persistApproval = async (): Promise<void> => {
+        if (configurationChanged) await this.store.writeConfig(approvalConfig);
+        if (assuranceManifest || priorAssurance.status || opts.assuranceOff) {
+          await writeAssuranceManifest(this.store, assuranceManifest);
+        }
+        await writePlanApproval(this.store, receipt);
+        if (assuranceApproval) await writeAssuranceApproval(this.store, assuranceApproval);
+        await this.#audit("plan_approve", state.phase, actor.id, {
+          specId: receipt.specId,
+          planFingerprint: receipt.planFingerprint,
+          verificationCommands: receipt.verificationCommands,
+        });
+      };
+      // The epoch anchor is written before the approval boundary: a crash or journal restore after this
+      // point leaves the anchor naming an approval the project no longer holds, which every writer refuses.
+      if (assuranceApproval || await readGovernanceEpochs(this.store)) {
+        await appendGovernanceEpoch(this.store, {
+          approvalId: receipt.approvalId,
+          adopted: Boolean(assuranceApproval),
+          recordedAt: receipt.approvedAt,
+        }, { assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); } });
+      }
+      if (assuranceApproval) {
+        await this.#governanceMutationForApproval(receipt.approvalId, approvalConfig, persistApproval);
+      } else {
+        await persistApproval();
+      }
       return receipt;
-    });
+    }, { allowInterruptedEpoch: true });
   }
 
   async readSpecChallenge(specId?: string): Promise<SpecChallengeResult> {
@@ -1920,6 +2371,21 @@ export class LegionEngine {
     });
   }
 
+  async getPlanEvidence(): Promise<AssuranceEvidenceReport> {
+    const context = await this.#workflowPlanContext();
+    const approval = await readPlanApproval(this.store);
+    const status = bindAssuranceApproval(context.assurance, approval, context.snapshot.planFingerprint);
+    return inspectAssuranceEvidence(this.store, { ...context.assurance, ...(status ? { status } : {}) }, context.spec.acceptance.map((criterion) => criterion.id), await this.#componentPolicyPosture(context.assurance, context.tasks));
+  }
+
+  async getPlanImpact(): Promise<AssuranceImpactReport> {
+    const context = await this.#workflowPlanContext();
+    const approval = await readPlanApproval(this.store);
+    const status = bindAssuranceApproval(context.assurance, approval, context.snapshot.planFingerprint);
+    const report = await inspectAssuranceEvidence(this.store, { ...context.assurance, ...(status ? { status } : {}) }, context.spec.acceptance.map((criterion) => criterion.id), await this.#componentPolicyPosture(context.assurance, context.tasks));
+    return assuranceImpact(report, context.assurance.manifest);
+  }
+
   async getWorkflowStatus(): Promise<WorkflowStatus> {
     const state = await this.#readState();
     if (state.phase === "shipped" || state.phase === "abandoned") {
@@ -1984,9 +2450,10 @@ export class LegionEngine {
 
     const context = await this.#workflowPlanContext();
     const approval = await readPlanApproval(this.store);
+    let assurance = bindAssuranceApproval(context.assurance, approval, context.snapshot.planFingerprint);
     const planApproval = !approval
       ? "missing" as const
-      : approval.specId === context.snapshot.specId && approval.planFingerprint === context.snapshot.planFingerprint
+      : assurance?.status !== "invalid" && approval.specId === context.snapshot.specId && approval.planFingerprint === context.snapshot.planFingerprint
         ? "valid" as const
         : "stale" as const;
     if (planApproval !== "valid" || !approval) {
@@ -1995,16 +2462,50 @@ export class LegionEngine {
       return {
         stage: "plan",
         planApproval,
+        ...(assurance ? { assurance } : {}),
         execution: "not_started",
         acceptance: this.#workflowAcceptanceStatus(context.spec, null),
-        blocker: missingPlanBody
+        blocker: assurance?.blocker ?? (missingPlanBody
           ? `create .legion-cli/plans/${context.snapshot.specId}.md before approving the plan`
           : planApproval === "stale"
             ? "plan approval is stale"
-            : null,
+            : null),
         next: "legion-cli plan approve",
       };
     }
+    const governedExecution = await this.#governedExecutionEvidence(context.assurance, context.tasks);
+    const informationFlowPosture = governedExecution.posture;
+    if (assurance?.mode === "information-flow") assurance = { ...assurance, informationFlow: informationFlowPosture };
+    // Done work whose governed run was granted different authority must re-run; undo returns it to todo.
+    const staleGovernedTask = context.tasks.find((task) => task.status === "done" && governedExecution.staleTaskIds.includes(task.id));
+    const staleGovernedBlocker = staleGovernedTask
+      ? `governed execution evidence for ${governedExecution.staleTaskIds.join(", ")} was not produced under the current approved authority; re-run with legion-cli undo --task ${staleGovernedTask.id}, then legion-cli plan approve and legion-cli execute`
+      : null;
+    const assuranceEvidence = context.assurance.manifest
+      ? await inspectAssuranceEvidence(
+        this.store,
+        { ...context.assurance, ...(assurance ? { status: assurance } : {}) },
+        context.spec.acceptance.map((criterion) => criterion.id),
+        informationFlowPosture,
+      )
+      : undefined;
+
+    const governanceTraceStatus = context.assurance.manifest && context.assurance.approval
+      ? await this.#governanceDeliveryTraceStatus(context.config, context.assurance.approval.approvalId)
+      : null;
+    const assuranceTraceStatus: "valid" | "incomplete" | "invalid" | undefined = governanceTraceStatus === null
+      ? assuranceEvidence?.traceStatus === "not-adopted" ? "incomplete" : assuranceEvidence?.traceStatus
+      : governanceTraceStatus === "not-adopted" ? "incomplete" : governanceTraceStatus;
+    if (assurance && assuranceEvidence) assurance = {
+      ...assurance,
+      coverage: assuranceEvidence.criteria,
+      checks: assuranceEvidence.checks,
+      traceStatus: assuranceTraceStatus,
+      policyStatus: assuranceEvidence.policyStatus === "not-adopted" ? "blocked" : assuranceEvidence.policyStatus,
+      blocker: governanceTraceStatus === "valid" && assuranceEvidence.blocker === ASSURANCE_TRACE_PREREQUISITE
+        ? null
+        : assuranceEvidence.blocker,
+    };
 
     const productFingerprint = await workflowProductFingerprint(this.projectRoot, context.tasks);
     const environmentFingerprint = workflowEnvironmentFingerprint();
@@ -2019,7 +2520,7 @@ export class LegionEngine {
       evidence.environmentFingerprint === environmentFingerprint &&
       reviewFresh,
     );
-    const execution: WorkflowStatus["execution"] = !evidence
+    let execution: WorkflowStatus["execution"] = !evidence
       ? "not_started"
       : !evidenceFresh
         ? "stale"
@@ -2028,6 +2529,7 @@ export class LegionEngine {
           : evidence.status === "running"
             ? "running"
             : "blocked";
+    if (assurance?.mode === "information-flow" && assurance.informationFlow !== "enforced") execution = "blocked";
     const acceptanceReceipt = await readAcceptanceReceipt(this.store);
     const acceptanceFresh = Boolean(
       acceptanceReceipt &&
@@ -2038,48 +2540,216 @@ export class LegionEngine {
     );
     const acceptance = this.#workflowAcceptanceStatus(context.spec, acceptanceFresh ? acceptanceReceipt : null);
     const ready = execution === "complete" && acceptance.failed.length === 0 && acceptance.pending.length === 0;
-    const retryableExecutionFailure = execution === "blocked" && Boolean(
-      evidenceFresh && evidence && (
-        evidence.integration.some((run) => !run.ok) ||
-        evidence.review?.verdict === "FAIL" ||
-        evidence.blocker?.startsWith("independent review")
-      ),
-    );
+    const retryableExecutionFailure = Boolean(assuranceEvidence?.checks.some((check) => check.decision === "blocked")) ||
+      execution === "blocked" && Boolean(
+        evidenceFresh && evidence && (
+          evidence.integration.some((run) => !run.ok) ||
+          evidence.review?.verdict === "FAIL" ||
+          evidence.blocker?.startsWith("independent review")
+        ),
+      );
     const blockedTask = context.tasks.find((task) => task.status === "blocked");
-    const blocker = execution === "stale"
-      ? "workflow evidence is stale"
-      : evidenceFresh && evidence?.blocker
-        ? evidence.blocker
-        : acceptance.failed.length > 0
+    const blocker = assuranceEvidence?.units.find((unit) => unit.status === "unknown")?.reason ??
+      staleGovernedBlocker ??
+      assuranceEvidence?.checks.find((check) => check.decision === "blocked")?.reason ??
+      (execution === "stale"
+        ? "workflow evidence is stale"
+        : null) ??
+        (evidenceFresh && evidence?.blocker
+          ? evidence.blocker
+          : evidenceFresh && evidence?.status === "complete" && assurance?.blocker
+            ? assurance.blocker
+            : null) ??
+        (acceptance.failed.length > 0
           ? `acceptance failed: ${acceptance.failed.join(", ")}`
           : execution === "complete" && acceptance.pending.length > 0
             ? `acceptance evidence pending: ${acceptance.pending.join(", ")}`
-            : null;
+            : assurance?.mode === "information-flow" && assurance.informationFlow !== "enforced"
+              ? "information-flow execution has not produced governed HTTP evidence"
+              : null);
     return {
       stage: ready ? "ship" : "execute",
       planApproval,
+      ...(assurance ? { assurance } : {}),
       execution,
       acceptance,
       blocker,
       next: ready
         ? "legion-cli ship"
+        : assuranceEvidence?.units.some((unit) => unit.status === "unknown")
+          ? "legion-cli plan impact"
+        : staleGovernedTask
+          ? `legion-cli undo --task ${staleGovernedTask.id}`
         : execution === "complete" && acceptance.failed.length > 0
           ? `legion-cli plan acceptance --pass ${acceptance.failed[0]}`
         : execution === "complete" && acceptance.pending.length > 0
           ? `legion-cli plan acceptance --pass ${acceptance.pending[0]}`
-          : retryableExecutionFailure
-            ? "legion-cli execute --retry"
-            : blockedTask
-              ? `legion-cli task amend ${blockedTask.id}`
+        : retryableExecutionFailure
+          ? "legion-cli execute --retry"
+          : blockedTask
+            ? `legion-cli task amend ${blockedTask.id}`
+            : evidenceFresh && evidence?.status === "complete" && assurance?.traceStatus !== "valid"
+              ? "legion-cli plan evidence"
               : "legion-cli execute",
     };
+  }
+
+  async getPendingGovernedActions(): Promise<PendingGovernedAction[]> {
+    return this.#read(async () => {
+      const current = await this.#requireCurrentPlanApproval().catch(() => null);
+      if (current?.assurance.manifest?.security.mode !== "information-flow" || !current.assurance.approval) return [];
+      const actions: PendingGovernedAction[] = [];
+      const resumes = await listCacheResumes(this.projectRoot);
+      const summarize = (labels: readonly { confidentiality: "public" | "workspace" | "sealed"; integrity: "approved" | "untrusted" }[], unavailable = false) => {
+        if (unavailable || labels.length === 0) return { confidentiality: "sealed" as const, integrity: "untrusted" as const };
+        const rank = { public: 0, workspace: 1, sealed: 2 } as const;
+        const confidentiality = labels.reduce(
+          (highest, label) => rank[label.confidentiality] > rank[highest] ? label.confidentiality : highest,
+          "public" as "public" | "workspace" | "sealed",
+        );
+        return {
+          confidentiality,
+          integrity: labels.every((label) => label.integrity === "approved") ? "approved" as const : "untrusted" as const,
+        };
+      };
+      for (const resume of resumes) {
+        if (resume.schemaVersion !== SCHEMA_VERSION.resume || resume.adapterId !== "http" || !resume.taskId) continue;
+        const state = await inspectGovernedRun({ store: this.store, runId: resume.runId }).catch(() => null);
+        if (!state || state.checkpoint.phase !== "program") continue;
+        const checkpoint = state.checkpoint;
+        let task: Task;
+        try {
+          task = (await this.store.readTask(resume.taskId)).data;
+        } catch {
+          continue;
+        }
+        let governed;
+        try {
+          // "default" in the run identity is the no-profile sentinel unless a profile is literally named "default".
+          const recordedProfile = checkpoint.identities.provider.profile;
+          governed = await this.#governedExecuteSpawnOptions(task, current.config, {
+            profile: recordedProfile === "default" && !current.config.adapter.profiles?.[recordedProfile] ? undefined : recordedProfile,
+          });
+          if (!governed) continue;
+          const context = await governed.resolveCurrentContext({
+            runId: checkpoint.runId,
+            sourceFingerprint: checkpoint.identities.sourceFingerprint,
+            jailFingerprint: checkpoint.identities.jailFingerprint,
+            jailRoot: "",
+            allowedWrites: [...task.contract.filesAllowed],
+            filesForbidden: [...task.contract.filesForbidden],
+            artifactPaths: [...task.contract.expectedArtifacts],
+          });
+          if (stableHash(context.identities) !== stableHash(checkpoint.identities)) continue;
+          const controlLabel = context.plannerInput.label;
+          for (const call of checkpoint.providerCalls) {
+            if (call.state !== "awaiting-approval") continue;
+            const classification = summarize([controlLabel, call.label]);
+            actions.push({
+              runId: checkpoint.runId,
+              actionId: call.actionId,
+              actionKind: "provider",
+              valueDigest: call.valueDigest,
+              sinkId: call.sinkId,
+              requestDigest: call.requestDigest,
+              ...classification,
+              target: "configured provider",
+            });
+          }
+          for (const effect of checkpoint.effects) {
+            if (effect.state !== "awaiting-approval") continue;
+            const operation = checkpoint.program.operations.find((candidate) => candidate.id === effect.operationId);
+            let inputLabels: Array<{ confidentiality: "public" | "workspace" | "sealed"; integrity: "approved" | "untrusted" }> = [];
+            let unavailable = false;
+            if (effect.kind === "write" && operation?.kind === "write") {
+              const value = checkpoint.values.find((candidate) => candidate.id === operation.value);
+              if (value) inputLabels = [value.label];
+              else unavailable = true;
+            } else if (effect.kind === "external-call" && operation?.kind === "external-call") {
+              for (const input of operation.data) {
+                const value = checkpoint.values.find((candidate) => candidate.id === input.value);
+                if (!value) unavailable = true;
+                else inputLabels.push(value.label);
+              }
+            } else {
+              unavailable = true;
+            }
+            const classification = summarize([controlLabel, ...inputLabels], unavailable);
+            const grant = effect.kind === "external-call" && operation?.kind === "external-call"
+              ? current.assurance.manifest.security.externalCalls.find((candidate) => candidate.id === operation.grantId)
+              : undefined;
+            actions.push({
+              runId: checkpoint.runId,
+              actionId: effect.actionId,
+              actionKind: effect.kind === "write" ? "write" : "http-mcp",
+              valueDigest: effect.valueDigest,
+              sinkId: effect.sinkId,
+              requestDigest: effect.requestDigest,
+              ...classification,
+              target: effect.kind === "write" && operation?.kind === "write"
+                ? operation.path
+                : grant
+                  ? `${grant.id}/${grant.tool}`
+                  : "approved external call",
+            });
+          }
+        } catch {
+          continue;
+        }
+      }
+      return actions.sort((left, right) =>
+        left.runId.localeCompare(right.runId) || left.actionId.localeCompare(right.actionId),
+      );
+    });
+  }
+
+  /** Read-only governance epoch and trace inspection: never reconciles a head or writes any file. */
+  async inspectGovernance(): Promise<GovernanceInspection> {
+    const identity = await this.#governanceEpochIdentity(await loadAssurance(this.store));
+    let anchor: GovernanceEpochs | null;
+    try {
+      anchor = await readGovernanceEpochs(this.store);
+    } catch (error) {
+      if (!(error instanceof GovernanceEpochError)) throw error;
+      return { current: { ...identity, status: "invalid" }, epochs: [] };
+    }
+    if (!anchor) return { current: { ...identity, status: identity.adopted ? "invalid" : "not-adopted" }, epochs: [] };
+    const modelDigest = anchor.epochs.some((epoch) => epoch.adopted)
+      ? await this.#governanceModelDigest(await this.#readConfig())
+      : null;
+    const epochs: GovernanceInspection["epochs"] = [];
+    for (const epoch of anchor.epochs) {
+      const base = { sequence: epoch.sequence, approvalId: epoch.approvalId, adopted: epoch.adopted, recordedAt: epoch.recordedAt };
+      if (!epoch.adopted || !epoch.approvalId || !modelDigest) {
+        epochs.push({
+          ...base, status: epoch.adopted ? "invalid" : "not-adopted",
+          frames: 0, headDigest: null, lastAction: null, lastOutcome: null, violations: [],
+        });
+        continue;
+      }
+      const { trace, violations } = await inspectGovernanceTrace(this.store, epoch.approvalId, modelDigest);
+      const last = trace.frames.at(-1);
+      const blocked = trace.frames.some((frame) => frame.boundary === "end" && governanceOutcomeBlocks(frame.outcome));
+      epochs.push({
+        ...base,
+        status: trace.status === "valid" && blocked ? "invalid" : trace.status,
+        frames: trace.frames.length,
+        headDigest: trace.status === "not-adopted" ? null : trace.headDigest,
+        lastAction: last?.action ?? null,
+        lastOutcome: last?.outcome ?? null,
+        violations,
+      });
+    }
+    const latest = epochs.at(-1)!;
+    const interrupted = latest.approvalId !== identity.approvalId || latest.adopted !== identity.adopted;
+    return { current: { ...identity, status: interrupted ? "interrupted-epoch" : latest.status }, epochs };
   }
 
   async recordAcceptance(
     entries: AcceptanceEvidenceInput[],
     actor: Actor = { id: "user" },
   ): Promise<AcceptanceReceipt> {
-    return this.#mutate(async () => {
+    return this.#mutate(async () => this.#governanceMutation("acceptance-record", async () => {
       const context = await this.#requireCurrentPlanApproval();
       const productFingerprint = await workflowProductFingerprint(this.projectRoot, context.tasks);
       const evidence = await readWorkflowEvidence(this.store);
@@ -2090,6 +2760,14 @@ export class LegionEngine {
           evidence.environmentFingerprint !== workflowEnvironmentFingerprint() ||
           !await workflowReviewEvidenceFresh(this.projectRoot, evidence.review)) {
         refuse("complete, fresh workflow evidence is required before acceptance", "legion-cli execute");
+      }
+      if (context.assurance.manifest) {
+        const assuranceEvidence = await inspectAssuranceEvidence(this.store, context.assurance, context.spec.acceptance.map((criterion) => criterion.id), await this.#componentPolicyPosture(context.assurance, context.tasks));
+        const failed = assuranceEvidence.criteria.find((criterion) => criterion.status === "failed");
+        const unknown = assuranceEvidence.units.find((unit) => unit.status === "unknown");
+        if (failed || unknown || assuranceEvidence.checks.some((check) => check.result !== "passed") || assuranceEvidence.blocker !== ASSURANCE_TRACE_PREREQUISITE) {
+          refuse(unknown?.reason ?? (failed ? `component evidence failed: ${failed.acceptanceId}` : "current passed component evidence is required before acceptance"), "legion-cli execute");
+        }
       }
       const validIds = new Set(context.spec.acceptance.map((criterion) => criterion.id));
       for (const entry of entries) {
@@ -2122,6 +2800,47 @@ export class LegionEngine {
         entries: entries.map((entry) => ({ id: entry.id, status: entry.status })),
       });
       return receipt;
+    }));
+  }
+
+  async approveAction(options: GovernedActionApprovalOptions) {
+    const state = await inspectGovernedRun({ store: this.store, runId: options.runId });
+    if (!state) refuse(`governed run ${options.runId} was not found`, HINT.status);
+    const resumePath = join(this.projectRoot, ".legion-cli", "cache", "runs", options.runId, "resume.json");
+    let resume: ResumeFile;
+    try {
+      const parsed = ResumeFileSchema.safeParse(JSON.parse(await readFile(resumePath, "utf8")));
+      if (!parsed.success || parsed.data.schemaVersion !== SCHEMA_VERSION.resume ||
+          parsed.data.skillId !== "execute" || !parsed.data.taskId) {
+        refuse(`governed run ${options.runId} has no compatible execute identity`, HINT.status);
+      }
+      resume = parsed.data;
+    } catch (err) {
+      if (err instanceof LegionRefuseError) throw err;
+      refuse(`governed run ${options.runId} has no compatible execute identity`, HINT.status);
+    }
+    const task = (await this.store.readTask(resume.taskId!)).data;
+    const current = await this.#requireCurrentPlanApproval();
+    // "default" in the run identity is the no-profile sentinel unless a profile is literally named "default".
+    const recordedProfile = state.checkpoint.identities.provider.profile;
+    const governed = await this.#governedExecuteSpawnOptions(task, current.config, {
+      profile: recordedProfile === "default" && !current.config.adapter.profiles?.[recordedProfile] ? undefined : recordedProfile,
+    });
+    if (!governed) refuse("information-flow authority is no longer approved", "legion-cli plan approve");
+    const identity = state.checkpoint.identities;
+    return approveGovernedAction({
+      store: this.store,
+      withLock: (callback) => this.#withLockOrRefuse(callback, { ownRunId: options.runId }),
+      resolveCurrentContext: () => governed.resolveCurrentContext({
+        runId: options.runId,
+        sourceFingerprint: identity.sourceFingerprint,
+        jailFingerprint: identity.jailFingerprint,
+        jailRoot: "",
+        allowedWrites: [...task.contract.filesAllowed],
+        filesForbidden: [...task.contract.filesForbidden],
+        artifactPaths: [...task.contract.expectedArtifacts],
+      }),
+      ...options,
     });
   }
 
@@ -2145,7 +2864,7 @@ export class LegionEngine {
         if (config.control_mode === "advisory") {
           refuse("Execute is off in advisory mode", HINT.advisory);
         }
-        return acquireWorkflowClaim(this.store);
+        return this.#governanceMutation("claim-acquire", () => acquireWorkflowClaim(this.store));
       });
     } catch (err) {
       if (err instanceof LegionRefuseError) throw err;
@@ -2154,7 +2873,7 @@ export class LegionEngine {
     try {
       return await this.#executeWorkflowClaimed(opts);
     } finally {
-      await releaseWorkflowClaim(this.store, claim.token);
+      await this.#mutate(() => this.#governanceMutation("claim-release", () => releaseWorkflowClaim(this.store, claim.token)));
     }
   }
 
@@ -2168,6 +2887,7 @@ export class LegionEngine {
       .map((task) => task.id);
     const workflowTasks: ExecuteTaskResult[] = [];
     const workflowWarnings: string[] = [];
+    let assuranceStage: WorkflowExecutionResult["assurance"];
 
     const result = (
       status: WorkflowExecutionResult["status"],
@@ -2182,6 +2902,7 @@ export class LegionEngine {
       next,
       tasks: workflowTasks,
       warnings: workflowWarnings,
+      ...(assuranceStage ? { assurance: assuranceStage } : {}),
     });
     const save = async (
       status: WorkflowEvidenceReceipt["status"],
@@ -2189,8 +2910,9 @@ export class LegionEngine {
       integration: WorkflowEvidenceReceipt["integration"],
       review: WorkflowEvidenceReceipt["review"],
       boundProductFingerprint?: string,
+      action: GovernanceAction = "integration-complete",
     ): Promise<WorkflowEvidenceReceipt> => {
-      return this.#withLockOrRefuse(async () => {
+      return this.#withLockOrRefuse(() => this.#governanceMutation(action, async () => {
         context = await this.#requireCurrentPlanApproval();
         const currentProductFingerprint = await workflowProductFingerprint(this.projectRoot, context.tasks);
         productFingerprint = boundProductFingerprint ?? currentProductFingerprint;
@@ -2214,7 +2936,7 @@ export class LegionEngine {
         await writeWorkflowEvidence(this.store, receipt);
         evidence = receipt;
         return receipt;
-      });
+      }, { explicitRetry: action === "integration-start" && opts.retry === true }));
     };
 
     const evidenceFresh = evidence &&
@@ -2240,7 +2962,7 @@ export class LegionEngine {
       const blocked = context.tasks.find((task) => task.status === "blocked");
       if (blocked && !(first && opts.resume)) {
         const blocker = `task ${blocked.id} is blocked`;
-        await save("blocked", blocker, evidenceFresh ? evidence?.integration ?? [] : [], null);
+        await save("blocked", blocker, evidenceFresh ? evidence?.integration ?? [] : [], null, undefined, "task-block");
         return result("blocked", blocker, `legion-cli task amend ${blocked.id}`, blocked.id);
       }
       const open = context.tasks.filter((task) => task.status !== "done" && task.status !== "compacted");
@@ -2265,7 +2987,7 @@ export class LegionEngine {
         const blocker = err instanceof Error ? err.message : String(err);
         const next = err instanceof LegionRefuseError ? err.nextHint : "legion-cli plan approve";
         try {
-          await save("blocked", blocker, [], null);
+          await save("blocked", blocker, [], null, undefined, "task-block");
         } catch {
           // A spawned task can intentionally stale the approved plan; the caller still gets the blocker.
         }
@@ -2282,7 +3004,7 @@ export class LegionEngine {
           ? "inspect .git — execute touched protected repository metadata"
           : blockedTask?.reason ?? `task ${blockedTaskId} is blocked`;
         try {
-          await save("blocked", blocker, [], null);
+          await save("blocked", blocker, [], null, undefined, "task-block");
         } catch (err) {
           if (!(err instanceof LegionRefuseError)) throw err;
           return result("blocked", blocker, err.nextHint, blockedTaskId);
@@ -2290,7 +3012,7 @@ export class LegionEngine {
         return result("blocked", blocker, blockedTask?.incident ? "legion-cli status" : `legion-cli task amend ${blockedTaskId}`, blockedTaskId);
       }
       if (opts.step) {
-        await save("running", null, [], null);
+        await save("running", null, [], null, undefined, "task-complete");
         return result("step_complete", null, "legion-cli execute", executed.taskId);
       }
     }
@@ -2324,12 +3046,20 @@ export class LegionEngine {
         await save("blocked", blocker, integration, null, verificationBaseline);
         return result("blocked", blocker, "legion-cli execute", lastTaskId);
       }
-      const [run] = await runVerificationCommands(this.projectRoot, [command], {
+      await save("running", null, integration, null, beforeCheck, "integration-start");
+      const runResults = await runVerificationCommands(this.projectRoot, [command], {
         runId: `workflow-${Date.now()}-${index + 1}-${randomUUID().slice(0, 8)}`,
         secretEnvNames: configuredApiKeyEnvNames(context.config),
         sandbox: context.config.sandbox,
         allowNoSandbox: opts.allowNoSandbox,
+        ...(context.assurance.manifest?.security.mode === "information-flow" && context.assurance.approval
+          ? { informationFlow: buildVerificationInformationFlow(context.assurance.manifest, context.assurance.approval) }
+          : {}),
+      }).catch(async (error: unknown) => {
+        await save("blocked", "workflow verification command could not complete", integration, null, beforeCheck, "integration-complete");
+        throw error;
       });
+      const run = runResults[0];
       if (run) integration.push(run);
       const afterCheck = await workflowProductFingerprint(this.projectRoot, context.tasks);
       if (afterCheck !== verificationBaseline) {
@@ -2342,7 +3072,41 @@ export class LegionEngine {
         await save("blocked", failure, integration, null);
         return result("blocked", failure, "legion-cli execute --retry", lastTaskId);
       }
-      await save("running", null, integration, null, beforeCheck);
+      await save("running", null, integration, null, beforeCheck, "integration-complete");
+    }
+
+    if (context.assurance.manifest && context.assurance.approval) {
+      try {
+        const componentStage = await runAssuranceChecks({
+          store: this.store, plan: context.assurance.manifest, approval: context.assurance.approval,
+          productFingerprint: verificationBaseline, environmentFingerprint, retry: Boolean(opts.retry),
+          informationFlowPosture: await this.#componentPolicyPosture(context.assurance, context.tasks),
+          observeProduct: () => workflowProductFingerprint(this.projectRoot, context.tasks),
+          persist: (receipt, execution) => this.#withLockOrRefuse(() => this.#governanceMutation("task-verify", async () => {
+            const current = await this.#requireCurrentPlanApproval();
+            if (current.approval.approvalId !== receipt.approvalId) refuse("approval epoch changed during component evidence", "legion-cli plan approve");
+            if (receipt.result === "passed" && await workflowProductFingerprint(this.projectRoot, current.tasks) !== verificationBaseline) {
+              refuse("product inputs changed before component evidence persistence", "legion-cli execute");
+            }
+            await writeAssuranceCheck(this.store, receipt, execution);
+          }, { explicitRetry: opts.retry === true })),
+        });
+        assuranceStage = { checks: componentStage.decisions, traceStatus: componentStage.execution.traceStatus, policyStatus: componentStage.execution.policyStatus };
+        await this.#withLockOrRefuse(() => this.#governanceMutation("task-verify", async () => {
+          const current = await this.#requireCurrentPlanApproval();
+          if (current.approval.approvalId !== componentStage.execution.approvalId) refuse("approval epoch changed during component evidence", "legion-cli plan approve");
+          await this.store.writeYaml(ASSURANCE_EXECUTION_PATH, componentStage.execution);
+        }, { explicitRetry: opts.retry === true }));
+        if (componentStage.blocker) {
+          await save("blocked", componentStage.blocker, integration, null, verificationBaseline, "task-verify");
+          return result("blocked", componentStage.blocker, componentStage.raced ? "legion-cli execute" : "legion-cli execute --retry", lastTaskId);
+        }
+      } catch (error) {
+        if (context.assurance.approval) throw error;
+        const blocker = `component evidence blocked: ${error instanceof Error ? error.message : String(error)}`;
+        await save("blocked", blocker, integration, null, verificationBaseline, "task-verify");
+        return result("blocked", blocker, "legion-cli execute", lastTaskId);
+      }
     }
 
     let completionProductFingerprint = verificationBaseline;
@@ -2359,28 +3123,31 @@ export class LegionEngine {
           return result("blocked", blocker, "legion-cli execute", lastTaskId);
         }
         completionProductFingerprint = beforeReview;
-        const reviewed = await this.review({ adapter: opts.adapter, profile: opts.profile });
+        const reviewed = await this.#runReview({ adapter: opts.adapter, profile: opts.profile }, opts.retry === true);
         const afterReview = await workflowProductFingerprint(this.projectRoot, context.tasks);
         if (afterReview !== verificationBaseline) {
           const blocker = "independent review changed product inputs";
-          await save("blocked", blocker, integration, null, beforeReview);
+          await save("blocked", blocker, integration, null, beforeReview, "review-complete");
           return result("blocked", blocker, "legion-cli status", lastTaskId);
         }
         if (reviewed.verdict !== "PASS") {
           const blocker = "independent review failed and filed follow-up work";
           const failedReviewEvidence = reviewed.evidenceBody
-            ? await writeWorkflowReviewReport(this.store, reviewed.evidenceBody)
+            ? await this.#withLockOrRefuse(() => this.#governanceMutation("review-complete", () =>
+              writeWorkflowReviewReport(this.store, reviewed.evidenceBody!)))
             : null;
-          await save("blocked", blocker, integration, failedReviewEvidence, beforeReview);
+          await save("blocked", blocker, integration, failedReviewEvidence, beforeReview, "review-complete");
           return result("blocked", blocker, "legion-cli execute --retry", lastTaskId);
         }
         if (reviewed.explicitVerdict !== "PASS" || !reviewed.evidenceBody) {
           const blocker = `independent review requires a fresh explicit Verdict: PASS in ${WORKFLOW_REVIEW_PATH}`;
-          await save("blocked", blocker, integration, null);
+          await save("blocked", blocker, integration, null, undefined, "review-complete");
           return result("blocked", blocker, "legion-cli review", lastTaskId);
         }
-        reviewEvidence = await writeWorkflowReviewReport(this.store, reviewed.evidenceBody);
+        reviewEvidence = await this.#withLockOrRefuse(() => this.#governanceMutation("review-complete", () =>
+          writeWorkflowReviewReport(this.store, reviewed.evidenceBody!)));
       } catch (err) {
+        if (context.assurance.approval) throw err;
         const blocker = `independent review failed: ${err instanceof Error ? err.message : String(err)}`;
         try {
           await save("blocked", blocker, integration, null);
@@ -2391,7 +3158,11 @@ export class LegionEngine {
       }
     }
 
-    await save("complete", null, integration, reviewEvidence, completionProductFingerprint);
+    await save("complete", null, integration, reviewEvidence, completionProductFingerprint, "review-complete");
+    if (context.assurance.manifest) {
+      const currentProduct = await workflowProductFingerprint(this.projectRoot, context.tasks);
+      if (currentProduct !== completionProductFingerprint) return result("blocked", "product inputs changed at assurance completion", "legion-cli execute", lastTaskId);
+    }
     const status = await this.getWorkflowStatus();
     if (status.stage === "ship") return result("complete", null, "legion-cli ship", lastTaskId);
     return result("blocked", status.blocker, status.next, lastTaskId);
@@ -2434,7 +3205,7 @@ export class LegionEngine {
   }
 
   async amendTask(id: string, contract: FileContract, opts?: AmendTaskOptions): Promise<void> {
-    return this.#mutate(async () => {
+    return this.#mutate(async () => this.#governanceMutation("amend-inputs", async () => {
       const doc = await this.store.readTask(id);
       const nextBlockedBy = opts?.blockedBy ?? doc.data.blockedBy;
       const nextBlocks = opts?.blocks ?? doc.data.blocks;
@@ -2508,7 +3279,7 @@ export class LegionEngine {
         // missing config
       }
       await this.#promoteReadyTasks(doc.data.specId, state.phase, controlMode);
-    });
+    }));
   }
 
   async execute(taskId: string | "auto" = "auto", opts?: ExecuteOptions): Promise<ExecuteResult> {
@@ -2730,12 +3501,14 @@ export class LegionEngine {
         });
         progress(task.id, "starting");
       }
-      for (const task of tasks) await this.#transitionTaskTo(task.id, "in_progress");
-      await this.#writeState({
-        ...state,
-        phase: "executing",
-        currentTaskId: tasks[0]?.id ?? null,
-        activeTaskIds: tasks.map((task) => task.id),
+      await this.#governanceMutation("task-start", async () => {
+        for (const task of tasks) await this.#transitionTaskTo(task.id, "in_progress");
+        await this.#writeState({
+          ...state,
+          phase: "executing",
+          currentTaskId: tasks[0]?.id ?? null,
+          activeTaskIds: tasks.map((task) => task.id),
+        });
       });
 
       const attempts = await Promise.allSettled(
@@ -2752,6 +3525,10 @@ export class LegionEngine {
             "Write only the files listed in FileContract. Do not git add or git commit.",
             "Link tests to SPEC criteria with @ac(AC-ID), and copy AC.priority as @p0/@p1/@p2.",
           ].filter(Boolean).join("\n");
+          const governed = await this.#governedExecuteSpawnOptions(task, configured, {
+            adapter: opts.adapter,
+            profile: opts.profile,
+          });
           const started = await startSkillSpawn({
             ...this.#skillSpawnFields(),
             exitCode: this.#fakeExitCodeForTask?.(task.id) ?? this.#fakeExitCode,
@@ -2772,6 +3549,17 @@ export class LegionEngine {
             cliProfile: opts.profile,
             taskProfile: task.profile,
             allowNoSandbox: opts.allowNoSandbox,
+            ...(governed ? {
+              governed: {
+                ...governed,
+                // Batch siblings run concurrently by design; a child's governed lock entry must not refuse on their
+                // live markers. Children enter only after the setup lock releases, when every started member is known.
+                withLock: <T>(runId: string, callback: () => Promise<T>) => this.#withLockOrRefuse(callback, {
+                  ownRunId: runId,
+                  ownRunIds: startedMembers.map((member) => member.started.runId),
+                }),
+              },
+            } : {}),
           });
           if (!started.spawned || !started.sandbox) {
             if (started.spawned) await cleanupStartedSpawnResources(started);
@@ -2787,25 +3575,27 @@ export class LegionEngine {
         .filter((attempt): attempt is PromiseFulfilledResult<ParallelMember> => attempt.status === "fulfilled")
         .map((attempt) => attempt.value);
       if (interrupted) {
-        await persistInterruptedMembers(live, "parallel execution interrupted during batch startup");
         const liveTaskIds = new Set(live.map((member) => member.task.id));
         const unstarted = tasks.filter((task) => !liveTaskIds.has(task.id));
-        for (const task of unstarted) {
-          const recoveryCommand = `legion-cli task amend ${task.id} --unblock`;
-          await this.#transitionTaskTo(task.id, "blocked");
-          progress(task.id, "blocked");
-          await this.#audit("execute", "executing", "agent", {
-            status: "blocked",
-            reason: "parallel execution was interrupted before this child started",
-            recoveryCommand,
-          }, task.id);
-        }
         const activeTaskIds = live.map((member) => member.task.id);
-        await this.#writeState({
-          ...(await this.#readState()),
-          phase: "executing",
-          currentTaskId: activeTaskIds[0] ?? unstarted[0]?.id ?? null,
-          activeTaskIds,
+        await this.#governanceMutation("task-block", async () => {
+          await persistInterruptedMembers(live, "parallel execution interrupted during batch startup");
+          for (const task of unstarted) {
+            const recoveryCommand = `legion-cli task amend ${task.id} --unblock`;
+            await this.#transitionTaskTo(task.id, "blocked");
+            progress(task.id, "blocked");
+            await this.#audit("execute", "executing", "agent", {
+              status: "blocked",
+              reason: "parallel execution was interrupted before this child started",
+              recoveryCommand,
+            }, task.id);
+          }
+          await this.#writeState({
+            ...(await this.#readState()),
+            phase: "executing",
+            currentTaskId: activeTaskIds[0] ?? unstarted[0]?.id ?? null,
+            activeTaskIds,
+          });
         });
         const guidance = unstarted.map((task) => `legion-cli task amend ${task.id} --unblock`).join("; ");
         throw new Error(
@@ -2814,21 +3604,23 @@ export class LegionEngine {
       }
       const failed = attempts.find((attempt): attempt is PromiseRejectedResult => attempt.status === "rejected");
       if (failed) {
-        await persistInterruptedMembers(live, "parallel batch start failed");
         const startReason = failed.reason instanceof Error ? failed.reason.message : String(failed.reason);
-        for (const task of tasks) {
-          await this.#transitionTaskTo(task.id, "blocked");
-          progress(task.id, "blocked");
-          await this.#audit("execute", "executing", "agent", {
-            status: "blocked",
-            reason: `parallel batch start failed: ${startReason}`,
-          }, task.id);
-        }
-        await this.#writeState({
-          ...(await this.#readState()),
-          phase: "executing",
-          currentTaskId: tasks[0]?.id ?? null,
-          activeTaskIds: [],
+        await this.#governanceMutation("task-block", async () => {
+          await persistInterruptedMembers(live, "parallel batch start failed");
+          for (const task of tasks) {
+            await this.#transitionTaskTo(task.id, "blocked");
+            progress(task.id, "blocked");
+            await this.#audit("execute", "executing", "agent", {
+              status: "blocked",
+              reason: `parallel batch start failed: ${startReason}`,
+            }, task.id);
+          }
+          await this.#writeState({
+            ...(await this.#readState()),
+            phase: "executing",
+            currentTaskId: tasks[0]?.id ?? null,
+            activeTaskIds: [],
+          });
         });
         throw failed.reason;
       }
@@ -2933,62 +3725,71 @@ export class LegionEngine {
         else if (!reason && (incident || extras.length > 0)) reason = "integration refused because the jail produced invalid or unsafe output";
 
         if (!reason) {
-          try {
-            const applied = await applyPreparedSandboxSpawn(sealed);
-            extras = [...new Set([...extras, ...applied.dropped])].sort();
-            if (applied.conflicts.length > 0) {
-              reason = `integration conflict: ${applied.conflicts.join(", ")}`;
-            } else if (applied.dropped.length > 0) {
-              reason = `integration dropped unsafe output: ${applied.dropped.join(", ")}`;
-            }
-            sealed.revert.sandboxCopied = applied.copied;
-            sealed.revert.sandboxDropped = applied.dropped;
+          const applied = await this.#governanceMutation("integration-start", async () => {
+            const result = await applyPreparedSandboxSpawn(sealed, (paths) =>
+              this.#recordGovernedAppliedFiles(member.started.runId, paths),
+            );
             await this.#audit("sandbox_copyout", "executing", "agent", {
               backend: member.started.sandbox?.backend,
               hardened: member.started.sandbox?.hardened,
-              copied: applied.copied,
-              dropped: applied.dropped,
-              conflicts: applied.conflicts,
+              copied: result.copied,
+              dropped: result.dropped,
+              conflicts: result.conflicts,
             }, member.task.id);
-          } catch (err) {
-            reason = `integration failed: ${err instanceof Error ? err.message : String(err)}`;
+            return result;
+          }).catch(async (error: unknown) => {
             await discardPreparedSandboxSpawn(sealed);
+            throw error;
+          });
+          extras = [...new Set([...extras, ...applied.dropped])].sort();
+          if (applied.conflicts.length > 0) {
+            reason = `integration conflict: ${applied.conflicts.join(", ")}`;
+          } else if (applied.dropped.length > 0) {
+            reason = `integration dropped unsafe output: ${applied.dropped.join(", ")}`;
           }
+          sealed.revert.sandboxCopied = applied.copied;
+          sealed.revert.sandboxDropped = applied.dropped;
         } else {
           await discardPreparedSandboxSpawn(sealed);
         }
 
-        const filed = await this.#fileExtrasFromRun(member.started.runId, member.task.specId);
+        const filed = await this.#governanceMutation("integration-complete", () =>
+          this.#fileExtrasFromRun(member.started.runId, member.task.specId),
+        );
         if (filed.invalid) {
           reason ??= "integration refused invalid extra.json evidence";
           ticketId = filed.ticketIds[0];
         }
         if (extras.length > 0 && !ticketId) {
-          const filedScope = await this.#fileTicketLocked({
-            title: extras.length === 1 ? `FileContract extra: ${extras[0]}` : `FileContract extras: ${extras.join(", ")}`,
-            parentId: member.task.id,
-            fromAgent: true,
-            type: "bug",
-            notes: "type: scope. Parallel jail output was outside FileContract and was not applied.",
-          }, member.task.specId);
+          const filedScope = await this.#governanceMutation("integration-complete", () =>
+            this.#fileTicketLocked({
+              title: extras.length === 1 ? `FileContract extra: ${extras[0]}` : `FileContract extras: ${extras.join(", ")}`,
+              parentId: member.task.id,
+              fromAgent: true,
+              type: "bug",
+              notes: "type: scope. Parallel jail output was outside FileContract and was not applied.",
+            }, member.task.specId),
+          );
           ticketId = filedScope.task.id;
         }
         if (reason) {
           status = "blocked";
-          await this.#transitionTaskTo(member.task.id, "blocked");
-          await updateResumeStage(this.projectRoot, member.started.runId, "blocked", {
-            pid: null,
-            pidStartedAt: null,
-            engineOwnershipReleasedAt: new Date().toISOString(),
-            childTerminationUncertain: false,
-            interruptionReason: reason,
-            recoveryCommand: `legion-cli task amend ${member.task.id} --unblock`,
+          await this.#governanceMutation("task-block", async () => {
+            await this.#transitionTaskTo(member.task.id, "blocked");
+            await updateResumeStage(this.projectRoot, member.started.runId, "blocked", {
+              pid: null,
+              pidStartedAt: null,
+              engineOwnershipReleasedAt: new Date().toISOString(),
+              childTerminationUncertain: false,
+              interruptionReason: reason!,
+              recoveryCommand: `legion-cli task amend ${member.task.id} --unblock`,
+            });
+            await clearLiveSpawnMarker(this.projectRoot, member.started.runId);
+            await clearLiveRun(this.projectRoot, member.started.runId);
           });
-          await clearLiveSpawnMarker(this.projectRoot, member.started.runId);
-          await clearLiveRun(this.projectRoot, member.started.runId);
           progress(member.task.id, "blocked", member.started.runId);
         } else {
-          await this.#transitionTaskTo(member.task.id, "verifying");
+          await this.#governanceMutation("task-verify", () => this.#transitionTaskTo(member.task.id, "verifying"));
         }
         out.push({ member, waited: wait, prepared: sealed, status, extras, incident, headMoved, reason, ticketId });
       }
@@ -2996,6 +3797,15 @@ export class LegionEngine {
     }, { ownRunIds });
 
     const verification = new Map<string, { pass: boolean; reason?: string; trustTierNote?: string }>();
+    const verificationProvenance = new Map<string, {
+      approvalId: string;
+      outputs: Array<{
+        checkId: string;
+        commandFingerprint: string;
+        label: VerificationInformationFlow["label"];
+        inventory: { path: string; beforeDigest: string | null; afterDigest: string };
+      }>;
+    }>();
     for (const item of integrated) {
       if (item.status !== "verifying") continue;
       progress(item.member.task.id, "verifying", item.member.started.runId);
@@ -3006,12 +3816,66 @@ export class LegionEngine {
       try {
         if (this.#fakeOnVerify) await this.#fakeOnVerify();
         if (this.#fakeVerificationError) throw new Error(this.#fakeVerificationError);
-        const runs = await runVerificationCommands(this.projectRoot, item.member.task.contract.verificationCommands, {
-          timeoutMs: this.#verificationTimeoutMs,
-          runId: item.member.started.runId,
-          secretEnvNames: configuredApiKeyEnvNames(configured),
-          sandbox: configured.sandbox,
-        });
+        const loadedAssurance = await loadAssurance(this.store);
+        const current = loadedAssurance.manifest?.security.mode === "information-flow"
+          ? await this.#requireCurrentPlanApproval()
+          : undefined;
+        const assurancePlan = current?.assurance.manifest;
+        const assuranceApproval = current?.assurance.approval;
+        const flow = assurancePlan && assuranceApproval
+          ? buildVerificationInformationFlow(assurancePlan, assuranceApproval, item.member.task)
+          : undefined;
+        const runs: Awaited<ReturnType<typeof runVerificationCommands>> = [];
+        const outputs: Array<{
+          checkId: string;
+          commandFingerprint: string;
+          label: VerificationInformationFlow["label"];
+          inventory: { path: string; beforeDigest: string | null; afterDigest: string };
+        }> = [];
+        if (!flow) {
+          runs.push(...await runVerificationCommands(this.projectRoot, item.member.task.contract.verificationCommands, {
+            timeoutMs: this.#verificationTimeoutMs,
+            runId: item.member.started.runId,
+            secretEnvNames: configuredApiKeyEnvNames(configured),
+            sandbox: configured.sandbox,
+          }));
+        } else {
+          for (const [index, command] of item.member.task.contract.verificationCommands.entries()) {
+            const before = await snapshotVerificationProduct(this.projectRoot);
+            const commandRuns = await runVerificationCommands(this.projectRoot, [command], {
+              timeoutMs: this.#verificationTimeoutMs,
+              runId: `${item.member.started.runId}-verify-${index + 1}`,
+              secretEnvNames: configuredApiKeyEnvNames(configured),
+              sandbox: configured.sandbox,
+              informationFlow: flow,
+            });
+            runs.push(...commandRuns);
+            const after = await snapshotVerificationProduct(this.projectRoot);
+            const changes = changedVerificationOutputs(before, after, item.member.task.contract.expectedArtifacts);
+            const run = commandRuns[0];
+            if (changes.length > 0 && (!run?.informationFlow || !assuranceApproval)) {
+              throw new Error("verification outputs lack approved information-flow provenance");
+            }
+            if (run?.informationFlow && assuranceApproval) {
+              const commandFingerprint = stableHash({ taskId: item.member.task.id, index, command });
+              for (const inventory of changes) {
+                outputs.push({
+                  checkId: `verify-${commandFingerprint.slice(0, 32)}`,
+                  commandFingerprint,
+                  label: {
+                    confidentiality: run.informationFlow.confidentiality,
+                    integrity: run.informationFlow.integrity,
+                    origins: [...run.informationFlow.origins],
+                  },
+                  inventory,
+                });
+              }
+            }
+          }
+        }
+        if (outputs.length > 0 && assuranceApproval) {
+          verificationProvenance.set(item.member.task.id, { approvalId: assuranceApproval.approvalId, outputs });
+        }
         pass = runs.length > 0 && runs.every((run) => run.ok);
         reason = verificationFailureReason(runs);
         trustTierNote = runs.find((run) => run.trustTierNote)?.trustTierNote;
@@ -3026,74 +3890,108 @@ export class LegionEngine {
       for (const item of integrated) {
         const checked = verification.get(item.member.task.id);
         let status: ExecuteTaskResult["status"] = item.status === "blocked" ? "blocked" : checked?.pass ? "done" : "blocked";
-        const reason = item.reason ?? checked?.reason;
+        let reason = item.reason ?? checked?.reason;
         if (item.status === "verifying") {
-          await this.#transitionTaskTo(item.member.task.id, status);
-          await updateResumeStage(this.projectRoot, item.member.started.runId, status === "done" ? "completed" : "blocked", {
-            pid: null,
-            pidStartedAt: null,
-            engineOwnershipReleasedAt: new Date().toISOString(),
-            childTerminationUncertain: false,
-            ...(reason ? { interruptionReason: reason } : {}),
-            ...(status === "blocked" ? { recoveryCommand: `legion-cli task amend ${item.member.task.id} --unblock` } : {}),
-          });
-          await clearLiveSpawnMarker(this.projectRoot, item.member.started.runId);
-          await clearLiveRun(this.projectRoot, item.member.started.runId);
+          const provenance = verificationProvenance.get(item.member.task.id);
+          if (status === "done" && provenance) {
+            await this.#governanceMutation("task-verify", async () => {
+              try {
+                for (const output of provenance.outputs) {
+                  await recordOpaqueVerificationOutputProvenance({
+                    store: this.store,
+                    withLock: (callback) => this.#withLockOrRefuse(callback, { ownRunId: item.member.started.runId }),
+                    runId: item.member.started.runId,
+                    approvalId: provenance.approvalId,
+                    taskId: item.member.task.id,
+                    checkId: output.checkId,
+                    commandFingerprint: output.commandFingerprint,
+                    label: output.label,
+                    inventory: output.inventory,
+                  });
+                }
+              } catch (err) {
+                status = "blocked";
+                reason = `verification output provenance failed: ${err instanceof Error ? err.message : String(err)}`;
+              }
+            });
+          }
         }
-        progress(item.member.task.id, status, item.member.started.runId);
-        const result: ExecuteTaskResult = {
-          taskId: item.member.task.id,
-          status,
-          runId: item.member.started.runId,
-          extrasReverted: item.extras,
-          incident: item.incident,
-          headMoved: item.headMoved,
-          ...(item.ticketId ? { ticketId: item.ticketId } : {}),
-          ...(item.status === "verifying" ? { verificationPass: Boolean(checked?.pass) } : {}),
-          ...(reason ? { reason } : {}),
-          ...(checked?.trustTierNote ? { trustTierNote: checked.trustTierNote } : {}),
-          adapterId: item.member.started.resolution.id,
-          resolutionSource: item.member.started.resolution.source,
-          ...(item.member.started.resolution.profile ? { profile: item.member.started.resolution.profile } : {}),
-          ...(item.waited.usage ? { usage: item.waited.usage } : {}),
-          ...(item.waited.limitReason ? { limitReason: item.waited.limitReason } : {}),
-        };
-        await this.#audit("execute", "executing", "agent", {
-          durationMs: item.waited.durationMs,
-          timedOut: item.waited.timedOut,
-          status,
-          runId: item.member.started.runId,
-          adapterId: result.adapterId,
-          resolutionSource: result.resolutionSource,
-          profile: result.profile,
-          usage: result.usage,
-          limitReason: result.limitReason,
-          ...(reason ? { reason } : {}),
-        }, item.member.task.id);
-        if (item.waited.timedOut) {
-          await this.#audit("timeout", "executing", "agent", {
-            skillId: "execute",
+        await this.#governanceMutation(status === "done" ? "task-complete" : "task-block", async () => {
+          if (item.status === "verifying") {
+            await this.#transitionTaskTo(item.member.task.id, status);
+            await updateResumeStage(this.projectRoot, item.member.started.runId, status === "done" ? "completed" : "blocked", {
+              pid: null,
+              pidStartedAt: null,
+              engineOwnershipReleasedAt: new Date().toISOString(),
+              childTerminationUncertain: false,
+              ...(reason ? { interruptionReason: reason } : {}),
+              ...(status === "blocked" ? { recoveryCommand: `legion-cli task amend ${item.member.task.id} --unblock` } : {}),
+            });
+            await clearLiveSpawnMarker(this.projectRoot, item.member.started.runId);
+            await clearLiveRun(this.projectRoot, item.member.started.runId);
+          }
+          progress(item.member.task.id, status, item.member.started.runId);
+          const result: ExecuteTaskResult = {
+            taskId: item.member.task.id,
+            status,
+            runId: item.member.started.runId,
+            extrasReverted: item.extras,
+            incident: item.incident,
+            headMoved: item.headMoved,
+            ...(item.ticketId ? { ticketId: item.ticketId } : {}),
+            ...(item.status === "verifying" ? { verificationPass: Boolean(checked?.pass) && status === "done" } : {}),
+            ...(reason ? { reason } : {}),
+            ...(checked?.trustTierNote ? { trustTierNote: checked.trustTierNote } : {}),
+            adapterId: item.member.started.resolution.id,
+            resolutionSource: item.member.started.resolution.source,
+            ...(item.member.started.resolution.profile ? { profile: item.member.started.resolution.profile } : {}),
+            ...(item.waited.usage ? { usage: item.waited.usage } : {}),
+            ...(item.waited.limitReason ? { limitReason: item.waited.limitReason } : {}),
+          };
+          await this.#audit("execute", "executing", "agent", {
             durationMs: item.waited.durationMs,
+            timedOut: item.waited.timedOut,
+            status,
+            runId: item.member.started.runId,
             adapterId: result.adapterId,
             resolutionSource: result.resolutionSource,
+            profile: result.profile,
+            usage: result.usage,
+            limitReason: result.limitReason,
+            ...(reason ? { reason } : {}),
           }, item.member.task.id);
+          if (item.waited.timedOut) {
+            await this.#audit("timeout", "executing", "agent", {
+              skillId: "execute",
+              durationMs: item.waited.durationMs,
+              adapterId: result.adapterId,
+              resolutionSource: result.resolutionSource,
+            }, item.member.task.id);
+          }
+          results.push(result);
+        });
+      }
+      await this.#governanceMutation("task-complete", async () => {
+        for (const specId of new Set(setup.map((member) => member.task.specId))) {
+          await this.#promoteReadyTasks(specId, "executing", configured.control_mode);
         }
-        results.push(result);
-      }
-      for (const specId of new Set(setup.map((member) => member.task.specId))) {
-        await this.#promoteReadyTasks(specId, "executing", configured.control_mode);
-      }
-      const state = await this.#readState();
-      await this.#writeState({
-        ...state,
-        phase: "executing",
-        currentTaskId: results.find((result) => result.status === "blocked")?.taskId ?? results.at(-1)?.taskId ?? null,
-        activeTaskIds: [],
+      });
+      await this.#governanceMutation("integration-complete", async () => {
+        const state = await this.#readState();
+        await this.#writeState({
+          ...state,
+          phase: "executing",
+          currentTaskId: results.find((result) => result.status === "blocked")?.taskId ?? results.at(-1)?.taskId ?? null,
+          activeTaskIds: [],
+        });
       });
       return results;
     }, { ownRunIds });
     } finally {
       await Promise.all(setup.map((member) => cleanupStartedSpawnResources(member.started)));
+      // As in #relock: however the batch ended, its runs are over, so their markers must not make this
+      // engine's next lock entry refuse its own finished workers (a still-alive agent keeps its marker).
+      for (const member of setup) await this.#dropRunMarkerById(member.started.runId);
     }
   }
 
@@ -3119,6 +4017,10 @@ export class LegionEngine {
         }
       }
 
+      const assurance = await loadAssurance(this.store);
+      if (assurance.manifest?.security.mode === "information-flow") {
+        refuse("optional verify is unavailable under information-flow assurance because it cannot receive governed context", HINT.doctor);
+      }
       const config = await this.#readConfig();
       const before = await this.snapshotTaskIds();
       const result = await optionalSkillSpawn({
@@ -3205,6 +4107,12 @@ export class LegionEngine {
   }
 
   async review(opts?: { adapter?: AdapterId; profile?: string }): Promise<ReviewResult> {
+    // A direct review request is itself the operator's explicit request to (re)run independent review.
+    return this.#runReview(opts, true);
+  }
+
+  /** `explicitRetry`: whether this round was explicitly requested, recorded on the review-start boundary. */
+  async #runReview(opts: { adapter?: AdapterId; profile?: string } | undefined, explicitRetry: boolean): Promise<ReviewResult> {
     let specId: string | undefined;
     let config: LegionConfig | undefined;
     let before: string[] = [];
@@ -3224,35 +4132,49 @@ export class LegionEngine {
       before = await this.snapshotTaskIds();
       beforeFiles = await snapshotTaskFiles(this.store.paths.tasksDir);
       // A notes file left by an earlier round must not satisfy this round's evidence check.
-      await rm(join(this.projectRoot, REVIEW_NOTES_PATH), { force: true });
-      started = await startSkillSpawn({
-        ...this.#skillSpawnFields(),
-        config,
-        skillId: "review",
-        specId,
-        promptBody: [
-          "Spec-level review of a terminal slice.",
-          `Active spec: ${specId}`,
-          `Read .legion-cli/specs/${specId}/SPEC.md and .legion-cli/tasks/*.md.`,
-          "Write notes to .legion-cli/cache/runs/<id>/review.md (the engine keeps them at .legion-cli/qa/review.md).",
-          "Include exactly one explicit `Verdict: PASS` or `Verdict: FAIL` line in that report.",
-          "If the slice does not meet the spec, file tasks under .legion-cli/tasks/ (type: fix) or extra.json.",
-          "Creating any new task id or rewriting existing TSK-*.md FAILs this review.",
-          "PASS only if ids are unchanged and existing task files are byte-identical.",
-          "Do not git add or git commit. Do not write packets.",
-        ].join("\n"),
-        required: true,
-        cliAdapter: opts?.adapter,
-        cliProfile: opts?.profile,
-      });
+      await this.#governanceMutation("review-start", async () => {
+        await rm(join(this.projectRoot, REVIEW_NOTES_PATH), { force: true });
+        const governed = await this.#governedReviewSpawnOptions(config!, {
+          adapter: opts?.adapter,
+          profile: opts?.profile,
+        });
+        started = await startSkillSpawn({
+          ...this.#skillSpawnFields(),
+          config: config!,
+          skillId: "review",
+          specId: specId!,
+          promptBody: [
+            "Spec-level review of a terminal slice.",
+            `Active spec: ${specId}`,
+            `Read .legion-cli/specs/${specId}/SPEC.md and .legion-cli/tasks/*.md.`,
+            "Write notes to .legion-cli/cache/runs/<id>/review.md (the engine keeps them at .legion-cli/qa/review.md).",
+            "Include exactly one explicit `Verdict: PASS` or `Verdict: FAIL` line in that report.",
+            "If the slice does not meet the spec, file tasks under .legion-cli/tasks/ (type: fix) or extra.json.",
+            "Creating any new task id or rewriting existing TSK-*.md FAILs this review.",
+            "PASS only if ids are unchanged and existing task files are byte-identical.",
+            "Do not git add or git commit. Do not write packets.",
+          ].join("\n"),
+          required: true,
+          cliAdapter: opts?.adapter,
+          cliProfile: opts?.profile,
+          ...(governed ? { governed } : {}),
+        });
+        this.#reviewProjection = started.spawned ? "running" : "unavailable";
+      }, { explicitRetry });
     });
 
     const waited = started?.spawned ? await waitStartedSpawn(started) : { error: undefined, timedOut: false, durationMs: 0 };
 
     return this.#relock(started?.runId, async () => {
-      if (!specId || !config) {
+      const completedSpecId = specId;
+      const completedConfig = config;
+      if (!completedSpecId || !completedConfig) {
         refuse("review requires an active spec", HINT.spec);
       }
+      const reviewSpecId = completedSpecId;
+      const reviewConfig = completedConfig;
+      return this.#governanceMutation("review-complete", async () => {
+        try {
       const revert = started?.spawned ? await finishStartedSpawn(started) : null;
       const restoredTaskIds = (revert?.engineRestored ?? [])
         .filter((posix) => posix.startsWith(".legion-cli/tasks/") && posix.toLowerCase().endsWith(".md"))
@@ -3267,13 +4189,13 @@ export class LegionEngine {
           ].sort((a, b) => a.localeCompare(b))
         : [];
       const filedExtras = started?.runId
-        ? await this.#fileExtrasFromRun(started.runId, specId, { agentSourceless: true })
+        ? await this.#fileExtrasFromRun(started.runId, reviewSpecId, { agentSourceless: true })
         : undefined;
       const after = await this.snapshotTaskIds();
       const createdTaskIds = after.filter((id) => !before.includes(id));
       if (createdTaskIds.length > 0) {
         await this.#clampSpawnedTaskStatuses(createdTaskIds);
-        await this.#promoteReadyTasks(specId, "executing", config.control_mode);
+        await this.#promoteReadyTasks(reviewSpecId, "executing", reviewConfig.control_mode);
       }
       // PASS needs positive evidence: exit 0 and non-empty notes written this run. The notes live in
       // the run cache because the engine restores everything the agent writes under .legion-cli/qa/.
@@ -3333,6 +4255,7 @@ export class LegionEngine {
         after,
         rewrittenExistingTaskIds,
       );
+      this.#reviewProjection = verdict === "PASS" ? "passed" : "failed";
       return {
         verdict,
         createdTaskIds,
@@ -3347,6 +4270,11 @@ export class LegionEngine {
         } : {}),
         warnings: reviewWarnings,
       };
+        } catch (error) {
+          this.#reviewProjection = "failed";
+          throw error;
+        }
+      });
     });
   }
 
@@ -3615,14 +4543,45 @@ export class LegionEngine {
     if (opts.pr && !opts.prCreate && !ghAvailable()) {
       refuse("gh is required for --pr", HINT.shipPr);
     }
+    const initialAssurance = await loadAssurance(this.store);
+    if ((Boolean(initialAssurance.manifest && initialAssurance.approval) || Boolean(opts.bundleDirectory)) && !opts.confirm) {
+      refuse("delivery capture requires an explicit confirmation callback", HINT.ship);
+    }
 
-    const preview = await this.#mutate(async () => {
-      // Routine appends verify only the chain tail; the gate replays the whole log.
-      await healAuditChain(this.projectRoot);
-      const state = await this.#readState();
-      await this.#assertCurrentShipGate(state, opts);
-      return this.#stageShipLocked(state);
-    });
+    let stagedPreview: ShipPreview | undefined;
+    let governanceAdopted = false;
+    let deliveryId: string | null = null;
+    let preview: ShipPreview;
+    try {
+      preview = await this.#mutate(async () => this.#governanceMutation("ship-prepare", async () => {
+        await healAuditChain(this.projectRoot);
+        const state = await this.#readState();
+        const adopted = await loadAssurance(this.store);
+        governanceAdopted = Boolean(adopted.manifest && adopted.approval);
+        if ((governanceAdopted || opts.bundleDirectory) && !opts.confirm) {
+          refuse("delivery capture requires an explicit confirmation callback", HINT.ship);
+        }
+        await this.#assertCurrentShipGate(state, opts);
+        const staged = await this.#stageShipLocked(state, governanceAdopted || Boolean(opts.bundleDirectory));
+        stagedPreview = staged;
+        deliveryId = governanceAdopted || opts.bundleDirectory ? randomUUID() : null;
+        this.#shipProjection = {
+          confirmationId: opts.confirm ? (deliveryId ?? randomUUID()) : null,
+          previewFingerprint: stableHash({ productFingerprint: staged.productFingerprint, staged: staged.staged }),
+          confirmed: false,
+          status: "prepared",
+        };
+        return staged;
+      }));
+    } catch (error) {
+      if (stagedPreview && governanceAdopted) {
+        throw new AggregateError(
+          [error],
+          `Ship preparation failed after staging; shipping is refused and staged paths remain for operator recovery: ${stagedPreview.added.join(", ") || "(none)"}`,
+        );
+      }
+      throw error;
+    }
 
     if (opts.confirm) {
       let accepted = false;
@@ -3639,16 +4598,242 @@ export class LegionEngine {
     }
 
     return this.#mutate(async () => {
-      const state = await this.#readState();
-      if (
-        isGitRepo(this.projectRoot) &&
-        shipProductIndexFingerprint(this.projectRoot) !== preview.productFingerprint
-      ) {
-        refuse(SHIP_STAGED_CHANGED, HINT.ship);
+      const completion = await this.#governanceMutation(opts.confirm ? "ship-confirm" : "ship-complete", async () => {
+        // The confirmation is part of this boundary: its begin records the unconfirmed preview and its
+        // end the confirmed one. A refused gate restores the projection so the denial changes nothing.
+        if (opts.confirm && this.#shipProjection) this.#shipProjection = { ...this.#shipProjection, confirmed: true };
+        try {
+          const state = await this.#readState();
+          if (
+            isGitRepo(this.projectRoot) &&
+            shipProductIndexFingerprint(this.projectRoot) !== preview.productFingerprint
+          ) {
+            refuse(SHIP_STAGED_CHANGED, HINT.ship);
+          }
+          await this.#assertCurrentShipGate(state, opts);
+          return await this.#completeShipLocked(state, opts, preview, deliveryId);
+        } catch (error) {
+          if (this.#shipProjection) this.#shipProjection = { ...this.#shipProjection, confirmed: false };
+          throw error;
+        }
+      }).catch(async (error) => {
+        if (this.#shipProjection) this.#shipProjection = { ...this.#shipProjection, confirmed: false };
+        if (deliveryId) {
+          try {
+            const snapshot = await readDeliverySnapshot(this.store, deliveryId);
+            if (snapshot.state === "prepared") await abortDeliverySnapshot(
+              this.store,
+              deliveryId,
+              nowIso(),
+              "capture-failed",
+              tryGitHead(this.projectRoot),
+              { assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); } },
+            );
+          } catch {
+            // Preserve the original shipment failure.
+          }
+        }
+        throw error;
+      });
+      if (completion.snapshotId && completion.preparedDigest && !completion.rollback) {
+        const lock = { assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); } };
+        let completedTrace: GovernanceTrace = { schemaVersion: SCHEMA_VERSION.governanceTrace, status: "not-adopted", frames: [] };
+        let traceEndDigest: string | undefined;
+        let durableOutcome = false;
+        let snapshotCompleted = false;
+        try {
+          const adopted = await loadAssurance(this.store);
+          if (adopted.approval) {
+            const config = await this.#readConfig();
+            const modelDigest = await this.#governanceModelDigest(config);
+            await this.#governanceMutation("ship-complete", async () => undefined);
+            completedTrace = await readGovernanceTrace(this.store, adopted.approval.approvalId, modelDigest);
+            if (completedTrace.status !== "valid" || completedTrace.frames.at(-1)?.action !== "ship-complete" || completedTrace.frames.at(-1)?.outcome !== "success") {
+              throw new Error("adopted ship-complete trace is not successful");
+            }
+            if (completedTrace.headDigest === null) throw new Error("adopted ship-complete trace has no head digest");
+            traceEndDigest = completedTrace.headDigest;
+          }
+          const outcome: DeliveryOutcome = {
+            schemaVersion: SCHEMA_VERSION.deliveryOutcome,
+            confirmationId: completion.snapshotId,
+            preparedDigest: completion.preparedDigest,
+            confirmedSubjectDigest: (await readDeliverySnapshot(this.store, completion.snapshotId)).prepared.product.subjectDigest,
+            commit: completion.receipt.commitSha ? { status: "verified", oid: completion.receipt.commitSha } : { status: "not-requested" },
+            pullRequest: completion.receipt.prUrl
+              ? { status: "created", number: Number(completion.receipt.prUrl.match(/\/pull\/(\d+)/)?.[1] ?? "0") }
+              : { status: "not-requested" },
+            recordedAt: nowIso(),
+            ...(traceEndDigest ? { traceEndDigest } : {}),
+          };
+          await recordDeliveryOutcome(this.store, completion.snapshotId, outcome, lock);
+          durableOutcome = true;
+          await completeDeliverySnapshot(this.store, completion.snapshotId, outcome, completedTrace, lock);
+          snapshotCompleted = true;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          if (!durableOutcome) {
+            try { durableOutcome = (await readDeliveryOutcome(this.store, completion.snapshotId)) !== null; }
+            catch { /* A damaged outcome cannot authorize recovery. */ }
+          }
+          const recoveryHint = durableOutcome
+            ? opts.bundleDirectory
+              ? `legion-cli ship export --snapshot ${completion.snapshotId} --out ${opts.bundleDirectory}`
+              : `legion-cli ship export --snapshot ${completion.snapshotId} --out <new-directory>`
+            : "No durable matching delivery outcome is available; export is blocked. Do not rerun shipment.";
+          completion.receipt.deliverySnapshot = { status: "pending", error: reason, recoveryHint };
+          if (opts.bundleDirectory) completion.receipt.bundle = {
+            status: "failed",
+            path: opts.bundleDirectory,
+            reason,
+            recoveryHint,
+          };
+        }
+        if (snapshotCompleted && opts.bundleDirectory) {
+          try {
+            const exported = await exportDeliveryBundle(await readDeliverySnapshot(this.store, completion.snapshotId), opts.bundleDirectory);
+            completion.receipt.bundle = {
+              status: "exported",
+              path: opts.bundleDirectory,
+              manifestSha256: exported.manifestSha256,
+              snapshotDigest: exported.snapshotDigest,
+            };
+            try {
+              await recordDeliveryExportAttempt(this.store, {
+                schemaVersion: SCHEMA_VERSION.deliveryExport,
+                snapshotId: completion.snapshotId,
+                snapshotDigest: exported.snapshotDigest,
+                requestedOutput: opts.bundleDirectory,
+                attemptId: randomUUID(),
+                attemptedAt: nowIso(),
+                result: "exported",
+                reason: null,
+              }, lock);
+            } catch (error) {
+              completion.receipt.bundle.warning = `Bundle was published, but export-attempt journaling failed: ${error instanceof Error ? error.message : String(error)}`;
+            }
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            completion.receipt.bundle = {
+              status: "failed",
+              path: opts.bundleDirectory,
+              reason,
+              recoveryHint: `legion-cli ship export --snapshot ${completion.snapshotId} --out ${opts.bundleDirectory}.recovery`,
+            };
+            try {
+              const complete = await readDeliverySnapshot(this.store, completion.snapshotId);
+              await recordDeliveryExportAttempt(this.store, {
+                schemaVersion: SCHEMA_VERSION.deliveryExport,
+                snapshotId: completion.snapshotId,
+                snapshotDigest: complete.state === "complete" ? complete.sealedDigest : complete.preparedDigest,
+                requestedOutput: opts.bundleDirectory,
+                attemptId: randomUUID(),
+                attemptedAt: nowIso(),
+                result: "failed",
+                reason: reason.slice(0, 4096) || "Bundle export failed",
+              }, lock);
+            } catch {
+              // Shipment remains complete when optional export or its journal fails.
+            }
+          }
+        }
       }
-      await this.#assertCurrentShipGate(state, opts);
-      return this.#completeShipLocked(state, opts, preview);
+
+      if (completion.rollback) {
+        const rollback = completion.rollback;
+        if (completion.snapshotId) {
+          try {
+            await abortDeliverySnapshot(
+              this.store,
+              completion.snapshotId,
+              nowIso(),
+              "pr-failed",
+              rollback.keptRootCommit ? rollback.commitSha ?? null : null,
+              { assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); } },
+            );
+          } catch {
+            // A damaged snapshot record cannot replace the actual shipment result.
+          }
+        }
+        await this.#governanceMutation("ship-rollback", async () => {
+          if (rollback.priorHead && rollback.commitSha) gitResetMixed(this.projectRoot, rollback.priorHead);
+          let receiptKept: string | undefined;
+          if (!rollback.keptRootCommit) {
+            try {
+              await rm(toFsPath(this.projectRoot, rollback.receiptPath), { force: true });
+            } catch (err) {
+              receiptKept = err instanceof Error ? err.message : String(err);
+            }
+          }
+          await this.#writeState(rollback.state, "ship-rollback");
+          await this.#audit("ship_rolled_back", rollback.state.phase, rollback.actor, {
+            specId: rollback.specId,
+            receiptPath: rollback.receiptPath,
+            reason: rollback.reason,
+            ...(rollback.keptRootCommit ? { commitKept: rollback.commitSha } : {}),
+            ...(receiptKept ? { receiptKept } : {}),
+          });
+          if (this.#shipProjection) this.#shipProjection = { ...this.#shipProjection, confirmed: false, status: "aborted" };
+        });
+        refuse(`gh pr create failed: ${rollback.reason}`, HINT.shipPrRetry);
+      }
+      return completion.receipt;
     });
+  }
+
+  async exportDeliverySnapshot(snapshotId: string, directory: string): Promise<ShipExportResult> {
+    const attemptId = randomUUID();
+    let snapshot = await readDeliverySnapshot(this.store, snapshotId);
+    if (snapshot.state === "prepared") {
+      await this.#mutate(async () => {
+        const outcome = await readDeliveryOutcome(this.store, snapshotId);
+        if (!outcome) throw new Error("Delivery outcome is not durably recorded; shipment must not be rerun");
+        let completedTrace: GovernanceTrace = { schemaVersion: SCHEMA_VERSION.governanceTrace, status: "not-adopted", frames: [] };
+        if (snapshot.prepared.approvalId) {
+          const config = await this.#readConfig();
+          completedTrace = await readGovernanceTrace(this.store, snapshot.prepared.approvalId, await this.#governanceModelDigest(config));
+          if (completedTrace.status !== "valid" || completedTrace.frames.at(-1)?.action !== "ship-complete" || completedTrace.frames.at(-1)?.outcome !== "success") {
+            throw new Error("Adopted delivery lacks a successful ship-complete trace");
+          }
+        }
+        await completeDeliverySnapshot(this.store, snapshotId, outcome, completedTrace, {
+          assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); },
+        });
+      });
+      snapshot = await readDeliverySnapshot(this.store, snapshotId);
+    }
+    let exported: DeliveryBundleExport;
+    try {
+      exported = await exportDeliveryBundle(snapshot, directory);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      await this.#mutate(async () => {
+        await recordDeliveryExportAttempt(this.store, {
+          schemaVersion: SCHEMA_VERSION.deliveryExport,
+          snapshotId,
+          snapshotDigest: snapshot.state === "complete" ? snapshot.sealedDigest : snapshot.preparedDigest,
+          requestedOutput: directory,
+          attemptId,
+          attemptedAt: nowIso(),
+          result: "failed",
+          reason: reason.slice(0, 4096) || "Bundle export failed",
+        }, { assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); } });
+      });
+      throw error;
+    }
+    await this.#mutate(async () => {
+      await recordDeliveryExportAttempt(this.store, {
+        schemaVersion: SCHEMA_VERSION.deliveryExport,
+        snapshotId,
+        snapshotDigest: exported.snapshotDigest,
+        requestedOutput: directory,
+        attemptId,
+        attemptedAt: nowIso(),
+        result: "exported",
+        reason: null,
+      }, { assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); } });
+    });
+    return { snapshotId, directory, ...exported };
   }
 
   async beginIntent(): Promise<IntentState> {
@@ -3969,7 +5154,7 @@ export class LegionEngine {
     if (!reason) {
       refuse("abandon requires a message", HINT.abandon);
     }
-    return this.#mutate(async () => {
+    return this.#mutate(async () => this.#governanceMutation("abandon", async () => {
       const state = await this.#readState();
       assertCanTransition(state.phase, "abandoned");
       const specId = state.activeSpecId ?? "none";
@@ -3987,11 +5172,11 @@ export class LegionEngine {
         fromPhase: state.phase,
         receiptPath,
       });
-    });
+    }));
   }
 
   async undoLastTask(opts?: { taskId?: string }): Promise<UndoResult> {
-    return this.#mutate(async () => {
+    return this.#mutate(async () => this.#governanceMutation("undo", async () => {
       await this.#assertNoLiveInProgress("undo");
       const result = await runUndoLastTask({
         projectRoot: this.projectRoot,
@@ -4004,11 +5189,11 @@ export class LegionEngine {
         commitSha: result.commitSha,
       });
       return result;
-    });
+    }));
   }
 
   async unblockTask(taskId: string): Promise<Task> {
-    return this.#mutate(async () => {
+    return this.#mutate(async () => this.#governanceMutation("unblock", async () => {
       let doc: { data: Task; body: string };
       try {
         doc = await this.store.readTask(taskId);
@@ -4051,12 +5236,12 @@ export class LegionEngine {
       }
       await this.#audit("unblock", (await this.#readState()).phase, "user", { from: "blocked" }, taskId);
       return (await this.store.readTask(taskId)).data;
-    });
+    }));
   }
 
   async recoverTask(taskId: string): Promise<Task> {
     // Own liveness check below (names the task); the central guard would hide that message.
-    return this.#mutate(async () => {
+    return this.#mutate(async () => this.#governanceMutation("recover", async () => {
       let doc: { data: Task; body: string };
       try {
         doc = await this.store.readTask(taskId);
@@ -4087,7 +5272,7 @@ export class LegionEngine {
         taskId,
       );
       return (await this.store.readTask(taskId)).data;
-    }, { allowLive: true });
+    }), { allowLive: true });
   }
 
   async expandCurrentTask(_work: string): Promise<never> {
@@ -4270,6 +5455,14 @@ export class LegionEngine {
     let config: LegionConfig | undefined = opts.config;
     let started: StartedSkillSpawn | undefined;
     let dirtyWarning: string | undefined;
+    let governedApprovalId: string | undefined;
+    let verificationFlow: VerificationInformationFlow | undefined;
+    const verificationOutputs: Array<{
+      checkId: string;
+      commandFingerprint: string;
+      label: VerificationInformationFlow["label"];
+      inventory: { path: string; beforeDigest: string | null; afterDigest: string };
+    }> = [];
 
     await this.#startLock(() => started, async () => {
       const state = await this.#readState();
@@ -4298,6 +5491,7 @@ export class LegionEngine {
       } else {
         task = await this.#resolveExecuteTask(taskId, state, config);
       }
+      const taskForStart = task;
       opts.onProgress?.({ taskId: task.id, stage: "starting", elapsedMs: Date.now() - executeStartedAt });
       if (task.contract.filesAllowed.length === 0 || task.contract.verificationCommands.length === 0) {
         refuse("This task needs a file contract and verification commands", HINT.plan);
@@ -4321,13 +5515,14 @@ export class LegionEngine {
         assertCanTransition(state.phase, "executing");
       }
 
-      if (!opts.resumeRunId) await this.#transitionTaskTo(task.id, "in_progress");
-      await this.#writeState({
-        ...(await this.#readState()),
-        phase: "executing",
-        currentTaskId: task.id,
+      await this.#governanceMutation("task-start", async () => {
+        if (!opts.resumeRunId) await this.#transitionTaskTo(taskForStart.id, "in_progress");
+        await this.#writeState({
+          ...(await this.#readState()),
+          phase: "executing",
+          currentTaskId: taskForStart.id,
+        });
       });
-
       const extraAllowed = [...task.contract.filesAllowed, ...task.contract.expectedArtifacts];
       const promptBody = [
         `Task: ${task.id} ${task.title}`,
@@ -4341,6 +5536,14 @@ export class LegionEngine {
         .join("\n");
 
       try {
+        const governed = await this.#governedExecuteSpawnOptions(task, config, {
+          adapter: opts.adapter,
+          profile: opts.profile,
+        });
+        if (governed) {
+          governedApprovalId = governed.approval.approvalId;
+          verificationFlow = buildVerificationInformationFlow(governed.plan, governed.approval, task);
+        }
         const spawnOptions = {
           ...this.#skillSpawnFields(),
           config,
@@ -4357,19 +5560,20 @@ export class LegionEngine {
           cliProfile: opts.profile,
           taskProfile: task.profile,
           allowNoSandbox: opts.allowNoSandbox,
+          ...(governed ? { governed } : {}),
         };
         started = opts.resumeRunId
           ? await resumeHttpSkillSpawn({ ...spawnOptions, runId: opts.resumeRunId })
           : await startSkillSpawn(spawnOptions);
       } catch (err) {
-        if (!opts.resumeRunId) await this.#transitionTaskTo(task.id, "blocked");
+        if (!opts.resumeRunId) await this.#governanceMutation("task-block", () => this.#transitionTaskTo(taskForStart.id, "blocked"));
         if (err instanceof SandboxError) {
           refuse(err.message, HINT.allowNoSandbox);
         }
         throw err;
       }
       if (!started.spawned) {
-        await this.#transitionTaskTo(task.id, "blocked");
+        await this.#governanceMutation("task-block", () => this.#transitionTaskTo(taskForStart.id, "blocked"));
       } else {
         const dirty = [...started.revertCtx.dirtyAtStart].filter(
           (posix) => !posix.startsWith(".legion-cli/") && isAllowedPath(posix, extraAllowed),
@@ -4424,35 +5628,36 @@ export class LegionEngine {
           (waited.recovery === "resume" || waited.recovery === "manual"),
         );
         const resumableHttpInterruption = preservedHttpInterruption && waited.recovery === "resume";
-        if (preservedHttpInterruption && started?.spawned) {
-          await preserveStartedHttpSpawnForRecovery(
-            started,
+        let revert = null;
+        const integrationSpawn = started;
+        if (preservedHttpInterruption && integrationSpawn?.spawned) {
+          const interruptedSpawn = integrationSpawn;
+          await this.#governanceMutation("integration-complete", () => preserveStartedHttpSpawnForRecovery(
+            interruptedSpawn,
             waited.error instanceof Error ? waited.error.message : String(waited.error),
             waited.recovery === "resume"
-              ? `legion-cli execute --resume ${started.runId}`
+              ? `legion-cli execute --resume ${interruptedSpawn.runId}`
               : `legion-cli task amend ${lockedTask.id} --unblock`,
-          );
+          ));
+        } else if (integrationSpawn?.spawned) {
+          const completedSpawn = integrationSpawn;
+          revert = await this.#governanceMutation("integration-complete", async () => {
+            const applied = await finishStartedSpawn(completedSpawn, { keepMarker: true });
+            if (applied.sandboxCopied?.length) await this.#recordGovernedAppliedFiles(completedSpawn.runId, applied.sandboxCopied);
+            if (completedSpawn.sandbox) {
+              await this.#audit("sandbox_copyout", "executing", "agent", {
+                backend: completedSpawn.sandbox.backend,
+                hardened: completedSpawn.sandbox.hardened,
+                copied: applied.sandboxCopied ?? [],
+                dropped: applied.sandboxDropped ?? [],
+              }, lockedTask.id);
+            }
+            return applied;
+          });
         }
-        const revert = started?.spawned && !preservedHttpInterruption
-          ? await finishStartedSpawn(started, { keepMarker: true })
-          : null;
         const extras = revert?.extrasReverted ?? [];
         const incident = Boolean(revert?.incident);
         const headMoved = Boolean(revert?.headMoved);
-        if (started?.spawned && started.sandbox && revert) {
-          await this.#audit(
-            "sandbox_copyout",
-            "executing",
-            "agent",
-            {
-              backend: started.sandbox.backend,
-              hardened: started.sandbox.hardened,
-              copied: revert.sandboxCopied ?? [],
-              dropped: revert.sandboxDropped ?? [],
-            },
-            lockedTask.id,
-          );
-        }
         const runId = started?.runId ?? "";
         const durationMs = waited.durationMs;
         const timedOut = Boolean(waited.timedOut);
@@ -4516,14 +5721,16 @@ export class LegionEngine {
         let extraJsonTicketIds: string[] = [];
         const filedTickets: FiledTicketSummary[] = [];
         if (runId) {
-          const filed = await this.#fileExtrasFromRun(runId, lockedTask.specId, {
-            inheritFrom: {
-              id: lockedTask.id,
-              label: "running task",
-              filesAllowed: lockedTask.contract.filesAllowed,
-              verificationCommands: lockedTask.contract.verificationCommands,
-            },
-          });
+          const filed = await this.#governanceMutation("integration-complete", () =>
+            this.#fileExtrasFromRun(runId, lockedTask.specId, {
+              inheritFrom: {
+                id: lockedTask.id,
+                label: "running task",
+                filesAllowed: lockedTask.contract.filesAllowed,
+                verificationCommands: lockedTask.contract.verificationCommands,
+              },
+            }),
+          );
           extraJsonInvalid = filed.invalid;
           extraJsonTicketIds = filed.ticketIds;
           filedTickets.push(...filed.tickets);
@@ -4531,94 +5738,98 @@ export class LegionEngine {
         if (incident || extras.length > 0 || extraJsonInvalid) {
           let ticketId: string | undefined;
           if (extras.length > 0) {
-            const { task: ticket, verificationSource } = await this.#fileTicketLocked(
-              {
+            const filed = await this.#governanceMutation("integration-complete", () =>
+              this.#fileTicketLocked({
                 inheritFrom: {
                   id: lockedTask.id,
                   label: "running task",
                   filesAllowed: lockedTask.contract.filesAllowed,
                   verificationCommands: lockedTask.contract.verificationCommands,
                 },
-                title:
-                  extras.length === 1
-                    ? `FileContract extra: ${extras[0]}`
-                    : `FileContract extras: ${extras.join(", ")}`,
+                title: extras.length === 1
+                  ? `FileContract extra: ${extras[0]}`
+                  : `FileContract extras: ${extras.join(", ")}`,
                 parentId: lockedTask.id,
                 fromAgent: true,
                 type: "bug",
                 notes: "type: scope. Spawn wrote paths outside FileContract; extras were reverted.",
-              },
-              lockedTask.specId,
+              }, lockedTask.specId),
             );
-            ticketId = ticket.id;
+            ticketId = filed.task.id;
             filedTickets.push({
-              id: ticket.id,
-              verificationCommands: ticket.contract.verificationCommands,
-              filesAllowed: ticket.contract.filesAllowed,
-              verificationSource,
+              id: filed.task.id,
+              verificationCommands: filed.task.contract.verificationCommands,
+              filesAllowed: filed.task.contract.filesAllowed,
+              verificationSource: filed.verificationSource,
             });
           }
           ticketId ??= extraJsonTicketIds[0];
-          await this.#transitionTaskTo(lockedTask.id, "blocked");
-          await this.#writeState({
-            ...(await this.#readState()),
-            phase: "executing",
-            currentTaskId: lockedTask.id,
-          });
-          if (runId) {
-            await updateResumeStage(this.projectRoot, runId, "blocked", {
-              pid: null,
-              pidStartedAt: null,
-              engineOwnershipReleasedAt: new Date().toISOString(),
-              childTerminationUncertain: false,
-              interruptionReason: incident ? "sandbox incident" : "file contract violation",
-              recoveryCommand: `legion-cli task amend ${lockedTask.id} --unblock`,
+          return await this.#governanceMutation("task-block", async () => {
+            await this.#transitionTaskTo(lockedTask.id, "blocked");
+            await this.#writeState({
+              ...(await this.#readState()),
+              phase: "executing",
+              currentTaskId: lockedTask.id,
             });
-          }
-          return {
-            kind: "done" as const,
-            result: await finish({
-              taskId: lockedTask.id,
-              status: "blocked",
-              runId,
-              extrasReverted: extras,
-              incident,
-              headMoved,
-              ticketId,
-              filedTickets,
-            }),
-          };
+            if (runId) {
+              await updateResumeStage(this.projectRoot, runId, "blocked", {
+                pid: null,
+                pidStartedAt: null,
+                engineOwnershipReleasedAt: new Date().toISOString(),
+                childTerminationUncertain: false,
+                interruptionReason: incident ? "sandbox incident" : "file contract violation",
+                recoveryCommand: `legion-cli task amend ${lockedTask.id} --unblock`,
+              });
+            }
+            return {
+              kind: "done" as const,
+              result: await finish({
+                taskId: lockedTask.id,
+                status: "blocked",
+                runId,
+                extrasReverted: extras,
+                incident,
+                headMoved,
+                ticketId,
+                filedTickets,
+              }),
+            };
+          });
         }
 
         if (waited.error || !started?.spawned) {
           const spawnReason = waited.error instanceof Error ? waited.error.message : "agent did not start";
-          if (!resumableHttpInterruption) await this.#transitionTaskTo(lockedTask.id, "blocked");
-          if (runId && !resumableHttpInterruption) {
-            await updateResumeStage(this.projectRoot, runId, preservedHttpInterruption ? "interrupted" : "blocked", {
-              pid: null,
-              pidStartedAt: null,
-              engineOwnershipReleasedAt: new Date().toISOString(),
-              childTerminationUncertain: false,
-              interruptionReason: spawnReason,
-              recoveryCommand: `legion-cli task amend ${lockedTask.id} --unblock`,
-            });
-          }
-          return {
-            kind: "done" as const,
-            result: await finish({
-              taskId: lockedTask.id,
-              status: "blocked",
-              runId,
-              extrasReverted: extras,
-              incident,
-              headMoved,
-              reason: spawnReason,
-            }),
-          };
+          return await this.#governanceMutation("task-block", async () => {
+            if (!resumableHttpInterruption) await this.#transitionTaskTo(lockedTask.id, "blocked");
+            if (runId && !resumableHttpInterruption) {
+              await updateResumeStage(this.projectRoot, runId, preservedHttpInterruption ? "interrupted" : "blocked", {
+                pid: null,
+                pidStartedAt: null,
+                engineOwnershipReleasedAt: new Date().toISOString(),
+                childTerminationUncertain: false,
+                interruptionReason: spawnReason,
+                recoveryCommand: `legion-cli task amend ${lockedTask.id} --unblock`,
+              });
+            }
+            return {
+              kind: "done" as const,
+              result: await finish({
+                taskId: lockedTask.id,
+                status: "blocked",
+                runId,
+                extrasReverted: extras,
+                incident,
+                headMoved,
+                reason: spawnReason,
+              }),
+            };
+          });
         }
 
-        await this.#transitionTaskTo(lockedTask.id, "verifying");
-        await updateResumeStage(this.projectRoot, runId, "verifying");
+        await this.#governanceMutation("task-verify", async () => {
+          await this.#transitionTaskTo(lockedTask.id, "verifying");
+          await updateResumeStage(this.projectRoot, runId, "verifying");
+        });
         return {
           kind: "verify" as const,
           runId,
@@ -4652,16 +5863,48 @@ export class LegionEngine {
       try {
         if (this.#fakeOnVerify) await this.#fakeOnVerify();
         if (this.#fakeVerificationError) throw new Error(this.#fakeVerificationError);
-        const verification = await runVerificationCommands(
-          this.projectRoot,
-          lockedTask.contract.verificationCommands,
-          {
+        let verification: Awaited<ReturnType<typeof runVerificationCommands>>;
+        if (verificationFlow) {
+          verification = [];
+          for (const [index, command] of lockedTask.contract.verificationCommands.entries()) {
+            const before = await snapshotVerificationProduct(this.projectRoot);
+            const [run] = await runVerificationCommands(this.projectRoot, [command], {
+              timeoutMs: this.#verificationTimeoutMs,
+              runId: `${post.runId}-verify-${index + 1}`,
+              secretEnvNames: configuredApiKeyEnvNames(lockedConfig),
+              sandbox: lockedConfig.sandbox,
+              informationFlow: verificationFlow,
+            });
+            if (run) verification.push(run);
+            const after = await snapshotVerificationProduct(this.projectRoot);
+            const changes = changedVerificationOutputs(before, after, lockedTask.contract.expectedArtifacts);
+            if (changes.length > 0 && (!run?.informationFlow || !governedApprovalId)) {
+              throw new Error("verification outputs lack approved information-flow provenance");
+            }
+            if (run?.informationFlow && governedApprovalId) {
+              const commandFingerprint = stableHash({ taskId: lockedTask.id, index, command });
+              for (const inventory of changes) {
+                verificationOutputs.push({
+                  checkId: `verify-${commandFingerprint.slice(0, 32)}`,
+                  commandFingerprint,
+                  label: {
+                    confidentiality: run.informationFlow.confidentiality,
+                    integrity: run.informationFlow.integrity,
+                    origins: [...run.informationFlow.origins],
+                  },
+                  inventory,
+                });
+              }
+            }
+          }
+        } else {
+          verification = await runVerificationCommands(this.projectRoot, lockedTask.contract.verificationCommands, {
             timeoutMs: this.#verificationTimeoutMs,
             runId: post.runId,
             secretEnvNames: configuredApiKeyEnvNames(lockedConfig),
             sandbox: lockedConfig.sandbox,
-          },
-        );
+          });
+        }
         verificationPass = verification.length > 0 && verification.every((run) => run.ok);
         verificationLogs = verification.flatMap((run) => (run.logPath ? [run.logPath] : []));
         reason = verificationFailureReason(verification);
@@ -4672,27 +5915,38 @@ export class LegionEngine {
       }
 
       const result = await this.#relock(started?.runId, async () => {
-        try {
+        if (verificationOutputs.length > 0) {
+          await this.#governanceMutation("task-verify", async () => {
+            try {
+              if (!governedApprovalId || !verificationFlow) throw new Error("verification authority is unavailable");
+              for (const output of verificationOutputs) {
+                await recordOpaqueVerificationOutputProvenance({
+                  store: this.store,
+                  withLock: (callback) => this.#withLockOrRefuse(callback, { ownRunId: post.runId }),
+                  runId: post.runId,
+                  approvalId: governedApprovalId,
+                  taskId: lockedTask.id,
+                  checkId: output.checkId,
+                  commandFingerprint: output.commandFingerprint,
+                  label: output.label,
+                  inventory: output.inventory,
+                });
+              }
+            } catch (err) {
+              verificationPass = false;
+              reason = `verification output provenance failed: ${describe(err)}`;
+            }
+          });
+        }
+
+        const action = verificationPass ? "task-complete" : "task-block";
+        return this.#governanceMutation(action, async () => {
           if (verificationPass) {
             await this.#transitionTaskTo(lockedTask.id, "done");
             await this.#promoteReadyTasks(lockedTask.specId, "executing", lockedConfig.control_mode);
           } else {
             await this.#transitionTaskTo(lockedTask.id, "blocked");
           }
-        } catch (err) {
-          reason = `${reason ? `${reason}; ` : ""}after verification: ${describe(err)}`;
-          try {
-            const status = (await this.store.readTask(lockedTask.id)).data.status;
-            verificationPass = status === "done";
-            if (status === "verifying") await this.#transitionTaskTo(lockedTask.id, "blocked");
-          } catch (inner) {
-            // Left for #recoverDeadInProgressLocked on the next verb; say so.
-            verificationPass = false;
-            reason = `${reason}; could not move ${lockedTask.id} out of verifying: ${describe(inner)}`;
-          }
-        }
-
-        try {
           const state = await this.#readState();
           const currentTaskId =
             state.currentTaskId && state.currentTaskId !== lockedTask.id ? state.currentTaskId : lockedTask.id;
@@ -4701,70 +5955,67 @@ export class LegionEngine {
             phase: "executing",
             currentTaskId,
           });
-        } catch (err) {
-          reason = `${reason ? `${reason}; ` : ""}STATE.md not updated: ${describe(err)}`;
-        }
-
-        const current = await this.#readState();
-        await updateResumeStage(this.projectRoot, post.runId, verificationPass ? "completed" : "blocked", {
-          pid: null,
-          pidStartedAt: null,
-          engineOwnershipReleasedAt: new Date().toISOString(),
-          childTerminationUncertain: false,
-          logs: {
-            stdout: `.legion-cli/cache/runs/${post.runId}/stdout.log`,
-            stderr: `.legion-cli/cache/runs/${post.runId}/stderr.log`,
-            ...(verificationLogs.length > 0 ? { verification: verificationLogs } : {}),
-          },
-          ...(verificationPass
-            ? {}
-            : {
-                interruptionReason: reason ?? "verification failed",
-                recoveryCommand: `legion-cli task amend ${lockedTask.id} --unblock`,
-              }),
-        });
-        await this.#audit(
-          "execute",
-          current.phase,
-          "agent",
-          {
-            durationMs: post.durationMs,
-            timedOut: post.timedOut,
-            status: verificationPass ? "done" : "blocked",
-            runId: post.runId,
-            ...post.spawnAudit,
-            ...(reason ? { reason } : {}),
-            ...(trustTierNote ? { trustTierNote } : {}),
-          },
-          lockedTask.id,
-        );
-        if (post.timedOut) {
+          const current = await this.#readState();
+          await updateResumeStage(this.projectRoot, post.runId, verificationPass ? "completed" : "blocked", {
+            pid: null,
+            pidStartedAt: null,
+            engineOwnershipReleasedAt: new Date().toISOString(),
+            childTerminationUncertain: false,
+            logs: {
+              stdout: `.legion-cli/cache/runs/${post.runId}/stdout.log`,
+              stderr: `.legion-cli/cache/runs/${post.runId}/stderr.log`,
+              ...(verificationLogs.length > 0 ? { verification: verificationLogs } : {}),
+            },
+            ...(verificationPass
+              ? {}
+              : {
+                  interruptionReason: reason ?? "verification failed",
+                  recoveryCommand: `legion-cli task amend ${lockedTask.id} --unblock`,
+                }),
+          });
           await this.#audit(
-            "timeout",
+            "execute",
             current.phase,
             "agent",
-            { skillId: "execute", durationMs: post.durationMs, ...post.spawnAudit },
+            {
+              durationMs: post.durationMs,
+              timedOut: post.timedOut,
+              status: verificationPass ? "done" : "blocked",
+              runId: post.runId,
+              ...post.spawnAudit,
+              ...(reason ? { reason } : {}),
+              ...(trustTierNote ? { trustTierNote } : {}),
+            },
             lockedTask.id,
           );
-        }
-        return {
-          taskId: lockedTask.id,
-          status: (verificationPass ? "done" : "blocked") as ExecuteTaskResult["status"],
-          runId: post.runId,
-          extrasReverted: post.extras,
-          incident: post.incident,
-          headMoved: post.headMoved,
-          verificationPass,
-          adapterId: post.adapterId,
-          resolutionSource: post.resolutionSource,
-          ...(post.profile ? { profile: post.profile } : {}),
-          ...(post.usage ? { usage: post.usage } : {}),
-          ...(post.limitReason ? { limitReason: post.limitReason } : {}),
-          ...(post.agentExitWarning ? { agentExitWarning: post.agentExitWarning } : {}),
-          ...(post.filedTickets.length > 0 ? { filedTickets: post.filedTickets } : {}),
-          ...(reason ? { reason } : {}),
-          ...(trustTierNote ? { trustTierNote } : {}),
-        };
+          if (post.timedOut) {
+            await this.#audit(
+              "timeout",
+              current.phase,
+              "agent",
+              { skillId: "execute", durationMs: post.durationMs, ...post.spawnAudit },
+              lockedTask.id,
+            );
+          }
+          return {
+            taskId: lockedTask.id,
+            status: (verificationPass ? "done" : "blocked") as ExecuteTaskResult["status"],
+            runId: post.runId,
+            extrasReverted: post.extras,
+            incident: post.incident,
+            headMoved: post.headMoved,
+            verificationPass,
+            adapterId: post.adapterId,
+            resolutionSource: post.resolutionSource,
+            ...(post.profile ? { profile: post.profile } : {}),
+            ...(post.usage ? { usage: post.usage } : {}),
+            ...(post.limitReason ? { limitReason: post.limitReason } : {}),
+            ...(post.agentExitWarning ? { agentExitWarning: post.agentExitWarning } : {}),
+            ...(post.filedTickets.length > 0 ? { filedTickets: post.filedTickets } : {}),
+            ...(reason ? { reason } : {}),
+            ...(trustTierNote ? { trustTierNote } : {}),
+          };
+        });
       });
       emitProgress(result.status, result.runId);
       return { result: dirtyWarning ? { ...result, dirtyWarning } : result, config: lockedConfig };
@@ -4856,7 +6107,12 @@ export class LegionEngine {
       cliProfile: opts?.cliProfile,
       taskProfile: opts?.taskProfile,
     });
-    if (!(await isResolvedAdapterSpawnable(config, resolution.id))) {
+    const assurance = skillId === "execute" && resolution.id === "http" ? await loadAssurance(this.store) : null;
+    const governedHttp = Boolean(
+      assurance?.approval &&
+      assurance.manifest?.security.mode === "information-flow",
+    );
+    if (!governedHttp && !(await isResolvedAdapterSpawnable(config, resolution.id))) {
       refuse(spawnableAdapterRefuseMessage(skillId, resolution), HINT.doctor);
     }
     const skillsDir = this.#skillsDir ?? findSkillsDir();
@@ -5822,11 +7078,12 @@ export class LegionEngine {
     }
   }
 
-  async #workflowPlanContext(configOverride?: LegionConfig): Promise<{
+  async #workflowPlanContext(configOverride?: LegionConfig, assuranceOverride?: AssurancePlan | null): Promise<{
     snapshot: WorkflowPlanSnapshot;
     spec: Spec;
     tasks: Task[];
     config: LegionConfig;
+    assurance: AssuranceState;
   }> {
     const state = await this.#readState();
     const specId = state.activeSpecId;
@@ -5839,6 +7096,9 @@ export class LegionEngine {
     const config = configOverride ?? await this.#readConfig();
     const project = (await this.store.readProject()).data;
     const planBody = await readPlanBody(this.projectRoot, specId);
+    const assurance = assuranceOverride === undefined
+      ? await loadAssurance(this.store)
+      : { manifest: assuranceOverride, approval: null, ...(assuranceOverride ? { fingerprint: assuranceManifestDigest(assuranceOverride) } : {}) };
     const snapshot = createWorkflowPlanSnapshot({
       spec: specDoc,
       tasks: taskDocs,
@@ -5846,8 +7106,9 @@ export class LegionEngine {
       config,
       project,
       discoveryContext: await readWorkflowDiscoveryContext(this.projectRoot),
+      ...(assurance.fingerprint !== undefined ? { assuranceFingerprint: assurance.fingerprint } : {}),
     });
-    return { snapshot, spec: specDoc.data, tasks, config };
+    return { snapshot, spec: specDoc.data, tasks, config, assurance };
   }
 
   async #requireCurrentPlanApproval(): Promise<{
@@ -5856,14 +7117,354 @@ export class LegionEngine {
     spec: Spec;
     tasks: Task[];
     config: LegionConfig;
+    assurance: AssuranceState;
   }> {
     const approval = await readPlanApproval(this.store);
     if (!approval) refuse("plan approval is required before execute", "legion-cli plan approve");
     const context = await this.#workflowPlanContext();
+    const assurance = bindAssuranceApproval(context.assurance, approval, context.snapshot.planFingerprint);
+    if (assurance?.status === "invalid") refuse(assurance.blocker ?? "assurance approval is invalid", "legion-cli plan approve");
+    if (context.assurance.manifest) {
+      await validateAssuranceContext(context.assurance.manifest, { ...context, projectRoot: this.projectRoot });
+    }
     if (approval.specId !== context.snapshot.specId || approval.planFingerprint !== context.snapshot.planFingerprint) {
       refuse("plan approval is stale; review and approve the current plan", "legion-cli plan approve");
     }
     return { approval, ...context };
+  }
+  async #governanceDeliveryTraceStatus(
+    config: LegionConfig,
+    approvalId: string,
+  ): Promise<"valid" | "incomplete" | "invalid" | "not-adopted"> {
+    const modelDigest = await this.#governanceModelDigest(config);
+    const trace = await readGovernanceTrace(this.store, approvalId, modelDigest);
+    const currentBoundaryOpen = this.#governanceBoundaryActive &&
+      trace.frames.at(-1)?.boundary === "begin" &&
+      trace.frames.slice(0, -1).every((frame) => frame.boundary === "end" && !governanceOutcomeBlocks(frame.outcome));
+    if (trace.status !== "valid" && !(trace.status === "incomplete" && currentBoundaryOpen)) return trace.status;
+    return trace.frames.some((frame) => frame.boundary === "end" && governanceOutcomeBlocks(frame.outcome))
+      ? "invalid"
+      : "valid";
+  }
+
+  async #assertAdoptedTraceCurrentLocked(): Promise<void> {
+    if (!this.store.holdsLock()) throw new Error("Governance trace validation requires the engine project lock");
+    const adopted = await loadAssurance(this.store);
+    if (!adopted.manifest || !adopted.approval) return;
+    const context = await this.#requireCurrentPlanApproval();
+    const approvalId = context.assurance.approval!.approvalId;
+    const modelDigest = await this.#governanceModelDigest(context.config);
+    const segment = `.legion-cli/audit/governance/${createHash("sha256").update(approvalId).digest("hex")}`;
+    if (!(await this.store.pathExists(segment))) refuse("adopted governance trace is missing", "legion-cli plan approve");
+    const trace = await reconcileGovernanceTrace(this.store, approvalId, modelDigest, {
+      assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); },
+    });
+    if (trace.status !== "valid" || trace.frames.some((frame) => frame.boundary === "end" && governanceOutcomeBlocks(frame.outcome))) {
+      refuse("adopted governance trace is invalid, incomplete, or records a failed operation", "legion-cli plan approve");
+    }
+  }
+
+  /** The approval identity the latest epoch anchor must name: the adopted sidecar, else the plan receipt. */
+  async #governanceEpochIdentity(assurance: AssuranceState): Promise<{ approvalId: string | null; adopted: boolean }> {
+    return {
+      approvalId: assurance.approval?.approvalId ?? (await readPlanApproval(this.store))?.approvalId ?? null,
+      adopted: Boolean(assurance.approval),
+    };
+  }
+
+  async #assertGovernanceEpochCurrentLocked(opts?: LockEntryOptions): Promise<void> {
+    if (opts?.allowLive || opts?.allowInterruptedEpoch) return;
+    let anchor: GovernanceEpochs | null;
+    try {
+      anchor = await readGovernanceEpochs(this.store);
+    } catch (error) {
+      if (!(error instanceof GovernanceEpochError)) throw error;
+      refuse(`governance epoch anchor is invalid: ${error.message}`, "legion-cli context trace validate");
+    }
+    const assurance = await loadAssurance(this.store);
+    if (!anchor) {
+      if (assurance.approval) refuse("adopted governance epoch anchor is missing", "legion-cli plan approve");
+      return;
+    }
+    const latest = anchor.epochs.at(-1)!;
+    const identity = await this.#governanceEpochIdentity(assurance);
+    if (latest.approvalId !== identity.approvalId || latest.adopted !== identity.adopted) {
+      refuse(`governance epoch ${latest.approvalId} was interrupted; review and approve the current plan`, "legion-cli plan approve");
+    }
+  }
+  async #governanceProjection(): Promise<GovernanceProjection> {
+    const context = await this.#workflowPlanContext();
+    const state = await this.#readState();
+    const planApproval = await readPlanApproval(this.store);
+    const currentApproval = planApproval && planApproval.specId === context.snapshot.specId &&
+      planApproval.planFingerprint === context.snapshot.planFingerprint;
+    const runStates = await liveRuns(this.projectRoot);
+    const taskOwners = new Map<string, { owner: string; liveness: "live" | "dead" | "unknown" }>();
+    for (const marker of [...runStates.dead, ...runStates.live]) {
+      if (!marker.taskId) continue;
+      const liveness = marker.unknown ? "unknown" : runStates.live.some((run) => run.runId === marker.runId) ? "live" : "dead";
+      const prior = taskOwners.get(marker.taskId);
+      if (!prior || liveness === "live") taskOwners.set(marker.taskId, { owner: marker.runId, liveness });
+    }
+    const tasks = [...context.tasks].sort((a, b) => a.id.localeCompare(b.id)).slice(0, 256).map((task) => {
+      const active = task.status === "in_progress" || task.status === "verifying";
+      const owner = active ? taskOwners.get(task.id) : undefined;
+      return {
+        id: task.id,
+        status: task.status,
+        owner: owner?.owner ?? null,
+        writes: [...task.contract.filesAllowed].sort().slice(0, 256),
+        checks: task.status === "done" || task.status === "compacted" ? "passed" as const
+          : task.status === "blocked" ? "failed" as const
+            : active ? owner?.liveness === "live" ? "running" as const : "unavailable" as const
+              : "not-run" as const,
+      };
+    });
+    const receipt = await readWorkflowEvidence(this.store);
+    const acceptance = await readAcceptanceReceipt(this.store);
+    const productFingerprint = await workflowProductFingerprint(this.projectRoot, context.tasks);
+    const evidenceCurrent = Boolean(
+      receipt && currentApproval && planApproval && receipt.specId === planApproval.specId &&
+      receipt.planFingerprint === planApproval.planFingerprint && receipt.approvalId === planApproval.approvalId &&
+      receipt.productFingerprint === productFingerprint &&
+      receipt.environmentFingerprint === workflowEnvironmentFingerprint() &&
+      (!receipt.review || await workflowReviewEvidenceFresh(this.projectRoot, receipt.review)),
+    );
+    const integrationCount = planApproval?.verificationCommands.length ?? 0;
+    const integrationStatus = !receipt ? "not-run" as const
+      : !evidenceCurrent ? "stale" as const
+        : receipt.integration.some((run) => !run.ok) ? "failed" as const
+          : receipt.status === "running" && receipt.integration.length < integrationCount ? "running" as const
+            : integrationCount === 0 && receipt.status !== "running" ? "passed" as const
+              : receipt.integration.length > 0 && receipt.integration.length >= integrationCount ? "passed" as const
+                // Only a recorded failing command is a failed integration (the stage execute --retry gates);
+                // a receipt blocked before integration ran (a task failure or an interrupted command) is not.
+                : "not-run" as const;
+    const assuranceExecution = await readAssuranceExecution(this.store);
+    const assuranceApproval = context.assurance.approval;
+    const assuranceExecutionCurrent = Boolean(
+      assuranceExecution && assuranceApproval && currentApproval && assuranceExecution.approvalId === assuranceApproval.approvalId &&
+      assuranceExecution.manifestDigest === context.assurance.fingerprint &&
+      assuranceExecution.productFingerprint === productFingerprint,
+    );
+    const components = (context.assurance.manifest?.validators ?? []).map((validator) => {
+      const execution = assuranceExecution?.checks.find((check) => check.checkId === validator.id);
+      return {
+        checkId: validator.id,
+        status: !assuranceExecution ? "not-run" as const
+          : !assuranceExecutionCurrent ? "stale" as const
+            : !execution ? "unavailable" as const
+              : execution.result === "passed" ? "passed" as const
+                : execution.result === "failed" ? "failed" as const : "unavailable" as const,
+      };
+    }).sort((a, b) => a.checkId.localeCompare(b.checkId)).slice(0, 256);
+    const acceptanceCurrent = Boolean(
+      acceptance && planApproval && currentApproval && acceptance.specId === planApproval.specId &&
+      acceptance.planFingerprint === planApproval.planFingerprint && acceptance.approvalId === planApproval.approvalId &&
+      acceptance.productFingerprint === productFingerprint,
+    );
+    let claim: { owner: string | null; liveness: "none" | "live" | "dead" | "unknown" } = { owner: null, liveness: "none" };
+    try {
+      const active = await this.store.readYaml(WORKFLOW_CLAIM_PATH, WorkflowClaimSchema);
+      // Identity-checked like acquisition: a dead holder's reused PID must not read as a live claim,
+      // or a takeover looks like a duplicate claim and a refusal looks like a state change.
+      claim = { owner: active.token, liveness: await workflowClaimHolderLive(active) ? "live" : "dead" };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const liveReview = runStates.live.some((run) => run.skillId === "review");
+    const reviewStatus = this.#reviewProjection ?? (liveReview ? "running" as const
+      : receipt?.review ? !evidenceCurrent ? "stale" as const
+        : receipt.review.verdict === "PASS" ? "passed" as const : "failed" as const
+        : state.lastReview === "PASS" ? "passed" as const
+          : state.lastReview === "FAIL" ? "failed" as const : "not-run" as const);
+    const acceptanceProjection = context.spec.acceptance.map((criterion) => {
+      const item = acceptance?.entries.find((entry) => entry.id === criterion.id);
+      return {
+        id: criterion.id,
+        status: item?.status === "passed" ? "passed" as const
+          : item?.status === "failed" ? "failed" as const
+            : item?.status === "not_applicable" ? "unknown" as const
+              : item ? "not-recorded" as const : "not-recorded" as const,
+        freshness: !acceptance ? "unknown" as const : acceptanceCurrent ? "current" as const : "stale" as const,
+      };
+    }).sort((a, b) => a.id.localeCompare(b.id)).slice(0, 256);
+    const ship = this.#shipProjection ?? {
+      confirmationId: null,
+      previewFingerprint: null,
+      confirmed: false,
+      status: state.phase === "shipped" ? "complete" as const : "none" as const,
+    };
+    const projection = {
+      schemaVersion: SCHEMA_VERSION.governanceProjection,
+      phase: state.phase, controlMode: context.config.control_mode, tasks,
+      approval: { id: planApproval?.approvalId ?? null, freshness: !planApproval ? "unknown" as const : currentApproval ? "current" as const : "stale" as const },
+      claim,
+      integration: integrationStatus,
+      components,
+      review: reviewStatus,
+      acceptance: acceptanceProjection,
+      sourceFingerprint: productFingerprint,
+      evidenceFingerprint: receipt ? stableHash(JSON.stringify({
+        status: receipt.status, productFingerprint: receipt.productFingerprint,
+        integration: receipt.integration.map((run) => run.ok), reviewed: Boolean(receipt.review),
+      })) : null,
+      ship,
+    };
+    return GovernanceProjectionSchema.parse(projection);
+  }
+
+  async #governanceModelDigest(config: LegionConfig): Promise<string> {
+    return stableHash({
+      adapter: config.adapter ?? null,
+      profiles: config.adapter.profiles ?? null,
+      skillProfiles: config.adapter.skillProfiles ?? null,
+    });
+  }
+
+  async #governanceMutation<T>(
+    action: GovernanceAction,
+    operation: () => Promise<T>,
+    options?: { explicitRetry?: boolean },
+  ): Promise<T> {
+    if (!this.store.holdsLock()) throw new Error("Governance mutation requires the engine project lock");
+    if (this.#governanceBoundaryActive) throw new Error("Nested governance boundaries are not permitted");
+    const adopted = await loadAssurance(this.store);
+    if (!adopted.manifest || !adopted.approval) return operation();
+    const context = await this.#requireCurrentPlanApproval();
+    const modelDigest = await this.#governanceModelDigest(context.config);
+    return this.#appendGovernanceBoundary(action, context.assurance.approval!.approvalId, modelDigest, operation, {
+      explicitRetry: options?.explicitRetry ?? false,
+    });
+  }
+
+  async #governanceMutationForApproval<T>(
+    approvalId: string,
+    config: LegionConfig,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (!this.store.holdsLock()) throw new Error("Governance mutation requires the engine project lock");
+    if (this.#governanceBoundaryActive) throw new Error("Nested governance boundaries are not permitted");
+    const modelDigest = await this.#governanceModelDigest(config);
+    return this.#appendGovernanceBoundary("approval-adopt", approvalId, modelDigest, operation, { allowMissing: true, explicitRetry: false });
+  }
+
+  async #appendGovernanceBoundary<T>(
+    action: GovernanceAction,
+    approvalId: string,
+    modelDigest: string,
+    operation: () => Promise<T>,
+    options: { allowMissing?: boolean; explicitRetry: boolean },
+  ): Promise<T> {
+    const segment = `.legion-cli/audit/governance/${createHash("sha256").update(approvalId).digest("hex")}`;
+    const lock = { assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); } };
+    if (await this.store.pathExists(segment)) {
+      const trace = await reconcileGovernanceTrace(this.store, approvalId, modelDigest, lock);
+      if (trace.status !== "valid" || trace.frames.some((frame) => frame.boundary === "end" && governanceOutcomeBlocks(frame.outcome))) {
+        refuse("adopted governance trace is invalid, incomplete, or records a failed operation", "legion-cli plan approve");
+      }
+    } else if (!options.allowMissing) {
+      refuse("adopted governance trace is missing", "legion-cli plan approve");
+    }
+    const fault = this.#fakeGovernanceFault;
+    const correlationId = randomUUID();
+    const explicitRetry = options.explicitRetry;
+    const previousBoundaryActive = this.#governanceBoundaryActive;
+    const before = await this.#governanceProjection();
+    await appendGovernanceBegin(this.store, {
+      approvalId, modelDigest, correlationId, action, before, explicitRetry, recordedAt: nowIso(),
+    }, lock, fault ? { afterFrame: () => fault("after-begin-frame"), afterHead: () => fault("after-begin-head") } : undefined);
+    this.#governanceBoundaryActive = true;
+    try {
+      const result = await operation();
+      if (fault) await fault("after-mutation");
+      await appendGovernanceEnd(this.store, {
+        approvalId, modelDigest, correlationId, action, after: await this.#governanceProjection(),
+        outcome: "success", explicitRetry, recordedAt: nowIso(),
+      }, lock, fault ? { afterFrame: () => fault("after-end-frame"), afterHead: () => fault("after-end-head") } : undefined);
+      return result;
+    } catch (error) {
+      try {
+        const after = await this.#governanceProjection();
+        // A typed refusal that left the governed projection untouched is a precondition denial, not a
+        // failed operation: it must not poison the epoch. Any state change keeps the blocking outcome.
+        const outcome = error instanceof LegionRefuseError && canonicalJson(after) === canonicalJson(before) ? "refused" : "failed";
+        await appendGovernanceEnd(this.store, {
+          approvalId, modelDigest, correlationId, action, after, outcome, explicitRetry, recordedAt: nowIso(),
+        }, lock);
+      } catch (boundaryError) {
+        throw new AggregateError([error, boundaryError], "Governance failure boundary could not be safely appended");
+      }
+      throw error;
+    } finally {
+      this.#governanceBoundaryActive = previousBoundaryActive;
+    }
+  }
+
+  /**
+   * Information-flow posture plus the completed tasks whose latest governed execute run is not current. A run is
+   * current when it completed under the current approval, or under a predecessor approval whose recorded authority is
+   * exactly what the current approval would grant (same manifest, policy, contract, prompt, configuration, provider).
+   */
+  async #governedExecutionEvidence(
+    assurance: AssuranceState,
+    tasks: readonly Task[],
+  ): Promise<{ posture: NonNullable<AssuranceState["status"]>["informationFlow"]; staleTaskIds: string[] }> {
+    const plan = assurance.manifest;
+    if (plan?.security.mode !== "information-flow") return { posture: "not-enforced", staleTaskIds: [] };
+    const approval = assurance.approval;
+    const manifestDigest = assurance.fingerprint;
+    if (!approval || !manifestDigest) return { posture: "pending", staleTaskIds: [] };
+    const completed = tasks.filter((task) => task.status === "done" || task.status === "compacted");
+    if (completed.length === 0) return { posture: "pending", staleTaskIds: [] };
+    const config = await this.#readConfig();
+    const resumes = await listCacheResumes(this.projectRoot);
+    const staleTaskIds: string[] = [];
+    for (const task of completed) {
+      const resume = resumes
+        .filter((item) => item.taskId === task.id && item.skillId === "execute")
+        .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
+      const governed = resume && resume.schemaVersion === SCHEMA_VERSION.resume && resume.adapterId === "http"
+        ? await inspectGovernedRun({ store: this.store, runId: resume.runId, manifestDigest }).catch(() => null)
+        : null;
+      if (!resume || governed?.checkpoint.status !== "complete" || governed.checkpoint.phase !== "program") {
+        staleTaskIds.push(task.id);
+        continue;
+      }
+      const identities = governed.checkpoint.identities;
+      if (identities.approvalId === approval.approvalId) continue;
+      const resolution = resolveAdapterId({ config, skillId: "execute", taskAdapter: task.adapter, taskProfile: task.profile });
+      const effectiveConfig = resolution.profileConfig
+        ? applyProfileArgs(config, {
+            adapterId: resolution.id,
+            source: resolution.source,
+            ...(resolution.profile ? { profile: resolution.profile } : {}),
+            config: resolution.profileConfig,
+          })
+        : config;
+      const http = effectiveConfig.adapter.http;
+      const profile = resolution.profile ?? "default";
+      const provider = http ? { endpoint: http.baseUrl, model: http.model, profile } : null;
+      const schemaIdentities = await readGovernedRunSchemaIdentities(this.store, resume.runId, identities.policyFingerprint).catch(() => null);
+      const current = resolution.id === "http" && provider !== null && schemaIdentities !== null &&
+        canonicalJson(identities.provider) === canonicalJson(provider) &&
+        identities.configurationFingerprint === governedConfigurationFingerprint(effectiveConfig, profile, resolution.profileConfig) &&
+        identities.contractFingerprint === stableHash(task.contract) &&
+        identities.promptFingerprint === stableHash("legion-cli-approved-task-planner/v1") &&
+        identities.policyFingerprint === currentGovernedTaskPolicyFingerprint({
+          plan, approval, task, provider, manifestDigest, config: effectiveConfig, recordedSchemaFingerprints: schemaIdentities,
+        });
+      if (!current) staleTaskIds.push(task.id);
+    }
+    const posture = staleTaskIds.length === 0
+      ? completed.length === tasks.length ? "enforced" : "pending"
+      : staleTaskIds.length < completed.length ? "partial" : "not-enforced";
+    return { posture, staleTaskIds };
+  }
+
+  /** Posture driving component-stage policy status; adapter-default manifests are never information-flow enforced. */
+  async #componentPolicyPosture(assurance: AssuranceState, tasks: readonly Task[]): Promise<NonNullable<AssuranceState["status"]>["informationFlow"]> {
+    return (await this.#governedExecutionEvidence(assurance, tasks)).posture;
   }
 
   #workflowAcceptanceStatus(spec: Spec, receipt: AcceptanceReceipt | null): WorkflowStatus["acceptance"] {
@@ -5990,6 +7591,20 @@ export class LegionEngine {
 
   async #assertCurrentShipGate(state: StateFile, opts: ShipOptions): Promise<void> {
     const config = await this.#readConfig();
+    const adopted = await loadAssurance(this.store);
+    if (adopted.manifest && adopted.approval && !this.#governanceBoundaryActive) {
+      const context = await this.#requireCurrentPlanApproval();
+      const approvalId = adopted.approval.approvalId;
+      const modelDigest = await this.#governanceModelDigest(context.config);
+      const segment = `.legion-cli/audit/governance/${createHash("sha256").update(approvalId).digest("hex")}`;
+      if (!(await this.store.pathExists(segment))) refuse("adopted governance trace is missing", "legion-cli plan approve");
+      const trace = await reconcileGovernanceTrace(this.store, approvalId, modelDigest, {
+        assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); },
+      });
+      if (trace.status !== "valid" || trace.frames.some((frame) => frame.boundary === "end" && governanceOutcomeBlocks(frame.outcome))) {
+        refuse("adopted governance trace is invalid, incomplete, or records a failed operation", "legion-cli plan approve");
+      }
+    }
     if (config.workflow?.profile === "focused" || await this.store.pathExists(WORKFLOW_APPROVAL_PATH)) {
       if (state.phase !== "executing" && state.phase !== "ready_to_ship") {
         refuse("focused ship requires completed execution", "legion-cli execute");
@@ -6042,7 +7657,7 @@ export class LegionEngine {
     }
   }
 
-  async #stageShipLocked(state: StateFile): Promise<ShipPreview> {
+  async #stageShipLocked(state: StateFile, captureDelivery = false): Promise<ShipPreview> {
     const slice = sliceTasks(await this.#listGateTasks(), state.activeSpecId);
     const allowedFiles = unionDoneFilesAllowed(slice);
     const allowedSet = new Set(allowedFiles);
@@ -6062,7 +7677,11 @@ export class LegionEngine {
       productFingerprint: "",
       qaCoverage,
     };
-    if (!isGitRepo(this.projectRoot)) return empty;
+    if (!isGitRepo(this.projectRoot)) {
+      return captureDelivery
+        ? { ...empty, productFingerprint: (await deliveryProductInventory(this.projectRoot)).subjectDigest }
+        : empty;
+    }
 
     const addPaths = shipAddPaths(this.projectRoot, allowedFiles);
     gitAdd(this.projectRoot, addPaths);
@@ -6083,17 +7702,32 @@ export class LegionEngine {
   }
 
   async #unstageShip(added: readonly string[]): Promise<void> {
-    if (added.length === 0 || !isGitRepo(this.projectRoot)) return;
-    await this.#mutate(async () => {
-      gitRestoreStaged(this.projectRoot, [...added]);
-    });
+    await this.#mutate(async () => this.#governanceMutation("ship-rollback", async () => {
+      if (added.length > 0 && isGitRepo(this.projectRoot)) gitRestoreStaged(this.projectRoot, [...added]);
+      if (this.#shipProjection) this.#shipProjection = { ...this.#shipProjection, confirmed: false, status: "aborted" };
+    }));
   }
 
   async #completeShipLocked(
     state: StateFile,
     opts: ShipOptions,
     preview: ShipPreview,
-  ): Promise<ShipReceipt> {
+    deliveryId: string | null,
+  ): Promise<{
+    receipt: ShipReceipt;
+    snapshotId?: string;
+    preparedDigest?: string;
+    rollback?: {
+      state: StateFile;
+      specId: string;
+      actor: string;
+      receiptPath: string;
+      reason: string;
+      priorHead: string | null;
+      keptRootCommit: boolean;
+      commitSha?: string;
+    };
+  }> {
     if (isGitRepo(this.projectRoot)) {
       const actual = shipProductIndexFingerprint(this.projectRoot);
       if (actual !== preview.productFingerprint) {
@@ -6124,12 +7758,193 @@ export class LegionEngine {
       receiptPath,
     };
 
+    let preparedDigest: string | undefined;
+    if (deliveryId) {
+      const adopted = await loadAssurance(this.store);
+      const isAdopted = Boolean(adopted.manifest && adopted.approval);
+      const product = await deliveryProductInventory(this.projectRoot);
+      const preparedAt = nowIso();
+      const config = await this.#readConfig();
+      const modelDigest = isAdopted ? await this.#governanceModelDigest(config) : null;
+      let trace: GovernanceTrace;
+      if (isAdopted) {
+        const current = await readGovernanceTrace(this.store, adopted.approval!.approvalId, modelDigest!);
+        if (current.frames.at(-1)?.action !== "ship-confirm" || current.frames.at(-1)?.boundary !== "begin") {
+          throw new Error("Adopted delivery preparation requires the open ship-confirm boundary");
+        }
+        const frames = current.frames.slice(0, -1);
+        trace = {
+          schemaVersion: SCHEMA_VERSION.governanceTrace,
+          status: "valid",
+          approvalId: adopted.approval!.approvalId,
+          modelDigest: modelDigest!,
+          headDigest: frames.at(-1)?.digest ?? null,
+          frames,
+        };
+      } else trace = { schemaVersion: SCHEMA_VERSION.governanceTrace, status: "not-adopted", frames: [] };
+
+      const tokenMapping: PreparedDeliverySnapshot["tokenMapping"] = [];
+      const localTokens = new Map<string, string>();
+      const addToken = (kind: PreparedDeliverySnapshot["tokenMapping"][number]["kind"], localId: string): string => {
+        const key = `${kind}:${localId}`;
+        const existing = localTokens.get(key);
+        if (existing) return existing;
+        const token = randomUUID();
+        localTokens.set(key, token);
+        tokenMapping.push({ token, localId, kind });
+        return token;
+      };
+      const confirmationToken = addToken("confirmation", deliveryId);
+      const approvalId = adopted.approval?.approvalId ?? null;
+      const approvalToken = approvalId ? addToken("approval", approvalId) : null;
+      const specToken = specId ? addToken("spec", specId) : null;
+      const manifestDigest = adopted.fingerprint ?? null;
+      const mode: PreparedDeliverySnapshot["evidence"]["mode"] = isAdopted ? adopted.manifest!.security.mode : "not-adopted";
+      const environmentFingerprint = sha256Hex(Buffer.from(canonicalJson(config), "utf8"));
+      const manifest = adopted.manifest;
+      const identities: PreparedDeliverySnapshot["predicate"]["identities"] = [
+        ...(manifest?.taskIds.map((id) => ({ token: addToken("task", id), kind: "task" as const, digest: null })) ?? []),
+        ...(manifest?.acceptanceIds.map((id) => ({ token: addToken("acceptance", id), kind: "acceptance" as const, digest: null })) ?? []),
+        ...(manifest?.validators.map((item) => ({ token: addToken("check", item.id), kind: "check" as const, digest: item.componentSha256 })) ?? []),
+        // Configured profile and model names stay private: only their opaque tokens reach the public predicate.
+        ...Object.keys(config.adapter.profiles ?? {}).sort().map((name) => ({ token: addToken("profile", name), kind: "profile" as const, digest: null })),
+        ...(config.adapter.http ? [{ token: addToken("model", `http:${config.adapter.http.model}`), kind: "model" as const, digest: null }] : []),
+      ];
+      const artifacts = await Promise.all((manifest?.delivery.artifacts ?? []).map(async (artifact) => {
+        const descriptor = product.entries.find((entry) => entry.path === artifact.path);
+        if (!descriptor || descriptor.kind === "gitlink" || (descriptor.kind === "blob" && descriptor.mode === "120000")) {
+          throw new Error(`Approved artifact must be a regular product file: ${artifact.path}`);
+        }
+        const absolute = toFsPath(this.projectRoot, artifact.path);
+        await assertNoLinkInPath(absolute, { root: this.projectRoot });
+        const stats = await lstat(absolute);
+        if (!stats.isFile() || stats.isSymbolicLink()) throw new Error(`Approved artifact must be a regular non-symlink file: ${artifact.path}`);
+        return { name: artifact.name, path: artifact.path, sha256: descriptor.sha256, size: descriptor.size };
+      }));
+      const assuranceEvidence = isAdopted
+        ? await inspectAssuranceEvidence(this.store, adopted, manifest!.acceptanceIds, await this.#componentPolicyPosture(adopted, sliceTasks(await this.#listGateTasks(), state.activeSpecId)))
+        : null;
+      const hostIdentities = new Map<string, { token: string; kind: "host"; digest: string }>();
+      const checkEvidence = assuranceEvidence
+        ? await Promise.all(assuranceEvidence.checks.map(async (check) => {
+          if (check.reusedFrom) addToken("check", check.reusedFrom);
+          if (check.executionId) addToken("check", check.executionId);
+          const receipt = await readDeliveryCheckEvidence(
+            this.store,
+            approvalId!,
+            check.checkId,
+            check.executionId,
+            adopted.approval!.nativeHost,
+          );
+          if (receipt.runtime) {
+            const digest = sha256Hex(Buffer.from(canonicalJson(receipt.runtime), "utf8"));
+            hostIdentities.set(receipt.runtime.target, {
+              token: addToken("host", receipt.runtime.target),
+              kind: "host",
+              digest,
+            });
+          }
+          return {
+            id: check.checkId,
+            status: check.result === "passed" ? "passed" as const : check.result === "failed" ? "failed" as const : "unavailable" as const,
+            inputDigest: check.inputDigest,
+            observationDigest: receipt.observationDigest,
+            executionId: check.executionId,
+            reusedFrom: check.reusedFrom,
+            trustTier: "component-closed-input" as const,
+            moduleDigest: manifest!.validators.find((item) => item.id === check.checkId)?.componentSha256 ?? null,
+            runtimeDigest: receipt.runtime ? sha256Hex(Buffer.from(canonicalJson(receipt.runtime), "utf8")) : null,
+            recordedAt: receipt.recordedAt ?? preparedAt,
+          };
+        }))
+        : [];
+      identities.push(...hostIdentities.values());
+      const acceptanceReceipt = isAdopted ? await readAcceptanceReceipt(this.store) : null;
+      const acceptanceEvidence = (manifest?.acceptanceIds ?? []).map((id) => {
+        const matchingReceipt = acceptanceReceipt?.approvalId === approvalId ? acceptanceReceipt : null;
+        const entry = matchingReceipt?.entries.find((item) => item.id === id);
+        const status = entry?.status === "passed" ? "passed" as const : entry?.status === "failed" ? "failed" as const : "unknown" as const;
+        const recordedAt = matchingReceipt?.recordedAt ?? preparedAt;
+        const evidenceDigest = status === "unknown"
+          ? null
+          : sha256Hex(Buffer.from(canonicalJson({
+            approvalId,
+            planFingerprint: matchingReceipt!.planFingerprint,
+            productFingerprint: matchingReceipt!.productFingerprint,
+            recordedAt: matchingReceipt!.recordedAt,
+            entry,
+          }), "utf8"));
+        return { id, status, evidenceDigest, recordedAt };
+      });
+      for (const acceptance of acceptanceEvidence) addToken("acceptance", acceptance.id);
+      const publicChecks = checkEvidence.map((check) => ({
+        token: addToken("check", check.id),
+        status: check.status,
+        inputDigest: check.inputDigest,
+        resultDigest: check.observationDigest,
+      }));
+      const publicAcceptance = acceptanceEvidence.map((item) => ({
+        token: addToken("acceptance", item.id),
+        status: item.status,
+        evidenceDigest: item.evidenceDigest,
+      }));
+      const traceStatus: PreparedDeliverySnapshot["predicate"]["traceStatus"] = isAdopted ? "valid" : "not-adopted";
+      const predicate: PreparedDeliverySnapshot["predicate"] = {
+        schemaVersion: SCHEMA_VERSION.deliveryPredicate,
+        confirmation: confirmationToken,
+        approval: approvalToken,
+        spec: specToken,
+        assuranceManifestDigest: manifestDigest,
+        subjectDigest: product.subjectDigest,
+        executionDigest: preview.productFingerprint,
+        mode,
+        traceStatus,
+        modelDigest,
+        policyDigest: manifestDigest,
+        identities,
+        checks: publicChecks,
+        acceptance: publicAcceptance,
+        preparedAt,
+      };
+      const prepared: PreparedDeliverySnapshot = {
+        confirmationId: deliveryId,
+        approvalId,
+        captureMode: isAdopted ? "adopted" : "legacy-bundle",
+        preparedAt,
+        executionFingerprint: preview.productFingerprint,
+        environmentFingerprint,
+        product,
+        artifacts: { artifacts },
+        evidence: {
+          approvalId,
+          specId: specId || null,
+          manifestDigest,
+          executionFingerprint: preview.productFingerprint,
+          environmentFingerprint,
+          mode,
+          checks: checkEvidence,
+          acceptance: acceptanceEvidence,
+          policyDigest: manifestDigest,
+          modelDigest,
+          sourceScope: isAdopted ? "declared-component-inputs" : "whole-working-product",
+        },
+        trace,
+        predicate,
+        tokenMapping,
+      };
+      preparedDigest = await prepareDeliverySnapshot(this.store, prepared, {
+        assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); },
+      });
+      receipt.snapshotId = deliveryId;
+    }
+
     assertCanTransition(state.phase, "shipped");
     await this.#writeState({
       ...state,
       phase: "shipped",
       currentTaskId: null,
     });
+    if (this.#shipProjection) this.#shipProjection = { ...this.#shipProjection, status: "complete" };
     await writeTextFile(toFsPath(this.projectRoot, receiptPath), shipReceiptBody(receipt), {
       root: this.projectRoot,
     });
@@ -6150,11 +7965,40 @@ export class LegionEngine {
       gitAdd(this.projectRoot, [".legion-cli"]);
       receipt.staged = gitStagedPaths(this.projectRoot);
       if (opts.commit && gitHasStaged(this.projectRoot)) {
-        receipt.commitSha = gitCommitIndex(this.projectRoot, shipCommitMessage(specId));
-        receipt.committed = true;
+        try {
+          receipt.commitSha = gitCommitIndex(this.projectRoot, shipCommitMessage(specId));
+          receipt.committed = true;
+        } catch (error) {
+          if (deliveryId) await abortDeliverySnapshot(this.store, deliveryId, nowIso(), "commit-failed", tryGitHead(this.projectRoot), {
+            assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); },
+          });
+          throw error;
+        }
+      }
+      if (deliveryId) {
+        const prepared = await readDeliverySnapshot(this.store, deliveryId);
+        const actualProduct = receipt.commitSha
+          ? gitCommitProductInventory(this.projectRoot, receipt.commitSha)
+          : await deliveryProductInventory(this.projectRoot);
+        if (actualProduct.subjectDigest !== prepared.prepared.product.subjectDigest) {
+          await abortDeliverySnapshot(this.store, deliveryId, nowIso(), "subject-changed", receipt.commitSha ?? null, {
+            assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); },
+          });
+          refuse(SHIP_STAGED_CHANGED, HINT.ship);
+        }
+      }
+
+    }
+    if (!isGitRepo(this.projectRoot) && deliveryId) {
+      const prepared = await readDeliverySnapshot(this.store, deliveryId);
+      const actualProduct = await nativeProductInventory(this.projectRoot);
+      if (actualProduct.subjectDigest !== prepared.prepared.product.subjectDigest) {
+        await abortDeliverySnapshot(this.store, deliveryId, nowIso(), "subject-changed", null, {
+          assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); },
+        });
+        refuse(SHIP_STAGED_CHANGED, HINT.ship);
       }
     }
-
     if (opts.pr) {
       const title = shipCommitMessage(specId);
       const body = [
@@ -6163,41 +8007,41 @@ export class LegionEngine {
         `QA score: ${qaScore ?? "none"}`,
         `QA pass: ${qaPass}`,
       ].join("\n");
-      const created = opts.prCreate
-        ? opts.prCreate({ cwd: this.projectRoot, title, body })
-        : tryCreatePullRequest(this.projectRoot, title, body);
-      if (created.error || !created.url) {
-        // --pr requires --commit and the receipt is always staged, so a commit exists here.
-        // With a prior HEAD, reset the index back to it (this also unstages the preview's paths).
-        // Without one (root commit) the commit cannot be undone here: keep the receipt (it is in
-        // that commit) and record the surviving commit in the audit event.
-        const keptRootCommit = Boolean(receipt.commitSha) && !priorHead;
-        if (priorHead && receipt.commitSha) {
-          gitResetMixed(this.projectRoot, priorHead);
-        }
-        // A receipt that cannot be removed (a Windows file lock) must not stop STATE going back.
-        let receiptKept: string | undefined;
-        if (!keptRootCommit) {
-          try {
-            await rm(toFsPath(this.projectRoot, receiptPath), { force: true });
-          } catch (err) {
-            receiptKept = err instanceof Error ? err.message : String(err);
-          }
-        }
-        await this.#writeState(state, "ship-rollback");
-        await this.#audit("ship_rolled_back", state.phase, actor, {
-          specId,
-          receiptPath,
-          reason: created.error ?? "no pull request url",
-          ...(keptRootCommit ? { commitKept: receipt.commitSha } : {}),
-          ...(receiptKept ? { receiptKept } : {}),
+      let created: { url?: string; error?: string };
+      try {
+        created = await (opts.prCreate
+          ? opts.prCreate({ cwd: this.projectRoot, title, body })
+          : tryCreatePullRequest(this.projectRoot, title, body));
+      } catch (error) {
+        if (deliveryId) await abortDeliverySnapshot(this.store, deliveryId, nowIso(), "pr-failed", receipt.commitSha ?? null, {
+          assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); },
         });
-        refuse(`gh pr create failed: ${created.error ?? "no pull request url"}`, HINT.shipPrRetry);
+        throw error;
+      }
+      if (created.error || !created.url) {
+        const keptRootCommit = Boolean(receipt.commitSha) && !priorHead;
+        return {
+          receipt,
+          rollback: {
+            state,
+            specId,
+            actor,
+            receiptPath,
+            reason: created.error ?? "no pull request url",
+            priorHead,
+            keptRootCommit,
+            ...(receipt.commitSha ? { commitSha: receipt.commitSha } : {}),
+          },
+          ...(deliveryId && preparedDigest ? { snapshotId: deliveryId, preparedDigest } : {}),
+        };
       }
       receipt.prUrl = created.url;
     }
 
-    return receipt;
+    return {
+      receipt,
+      ...(deliveryId && preparedDigest ? { snapshotId: deliveryId, preparedDigest } : {}),
+    };
   }
 
   async #audit(
@@ -6251,6 +8095,282 @@ export class LegionEngine {
       onWait: this.#fakeOnWait,
       handlePid: this.#fakeHandlePid,
     };
+  }
+  async #governedExecuteSpawnOptions(
+    task: Task,
+    config: LegionConfig,
+    selection: { adapter?: AdapterId; profile?: string },
+  ) {
+    const assuranceState = await loadAssurance(this.store);
+    if (!assuranceState.manifest || assuranceState.manifest.security.mode !== "information-flow") return undefined;
+    const current = await this.#requireCurrentPlanApproval();
+    const plan = current.assurance.manifest;
+    const approval = current.assurance.approval;
+    if (!plan || !approval || plan.security.mode !== "information-flow") return undefined;
+    const resolution = resolveAdapterId({
+      config,
+      skillId: "execute",
+      taskAdapter: task.adapter,
+      cliAdapter: selection.adapter,
+      taskProfile: task.profile,
+      cliProfile: selection.profile,
+    });
+    if (resolution.id !== "http") {
+      refuse("information-flow execute requires the approved HTTP controller; the selected adapter cannot enforce it", HINT.doctor);
+    }
+    const effectiveConfig = resolution.profileConfig
+      ? applyProfileArgs(config, {
+          adapterId: resolution.id,
+          source: resolution.source,
+          ...(resolution.profile ? { profile: resolution.profile } : {}),
+          config: resolution.profileConfig,
+        })
+      : config;
+    const http = effectiveConfig.adapter.http;
+    if (!http) refuse("information-flow execute requires a configured HTTP provider", HINT.plan);
+    const spec = current.spec;
+    const profile = resolution.profile ?? "default";
+    const provider = { endpoint: http.baseUrl, model: http.model, profile };
+    const runtimeOptions = {
+      store: this.store,
+      plan,
+      approval,
+      spec,
+      task,
+      runId: "",
+      skillId: "execute" as const,
+      config: effectiveConfig,
+      profile,
+      provider,
+      promptFingerprint: stableHash("legion-cli-approved-task-planner/v1"),
+      configurationFingerprint: governedConfigurationFingerprint(effectiveConfig, profile, resolution.profileConfig),
+      contractFingerprint: stableHash(task.contract),
+      sourceFingerprint: "",
+      jailFingerprint: "",
+      jailRoot: "",
+      manifestDigest: current.assurance.fingerprint ?? assuranceManifestDigest(plan),
+      allowedWrites: [...task.contract.filesAllowed],
+      filesForbidden: [...task.contract.filesForbidden],
+      artifactPaths: [...task.contract.expectedArtifacts],
+    };
+    return {
+      ...runtimeOptions,
+      withLock: <T>(runId: string, callback: () => Promise<T>) =>
+        this.#withLockOrRefuse(callback, { ownRunId: runId }),
+      resolveCurrentContext: async (identity: {
+        runId: string;
+        sourceFingerprint: string;
+        jailFingerprint: string;
+        jailRoot: string;
+        allowedWrites: readonly string[];
+        filesForbidden: readonly string[];
+        artifactPaths: readonly string[];
+        /** The running spawn's descriptors; omitted outside a run, where the current tools are listed live. */
+        externalTools?: readonly GovernedMcpDescriptor[];
+      }) => {
+        const refreshed = await this.#requireCurrentPlanApproval();
+        const refreshedPlan = refreshed.assurance.manifest;
+        const refreshedApproval = refreshed.assurance.approval;
+        if (!refreshedPlan || !refreshedApproval || refreshedPlan.security.mode !== "information-flow") {
+          refuse("information-flow authority is no longer approved", "legion-cli plan approve");
+        }
+        const currentTask = refreshed.tasks.find((candidate) => candidate.id === task.id);
+        if (!currentTask) refuse("approved execute task no longer exists", "legion-cli plan approve");
+        const currentResolution = resolveAdapterId({
+          config: refreshed.config,
+          skillId: "execute",
+          taskAdapter: currentTask.adapter,
+          cliAdapter: selection.adapter,
+          taskProfile: currentTask.profile,
+          cliProfile: selection.profile,
+        });
+        if (currentResolution.id !== "http") refuse("information-flow execute adapter changed", HINT.doctor);
+        const currentConfig = currentResolution.profileConfig
+          ? applyProfileArgs(refreshed.config, {
+              adapterId: currentResolution.id,
+              source: currentResolution.source,
+              ...(currentResolution.profile ? { profile: currentResolution.profile } : {}),
+              config: currentResolution.profileConfig,
+            })
+          : refreshed.config;
+        const currentHttp = currentConfig.adapter.http;
+        if (!currentHttp) refuse("information-flow provider configuration was removed", HINT.plan);
+        const currentProfile = currentResolution.profile ?? "default";
+        return buildApprovedHttpAssuranceContext({
+          ...runtimeOptions,
+          plan: refreshedPlan,
+          approval: refreshedApproval,
+          spec: refreshed.spec,
+          task: currentTask,
+          config: currentConfig,
+          profile: currentProfile,
+          provider: { endpoint: currentHttp.baseUrl, model: currentHttp.model, profile: currentProfile },
+          promptFingerprint: stableHash("legion-cli-approved-task-planner/v1"),
+          configurationFingerprint: governedConfigurationFingerprint(currentConfig, currentProfile, currentResolution.profileConfig),
+          contractFingerprint: stableHash(currentTask.contract),
+          runId: identity.runId,
+          sourceFingerprint: identity.sourceFingerprint,
+          jailFingerprint: identity.jailFingerprint,
+          jailRoot: identity.jailRoot,
+          allowedWrites: identity.allowedWrites,
+          filesForbidden: identity.filesForbidden,
+          artifactPaths: identity.artifactPaths,
+          externalTools: identity.externalTools ?? await currentGovernedMcpDescriptors(currentConfig, refreshedPlan),
+          manifestDigest: refreshed.assurance.fingerprint ?? assuranceManifestDigest(refreshedPlan),
+        });
+      },
+    };
+  }
+
+  async #governedReviewSpawnOptions(
+    config: LegionConfig,
+    selection: { adapter?: AdapterId; profile?: string },
+  ) {
+    const assuranceState = await loadAssurance(this.store);
+    if (!assuranceState.manifest || assuranceState.manifest.security.mode !== "information-flow") return undefined;
+    const current = await this.#requireCurrentPlanApproval();
+    const plan = current.assurance.manifest;
+    const approval = current.assurance.approval;
+    if (!plan || !approval) refuse("information-flow review requires current approval", "legion-cli plan approve");
+    const resolution = resolveAdapterId({ config, skillId: "review", cliAdapter: selection.adapter, cliProfile: selection.profile });
+    if (resolution.id !== "http") refuse("information-flow review requires the governed HTTP controller", HINT.doctor);
+    const effectiveConfig = resolution.profileConfig
+      ? applyProfileArgs(config, {
+          adapterId: resolution.id,
+          source: resolution.source,
+          ...(resolution.profile ? { profile: resolution.profile } : {}),
+          config: resolution.profileConfig,
+        })
+      : config;
+    const http = effectiveConfig.adapter.http;
+    if (!http) refuse("information-flow review requires a configured HTTP provider", HINT.plan);
+    const profile = resolution.profile ?? "default";
+    const makeReviewContract = (tasks: readonly Task[], runId?: string) => ({
+      kind: "independent-review",
+      artifact: `.legion-cli/cache/runs/${runId ?? "<runId>"}/review.md`,
+      acceptance: current.spec.acceptance.map(({ id, statement }) => ({ id, statement })),
+      tasks: tasks.map((task) => ({
+        id: task.id,
+        title: task.title,
+        filesAllowed: task.contract.filesAllowed,
+        filesForbidden: task.contract.filesForbidden,
+        expectedArtifacts: task.contract.expectedArtifacts,
+      })),
+    });
+    const reviewContract = makeReviewContract(current.tasks);
+    const runtimeOptions = {
+      store: this.store,
+      plan,
+      approval,
+      spec: current.spec,
+      task: null,
+      runId: "",
+      skillId: "review" as const,
+      config: effectiveConfig,
+      profile,
+      provider: { endpoint: http.baseUrl, model: http.model, profile },
+      promptFingerprint: stableHash("legion-cli-independent-review/v1"),
+      configurationFingerprint: governedConfigurationFingerprint(effectiveConfig, profile, resolution.profileConfig),
+      contractFingerprint: stableHash(reviewContract),
+      sourceFingerprint: "",
+      jailFingerprint: "",
+      jailRoot: "",
+      manifestDigest: current.assurance.fingerprint ?? assuranceManifestDigest(plan),
+      allowedWrites: [] as string[],
+      filesForbidden: [] as string[],
+      artifactPaths: [] as string[],
+      reviewContract,
+    };
+    const resolveCurrentContext = async (identity: {
+      runId: string; sourceFingerprint: string; jailFingerprint: string; jailRoot: string;
+      allowedWrites: readonly string[]; filesForbidden: readonly string[]; artifactPaths: readonly string[];
+      externalTools?: readonly GovernedMcpDescriptor[];
+    }) => {
+      const refreshed = await this.#requireCurrentPlanApproval();
+      const refreshedPlan = refreshed.assurance.manifest;
+      const refreshedApproval = refreshed.assurance.approval;
+      if (!refreshedPlan || !refreshedApproval || refreshedPlan.security.mode !== "information-flow") {
+        refuse("information-flow review authority is no longer approved", "legion-cli plan approve");
+      }
+      const currentResolution = resolveAdapterId({
+        config: refreshed.config, skillId: "review", cliAdapter: selection.adapter, cliProfile: selection.profile,
+      });
+      if (currentResolution.id !== "http") refuse("information-flow review adapter changed", HINT.doctor);
+      const currentConfig = currentResolution.profileConfig
+        ? applyProfileArgs(refreshed.config, {
+            adapterId: currentResolution.id,
+            source: currentResolution.source,
+            ...(currentResolution.profile ? { profile: currentResolution.profile } : {}),
+            config: currentResolution.profileConfig,
+          })
+        : refreshed.config;
+      const currentHttp = currentConfig.adapter.http;
+      if (!currentHttp) refuse("information-flow review provider was removed", HINT.plan);
+      const currentProfile = currentResolution.profile ?? "default";
+      const currentReviewContract = makeReviewContract(refreshed.tasks, identity.runId);
+      return buildApprovedHttpAssuranceContext({
+        ...runtimeOptions,
+        plan: refreshedPlan,
+        approval: refreshedApproval,
+        spec: refreshed.spec,
+        config: currentConfig,
+        profile: currentProfile,
+        provider: { endpoint: currentHttp.baseUrl, model: currentHttp.model, profile: currentProfile },
+        configurationFingerprint: governedConfigurationFingerprint(currentConfig, currentProfile, currentResolution.profileConfig),
+        contractFingerprint: stableHash(currentReviewContract),
+        reviewContract: currentReviewContract,
+        runId: identity.runId,
+        sourceFingerprint: identity.sourceFingerprint,
+        jailFingerprint: identity.jailFingerprint,
+        jailRoot: identity.jailRoot,
+        allowedWrites: identity.allowedWrites,
+        filesForbidden: identity.filesForbidden,
+        artifactPaths: identity.artifactPaths,
+        externalTools: identity.externalTools ?? await currentGovernedMcpDescriptors(currentConfig, refreshedPlan),
+        manifestDigest: refreshed.assurance.fingerprint ?? assuranceManifestDigest(refreshedPlan),
+      });
+    };
+    return {
+      ...runtimeOptions,
+      withLock: <T>(runId: string, callback: () => Promise<T>) =>
+        this.#withLockOrRefuse(callback, { ownRunId: runId }),
+      resolveCurrentContext,
+    };
+  }
+
+  async #recordGovernedAppliedFiles(runId: string, paths: readonly string[]): Promise<void> {
+    if (paths.length === 0) return;
+    const governed = await inspectGovernedRun({ store: this.store, runId });
+    if (!governed || governed.checkpoint.phase !== "program") return;
+    const checkpoint = governed.checkpoint;
+    for (const projectRelativePath of paths) {
+      const operation = checkpoint.program.operations.find(
+        (candidate) => candidate.kind === "write" && normalizePathKey(candidate.path) === normalizePathKey(projectRelativePath),
+      );
+      if (!operation || operation.kind !== "write") continue;
+      const absolute = toFsPath(this.projectRoot, projectRelativePath);
+      const stat = await lstat(absolute);
+      if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error("governed applied artifact exceeds its bounded provenance size");
+      const bytes = await readFile(absolute);
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      const effect = checkpoint.effects.find((candidate) =>
+        candidate.kind === "write" &&
+        candidate.operationId === operation.id &&
+        candidate.state === "completed" &&
+        candidate.outcome?.kind === "success" &&
+        candidate.resultDigest === digest,
+      );
+      if (!effect) throw new Error(`applied governed output ${projectRelativePath} has no matching completed write action`);
+      await recordAppliedFileProvenance({
+        store: this.store,
+        withLock: (callback) => this.#withLockOrRefuse(callback, { ownRunId: runId }),
+        approvalId: checkpoint.identities.approvalId,
+        runId,
+        actionId: effect.actionId,
+        projectRelativePath,
+        bytes,
+      });
+    }
   }
 
   async #liveInProgressTask(): Promise<Task | null> {
@@ -6332,56 +8452,66 @@ export class LegionEngine {
       if (!resume && !isCurrent) continue;
       const httpRecovery = await classifyHttpCrashRecovery(this.projectRoot, task, resume);
       if (httpRecovery.kind === "safe" && resume?.schemaVersion === SCHEMA_VERSION.resume) {
-        await updateResumeStage(this.projectRoot, resume.runId, "interrupted", {
-          pid: null,
-          pidStartedAt: null,
-          engineOwnershipReleasedAt: nowIso(),
-          childTerminationUncertain: false,
-          interruptionReason: "HTTP execution was interrupted and has a compatible checkpoint",
-          recoveryCommand: `legion-cli execute --resume ${resume.runId}`,
+        // Already preserved for `execute --resume` (released ownership, resume hint recorded): nothing to recover,
+        // and a read-only entry must not re-run a governed mutation for it.
+        if (resume.stage === "interrupted" && resume.engineOwnershipReleasedAt &&
+            resume.recoveryCommand === `legion-cli execute --resume ${resume.runId}`) continue;
+        await this.#governanceMutation("recover", async () => {
+          await updateResumeStage(this.projectRoot, resume.runId, "interrupted", {
+            pid: null,
+            pidStartedAt: null,
+            engineOwnershipReleasedAt: nowIso(),
+            childTerminationUncertain: false,
+            interruptionReason: "HTTP execution was interrupted and has a compatible checkpoint",
+            recoveryCommand: `legion-cli execute --resume ${resume.runId}`,
+          });
+          await this.#audit(
+            "recover",
+            state.phase,
+            "cli",
+            { from: task.status, to: task.status, reason: "compatible HTTP checkpoint retained" },
+            task.id,
+          );
         });
-        await this.#audit(
-          "recover",
-          state.phase,
-          "cli",
-          { from: task.status, to: task.status, reason: "compatible HTTP checkpoint retained" },
-          task.id,
-        );
         continue;
       }
-      if (task.status === "verifying") {
-        await this.#audit(
-          "recover",
-          state.phase,
-          "cli",
-          { from: "verifying", to: "blocked", reason: "verification was interrupted" },
-          task.id,
-        );
-      }
-      if (resume?.schemaVersion === SCHEMA_VERSION.resume) {
-        await updateResumeStage(this.projectRoot, resume.runId, "interrupted", {
-          interruptionReason:
-            httpRecovery.kind === "manual"
-              ? httpRecovery.reason
-              : task.status === "verifying"
-                ? "verification was interrupted"
-                : "execution was interrupted",
-          recoveryCommand: `legion-cli task amend ${task.id} --unblock`,
-        });
-      }
-      await this.#transitionTaskTo(task.id, "blocked");
-      if (active.delete(task.id)) changedActive = true;
-      if (isCurrent) {
-        current = null;
-        changedCurrent = true;
-      }
+      await this.#governanceMutation("recover", async () => {
+        if (task.status === "verifying") {
+          await this.#audit(
+            "recover",
+            state.phase,
+            "cli",
+            { from: "verifying", to: "blocked", reason: "verification was interrupted" },
+            task.id,
+          );
+        }
+        if (resume?.schemaVersion === SCHEMA_VERSION.resume) {
+          await updateResumeStage(this.projectRoot, resume.runId, "interrupted", {
+            interruptionReason:
+              httpRecovery.kind === "manual"
+                ? httpRecovery.reason
+                : task.status === "verifying"
+                  ? "verification was interrupted"
+                  : "execution was interrupted",
+            recoveryCommand: `legion-cli task amend ${task.id} --unblock`,
+          });
+        }
+        await this.#transitionTaskTo(task.id, "blocked");
+        if (active.delete(task.id)) changedActive = true;
+        if (isCurrent) {
+          current = null;
+          changedCurrent = true;
+        }
+      });
     }
     if (changedCurrent || changedActive) {
-      await this.#writeState({
-        ...(await this.#readState()),
-        ...(changedCurrent ? { currentTaskId: null } : {}),
-        ...(changedActive ? { activeTaskIds: [...active] } : {}),
-      });
+      await this.#governanceMutation("recover", async () =>
+        this.#writeState({
+          ...(await this.#readState()),
+          ...(changedCurrent ? { currentTaskId: null } : {}),
+          ...(changedActive ? { activeTaskIds: [...active] } : {}),
+        }),
+      );
     }
   }
 
@@ -6407,12 +8537,22 @@ export class LegionEngine {
               await this.store.reconcileUnfinished();
               this.#reconciled = live.length === 0;
             }
-            await this.#recoverDeadInProgressLocked();
+            // Writers refuse when the approval identity disagrees with the latest governance epoch
+            // anchor (an interrupted or rolled-back reapproval) before recovery can append frames.
+            if (!opts?.allowLive) {
+              try {
+                await this.#assertGovernanceEpochCurrentLocked(opts);
+              } catch (err) {
+                if (!(err instanceof LegionRefuseError)) throw err;
+                guardError = err;
+              }
+            }
+            if (!guardError) await this.#recoverDeadInProgressLocked();
             // "Hands off during execute": one guard for every mutating verb. The run this call
             // is finishing (`ownRunId`) is exempt so execute's relock never refuses itself.
-            const resumeRun = opts?.allowLive ? null : await this.#liveResumeRun(live);
+            const resumeRun = opts?.allowLive || guardError ? null : await this.#liveResumeRun(live);
             const running = resumeRun ? [...live, resumeRun] : live;
-            if (!opts?.allowLive && running.length > 0) {
+            if (!opts?.allowLive && !guardError && running.length > 0) {
               try {
                 refuseIfLiveRun(running, {
                   ownRunId: opts?.ownRunId,
@@ -6488,7 +8628,10 @@ export class LegionEngine {
   /** Lock entry that finishes run `runId`: the live-run guard exempts that run's own marker. */
   async #relock<T>(runId: string | undefined, fn: () => Promise<T>): Promise<T> {
     try {
-      return await this.#withLockOrRefuse(fn, { ownRunId: runId });
+      return await this.#withLockOrRefuse(async () => {
+        await this.#assertAdoptedTraceCurrentLocked();
+        return fn();
+      }, { ownRunId: runId });
     } finally {
       // Whatever happened (refused, lock timeout, a throw before finishStartedSpawn), the run is over:
       // its marker must not outlive it in a long-lived process. A still-alive agent keeps it.
@@ -6498,7 +8641,10 @@ export class LegionEngine {
 
   /** Like #relock, but keeps the marker: execute's verification still runs after this entry. */
   async #relockKeep<T>(runId: string | undefined, fn: () => Promise<T>): Promise<T> {
-    return this.#withLockOrRefuse(fn, { ownRunId: runId });
+    return this.#withLockOrRefuse(async () => {
+      await this.#assertAdoptedTraceCurrentLocked();
+      return fn();
+    }, { ownRunId: runId });
   }
 
   /** The lock entry that starts a spawn: if it throws after the agent started, stop the agent and drop its marker. */

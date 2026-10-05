@@ -24,14 +24,20 @@ const LIFECYCLE_CORE = [
   ["spec approve", "Freeze the spec", "--message"],
   ["spec new", "Start the next increment after ship", ""],
   ["plan", "Break approved work into tasks", "--adapter, --profile"],
-  ["plan approve", "Approve the plan and its checks", "--check <command...>"],
+  ["plan approve", "Approve the plan and its checks", "--check <command...>, --assurance <yaml-file>|--assurance-off"],
   ["plan acceptance", "Record manual acceptance evidence", "--pass|--fail|--not-applicable <ids...>, --note"],
+  ["plan evidence", "Inspect requirement coverage and component evidence", "--json"],
+  ["plan impact", "Inspect changed bindings and exact rerun/reuse reasons", "--json"],
   ["execute [id]", "Run approved work to completion or a blocker", "--step, --retry, --resume <runId>, --until-blocked, --jobs 1-4, --fix, --adapter, --profile, --allow-no-sandbox (TTY confirmation)"],
+  ["execute approve-action", "Approve one exact pending governed effect", "--run, --action, --value-digest, --sink, --reason"],
   ["verify [id]", "Optional agent walkthrough (not a ship gate; notes not retained yet)", "--adapter, --profile"],
   ["review", "Spec-level review; fix tasks or in-place rewrites mean FAIL and re-review; PASS needs exit 0 and notes", "--adapter, --profile"],
   ["qa", "Score the product (when the slice is done)", "--mode full|no-browser"],
   ["qa checklist", "Tick AC items when no browser", "--tick"],
-  ["ship", "Final human review; stage diff", "--allow-degraded-qa, --pr (needs --commit), --commit"],
+  ["ship", "Final human review; stage diff", "--allow-degraded-qa, --pr (needs --commit), --commit, --bundle <directory>"],
+  ["ship export", "Export a completed historical delivery snapshot locally without recapturing project state", "--snapshot <id>, --out <directory>, --json"],
+  ["ship verify <bundle>", "Verify bundle integrity, authenticity, supplied content, and claims without project state", "--require, --trust-policy, --source, --artifacts, --expect-approval, --json"],
+  ["ship sign <bundle>", "Sign a prepared delivery bundle offline with an external Ed25519 key; encrypted keys prompt for a hidden TTY passphrase", "--key <path>, --project, --json"],
 ] as const;
 
 const ALWAYS_ON = [
@@ -68,6 +74,8 @@ const SHIPPED_ADJACENT = [
   ["packet new", "PM/designer request without the DAG", "--title, --request, --requester"],
   ["packet respond", "Spawn tickets from a packet (does not execute)", "--message, --title, --type, --priority"],
   ["context compact", "Manual compaction of done tasks", ""],
+  ["context trace", "Governance epochs, trace status, and the next command (read-only)", "--json"],
+  ["context trace validate", "Validate the governance trace; exit 0 only when valid or not adopted", "--json"],
   ["map", "Generate architecture markdown and fingerprints", "--refresh, --lsp, --no-lsp"],
   ["garden", "Stale wiki, orphans, duplicates", ""],
   ["brownfield [context]", "Audit an existing app: init a run, then roster|evidence|merge|review-status|pr-plan|dag|worktree|state|patterns", "--effort 1–5, --execute, --resume, --lsp"],
@@ -84,7 +92,7 @@ const SHIPPED_ADJACENT = [
   ["skills list", "List packaged and overlay skills", ""],
   ["skills show <id>", "Show one packaged or overlay skill", ""],
   ["skills install <dir|github:owner/repo@tag>", "Install a pinned skill or extension overlay", "--unsigned, --skill, --extension, --integrity"],
-  ["skills run <extension:id>", "Run a governed extension evidence job", "--profile"],
+  ["skills run <extension:id>", "Run an extension evidence job or component validator", "--profile, --validator-input"],
   ["wireframe", "Re-generate HTML wireframes after spec edits", "--restyle, --spawn, --adapter, --profile"],
 ] as const;
 

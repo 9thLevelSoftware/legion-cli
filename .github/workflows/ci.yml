@@ -48,6 +48,16 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --target wasm32-unknown-unknown
+
+      - name: Build native component host for the packed consumer
+        shell: bash
+        run: |
+          node scripts/build-wasi-host.mjs
+          # Keep the committed, CI-reproduced guest; only the local host binary is needed here.
+          git checkout -- extensions/json-contract
+
       - name: Clean consumer smoke
         run: pnpm smoke:consumer
 
@@ -111,5 +121,175 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  native:
+    name: Native component hosts (seven targets + release assembly)
+    uses: ./.github/workflows/native-host.yml
+
+  assurance-smoke:
+    name: Installed assurance smoke (information-flow lifecycle, bwrap)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --target wasm32-unknown-unknown
+
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Allow unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Build native component host
+        run: node scripts/build-wasi-host.mjs
+
+      - name: Build
+        run: pnpm build
+
+      - name: Installed assurance smoke
+        run: node scripts/assurance-smoke.mjs --evidence "$RUNNER_TEMP/assurance-evidence.json"
+
+      - name: Upload assurance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: assurance-evidence
+          path: ${{ runner.temp }}/assurance-evidence.json
+          if-no-files-found: error
+
+  governance-model:
+    name: Governance models (bounded Safety ≤20; boundary conformance, 1,000×40)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build schema and persist validators
+        run: pnpm build
+
+      - name: Install pinned Apalache 0.62.1
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/apalache-0.62.1.tgz"
+          curl --fail --location --retry 3 \
+            https://github.com/apalache-mc/apalache/releases/download/v0.62.1/apalache-0.62.1.tgz \
+            --output "$archive"
+          echo "93fef2f381d30465eff906a2d6afa3358cb2c9adf6a8aad3bec0ded4f45432bb  $archive" | sha256sum --check
+          quint_home="${QUINT_HOME:-$HOME/.quint}"
+          install_dir="$quint_home/apalache-dist-0.62.1"
+          # The release archive's top directory is apalache-0.62.1/; Quint expects apalache-dist-<v>/apalache/.
+          mkdir -p "$install_dir/apalache"
+          tar -xzf "$archive" -C "$install_dir/apalache" --strip-components=1
+          test -x "$install_dir/apalache/bin/apalache-mc"
+
+      - name: Verify bounded Safety invariants
+        run: |
+          set -euo pipefail
+          echo "Proof scope: Apalache 0.62.1 bounded model checking of Safety through 20 transitions; not a universal proof."
+          pnpm exec quint verify models/governance.qnt --apalache-version=0.62.1 --max-steps=20 --invariant=Safety
+          # Invariants are checked once per step (not per transition) to keep the 20-step bound tractable; the bound is unchanged.
+          pnpm exec quint verify models/governance-boundaries.qnt --apalache-version=0.62.1 --max-steps=20 --invariant=Safety --apalache-config models/governance-boundaries.apalache.json
+
+      - name: Generate and check 1,000 boundary ITF traces
+        run: |
+          set -euo pipefail
+          traces="$RUNNER_TEMP/boundary-itf"
+          mkdir -p "$traces"
+          pnpm exec quint run models/governance-boundaries.qnt \
+            --backend=typescript \
+            --seed=20261002 \
+            --max-steps=40 \
+            --max-samples=1000 \
+            --n-traces=1000 \
+            --mbt \
+            --out-itf "$traces/trace.itf.json"
+          echo "Conformance scope: every generated boundary trace is accepted by validateGovernanceFrames; seven counterexample classes per trace are rejected with their exact code."
+          node scripts/check-governance-boundaries.mjs --directory "$traces" --expected-traces 1000
+
+  governance-replay:
+    name: Governance public-API replay (shard ${{ matrix.shard }}/8 of 1,000×40)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build engine for API replay
+        run: pnpm build
+
+      - name: Install sandbox runner
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Allow unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Generate and replay deterministic ITF shard
+        run: |
+          set -euo pipefail
+          traces="$RUNNER_TEMP/governance-itf"
+          mkdir -p "$traces"
+          pnpm exec quint run models/governance.qnt \
+            --backend=typescript \
+            --seed=20261002 \
+            --max-steps=40 \
+            --max-samples=1000 \
+            --n-traces=1000 \
+            --mbt \
+            --out-itf "$traces/trace.itf.json"
+          echo "Replay scope: traces with index % 8 == ${{ matrix.shard }} of the complete 1,000-trace corpus through public LegionEngine APIs in isolated adopted projects; every trace's governance epochs must validate."
+          node scripts/replay-governance-itf.mjs --directory "$traces" --expected-traces 1000 --jobs 4 --shard ${{ matrix.shard }}/8
 
   # Windows-Docker CI leg: named deferral Q-WIN-DOCKER (root package.json legionQuarantine). Not required.

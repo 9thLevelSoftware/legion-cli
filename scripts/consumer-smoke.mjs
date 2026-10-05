@@ -1,81 +1,176 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { installPackedConsumer } from "./lib/packed-consumer.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const temporary = await mkdtemp(join(tmpdir(), "legion-consumer-"));
-function run(binary, args, cwd) {
-  let executable = binary;
-  let argv = args;
-  if (process.platform === "win32" && binary !== process.execPath) {
-    // Invoke package-manager JavaScript directly; .cmd shells cannot safely carry
-    // arbitrary consumer paths (spaces, percent signs, or metacharacters).
-    const manager = binary === "pnpm"
-      ? process.env.npm_execpath
-      : join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-    if (!manager || (binary === "pnpm" && !/pnpm\.(?:c?js)$/i.test(manager))) {
-      throw new Error("Run this smoke through pnpm smoke:consumer on Windows");
-    }
-    executable = process.execPath;
-    argv = [manager, ...args];
-  }
-  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    !/^npm_config_allow[-_]scripts(?:[-_].*)?$/i.test(key)));
-  const result = spawnSync(executable, argv, {
-    cwd, encoding: "utf8", windowsHide: true,
-    shell: false,
-    env: { ...environment, LEGION_CLI_ADAPTER: "fake", LEGION_CLI_SKILLS_DIR: "", LEGION_CLI_CRAFT_DIR: "", LEGION_CLI_EXTENSIONS_DIR: "" },
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.status !== 0) throw new Error(`${binary} ${args[0]} exited ${result.status}\n${result.stdout}\n${result.stderr}`);
-  return result.stdout;
-}
 try {
-  const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-  assert.equal(manifest.private, true);
-  const allowlist = new Set(manifest.legionPublishAllowlist);
-  const packs = join(temporary, "packs");
-  const consumer = join(temporary, "consumer");
-  await mkdir(packs);
-  await mkdir(consumer);
-  const npmConfig = join(temporary, "npmrc");
-  await writeFile(npmConfig, ""); // A clean consumer must not inherit machine-specific npm install policy.
-  const packed = [];
-  for (const directory of (await readdir(join(root, "packages"))).sort()) {
-    const packageRoot = join(root, "packages", directory);
-    const packageJson = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
-    if (!allowlist.has(packageJson.name)) continue;
-    assert.notEqual(packageJson.private, true);
-    run("pnpm", ["pack", "--pack-destination", packs], packageRoot);
-    packed.push(packageJson.name);
-  }
-  assert.equal(packed.length, allowlist.size, "all allowlisted packages must be packed");
-  await writeFile(join(consumer, "package.json"), JSON.stringify({ name: "legion-clean-consumer", private: true, type: "module" }));
-  const tarballs = (await readdir(packs)).filter((name) => name.endsWith(".tgz")).sort().map((name) => join(packs, name));
-  // Install all packages together so 0.0.0 dependencies resolve locally, without workspace links.
-  run("npm", ["install", "--userconfig", npmConfig, "--no-audit", "--no-fund", ...tarballs], consumer);
-  const installed = join(consumer, "node_modules", "@9thlevelsoftware");
-  for (const name of packed) assert.ok((await realpath(join(consumer, "node_modules", name))).startsWith(await realpath(consumer)));
-  const bin = join(installed, "legion-cli", "dist", "bin.js");
-  const help = run(process.execPath, [bin, "help", "--all"], consumer);
-  assert.match(help, /execute/);
+  const { consumer, bin, packed, runOk, runRefused, initGitRepo } = await installPackedConsumer(root, temporary);
   const project = join(consumer, "project");
   await mkdir(project);
-  const initialized = JSON.parse(run(process.execPath, [bin, "init", "--adapter", "fake", "--name", "Consumer", "--project", project, "--json"], consumer));
+  const initialized = JSON.parse(runOk(process.execPath, [bin, "init", "--adapter", "fake", "--name", "Consumer", "--project", project, "--json"], consumer));
   assert.notEqual(initialized.ok, false);
-  const status = JSON.parse(run(process.execPath, [bin, "status", "--project", project, "--json"], consumer));
+  const status = JSON.parse(runOk(process.execPath, [bin, "status", "--project", project, "--json"], consumer));
   assert.notEqual(status.ok, false);
-  const skills = JSON.parse(run(process.execPath, [bin, "skills", "list", "--project", project, "--json"], consumer));
+  const skills = JSON.parse(runOk(process.execPath, [bin, "skills", "list", "--project", project, "--json"], consumer));
   assert.match(JSON.stringify(skills), /execute/);
   assert.match(JSON.stringify(skills), /accessibility/, "extension packs must ship in the installed package");
   const craft = await readFile(join(project, ".legion-cli", "design", "craft", "typography.md"), "utf8");
   assert.ok(craft.length > 0);
-  const brownfield = run(process.execPath, [bin, "help", "brownfield"], consumer);
+  const packageProbe = join(consumer, "package-probe.mjs");
+  await writeFile(packageProbe, [
+    'import * as persist from "@9thlevelsoftware/legion-cli-persist";',
+    'import * as sandbox from "@9thlevelsoftware/legion-cli-sandbox";',
+    "export { persist, sandbox };",
+    "",
+  ].join("\n"), "utf8");
+  const { persist, sandbox } = await import(pathToFileURL(packageProbe).href);
+  const store = persist.createLegionStore(project);
+  const config = await store.readConfig();
+  const hardened = sandbox.hardenedSandboxAvailable(config.sandbox);
+  let activeSpecId;
+  if (hardened) {
+    const specAnswers = [
+      "Teammates who need a simple check-in.",
+      "They cannot tell who is available.",
+      "A check-in is recorded in under five seconds.",
+      "Do not change auth. We will not build payroll.",
+      "Open the CLI, check in, see confirmation.",
+      "Return a clear error when unavailable.",
+      "none",
+      "CLI",
+      "none",
+      "none",
+      "Y",
+      "Y",
+    ].join("\n") + "\n";
+    runOk(process.execPath, [bin, "spec", "--project", project], consumer, specAnswers);
+    const state = await store.readState();
+    activeSpecId = state.data.activeSpecId;
+    assert.ok(activeSpecId, "spec command must set the active spec through the public store");
+    const spec = await store.readSpec(activeSpecId);
+    assert.ok(spec.data.acceptance.length > 0, "active spec must provide acceptance criteria");
+    const challenge = JSON.parse(runOk(process.execPath, [bin, "spec", "--json", "--project", project], consumer));
+    if (challenge.challenge.status === "manual_required") {
+      runOk(process.execPath, [bin, "spec", "--manual-review", "--project", project], consumer, [
+        "People can complete a check-in in under five seconds.",
+        "Show a clear retryable error when check-in cannot be saved.",
+        "Keep authentication unchanged and exclude payroll from this increment.",
+        "I acknowledge",
+      ].join("\n") + "\n");
+    } else {
+      assert.equal(challenge.challenge.status, "complete", "spec challenge must complete or require its documented manual fallback");
+    }
+    runOk(process.execPath, [bin, "spec", "approve", "--message", "Consumer smoke acceptance", "--project", project], consumer);
+
+    const taskId = "consumer-smoke-task";
+    await store.writeTask({
+      schemaVersion: "legion-cli-task/v1",
+      id: taskId,
+      title: "Write the check-in result",
+      status: "ready",
+      type: "feature",
+      priority: "P0",
+      specId: activeSpecId,
+      blockedBy: [],
+      blocks: [],
+      assignee: "agent",
+      notes: "",
+      contract: {
+        filesAllowed: ["src/main.js"],
+        filesForbidden: [".git/**"],
+        expectedArtifacts: ["src/main.js"],
+        verificationCommands: ['node -e "process.exit(0)"'],
+        maxFilesTouched: 20,
+      },
+    }, "Implement the approved check-in behavior.\n");
+    await store.writeMarkdown(`.legion-cli/plans/${activeSpecId}.md`, {}, "# Consumer plan\n\nImplement the check-in behavior.\n");
+    // The fixture carries the check-in module the task contract names: the fake adapter writes only the artifacts
+    // it is given, and this smoke proves lifecycle wiring, not generated code.
+    await mkdir(join(project, "src"));
+    await writeFile(join(project, "src", "main.js"), "export function checkIn(name) {\n  return `${name} checked in`;\n}\n");
+    await initGitRepo(project);
+    const plan = JSON.parse(runOk(process.execPath, [bin, "plan", "--project", project, "--json"], consumer));
+    assert.notEqual(plan.readiness, "FAIL", JSON.stringify(plan));
+    runOk(process.execPath, [
+      bin, "plan", "approve", "--project", project, "--check", 'node -e "process.exit(0)"',
+    ], consumer);
+    // Focused execute runs the task, its planned checks and the independent review in one call. The installed
+    // CLI's fake-adapter seam supplies the reviewer's explicit run-cache notes.
+    const reviewNotes = JSON.stringify([
+      { path: ".legion-cli/cache/runs/<id>/review.md", content: "# Independent review\n\nThe check-in task meets the approved spec.\n\nVerdict: PASS\n" },
+    ]);
+    const execution = runRefused(process.execPath, [bin, "execute", "--project", project, "--json"], consumer,
+      /"status": "blocked"[\s\S]*"blocker": "acceptance evidence pending/, { LEGION_CLI_FAKE_ARTIFACTS: reviewNotes });
+    assert.match(execution, new RegExp(`"completedTaskIds": \\[\\s*"${taskId}"`), execution);
+    const acceptanceIds = (await store.readSpec(activeSpecId)).data.acceptance.map((criterion) => criterion.id);
+    runOk(process.execPath, [bin, "plan", "acceptance", "--pass", ...acceptanceIds, "--note", "Consumer smoke manual acceptance", "--project", project], consumer);
+    const shipped = runOk(process.execPath, [bin, "ship", "--project", project], consumer, "y\n");
+    assert.match(shipped, /Ship receipt written/);
+    assert.ok((await readFile(join(project, "src", "main.js"), "utf8")).length > 0);
+  } else {
+    console.log(`SKIP lifecycle init→spec→plan→execute→ship: installed sandbox configuration (${config.sandbox.backend}) has no hardened backend`);
+  }
+
+  const validatorData = join(project, "data", "product.json");
+  const validatorInput = join(consumer, "validator-input.json");
+  await mkdir(join(project, "data"));
+  await writeFile(validatorData, JSON.stringify({ release: "consumer-smoke", approved: true }));
+  await writeFile(validatorInput, JSON.stringify({
+    schemaVersion: "legion-cli-component-invocation/v1",
+    checks: [{
+      id: "json-contract",
+      configuration: {
+        assertions: [{
+          id: "approved-release",
+          predicate: { file: "data/product.json", pointer: "/approved", op: "eq", expected: true },
+        }],
+      },
+      files: ["data/product.json"],
+    }],
+  }));
+  const validator = JSON.parse(runOk(process.execPath, [
+    bin, "skills", "run", "extension:json-contract", "--project", project, "--validator-input", validatorInput, "--json",
+  ], consumer));
+  assert.equal(validator.ok, true, JSON.stringify(validator));
+  assert.equal(validator.counts.passed, 1, JSON.stringify(validator));
+  assert.equal(validator.evidence.checks[0].status, "passed", JSON.stringify(validator));
+  const legacyGovernedRun = runRefused(process.execPath, [
+    bin, "skills", "run", "extension:accessibility", "--project", project,
+  ], consumer, /evidence\.json/i);
+  assert.doesNotMatch(legacyGovernedRun, /validator-input.*only supported for component/i);
+
+  runRefused(process.execPath, [
+    bin, "skills", "run", "extension:accessibility", "--project", project, "--validator-input", validatorInput,
+  ], consumer, /validator-input.*only supported for component/i);
+  const legacyFixture = join(consumer, "legacy-vendor");
+  await mkdir(legacyFixture);
+  await writeFile(join(legacyFixture, "vendor-input.json"), await readFile(validatorInput, "utf8"));
+  const legacyRefusal = runRefused(process.execPath, [
+    bin, "skills", "run", "extension:accessibility", "--project", project,
+    "--validator-input", join(legacyFixture, "vendor-input.json"),
+  ], consumer, /validator-input.*only supported for component/i);
+  assert.match(legacyRefusal, /extension:accessibility/);
+  const brownfield = runOk(process.execPath, [bin, "help", "brownfield"], consumer);
   assert.match(brownfield, /brownfield/);
-  console.log(JSON.stringify({ ok: true, packages: packed, checks: ["local tarball installation", "no workspace links", "installed help", "init", "status JSON", "skill resources", "extension resources", "craft resources", "brownfield help"] }, null, 2));
+  const checks = [
+    "local tarball installation", "no workspace links", "installed help", "bare status",
+    "init", "status JSON", "skill resources", "extension resources", "craft resources",
+    "installed JSON contract component business assertion", "legacy vendor governed refusal",
+    "brownfield help",
+  ];
+  if (hardened) checks.push("interactive spec and approval", "plan and approval", "execute", "ship");
+  console.log(JSON.stringify({
+    ok: true,
+    packages: packed,
+    checks,
+    ...(hardened ? {} : {
+      skipped: `Lifecycle init→spec→plan→execute→ship requires a hardened OS sandbox; installed backend ${config.sandbox.backend} is not hardened`,
+    }),
+  }, null, 2));
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }

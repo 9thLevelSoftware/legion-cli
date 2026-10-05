@@ -1,10 +1,13 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  ASSURANCE_PLAN_PATH,
+  createLegionEngine,
   evaluateQaEvidenceFreshness,
   listRunRecoveryStatuses,
   sliceTasks,
   type RunRecoveryStatus,
+  type WorkflowStatus,
 } from "@9thlevelsoftware/legion-cli-core";
 import { unresolvedBlockers } from "@9thlevelsoftware/legion-cli-graph";
 import {
@@ -14,6 +17,7 @@ import {
   listTaskFiles,
   readAuditEvents,
   toFsPath,
+  type LegionReader,
   type LegionStore,
   type TaskFileEntry,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -107,7 +111,44 @@ export type DashboardSnapshot = {
     failed: string[];
     skipped: string[];
   } | null;
+  /** Focused/assurance workflow projection; null when `legion-cli status` would not compute one. */
+  workflow: DashboardWorkflow | null;
+  /** Set when the workflow projection could not be computed; never mistaken for "no assurance". */
+  workflowError: string | null;
 };
+
+export type DashboardWorkflow = {
+  assurance: WorkflowStatus["assurance"] | null;
+  blocker: string | null;
+  next: string;
+};
+
+/**
+ * Read-only workflow projection with the same guard as `legion-cli status`: legacy executing projects
+ * (no focused profile, no adopted assurance) have none. Unknown coverage never reports a valid trace.
+ */
+export async function loadWorkflowProjection(
+  store: LegionReader,
+  phase: Phase,
+  config: LegionConfig | null,
+): Promise<{ workflow: DashboardWorkflow | null; workflowError: string | null }> {
+  if (phase === "uninitialized") return { workflow: null, workflowError: null };
+  const assuranceAdopted = await store.pathExists(ASSURANCE_PLAN_PATH);
+  if (phase === "executing" && config?.workflow?.profile !== "focused" && !assuranceAdopted) {
+    return { workflow: null, workflowError: null };
+  }
+  let status: WorkflowStatus;
+  try {
+    status = await createLegionEngine(store.projectRoot).getWorkflowStatus();
+  } catch (err) {
+    return { workflow: null, workflowError: err instanceof Error ? err.message : String(err) };
+  }
+  let assurance = status.assurance ?? null;
+  if (assurance?.traceStatus === "valid" && assurance.coverage?.some((criterion) => criterion.status === "unknown")) {
+    assurance = { ...assurance, traceStatus: "incomplete" };
+  }
+  return { workflow: { assurance, blocker: status.blocker, next: status.next }, workflowError: null };
+}
 
 const UNINITIALIZED: StateFile = {
   schemaVersion: SCHEMA_VERSION.state,
@@ -395,6 +436,7 @@ export async function loadSnapshot(
     ...run,
     ...(run.recoveryCommand ? { recoveryCommand: projectScopedCommand(run.recoveryCommand, projectRoot) } : {}),
   }));
+  const workflowProjection = await loadWorkflowProjection(store, state.phase, await readOptionalConfig(store));
   return {
     readOnly: true,
     project: project
@@ -418,5 +460,6 @@ export async function loadSnapshot(
     runs,
     qaEvidence,
     ...specView,
+    ...workflowProjection,
   };
 }

@@ -1,6 +1,8 @@
 export { GENERATED_END, GENERATED_START, mergeArchitecture, renderArchitecture } from "./architecture.js";
 export { MapError, MAP_HINT } from "./errors.js";
 export { fingerprintHash } from "./fingerprint.js";
+export { bindKnowledgeUnit } from "./knowledge.js";
+export type { KnowledgeBindingResult } from "./knowledge.js";
 export { ensureRealMapDir, generateMap, readExistingMapFile, writeMapFile } from "./generate.js";
 export type { GenerateMapResult, MapLspMode, MapOptions } from "./generate.js";
 export {

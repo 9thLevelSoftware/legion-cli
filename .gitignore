@@ -11,3 +11,5 @@ Thumbs.db
 .grok-worktrees/
 scratchpad/
 packages/agents/skills/
+_apalache-out/
+packages/sandbox/native/target/

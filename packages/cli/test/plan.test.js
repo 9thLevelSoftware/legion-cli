@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
@@ -511,4 +514,115 @@ test("help lists plan adapter flag", () => {
   assert.match(normalize(result.stdout), /--adapter/);
   const all = runCli(["help", "--all"]);
   assert.match(normalize(all.stdout), /plan[\s\S]*--adapter/);
+});
+
+test("plan evidence and impact expose absent adoption without manufacturing covered criteria", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir);
+    for (const command of ["evidence", "impact"]) {
+      const result = runCli(["plan", command, "--project", dir, "--json"]);
+      assert.equal(result.status, 0, result.stderr);
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.adopted, false);
+      assert.equal(report.traceStatus, "not-adopted");
+      assert.equal(report.criteria[0].status, "unknown");
+      assert.deepEqual(report.checks, []);
+      if (command === "impact") assert.deepEqual(report.impacts, []);
+    }
+  });
+});
+
+test("CLI evidence, impact and status surface unknown authored bindings without a native runtime", async () => {
+  await withTempDir(async (dir) => {
+    const engine = await seedFrozen(dir, { mustNotChange: [] });
+    const planned = runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.equal(planned.status, 0, planned.stderr);
+    await writeFile(join(dir, ".legion-cli/plans/spec-checkin.md"), "# Reviewed plan\n\nImplement the authored requirement.\n");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src/main.ts"), "export function approved() { return 42; }\n");
+    const draft = join(dir, "assurance.json");
+    await writeFile(draft, JSON.stringify({
+      schemaVersion: "legion-cli-assurance-plan/v1", specId: "spec-checkin", acceptanceIds: ["AC-01"], taskIds: ["TSK-0001"],
+      security: { mode: "adapter-default", sources: [], sinks: [], transformations: [], tasks: [], externalCalls: [] },
+      knowledge: [{ id: "approved-function", statement: "Return the approved answer", source: { path: "src/main.ts", selector: { kind: "function", qualifiedName: "approved" } }, acceptanceIds: ["AC-01"], taskIds: ["TSK-0001"], dependsOn: [], checkIds: [] }],
+      validators: [], delivery: { artifacts: [] },
+    }));
+    const adopted = runCli(["plan", "approve", "--assurance", draft, "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.equal(adopted.status, 0, adopted.stderr);
+    assert.match(adopted.stdout, /information-flow not enforced/);
+    const bound = runCli(["plan", "evidence", "--project", dir, "--json"]);
+    assert.equal(bound.status, 0, bound.stderr);
+    assert.equal(JSON.parse(bound.stdout).units[0].status, "bound");
+    await writeFile(join(dir, "src/main.ts"), "export function renamed() { return 42; }\n");
+    const evidence = runCli(["plan", "evidence", "--project", dir, "--json"]);
+    assert.equal(evidence.status, 0, evidence.stderr);
+    const report = JSON.parse(evidence.stdout);
+    assert.equal(report.adopted, true);
+    assert.equal(report.units[0].status, "unknown");
+    assert.equal(report.criteria[0].status, "unknown");
+    assert.equal(report.policyStatus, "not-enforced");
+    assert.equal(report.traceStatus, "incomplete");
+    const impact = runCli(["plan", "impact", "--project", dir, "--json"]);
+    assert.equal(impact.status, 0, impact.stderr);
+    assert.deepEqual(JSON.parse(impact.stdout).impacts[0].taskIds, ["TSK-0001"]);
+    assert.deepEqual(JSON.parse(impact.stdout).impacts[0].acceptanceIds, ["AC-01"]);
+    const status = runCli(["status", "--project", dir, "--json"]);
+    assert.equal(status.status, 2, status.stderr);
+    const projected = JSON.parse(status.stdout);
+    assert.equal(projected.assurance.coverage[0].status, "unknown");
+    assert.equal(projected.assurance.traceStatus, "incomplete");
+    assert.equal((await engine.store.readTask("TSK-0001")).data.status, "ready");
+  });
+});
+
+test("context trace validate passes an adopted epoch and fails after a frame is deleted", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir, { mustNotChange: [] });
+    const planned = runCli(["plan", "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.equal(planned.status, 0, planned.stderr);
+    await writeFile(join(dir, ".legion-cli/plans/spec-checkin.md"), "# Reviewed plan\n\nImplement the authored requirement.\n");
+    const draft = join(dir, "assurance.json");
+    await writeFile(draft, JSON.stringify({
+      schemaVersion: "legion-cli-assurance-plan/v1", specId: "spec-checkin", acceptanceIds: ["AC-01"], taskIds: ["TSK-0001"],
+      security: { mode: "adapter-default", sources: [], sinks: [], transformations: [], tasks: [], externalCalls: [] },
+      knowledge: [], validators: [], delivery: { artifacts: [] },
+    }));
+    const legacy = runCli(["context", "trace", "validate", "--project", dir, "--json"]);
+    assert.equal(legacy.status, 0, legacy.stderr);
+    assert.deepEqual(JSON.parse(legacy.stdout), { ok: true, current: { approvalId: null, adopted: false, status: "not-adopted" }, epochs: [] });
+
+    const adopted = runCli(["plan", "approve", "--assurance", draft, "--project", dir], { env: { LEGION_CLI_ADAPTER: "fake" } });
+    assert.equal(adopted.status, 0, adopted.stderr);
+    const valid = runCli(["context", "trace", "validate", "--project", dir, "--json"]);
+    assert.equal(valid.status, 0, valid.stderr);
+    const report = JSON.parse(valid.stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.current.status, "valid");
+    assert.equal(report.current.adopted, true);
+    assert.equal(report.epochs.length, 1);
+    assert.deepEqual(
+      [report.epochs[0].approvalId, report.epochs[0].status, report.epochs[0].frames, report.epochs[0].lastAction, report.epochs[0].lastOutcome],
+      [report.current.approvalId, "valid", 2, "approval-adopt", "success"],
+    );
+    assert.deepEqual(report.epochs[0].violations, []);
+    const text = runCli(["context", "trace", "--project", dir]);
+    assert.equal(text.status, 0, text.stderr);
+    assert.match(normalize(text.stdout), new RegExp(`#0  ${report.current.approvalId}  adopted  valid; 2 frames; last approval-adopt/success`));
+    assert.match(normalize(text.stdout), /Next: legion-cli status/);
+
+    const segment = join(dir, ".legion-cli", "audit", "governance", createHash("sha256").update(report.current.approvalId).digest("hex"));
+    await rm(join(segment, "0.json"));
+    const invalid = runCli(["context", "trace", "validate", "--project", dir, "--json"]);
+    assert.equal(invalid.status, 1, invalid.stderr);
+    const failed = JSON.parse(invalid.stdout);
+    assert.equal(failed.ok, false);
+    assert.equal(failed.current.status, "invalid");
+    assert.equal(failed.epochs[0].status, "invalid");
+    const invalidText = runCli(["context", "trace", "validate", "--project", dir]);
+    assert.equal(invalidText.status, 1);
+    assert.match(normalize(invalidText.stdout), /Governance trace invalid\. Next: legion-cli plan approve/);
+    const traceText = runCli(["context", "trace", "--project", dir]);
+    assert.equal(traceText.status, 0, traceText.stderr);
+    assert.match(normalize(traceText.stdout), /Next: legion-cli plan approve/);
+  });
 });

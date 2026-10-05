@@ -1,10 +1,12 @@
 import type { FakeArtifact, FakeHoldWait } from "@9thlevelsoftware/legion-cli-agents";
+import type { AssuranceEvidenceReport, AssuranceStatus } from "./assurance.js";
 import type { MapOptions, MapResult } from "./map.js";
 import type { GardenReport, SearchHit } from "@9thlevelsoftware/legion-cli-wiki";
 import type {
   AdapterId,
   AdapterResolutionSource,
   AcceptanceReceipt,
+  ActionApproval,
   AgentUsage,
   Assumption,
   BrownfieldDagNode,
@@ -15,6 +17,9 @@ import type {
   ControlMode,
   DiscussDecision,
   FileContract,
+  GovernanceAction,
+  GovernanceFrame,
+  GovernanceViolation,
   IngestReceipt,
   IntentAnswersFile,
   IntentMapped,
@@ -70,6 +75,35 @@ export type LegionEngineOptions = {
   verificationTimeoutMs?: number;
   /** Test-only: overrides hardened-backend detection for the `ingest --distill` refusal. */
   fakeDistillSandboxHardened?: boolean;
+  /** Test-only: runs at each adopted governance boundary point (crash-consistency fault injection). */
+  fakeGovernanceFault?: (point: GovernanceFaultPoint) => Promise<void>;
+};
+
+export type GovernanceFaultPoint =
+  | "after-begin-frame"
+  | "after-begin-head"
+  | "after-mutation"
+  | "after-end-frame"
+  | "after-end-head";
+
+export type GovernanceInspection = {
+  current: {
+    approvalId: string | null;
+    adopted: boolean;
+    status: "valid" | "incomplete" | "invalid" | "not-adopted" | "interrupted-epoch";
+  };
+  epochs: Array<{
+    sequence: number;
+    approvalId: string | null;
+    adopted: boolean;
+    recordedAt: string;
+    status: "valid" | "incomplete" | "invalid" | "not-adopted";
+    frames: number;
+    headDigest: string | null;
+    lastAction: GovernanceAction | null;
+    lastOutcome: GovernanceFrame["outcome"] | null;
+    violations: GovernanceViolation[];
+  }>;
 };
 
 export type IntentState = {
@@ -106,6 +140,8 @@ export type InitOptions = {
 export type PlanApprovalOptions = {
   /** Additional project-level checks, merged with config.workflow.verificationCommands. */
   verificationCommands?: string[];
+  assuranceManifestPath?: string;
+  assuranceOff?: boolean;
 };
 
 export type AcceptanceEvidenceInput = {
@@ -144,6 +180,7 @@ export type WorkflowStatus = {
   acceptance: WorkflowAcceptanceStatus;
   blocker: string | null;
   next: string;
+  assurance?: AssuranceStatus;
 };
 
 export type WorkflowExecutionResult = {
@@ -154,6 +191,7 @@ export type WorkflowExecutionResult = {
   next: string;
   tasks?: ExecuteTaskResult[];
   warnings?: string[];
+  assurance?: Pick<AssuranceEvidenceReport, "checks" | "policyStatus" | "traceStatus">;
 };
 
 export type { AcceptanceReceipt, PlanApprovalReceipt, WorkflowEvidenceReceipt };
@@ -396,9 +434,49 @@ export type ShipOptions = {
   confirm?: (preview: ShipPreview) => Promise<boolean>;
   /** Where the confirm answer came from; recorded in the ship audit event. */
   confirmSource?: "tty" | "piped";
+  /** Capture a durable immutable delivery and export it after successful delivery. */
+  bundleDirectory?: string;
   /** Test seam for `gh pr create`. */
   prCreate?: (input: { cwd: string; title: string; body: string }) => { url?: string; error?: string };
 };
+
+export type ShipBundleStatus =
+  | { status: "exported"; path: string; manifestSha256: string; snapshotDigest: string; warning?: string }
+  | { status: "failed"; path: string; reason: string; recoveryHint: string };
+
+export type ShipDeliverySnapshotStatus = { status: "pending"; error: string; recoveryHint: string };
+
+
+export type ShipExportResult = {
+  snapshotId: string;
+  directory: string;
+  manifestSha256: string;
+  /** SHA-256 of the exact exported `predicate.json` bytes. */
+  predicateSha256: string;
+  snapshotDigest: string;
+};
+
+export type GovernedActionApprovalOptions = {
+  runId: string;
+  actionId: string;
+  valueDigest: string;
+  sinkId: string;
+  operatorId: string;
+  reason: string;
+};
+export type PendingGovernedAction = {
+  runId: string;
+  actionId: string;
+  actionKind: "provider" | "write" | "http-mcp";
+  valueDigest: string;
+  sinkId: string;
+  requestDigest: string;
+  confidentiality: "public" | "workspace" | "sealed";
+  integrity: "approved" | "untrusted";
+  target: string;
+};
+
+export type GovernedActionApprovalResult = ActionApproval;
 
 export type ExecuteOptions = {
   /** Resume a compatible interrupted engine-owned HTTP run. */
@@ -511,6 +589,9 @@ export type ShipReceipt = {
   commitSha?: string;
   prUrl?: string;
   receiptPath: string;
+  snapshotId?: string;
+  deliverySnapshot?: ShipDeliverySnapshotStatus;
+  bundle?: ShipBundleStatus;
 };
 
 export type IngestSource = string;

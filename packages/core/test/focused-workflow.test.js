@@ -9,7 +9,7 @@ import {
   SpecApprovalReceiptSchema,
   WorkflowEvidenceReceiptSchema,
 } from "@9thlevelsoftware/legion-cli-schema";
-import { LegionEngine, LegionRefuseError } from "../dist/index.js";
+import { LegionEngine, LegionRefuseError, openEngineCommand } from "../dist/index.js";
 import { prepareDiscovery, recordDiscoverySelection } from "../dist/discovery.js";
 import {
   WORKFLOW_APPROVAL_PATH,
@@ -343,9 +343,12 @@ test("failed planned checks stay blocked until retry and retry reruns only the f
     await withEngine(async ({ engine, store, dir }) => {
       await initFocused(engine);
       await seedFocusedPlan(store, dir, { phase: "executing", taskStatus: "done" });
-      const passCount = ".legion-cli/cache/focused-pass-count";
-      const failCount = ".legion-cli/cache/focused-fail-count";
-      const retryMarker = ".legion-cli/cache/focused-retry-ok";
+      // Counters live in an untracked `.cache` tree: writable inside the hardened verification sandbox (which binds
+      // `.legion-cli` read-only) and excluded from the workflow product fingerprint.
+      await mkdir(join(dir, ".cache"), { recursive: true });
+      const passCount = ".cache/focused-pass-count";
+      const failCount = ".cache/focused-fail-count";
+      const retryMarker = ".cache/focused-retry-ok";
       const passScript = `require('node:fs').appendFileSync('${passCount}','x'),process.exit(0)`;
       const failScript = `require('node:fs').appendFileSync('${failCount}','x'),process.exit(require('node:fs').existsSync('${retryMarker}')?0:1)`;
       const pass = `${quoteArg(process.execPath)} -e ${JSON.stringify(passScript)}`;
@@ -476,6 +479,23 @@ test("a live workflow claim excludes a second pipeline", async () => {
       await releaseWorkflowClaim(store, claim.token);
     }
     assert.equal(await store.pathExists(".legion-cli/workflow/run-claim.yaml"), false);
+  });
+});
+
+test("crash recovery of a dead run's open command does not resurrect a released workflow claim", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initFocused(engine);
+    await seedFocusedPlan(store, dir, { phase: "executing", taskStatus: "done" });
+    await engine.approvePlan({ id: "owner" });
+    // A killed run leaves its command open while a later workflow claims and releases.
+    await openEngineCommand(dir, "execute-killed-run");
+    const claim = await acquireWorkflowClaim(store);
+    await releaseWorkflowClaim(store, claim.token);
+    assert.equal(await store.pathExists(".legion-cli/workflow/run-claim.yaml"), false);
+    await new LegionEngine(dir).recoverStaleInProgress();
+    assert.equal(await store.pathExists(".legion-cli/workflow/run-claim.yaml"), false);
+    const next = await acquireWorkflowClaim(store);
+    await releaseWorkflowClaim(store, next.token);
   });
 });
 

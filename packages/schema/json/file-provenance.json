@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-file-provenance/v1"
+    },
+    "approvalId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "policyFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "files": {
+      "maxItems": 16384,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "label": {
+            "type": "object",
+            "properties": {
+              "origins": {
+                "maxItems": 256,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                }
+              },
+              "integrity": {
+                "type": "string",
+                "enum": [
+                  "approved",
+                  "untrusted"
+                ]
+              },
+              "confidentiality": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "workspace",
+                  "sealed"
+                ]
+              }
+            },
+            "required": [
+              "origins",
+              "integrity",
+              "confidentiality"
+            ],
+            "additionalProperties": false
+          },
+          "producer": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "governed-action"
+                  },
+                  "runId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "actionId": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "runId",
+                  "actionId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "verification"
+                  },
+                  "runId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "checkIds": {
+                    "maxItems": 256,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                    }
+                  },
+                  "commandFingerprint": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "runId",
+                  "checkIds",
+                  "commandFingerprint"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "recordedAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "label",
+          "producer",
+          "recordedAt"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "approvalId",
+    "policyFingerprint",
+    "files"
+  ],
+  "additionalProperties": false
+}

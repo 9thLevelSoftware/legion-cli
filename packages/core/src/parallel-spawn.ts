@@ -121,10 +121,14 @@ export async function prepareSandboxedSpawn(started: LiveStartedSpawn): Promise<
 
 export async function applyPreparedSandboxSpawn(
   prepared: PreparedSandboxSpawn,
+  onApplied?: (paths: readonly string[]) => Promise<void>,
 ): Promise<SandboxApplyResult> {
   const sandbox = prepared.started.sandbox;
   if (!sandbox) throw new Error("parallel execute requires an individual sandbox jail");
-  return sandbox.applyOutput(prepared.output);
+  const result = await sandbox.applyOutput(prepared.output);
+  if (result.copied.length > 0) await onApplied?.(result.copied);
+  return result;
+
 }
 
 export async function discardPreparedSandboxSpawn(_prepared: PreparedSandboxSpawn): Promise<void> {

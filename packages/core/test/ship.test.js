@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { stringify } from "yaml";
 
-import { SymlinkRefusedError, appendAuditEvent } from "@9thlevelsoftware/legion-cli-persist";
+import { SymlinkRefusedError, appendAuditEvent, inspectGovernanceTrace, readDeliverySnapshot } from "@9thlevelsoftware/legion-cli-persist";
+import { stableHash } from "@9thlevelsoftware/legion-cli-http";
 import { LegionRefuseError } from "../dist/index.js";
 import { appendFile } from "node:fs/promises";
 import {
@@ -15,8 +18,10 @@ import {
   initGitRepo,
   initProject,
   makeQaScore,
+  passingVerificationCommand,
   seedPlanReady,
   withEngine,
+  withFakeAdapter,
   writeQaFile,
 } from "./helpers.js";
 
@@ -55,6 +60,116 @@ test("ship receipt records QA mode/score and writes events.jsonl", async () => {
   });
 });
 
+test("bundle capture finalizes immutable delivery facts and exports historical product", async (t) => {
+  await withEngine(async ({ engine, store, dir }) => {
+    const bundleRoot = await mkdtemp(join(tmpdir(), "legion-ship-bundle-"));
+    t.after(() => rm(bundleRoot, { recursive: true, force: true }));
+    await initProject(engine);
+    const source = join(dir, "ship-source.txt");
+    await writeFile(source, "captured bytes\n", "utf8");
+    await seedReadyToShip(store);
+    const bundle = join(bundleRoot, "first-bundle");
+    const receipt = await engine.ship({ bundleDirectory: bundle, confirm: async () => true });
+    assert.ok(receipt.snapshotId);
+    assert.equal(receipt.bundle.status, "exported", JSON.stringify(receipt.bundle));
+    const manifestSha256 = createHash("sha256").update(await readFile(join(bundle, "manifest.json"))).digest("hex");
+    assert.deepEqual(Object.keys(receipt.bundle).sort(), ["manifestSha256", "path", "snapshotDigest", "status"]);
+    assert.equal(receipt.bundle.path, bundle);
+    assert.equal(receipt.bundle.manifestSha256, manifestSha256);
+    const snapshot = await readDeliverySnapshot(store, receipt.snapshotId);
+    assert.equal(snapshot.state, "complete");
+    const frozen = JSON.parse(await readFile(join(bundle, "product.json"), "utf8"));
+    await writeFile(source, "changed checkout\n", "utf8");
+    const historical = join(bundleRoot, "historical-bundle");
+    const exported = await engine.exportDeliverySnapshot(receipt.snapshotId, historical);
+    assert.equal(exported.manifestSha256, manifestSha256);
+    assert.equal(exported.predicateSha256, createHash("sha256").update(await readFile(join(historical, "predicate.json"))).digest("hex"));
+    assert.deepEqual(JSON.parse(await readFile(join(historical, "product.json"), "utf8")), frozen);
+  });
+});
+
+test("bundle target failure is reported without failing the completed ship", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    const target = join(dir, "occupied");
+    await mkdir(target, { recursive: true });
+    const receipt = await engine.ship({ bundleDirectory: target, confirm: async () => true });
+    assert.equal(receipt.phase, "shipped");
+    assert.equal(receipt.bundle.status, "failed");
+    assert.deepEqual(Object.keys(receipt.bundle).sort(), ["path", "reason", "recoveryHint", "status"]);
+    assert.equal(receipt.bundle.path, target);
+    assert.match(receipt.bundle.reason, /already exists/);
+    assert.equal(receipt.bundle.recoveryHint, `legion-cli ship export --snapshot ${receipt.snapshotId} --out ${target}.recovery`);
+    assert.equal((await readDeliverySnapshot(store, receipt.snapshotId)).state, "complete");
+  });
+});
+test("shipment success reports an unresolved delivery snapshot without treating it as exportable", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const delivered = true;\n", "utf8");
+    initGitRepo(dir);
+    await seedReadyToShip(store);
+    let pullRequests = 0;
+    const target = join(dir, "recovery-bundle");
+    const receipt = await engine.ship({
+      commit: true,
+      pr: true,
+      bundleDirectory: target,
+      confirm: async () => true,
+      prCreate: async ({ cwd }) => {
+        pullRequests++;
+        const snapshotDirs = await readdir(join(cwd, ".legion-cli", "audit", "delivery"));
+        assert.equal(snapshotDirs.length, 1);
+        await writeFile(join(cwd, ".legion-cli", "audit", "delivery", snapshotDirs[0], "outcome.yaml"), "not-json\n");
+        return { url: "https://github.com/fixture/repo/pull/1" };
+      },
+    });
+    assert.equal(receipt.phase, "shipped");
+    assert.equal(pullRequests, 1);
+    assert.equal(receipt.deliverySnapshot?.status, "pending");
+    assert.match(receipt.deliverySnapshot?.recoveryHint ?? "", /Do not rerun shipment/);
+    assert.equal(receipt.bundle?.status, "failed");
+    assert.equal(receipt.bundle.path, target);
+    assert.equal(receipt.bundle.reason, receipt.deliverySnapshot.error);
+    assert.equal((await engine.getState()).phase, "shipped");
+    await assert.rejects(() => engine.exportDeliverySnapshot(receipt.snapshotId, target));
+  });
+});
+
+
+test("adopted ship refuses when core confirmation callback is missing", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine, { workflowProfile: "focused" });
+    await seedReadyToShip(store);
+    await writeFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "# Reviewed plan\n\nImplement the approved task.\n", "utf8");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const value = 1;\n", "utf8");
+    const draft = join(dir, "assurance-draft.yaml");
+    await writeFile(draft, stringify({
+      schemaVersion: "legion-cli-assurance-plan/v1",
+      specId: "spec-checkin",
+      acceptanceIds: ["AC-01"],
+      taskIds: ["TSK-0001"],
+      security: {
+        mode: "adapter-default",
+        sources: [{ id: "main", path: "src/main.ts", classification: "workspace" }],
+        sinks: [],
+        transformations: [],
+        tasks: [{ taskId: "TSK-0001", readPaths: ["src/main.ts"], transformationIds: [] }],
+        externalCalls: [],
+      },
+      knowledge: [],
+      validators: [],
+      delivery: { artifacts: [] },
+    }));
+    await engine.approvePlan();
+    await engine.approvePlan({ id: "operator" }, { assuranceManifestPath: draft });
+    await assert.rejects(() => engine.ship(), /delivery capture requires an explicit confirmation callback/);
+  });
+});
+
 test("ship stages filesAllowed union plus .legion-cli and leaves unrelated files", async () => {
   await withEngine(async ({ engine, store, dir }) => {
     await initProject(engine);
@@ -82,6 +197,65 @@ test("ship stages filesAllowed union plus .legion-cli and leaves unrelated files
     assert.doesNotMatch(staged, /unrelated\.ts/);
     const status = git(dir, ["status", "--porcelain", "unrelated.ts"]);
     assert.match(status, /unrelated\.ts/);
+  });
+});
+
+test("delivery snapshot captures every staged product entry and verifies the resulting commit tree", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "before\n", "utf8");
+    await writeFile(join(dir, "unrelated.txt"), "before unrelated\n", "utf8");
+    initGitRepo(dir);
+    await writeFile(join(dir, "src", "main.ts"), "shipped\n", "utf8");
+    await writeFile(join(dir, "unrelated.txt"), "staged too\n", "utf8");
+    git(dir, ["add", "unrelated.txt"]);
+    await seedReadyToShip(store);
+    const receipt = await engine.ship({
+      commit: true,
+      bundleDirectory: join(dir, "verified-bundle"),
+      confirm: async () => true,
+    });
+    const snapshot = await readDeliverySnapshot(store, receipt.snapshotId);
+    assert.equal(snapshot.state, "complete");
+    assert.equal(snapshot.outcome.commit.status, "verified");
+    assert.deepEqual(snapshot.prepared.product.entries.map((entry) => entry.path), [".gitignore", "src/main.ts", "unrelated.txt"]);
+  });
+});
+
+test("delivery predicate tokenizes configured profile and model names without publishing them", async (t) => {
+  await withEngine(async ({ engine, store }) => {
+    const bundleRoot = await mkdtemp(join(tmpdir(), "legion-ship-tokens-"));
+    t.after(() => rm(bundleRoot, { recursive: true, force: true }));
+    await initProject(engine);
+    const config = await store.readConfig();
+    await store.writeConfig({
+      ...config,
+      adapter: {
+        ...config.adapter,
+        http: { baseUrl: "https://models.example.test/v1", model: "private-model-name", apiKeyEnv: "TOKEN_TEST_KEY", allowLoopback: false },
+        profiles: { "zeta-private": { adapter: config.adapter.default, modelArgs: [] }, "alpha-private": { adapter: config.adapter.default, modelArgs: [] } },
+      },
+    });
+    await seedReadyToShip(store);
+    const bundle = join(bundleRoot, "bundle");
+    const receipt = await engine.ship({ bundleDirectory: bundle, confirm: async () => true });
+    assert.equal(receipt.bundle.status, "exported", JSON.stringify(receipt.bundle));
+    const snapshot = await readDeliverySnapshot(store, receipt.snapshotId);
+    const mapping = snapshot.prepared.tokenMapping;
+    const profileTokens = mapping.filter((entry) => entry.kind === "profile");
+    const modelTokens = mapping.filter((entry) => entry.kind === "model");
+    assert.deepEqual(profileTokens.map((entry) => entry.localId), ["alpha-private", "zeta-private"]);
+    assert.deepEqual(modelTokens.map((entry) => entry.localId), ["http:private-model-name"]);
+    const predicateText = await readFile(join(bundle, "predicate.json"), "utf8");
+    const predicate = JSON.parse(predicateText);
+    assert.deepEqual(
+      predicate.identities.filter((identity) => identity.kind === "profile" || identity.kind === "model"),
+      [...profileTokens, ...modelTokens].map((entry) => ({ token: entry.token, kind: entry.kind, digest: null })),
+    );
+    for (const name of ["alpha-private", "zeta-private", "private-model-name"]) {
+      assert.equal(predicateText.includes(name), false, `${name} leaked into predicate.json`);
+    }
   });
 });
 
@@ -418,6 +592,112 @@ test("ship --pr failure stays ready_to_ship", async () => {
     assert.equal((await engine.getState()).phase, "ready_to_ship");
     assert.equal(gitHead(dir), before);
   });
+});
+
+test("failed PR aborts the prepared immutable delivery snapshot", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await seedReadyToShip(store);
+    initGitRepo(dir);
+    await assert.rejects(() => engine.ship({
+      pr: true,
+      commit: true,
+      bundleDirectory: join(dir, "never-exported"),
+      confirm: async () => true,
+      prCreate: () => ({ error: "gh failed" }),
+    }), /gh failed/);
+    const snapshots = await readdir(join(store.paths.auditDir, "delivery"));
+    assert.equal(snapshots.length, 1);
+    const prepared = JSON.parse(await readFile(join(store.paths.auditDir, "delivery", snapshots[0], "prepared.json"), "utf8"));
+    const snapshot = await readDeliverySnapshot(store, prepared.prepared.confirmationId);
+    assert.equal(snapshot.state, "aborted");
+    assert.equal(snapshot.reason, "pr-failed");
+  });
+});
+
+test("adopted PR failure aborts the snapshot through a traced ship-rollback and blocks export", async () => {
+  await withFakeAdapter(() => withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine, { workflowProfile: "focused" });
+    await seedPlanReady(store);
+    await writeFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "# Reviewed plan\n\nImplement the approved task.\n", "utf8");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const value = 1;\n", "utf8");
+    const task = await store.readTask("TSK-0001");
+    await store.writeTask({
+      ...task.data,
+      contract: { ...task.data.contract, verificationCommands: [passingVerificationCommand()] },
+    }, task.body);
+    initGitRepo(dir);
+    const config = await store.readConfig();
+    await store.writeConfig({
+      ...config,
+      workflow: { ...(config.workflow ?? {}), verificationCommands: [passingVerificationCommand()] },
+    });
+    const draft = join(dir, "assurance-draft.yaml");
+    await writeFile(draft, stringify({
+      schemaVersion: "legion-cli-assurance-plan/v1",
+      specId: "spec-checkin",
+      acceptanceIds: ["AC-01"],
+      taskIds: ["TSK-0001"],
+      security: {
+        mode: "adapter-default",
+        sources: [{ id: "main", path: "src/main.ts", classification: "workspace" }],
+        sinks: [],
+        transformations: [],
+        tasks: [{ taskId: "TSK-0001", readPaths: ["src/main.ts"], transformationIds: [] }],
+        externalCalls: [],
+      },
+      knowledge: [],
+      validators: [],
+      delivery: { artifacts: [] },
+    }));
+    const approved = await engine.approvePlan({ id: "operator" }, { assuranceManifestPath: draft });
+    const executed = await engine.executeWorkflow();
+    assert.match(executed.blocker ?? "", /acceptance evidence pending/);
+    await engine.recordAcceptance([{ id: "AC-01", status: "passed" }], { id: "owner" });
+
+    await assert.rejects(() => engine.ship({
+      commit: true,
+      pr: true,
+      confirm: async () => true,
+      prCreate: () => ({ error: "pr failure" }),
+    }), /gh pr create failed: pr failure/);
+
+    const snapshots = await readdir(join(store.paths.auditDir, "delivery"));
+    assert.equal(snapshots.length, 1);
+    const prepared = JSON.parse(await readFile(join(store.paths.auditDir, "delivery", snapshots[0], "prepared.json"), "utf8"));
+    const snapshotId = prepared.prepared.confirmationId;
+    const snapshot = await readDeliverySnapshot(store, snapshotId);
+    assert.equal(snapshot.state, "aborted");
+    assert.equal(snapshot.reason, "pr-failed");
+
+    const finalConfig = await store.readConfig();
+    const modelDigest = stableHash({
+      adapter: finalConfig.adapter ?? null,
+      profiles: finalConfig.adapter.profiles ?? null,
+      skillProfiles: finalConfig.adapter.skillProfiles ?? null,
+    });
+    const inspected = await inspectGovernanceTrace(store, approved.approvalId, modelDigest);
+    assert.deepEqual(inspected.violations, []);
+    assert.equal(inspected.trace.status, "valid");
+    const confirm = inspected.trace.frames.find((frame) => frame.boundary === "end" && frame.action === "ship-confirm");
+    assert.equal(confirm.outcome, "success");
+    assert.equal(confirm.before.ship.confirmed, false);
+    assert.equal(confirm.after.ship.confirmed, true);
+    const rollback = inspected.trace.frames.at(-1);
+    assert.deepEqual([rollback.boundary, rollback.action, rollback.outcome], ["end", "ship-rollback", "success"]);
+    assert.notEqual(rollback.after.phase, "shipped");
+    assert.equal(rollback.after.ship.status, "aborted");
+
+    const target = join(dir, "aborted-bundle");
+    await assert.rejects(() => engine.exportDeliverySnapshot(snapshotId, target));
+    assert.equal(existsSync(target), false);
+  }, {
+    fakeArtifacts: [
+      { path: "src/main.ts", content: "export const value = 2;\n" },
+      { path: ".legion-cli/cache/runs/<id>/review.md", content: "# Review\n\nVerdict: PASS\n" },
+    ],
+  }));
 });
 
 test("ship --pr without --commit is refused", async () => {

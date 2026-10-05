@@ -1,0 +1,26 @@
+{
+  "frontmatter": {
+    "name": "json-contract",
+    "description": "Validate explicit JSON business predicates against declared immutable product files with an import-free component.",
+    "compatibility": "Legion CLI >=0.0.0",
+    "allowed-tools": "Read",
+    "metadata": {
+      "legion": {
+        "extensionId": "json-contract",
+        "version": "1.0.0",
+        "requiredTools": [],
+        "checks": ["json-contract"],
+        "resources": {
+          "references": ["references/SDK.md"],
+          "assets": ["assets/json-contract.wasm"]
+        },
+        "permissions": {
+          "read": ["src", "data", "config", "test", "fixtures", "package.json"],
+          "write": [],
+          "commands": []
+        }
+      }
+    }
+  },
+  "body": "# JSON contract validator\n\nThis extension executes its pinned capability-limited component, not a model or command. Select exact inputs and assertions with `--validator-input`; see `references/SDK.md`. It receives immutable input records only and cannot read files, mutate the product or access network, environment, clock or random capabilities. Recommendations are untrusted data converted to ordinary tickets, never executed.\n"
+}

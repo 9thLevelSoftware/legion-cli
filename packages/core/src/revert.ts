@@ -407,6 +407,9 @@ export async function revertExtras(opts: {
       incident = true;
       continue;
     }
+    if (posix === ".legion-cli/audit" || posix.startsWith(".legion-cli/audit/")) {
+      continue;
+    }
     if (isRestoreManifestPath(posix, extraRoots)) {
       continue;
     }

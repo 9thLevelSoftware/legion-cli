@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
+import { lstat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { assertNoLinkInPath } from "@9thlevelsoftware/legion-cli-persist";
 import { parseCommandLine, runCommand, splitCommand } from "@9thlevelsoftware/legion-cli-agents";
 import {
   prepareVerificationWrapper,
@@ -7,7 +10,7 @@ import {
   type VerificationTrustPosture,
   type VerificationWrapper,
 } from "@9thlevelsoftware/legion-cli-sandbox";
-import { SandboxConfigSchema, type SandboxConfig } from "@9thlevelsoftware/legion-cli-schema";
+import { ProvenanceLabelSchema, SandboxConfigSchema, type ProvenanceLabel, type SandboxConfig, type WorkflowCommandEvidence } from "@9thlevelsoftware/legion-cli-schema";
 
 export { splitCommand };
 export { resolveVerificationTrustTier };
@@ -26,6 +29,9 @@ export function resetVerificationWork(): void {
   verificationWork.copyBytes = 0;
 }
 
+/** Persisted with the run as workflow integration evidence (`WorkflowCommandEvidenceSchema`). */
+export type VerificationOutputProvenance = NonNullable<WorkflowCommandEvidence["informationFlow"]>;
+
 export type VerificationRun = {
   command: string;
   /** started && exit 0 && !timedOut */
@@ -38,23 +44,32 @@ export type VerificationRun = {
   logPath?: string;
   trustTier: string;
   trustTierNote: string;
+  /** Finite label metadata only; raw stdout/stderr remain in protected local storage. */
+  informationFlow?: VerificationOutputProvenance;
+};
+
+export type VerificationInformationFlow = {
+  label: ProvenanceLabel;
+  installedEnginePaths: readonly string[];
+  readOnlyEnginePaths: readonly string[];
 };
 
 export type VerificationOpts = {
   timeoutMs?: number;
-  /** Log directory name under `.legion-cli/cache/runs/`; defaults to `verify-<timestamp>`. */
+  /** Log directory name; information-flow mode uses a protected hash-namespaced raw-log path. */
   runId?: string;
   /** Configured `adapter.*.apiKeyEnv` names, scrubbed on top of the KD-4 pattern. */
   secretEnvNames?: readonly string[];
   sandbox?: SandboxConfig;
-  /** Accepted and ignored: no platform requires this flag to run verify. */
+  /** Accepted and ignored in legacy mode; information-flow mode never bypasses sandboxing. */
   allowNoSandbox?: boolean;
   platform?: NodeJS.Platform;
   dockerAvailable?: boolean;
   bwrapAvailable?: boolean;
   seatbeltAvailable?: boolean;
-  /** Test seam: skip prepareVerificationWrapper. */
+  /** Test seam for legacy verification only; information-flow mode requires a real wrapper. */
   wrapper?: VerificationWrapper;
+  informationFlow?: VerificationInformationFlow;
 };
 
 function attachPosture(
@@ -72,6 +87,39 @@ function attachPosture(
  * Linux: hardened bwrap. macOS: seatbelt. Windows without Docker: allowlist posture with a
  * named trust-tier note. Docker is opt-in. Copy jail is never used. No --allow-no-sandbox.
  */
+async function prepareInformationFlowLogs(cwd: string, runId: string): Promise<string> {
+  const runHash = createHash("sha256").update(runId, "utf8").digest("hex");
+  const relativePath = `.legion-cli/audit/raw-logs/${runHash}`;
+  const parts = [".legion-cli", ".legion-cli/audit", ".legion-cli/audit/raw-logs", relativePath];
+  for (const part of parts) {
+    const path = join(cwd, ...part.split("/"));
+    await assertNoLinkInPath(path, { root: cwd, message: "protected verification log path contains a link" });
+    try {
+      await mkdir(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    await assertNoLinkInPath(path, { root: cwd, message: "protected verification log path contains a link" });
+    const stat = await lstat(path);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new SandboxError("protected verification log path is unsafe");
+  }
+  return relativePath;
+}
+
+function outputProvenance(label: ProvenanceLabel): VerificationOutputProvenance {
+  const canonical = {
+    origins: [...label.origins].sort(),
+    integrity: label.integrity,
+    confidentiality: label.confidentiality,
+  };
+  return {
+    confidentiality: canonical.confidentiality,
+    integrity: canonical.integrity,
+    origins: canonical.origins,
+    joinDigest: createHash("sha256").update(JSON.stringify(canonical), "utf8").digest("hex"),
+  };
+}
+
 export async function runVerificationCommands(
   cwd: string,
   commands: readonly string[],
@@ -79,54 +127,76 @@ export async function runVerificationCommands(
 ): Promise<VerificationRun[]> {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const runId = opts?.runId || `verify-${Date.now()}`;
+  const informationFlow = opts?.informationFlow;
   resetVerificationWork();
   const sandbox = opts?.sandbox ?? DEFAULT_VERIFY_SANDBOX;
   const posture = resolveVerificationTrustTier(sandbox, {
-    allowNoSandbox: opts?.allowNoSandbox,
+    allowNoSandbox: informationFlow ? undefined : opts?.allowNoSandbox,
     platform: opts?.platform,
     dockerAvailable: opts?.dockerAvailable,
     bwrapAvailable: opts?.bwrapAvailable,
     seatbeltAvailable: opts?.seatbeltAvailable,
   });
+  const provenance = informationFlow ? outputProvenance(ProvenanceLabelSchema.parse(informationFlow.label)) : undefined;
   const runs: VerificationRun[] = [];
-  if (posture.error) {
+  const refuse = (error: string, trustPosture = posture): VerificationRun[] => {
     const command = commands[0] ?? "";
-    runs.push(
-      attachPosture(
-        { command, ok: false, started: false, status: null, error: posture.error },
-        posture,
-      ),
-    );
+    runs.push(attachPosture({
+      command,
+      ok: false,
+      started: false,
+      status: null,
+      error,
+      ...(provenance ? { informationFlow: provenance } : {}),
+    }, trustPosture));
     return runs;
+  };
+  if (informationFlow && (posture.backend === "host" || posture.backend === "copy")) {
+    return refuse("information-flow verification requires a hardened OS sandbox");
   }
+  if (posture.error) return refuse(posture.error);
 
-  const wrapper = opts?.wrapper ?? (await prepareVerificationWrapper(cwd, runId, posture));
+  let logDirectory: string | undefined;
+  if (informationFlow) {
+    try {
+      logDirectory = await prepareInformationFlowLogs(cwd, runId);
+    } catch {
+      return refuse("protected verification log path is unavailable or unsafe");
+    }
+  }
+  let wrapper: VerificationWrapper | undefined;
+  try {
+    wrapper = informationFlow
+      ? await prepareVerificationWrapper(cwd, runId, posture, {
+        informationFlow: { installedEnginePaths: informationFlow.installedEnginePaths, readOnlyEnginePaths: informationFlow.readOnlyEnginePaths },
+      })
+      : opts?.wrapper ?? (await prepareVerificationWrapper(cwd, runId, posture));
+  } catch {
+    return refuse("verification isolation wrapper could not protect engine paths");
+  }
+  if (informationFlow && (opts?.wrapper || !wrapper)) {
+    return refuse(`verification wrapper unavailable for ${posture.tier}`);
+  }
   if (!opts?.wrapper && posture.backend !== "host" && !wrapper) {
-    const command = commands[0] ?? "";
-    runs.push(
-      attachPosture(
-        {
-          command,
-          ok: false,
-          started: false,
-          status: null,
-          error: `verification wrapper unavailable for ${posture.tier}`,
-        },
-        posture,
-      ),
-    );
-    return runs;
+    return refuse(`verification wrapper unavailable for ${posture.tier}`);
   }
 
   for (const [index, command] of commands.entries()) {
     const parsed = parseCommandLine(command);
     if ("error" in parsed) {
-      runs.push(
-        attachPosture({ command, ok: false, started: false, status: null, error: parsed.error }, posture),
-      );
+      runs.push(attachPosture({
+        command,
+        ok: false,
+        started: false,
+        status: null,
+        error: informationFlow ? "verification command is invalid" : parsed.error,
+        ...(provenance ? { informationFlow: provenance } : {}),
+      }, posture));
       break;
     }
-    const logStore = `.legion-cli/cache/runs/${runId}/verify-${index + 1}.log`;
+    const logStore = informationFlow
+      ? `${logDirectory}/verify-${index + 1}.log`
+      : `.legion-cli/cache/runs/${runId}/verify-${index + 1}.log`;
     let argv = parsed.argv;
     if (wrapper) {
       try {
@@ -134,12 +204,11 @@ export async function runVerificationCommands(
         argv = [wrapper.bin, ...wrapper.argvPrefix, invoke, ...argv.slice(1)];
       } catch (err) {
         if (err instanceof SandboxError) {
-          runs.push(
-            attachPosture(
-              { command, ok: false, started: false, status: null, error: err.message },
-              posture,
-            ),
-          );
+          runs.push(attachPosture({
+            command, ok: false, started: false, status: null,
+            error: informationFlow ? "verification command could not be isolated" : err.message,
+            ...(provenance ? { informationFlow: provenance } : {}),
+          }, posture));
           break;
         }
         throw err;
@@ -159,7 +228,8 @@ export async function runVerificationCommands(
         status: result.exitCode,
         logPath: logStore,
         ...(result.timedOut ? { timedOut: true } : {}),
-        ...(result.error ? { error: result.error } : {}),
+        ...(result.error ? { error: informationFlow ? "verification command could not start" : result.error } : {}),
+        ...(provenance ? { informationFlow: provenance } : {}),
       },
       posture,
     );
@@ -168,6 +238,7 @@ export async function runVerificationCommands(
   }
   return runs;
 }
+
 
 /** One line for the user: why verification did not pass, or undefined when it did. */
 export function verificationFailureReason(runs: readonly VerificationRun[]): string | undefined {

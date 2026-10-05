@@ -1,7 +1,10 @@
 import {
+  ASSURANCE_PLAN_PATH,
   createLegionEngine,
+  LegionRefuseError,
   listRunRecoveryStatuses,
   type RunRecoveryStatus,
+  type WorkflowStatus,
 } from "@9thlevelsoftware/legion-cli-core";
 import { EXPOSE_BIND, LOOPBACK_BIND, readLiveServe } from "@9thlevelsoftware/legion-cli-dashboard";
 import {
@@ -136,8 +139,9 @@ export async function runStatus(
   opts: CliOpts,
   jsonExtra?: Record<string, unknown>,
   output?: { jsonLines?: boolean },
+  engineOverride?: ReturnType<typeof createLegionEngine>,
 ): Promise<number> {
-  const engine = createLegionEngine(opts.project);
+  const engine = engineOverride ?? createLegionEngine(opts.project);
   const state = await engine.getState();
   const project = state.phase === "uninitialized" ? null : await readOptionalProject(engine);
   const config = await readOptionalConfig(engine);
@@ -147,17 +151,21 @@ export async function runStatus(
         .filter((row) => row.ok && row.specId === state.activeSpecId)
         .map((row) => ({ id: row.id, title: row.title, status: row.status as StatusSliceTask["status"] }))
     : [];
-  const next = nextCommand(state, slice, project?.mode, config?.control_mode);
-  let workflow: Awaited<ReturnType<typeof engine.getWorkflowStatus>> | null = null;
-  if (state.phase !== "uninitialized") {
+  let workflow: WorkflowStatus | null = null;
+  const assuranceAdopted = await engine.store.pathExists(ASSURANCE_PLAN_PATH);
+  const legacyExecuting = state.phase === "executing" && config?.workflow?.profile !== "focused" && !assuranceAdopted;
+  if (state.phase !== "uninitialized" && !legacyExecuting) {
     try {
       workflow = await engine.getWorkflowStatus();
     } catch (err) {
-      // Legacy partial artifacts can still be inspected through status. Focused
-      // projects must surface corrupt workflow receipts instead of hiding them.
-      if (config?.workflow?.profile === "focused") throw err;
+      const auditFailure = err instanceof AuditTamperError || (err instanceof LegionRefuseError && /audit chain/i.test(err.message));
+      if (!auditFailure && config?.workflow?.profile === "focused") throw err;
+      // Corrupt audit history is reported below as a status blocker, not as an empty status response.
       workflow = null;
     }
+  }
+  if (workflow?.assurance?.coverage?.some((criterion) => criterion.status === "unknown") && workflow.assurance.traceStatus === "valid") {
+    workflow = { ...workflow, assurance: { ...workflow.assurance, traceStatus: "incomplete" } };
   }
   const blockers = collectBlockers(state.lastReadiness, state.lastReview, slice);
   if (workflow?.blocker) blockers.push({ kind: "workflow", detail: workflow.blocker });
@@ -170,13 +178,18 @@ export async function runStatus(
   const code =
     workflow?.execution === "blocked" || workflow?.execution === "stale" || workflow?.planApproval === "stale"
       ? 2
-      : workflow?.acceptance.failed.length
-        ? 1
-        : legacyCode;
+      : workflow?.assurance?.coverage?.some((criterion) => criterion.status === "unknown") || workflow?.assurance?.traceStatus === "incomplete"
+        ? 2
+        : workflow?.acceptance.failed.length
+          ? 1
+          : legacyCode;
+  const next = nextCommand(state, slice, project?.mode, config?.control_mode);
   const current = summaries.find((row) => row.id === state.currentTaskId);
   const currentTaskAdapter = (current?.adapter as AdapterId | null | undefined) ?? null;
   const runs = state.phase === "uninitialized" ? [] : await listRunRecoveryStatuses(opts.project);
   const run = runs.find((item) => item.taskId === state.currentTaskId) ?? runs[0] ?? null;
+  const pendingGovernedActions =
+    workflow?.assurance?.mode === "information-flow" ? await engine.getPendingGovernedActions() : [];
   const advisoryBlocksNext = config?.control_mode === "advisory" && (
     workflow?.next === "legion-cli execute" ||
     workflow?.next.startsWith("legion-cli execute ") ||
@@ -184,13 +197,14 @@ export async function runStatus(
   );
   const workflowNext = advisoryBlocksNext
     ? ADVISORY_EXECUTION_NEXT
-    : workflow
-      ? {
-          run: workflow.next,
-          hint: workflow.next === "legion-cli spec" && workflow.blocker ? workflow.blocker : next.hint,
-        }
-      : next;
-
+    : legacyExecuting
+      ? { run: "legion-cli plan approve", hint: "approve the implementation plan before execution." }
+      : workflow
+        ? {
+            run: workflow.next,
+            hint: workflow.next === "legion-cli spec" && workflow.blocker ? workflow.blocker : next.hint,
+          }
+        : next;
   if (opts.json) {
     const payload = {
       name: project?.name ?? null,
@@ -206,11 +220,37 @@ export async function runStatus(
       viewer,
       viewerLive,
       runs,
+      pendingGovernedActions,
+      ...(workflow?.assurance ? { assurance: workflow.assurance } : {}),
       ...jsonExtra,
     };
     if (output?.jsonLines) writeJsonLine(payload);
     else writeJson(payload);
     return code;
+  }
+  if (workflow?.assurance) {
+    const informationFlowLabels = {
+      "not-enforced": "not enforced",
+      pending: "pending governed execution evidence",
+      partial: "partially governed",
+      enforced: "enforced by completed governed runs",
+    } as const;
+    writeOut(`Assurance approval: ${workflow.assurance.status} (${workflow.assurance.mode ?? "unknown"}; information-flow ${informationFlowLabels[workflow.assurance.informationFlow]})`);
+    if (workflow.assurance.traceStatus) writeOut(`Trace: ${workflow.assurance.traceStatus}; policy ${workflow.assurance.policyStatus}`);
+    if (workflow.assurance.coverage) {
+      const coverage = workflow.assurance.coverage;
+      writeOut(`Coverage: ${coverage.filter((criterion) => criterion.status === "covered").length} covered; ${coverage.filter((criterion) => criterion.status === "failed").length} failed; ${coverage.filter((criterion) => criterion.status === "unknown").length} unknown.`);
+      // Core attaches detail only for observations labeled public; IDs, statuses and codes always render.
+      for (const observation of coverage.flatMap((criterion) => criterion.observations).filter((entry) => entry.status !== "passed")) {
+        writeOut(`Observation ${observation.checkId}/${observation.id}: ${observation.status} (${observation.code})${observation.detail === undefined ? "" : ` — ${JSON.stringify(observation.detail)}`}`);
+      }
+    }
+    for (const check of workflow.assurance.checks ?? []) writeOut(`Check ${check.checkId}: ${check.result}; ${check.decision} — ${check.reason}`);
+  }
+
+  for (const action of pendingGovernedActions) {
+    writeOut(`Pending governed action: run=${action.runId} action=${action.actionId} kind=${action.actionKind} target=${action.target} sink=${action.sinkId} classification=${action.confidentiality} integrity=${action.integrity} value=${action.valueDigest} request=${action.requestDigest}`);
+    writeOut(`Approve exactly this action with: legion-cli execute approve-action --run ${action.runId} --action ${action.actionId} --value-digest ${action.valueDigest} --sink ${action.sinkId} --reason "<reason>"`);
   }
 
   if (opts.plain) {

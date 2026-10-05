@@ -1,5 +1,6 @@
 import { createLegionEngine, findSkillsDir, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
+import { fakeArtifactsFromEnv } from "./fake-artifacts.js";
 import type { CliOpts } from "./io.js";
 import { ticketVerificationLine, writeErr, writeJson, writeOut } from "./io.js";
 import { closePrompt, isNo, isYes, readLine, slurpStdin } from "./prompt.js";
@@ -46,7 +47,7 @@ export async function runExecute(
   if (jobs !== undefined && (flags.id || flags.step)) {
     refuse("execute --jobs is only for automatic execution", "legion-cli execute --until-blocked --jobs 1");
   }
-  const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
+  const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir(), fakeArtifacts: fakeArtifactsFromEnv() });
   try {
     if (flags.allowNoSandbox) {
       await slurpStdin();
@@ -123,4 +124,20 @@ export async function runExecute(
   } finally {
     closePrompt();
   }
+}
+
+export async function runApproveAction(
+  opts: CliOpts,
+  request: { runId: string; actionId: string; valueDigest: string; sinkId: string },
+  reason: string,
+): Promise<number> {
+  const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
+  const approval = await engine.approveAction({
+    ...request,
+    operatorId: "user",
+    reason,
+  });
+  if (opts.json) writeJson({ ok: true, approval });
+  else writeOut(`Approved exact governed action ${approval.actionId} for sink ${approval.sinkId}.`);
+  return 0;
 }

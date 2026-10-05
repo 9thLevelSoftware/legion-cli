@@ -1,4 +1,4 @@
-import type { HttpToolHost } from "@9thlevelsoftware/legion-cli-http";
+import type { ApprovedHttpAssuranceContext, GovernedEffectHost, HttpToolHost } from "@9thlevelsoftware/legion-cli-http";
 import type { AgentProfileConfig, AgentUsage } from "./profiles.js";
 import {
   ADAPTER_IDS,
@@ -43,7 +43,7 @@ export interface AgentAdapter {
   id: AgentAdapterId;
   binary: string;
   detect(): Promise<DetectResult>;
-  spawn(job: AgentJob): Promise<AgentHandle>;
+  spawn(job: AgentExecutionJob): Promise<AgentHandle>;
 }
 
 export type FakeArtifact = {
@@ -89,6 +89,17 @@ export interface AgentJob {
   /** Fixture paths the fake adapter writes. Real adapters ignore this. */
   expectedArtifacts?: Array<string | FakeArtifact>;
 }
+export type GovernedAgentJob = Omit<AgentJob, "promptPath" | "pointerPrompt" | "httpHost"> & {
+  assuranceContext: ApprovedHttpAssuranceContext;
+  effectHost: GovernedEffectHost;
+  promptPath?: never;
+  pointerPrompt?: never;
+  httpHost?: never;
+};
+export type AgentExecutionJob = AgentJob | GovernedAgentJob;
+export function isGovernedAgentJob(job: AgentExecutionJob): job is GovernedAgentJob {
+  return "assuranceContext" in job || "effectHost" in job;
+}
 
 export interface AgentHandle {
   pid: number | null;
@@ -108,6 +119,8 @@ export interface AgentResult {
   recovery?: "resume" | "manual" | "none";
   /** Spawn failure message (for example ENOENT) when the process never ran. */
   errorMessage?: string;
+  /** Governed HTTP controller stop code: the run did not complete, so its result can never certify the task. */
+  governedBlock?: string;
 }
 
 export type GenericAdapterConfig = {

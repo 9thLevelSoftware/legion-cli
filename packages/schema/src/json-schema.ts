@@ -39,6 +39,48 @@ import {
   WorkflowClaimSchema,
 } from "./schemas.js";
 import { ADAPTER_IDS, PhaseSchema, SkillIdSchema, TaskStatusSchema } from "./versions.js";
+import { AssurancePlanSchema, AssuranceApprovalSchema, CheckEvidenceSchema, AssuranceExecutionSchema } from "./assurance.js";
+import { ComponentRequestSchema, ComponentInvocationSchema, ComponentInputSchema, ValidatorOutputSchema, NativeHostManifestSchema, NativeHostProbeSchema, JsonContractConfigurationSchema } from "./component.js";
+import { ActionApprovalSchema, FileProvenanceSchema, HttpGovernedCheckpointSchema, HttpRunAuthoritySchema, GovernedProgramSchema, GovernedValueRecordSchema, ProviderUsageReceiptSchema } from "./governed-records.js";
+import { GovernanceProjectionSchema, GovernanceFrameSchema, GovernanceHeadSchema, GovernanceTraceSchema, GovernanceEpochsSchema } from "./governance-records.js";
+import { DeliverySnapshotSchema, DeliveryManifestSchema, DeliveryTrustSchema, DeliveryPredicateSchema, DeliveryOutcomeSchema, DeliveryExportSchema, DeliveryProductSchema, DeliveryArtifactsSchema, DeliveryEvidenceSchema, DsseEnvelopeSchema, DeliveryStatementSchema } from "./delivery-records.js";
+
+const assuranceSchemaByFile = {
+  "assurance-plan": AssurancePlanSchema,
+  "assurance-approval": AssuranceApprovalSchema,
+  "check-evidence": CheckEvidenceSchema,
+  "assurance-execution": AssuranceExecutionSchema,
+  "governance-projection": GovernanceProjectionSchema,
+  "governance-frame": GovernanceFrameSchema,
+  "governance-head": GovernanceHeadSchema,
+  "governance-trace": GovernanceTraceSchema,
+  "governance-epochs": GovernanceEpochsSchema,
+  "delivery-snapshot": DeliverySnapshotSchema,
+  "delivery-manifest": DeliveryManifestSchema,
+  "delivery-trust": DeliveryTrustSchema,
+  "delivery-predicate": DeliveryPredicateSchema,
+  "delivery-outcome": DeliveryOutcomeSchema,
+  "delivery-export": DeliveryExportSchema,
+  "delivery-product": DeliveryProductSchema,
+  "delivery-artifacts": DeliveryArtifactsSchema,
+  "delivery-evidence": DeliveryEvidenceSchema,
+  "action-approval": ActionApprovalSchema,
+  "http-governed-checkpoint": HttpGovernedCheckpointSchema,
+  "http-run-authority": HttpRunAuthoritySchema,
+  "file-provenance": FileProvenanceSchema,
+  "provider-usage": ProviderUsageReceiptSchema,
+  "governed-value": GovernedValueRecordSchema,
+  "component-request": ComponentRequestSchema,
+  "component-invocation": ComponentInvocationSchema,
+  "component-input": ComponentInputSchema,
+  "validator-output": ValidatorOutputSchema,
+  "native-host-manifest": NativeHostManifestSchema,
+  "native-host-probe": NativeHostProbeSchema,
+  "json-contract-configuration": JsonContractConfigurationSchema,
+  "governed-program": GovernedProgramSchema,
+  "dsse-envelope": DsseEnvelopeSchema,
+  "delivery-statement": DeliveryStatementSchema,
+} as const;
 
 export const JSON_SCHEMA_FILES = [
   "phase",
@@ -81,6 +123,7 @@ export const JSON_SCHEMA_FILES = [
   "acceptance-receipt",
   "workflow-claim",
   "spec-challenge",
+  ...Object.keys(assuranceSchemaByFile) as (keyof typeof assuranceSchemaByFile)[],
 ] as const;
 
 export type JsonSchemaFileName = (typeof JSON_SCHEMA_FILES)[number];
@@ -126,13 +169,14 @@ const schemaByFile = {
   "acceptance-receipt": AcceptanceReceiptSchema,
   "workflow-claim": WorkflowClaimSchema,
   "spec-challenge": SpecChallengeReceiptSchema,
+  ...assuranceSchemaByFile,
 } as const satisfies Record<JsonSchemaFileName, z.ZodType>;
 
-export function toLegionJsonSchema(schema: z.ZodType): Record<string, unknown> {
+export function toLegionJsonSchema(schema: z.ZodType, io: "input" | "output" = "input"): Record<string, unknown> {
   const raw = z.toJSONSchema(schema, {
     target: "draft-2020-12",
     unrepresentable: "any",
-    io: "input",
+    io,
   }) as Record<string, unknown>;
   const { ["~standard"]: _standard, ...json } = raw;
   return json;
@@ -397,7 +441,7 @@ function overlayJsonSchema(
 export function legionJsonSchemas(): Record<JsonSchemaFileName, Record<string, unknown>> {
   const out = {} as Record<JsonSchemaFileName, Record<string, unknown>>;
   for (const name of JSON_SCHEMA_FILES) {
-    out[name] = overlayJsonSchema(name, toLegionJsonSchema(schemaByFile[name]));
+    out[name] = overlayJsonSchema(name, toLegionJsonSchema(schemaByFile[name], Object.hasOwn(assuranceSchemaByFile, name) ? "output" : "input"));
   }
   return out;
 }

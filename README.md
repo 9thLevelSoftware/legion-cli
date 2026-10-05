@@ -257,6 +257,7 @@ See `legion-cli help --all` for the full rows. One sentence each:
 - `control-mode` — show or set `guarded|advisory` (refuses `autonomous`; `surgical` is removed — migrate to `guarded`).
 - `brownfield …` — effort 1–5 audit bookkeeping (separate from `init --mode brownfield`).
 - `context compact` — manual compaction of done tasks.
+- `context trace [validate]` — read-only governance epoch/trace inspection; `validate` exits 1 unless the current epoch is valid or not adopted.
 - `garden` — stale wiki, orphans, duplicates.
 - `packet new|respond` — PM/designer packets that spawn tickets, not execute.
 
@@ -310,6 +311,28 @@ Local metrics (never phones home): `legion-cli doctor --metrics`.
 pnpm typecheck
 pnpm test
 ```
+
+### Evidence fingerprint benchmark
+
+With Node 22+, pnpm 9.15.9 and workspace dependencies already installed, run:
+
+```bash
+bash autoresearch.sh
+```
+
+The harness builds the core dependency closure without downloading dependencies,
+then exercises the real whole-product fingerprint against a fixed temporary,
+non-Git fixture: 260 included files, three ignored files and 15 independent
+mutation cases. It performs 167 fingerprint calls, including 105 timed samples;
+fixture setup, oracle checks and compilation are excluded from timing.
+WSL without native Node/pnpm uses installed Windows tools through PowerShell.
+
+`fingerprint_median_ms` is the primary metric; p95 and mutation-safety diagnostics
+are also emitted as `METRIC` lines. The workload is deterministic, but elapsed
+times depend on the machine. Safe-reuse and conservative-invalidation counts use
+hand-authored synthetic check inputs: they do not establish production selective
+reuse or general dependency-inference safety. Any failed invariant exits nonzero,
+and the temporary fixture is removed before success metrics are printed.
 
 Publish is tag-triggered (`git tag v*`) via GitHub Actions trusted publisher for the `@9thlevelsoftware` npm org, with provenance. Untagged `main` does not publish. There is no long-lived npm token.
 

@@ -1,4 +1,4 @@
-import { isRestoreManifestPath } from "@9thlevelsoftware/legion-cli-persist";
+import { isEngineProtectedPath, isRestoreManifestPath, overlapsEngineProtectedPath } from "@9thlevelsoftware/legion-cli-persist";
 import { normalizePathKey, type FileContract, type SkillContract, type SkillId } from "@9thlevelsoftware/legion-cli-schema";
 
 export { isRestoreManifestPath };
@@ -31,13 +31,14 @@ const IMPLICIT_FORBIDDEN = [
   ".legion-cli/index/**",
 ];
 
-/** Cache/index/worktrees/audit/sandbox are engine-owned; never revert them as extras. chat/** is not — spawn-planted sessions must revert. */
+/** Engine-owned projections, audit history and workflow authority are never reverted as extras. */
 const ENGINE_OWNED = [
   ".legion-cli/cache/**",
   ".legion-cli/index/**",
   ".legion-cli/worktrees/**",
   ".legion-cli/audit/**",
   ".legion-cli/sandbox/**",
+  ".legion-cli/workflow/**",
 ];
 
 const ENGINE_OWNED_RES = ENGINE_OWNED.map(globToRegExp);
@@ -115,6 +116,7 @@ export function isEnvBasename(name: string): boolean {
  * names), so `.GIT/x`, `.git./x` and `.LEGION-CLI/STATE.md` are refused like their plain forms.
  */
 export function isImplicitForbidden(posixPath: string): boolean {
+  if (overlapsEngineProtectedPath(posixPath)) return true;
   const key = normalizePathKey(posixPath).replace(
     /^(?:legion~\d+)(?=\/|$)/,
     ".legion-cli",
@@ -136,7 +138,7 @@ export function isImplicitForbidden(posixPath: string): boolean {
 }
 
 export function isEngineOwned(posixPath: string): boolean {
-  return ENGINE_OWNED_RES.some((re) => re.test(posixPath));
+  return isEngineProtectedPath(posixPath) || ENGINE_OWNED_RES.some((re) => re.test(posixPath));
 }
 
 export function isAllowedPath(posixPath: string, allowedRoots: readonly string[]): boolean {

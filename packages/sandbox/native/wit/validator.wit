@@ -1,0 +1,5 @@
+package legion:validator@1.0.0;
+
+world validator {
+    export validate: func(input: string) -> string;
+}

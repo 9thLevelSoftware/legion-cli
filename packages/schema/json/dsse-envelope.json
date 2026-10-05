@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "payloadType": {
+      "type": "string",
+      "const": "application/vnd.in-toto+json"
+    },
+    "payload": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864,
+      "pattern": "^[A-Za-z0-9+/_-]+={0,2}$"
+    },
+    "signatures": {
+      "minItems": 1,
+      "maxItems": 256,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "keyid": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "sig": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9+/_-]+={0,2}$"
+          }
+        },
+        "required": [
+          "keyid",
+          "sig"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "payloadType",
+    "payload",
+    "signatures"
+  ],
+  "additionalProperties": false
+}

@@ -1,3 +1,4 @@
+import { runGovernedHttp } from "./governed.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import type { HttpAdapterConfig } from "@9thlevelsoftware/legion-cli-schema";
@@ -24,7 +25,7 @@ import {
   validateToolCallArguments,
   type OpenAiToolCall,
 } from "./tools.js";
-import type { HttpAgentHandle, HttpAgentJob, HttpAgentResult, SsrfLookup } from "./types.js";
+import type { GovernedHttpAgentJob, HttpAgentHandle, HttpAgentJob, HttpAgentResult, LegacyHttpAgentJob, SsrfLookup } from "./types.js";
 
 export const MAX_PROMPT_CHARS = 256 * 1024;
 
@@ -108,6 +109,11 @@ export class HttpAdapter {
   }
 
   async #run(job: HttpAgentJob, signal: AbortSignal): Promise<HttpAgentResult> {
+    if ("assuranceContext" in job || "effectHost" in job) {
+      return runGovernedHttp(job as GovernedHttpAgentJob, signal, this.#config, this.#lookup);
+    }
+    const legacyJob = job as LegacyHttpAgentJob;
+    job = legacyJob;
     const paths = runLogPaths(job.cwd, job.runId);
     const savedCheckpointPath = checkpointPath(job.checkpointRoot ?? job.cwd, job.runId);
     await mkdir(dirname(paths.stdoutPath), { recursive: true });

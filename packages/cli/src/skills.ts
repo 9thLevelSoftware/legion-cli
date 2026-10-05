@@ -12,6 +12,7 @@ import {
   parseSkillFrontmatter,
   resolveExtensionDir,
   resolveSkillDir,
+  readComponentInvocation,
   runGovernedExtension,
   exportUsageTelemetry,
   skillCatalogPath,
@@ -301,7 +302,7 @@ export async function runSkillsInstall(opts: CliOpts, source: string, flags: Ski
   }
 }
 
-export async function runSkillsRun(opts: CliOpts, ref: string, flags: { profile?: string } = {}): Promise<number> {
+export async function runSkillsRun(opts: CliOpts, ref: string, flags: { profile?: string; validatorInput?: string } = {}): Promise<number> {
   const extensionId = parseExtensionRef(ref);
   const engine = createLegionEngine(opts.project);
   if (!(await engine.store.pathExists(".legion-cli/config.yaml"))) {
@@ -327,12 +328,17 @@ export async function runSkillsRun(opts: CliOpts, ref: string, flags: { profile?
   let result;
   const config = await engine.store.readConfig();
   try {
+    if (parsed.manifest.runtime && flags.profile !== undefined) refuse("--profile is not supported for component runtimes", `legion-cli skills run ${ref} --validator-input <json-file>`);
+    if (parsed.manifest.runtime && flags.validatorInput === undefined) refuse("component runtimes require --validator-input", `legion-cli skills run ${ref} --validator-input <json-file>`);
+    if (!parsed.manifest.runtime && flags.validatorInput !== undefined) refuse("--validator-input is only supported for component runtimes", `legion-cli skills run ${ref}`);
+    const componentInvocation = flags.validatorInput !== undefined ? await readComponentInvocation(flags.validatorInput) : undefined;
     result = await runGovernedExtension({
       projectRoot: opts.project,
       extensionDir: resolved.extensionDir,
       manifest: parsed.manifest,
       config,
       profile: flags.profile,
+      ...(componentInvocation ? { componentInvocation } : {}),
       createHttpToolHost,
     });
   } catch (err) {

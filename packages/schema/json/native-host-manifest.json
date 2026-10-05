@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-native-host-manifest/v1"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[a-zA-Z0-9.-]+)?$"
+    },
+    "abi": {
+      "type": "string",
+      "const": "legion-validator/v1"
+    },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "local",
+        "release"
+      ]
+    },
+    "hosts": {
+      "minItems": 1,
+      "maxItems": 7,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "enum": [
+              "x86_64-pc-windows-msvc",
+              "x86_64-unknown-linux-gnu",
+              "aarch64-unknown-linux-gnu",
+              "x86_64-unknown-linux-musl",
+              "aarch64-unknown-linux-musl",
+              "x86_64-apple-darwin",
+              "aarch64-apple-darwin"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "size": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 268435456
+          }
+        },
+        "required": [
+          "target",
+          "path",
+          "sha256",
+          "size"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "version",
+    "abi",
+    "scope",
+    "hosts"
+  ],
+  "additionalProperties": false
+}

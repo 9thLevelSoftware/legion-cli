@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readdir, readFile, readlink, rm } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import {
   AcceptanceReceiptSchema,
@@ -20,6 +20,7 @@ import {
 import {
   isGitRepo,
   isPidAlive,
+  journaledRemove,
   runGit,
   ownProcessStartedAt,
   processIdentity,
@@ -80,6 +81,7 @@ export function createWorkflowPlanSnapshot(input: {
   config: LegionConfig;
   project: ProjectFile;
   discoveryContext?: string | null;
+  assuranceFingerprint?: string;
 }): WorkflowPlanSnapshot {
   const tasks = input.tasks
     .filter((entry) => entry.data.specId === input.spec.data.id)
@@ -103,6 +105,7 @@ export function createWorkflowPlanSnapshot(input: {
     configFingerprint,
     planBody: input.planBody,
     discoveryContext: input.discoveryContext ?? null,
+    ...(input.assuranceFingerprint !== undefined ? { assuranceFingerprint: input.assuranceFingerprint } : {}),
   });
   return {
     specId: input.spec.data.id,
@@ -213,20 +216,38 @@ async function nonGitProductPaths(projectRoot: string): Promise<string[]> {
   await walk(root);
   return out;
 }
-
-/** Snapshot product inputs and outputs while excluding Legion's own receipts and generated dependency/build trees. */
-export async function workflowProductFingerprint(projectRoot: string, _tasks: readonly Task[]): Promise<string> {
-  let paths: string[];
+export async function workflowProductPaths(projectRoot: string): Promise<string[]> {
   if (isGitRepo(projectRoot)) {
     const tracked = gitPaths(projectRoot, ["ls-files", "-z"]).filter((path) => !excludedProductPath(path, false));
     const untracked = gitPaths(projectRoot, ["ls-files", "-z", "--others", "--exclude-standard"])
       .filter((path) => !excludedProductPath(path, true));
-    paths = [...new Set([...tracked, ...untracked])].sort((left, right) => left.localeCompare(right));
-  } else {
-    paths = await nonGitProductPaths(projectRoot);
+    return [...new Set([...tracked, ...untracked])].sort((left, right) => left.localeCompare(right));
   }
-  const values: unknown[] = [];
-  for (const path of paths) values.push(await hashProductPath(projectRoot, path));
+  return nonGitProductPaths(projectRoot);
+}
+
+/** Snapshot product inputs and outputs while excluding Legion's own receipts and generated dependency/build trees. */
+export async function workflowProductFingerprint(projectRoot: string, _tasks: readonly Task[]): Promise<string> {
+  const paths = await workflowProductPaths(projectRoot);
+  const values = new Array<unknown>(paths.length);
+  let nextPath = 0;
+  let failed = false;
+  let failure: unknown;
+  const hashPaths = async (): Promise<void> => {
+    while (!failed) {
+      const index = nextPath++;
+      if (index >= paths.length) return;
+      try {
+        values[index] = await hashProductPath(projectRoot, paths[index]!);
+      } catch (err) {
+        if (!failed) failure = err;
+        failed = true;
+      }
+    }
+  };
+  // Preserve path order and drain started reads before propagating the first failure.
+  await Promise.all(Array.from({ length: Math.min(12, paths.length) }, hashPaths));
+  if (failed) throw failure;
   return workflowFingerprint(values);
 }
 
@@ -251,14 +272,18 @@ export function readAcceptanceReceipt(store: LegionStore): Promise<AcceptanceRec
   return readOptional(store, WORKFLOW_ACCEPTANCE_PATH, AcceptanceReceiptSchema);
 }
 
+/** A claim's holder is live while its PID runs with the recorded start time; an unknown identity counts as live. */
+export async function workflowClaimHolderLive(claim: WorkflowClaim): Promise<boolean> {
+  if (!isPidAlive(claim.pid)) return false;
+  const actualStartedAt = await processIdentity(claim.pid);
+  return actualStartedAt === null || sameProcessStart(actualStartedAt, claim.processStartedAt);
+}
+
 export async function acquireWorkflowClaim(store: LegionStore): Promise<WorkflowClaim> {
   return store.withLock(async () => {
     const existing = await readOptional(store, WORKFLOW_CLAIM_PATH, WorkflowClaimSchema);
-    if (existing && isPidAlive(existing.pid)) {
-      const actualStartedAt = await processIdentity(existing.pid);
-      if (actualStartedAt === null || sameProcessStart(actualStartedAt, existing.processStartedAt)) {
-        throw new Error(`another focused workflow is running (pid ${existing.pid})`);
-      }
+    if (existing && await workflowClaimHolderLive(existing)) {
+      throw new Error(`another focused workflow is running (pid ${existing.pid})`);
     }
     const claim = WorkflowClaimSchema.parse({
       schemaVersion: "legion-cli-workflow-claim/v1",
@@ -276,7 +301,9 @@ export async function releaseWorkflowClaim(store: LegionStore, token: string): P
   await store.withLock(async () => {
     const existing = await readOptional(store, WORKFLOW_CLAIM_PATH, WorkflowClaimSchema);
     if (!existing || existing.token !== token) return;
-    await rm(toFsPath(store.projectRoot, WORKFLOW_CLAIM_PATH), { force: true });
+    // Journaled like the claim's write: an unjournaled delete reads as tampering to a later restore of a
+    // dead run's command, which would resurrect this released claim and block the next workflow.
+    await journaledRemove(store.projectRoot, toFsPath(store.projectRoot, WORKFLOW_CLAIM_PATH));
   });
 }
 

@@ -79,6 +79,64 @@ test("F-048 bare status does not read every task file", async () => {
     );
   });
 });
+test("status presents bounded pending governed approvals in text and JSON without action bodies", async () => {
+  await withTempDir(async (dir) => {
+    const engine = createLegionEngine(dir);
+    await engine.init({ name: "Pending approval", adapter: "fake" });
+    const action = {
+      runId: "run-safe",
+      actionId: "act-safe",
+      actionKind: "http-mcp",
+      valueDigest: "a".repeat(64),
+      sinkId: "approved-sink",
+      requestDigest: "b".repeat(64),
+      confidentiality: "workspace",
+      integrity: "untrusted",
+      target: "grant/tool",
+    };
+    const workflow = await engine.getWorkflowStatus();
+    engine.getWorkflowStatus = async () => ({
+      ...workflow,
+      planApproval: "valid",
+      assurance: {
+        mode: "information-flow",
+        status: "valid",
+        manifestDigest: "c".repeat(64),
+        informationFlow: "pending",
+        blocker: null,
+      },
+    });
+    engine.getPendingGovernedActions = async () => [action];
+    const originalWrite = process.stdout.write;
+    let text = "";
+    process.stdout.write = (chunk) => {
+      text += String(chunk);
+      return true;
+    };
+    try {
+      await runStatus({ ...cliOpts(dir), json: false }, undefined, undefined, engine);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    assert.match(text, /classification=workspace integrity=untrusted/);
+    assert.match(text, /legion-cli execute approve-action --run run-safe --action act-safe/);
+    assert.doesNotMatch(text, /raw action body|actual private value/);
+
+    text = "";
+    process.stdout.write = (chunk) => {
+      text += String(chunk);
+      return true;
+    };
+    try {
+      await runStatus({ ...cliOpts(dir), json: true }, undefined, undefined, engine);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    const payload = JSON.parse(text);
+    assert.deepEqual(payload.pendingGovernedActions, [action]);
+    assert.doesNotMatch(text, /raw action body|actual private value/);
+  });
+});
 
 test("F-048 invalid status: Ready is not a slice task and does not flip next", async () => {
   await withTempDir(async (dir) => {
@@ -143,7 +201,7 @@ invalid
     const payload = JSON.parse(chunks.join(""));
     // This direct handler test bypasses resolveOpts(), which supplies command
     // output scope for a CLI invocation.
-    assert.equal(payload.next.run, "legion-cli execute");
+    assert.equal(payload.next.run, "legion-cli plan approve");
     assert.equal(payload.blockers.length, 0);
   });
 });

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, readdir, readFile, readlink } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { stableHash } from "@9thlevelsoftware/legion-cli-http";
 import { isGitRepo, runGit, toFsPath, toPosixPath } from "@9thlevelsoftware/legion-cli-persist";
@@ -155,13 +155,21 @@ async function submoduleSourceDigest(projectRoot: string, path: string, index: r
   } catch {
     return stableHash({ index, state: "unavailable" });
   }
-  const sameRoot = (left: string, right: string): boolean =>
-    process.platform === "win32"
-      ? resolve(left).toLowerCase() === resolve(right).toLowerCase()
-      : resolve(left) === resolve(right);
+  // Git reports a canonical toplevel; compare canonical paths so 8.3 short names
+  // (Windows TEMP) and symlinked ancestors (macOS /var) cannot hide a distinct worktree.
+  const canonical = async (path: string): Promise<string | null> => {
+    try {
+      const real = resolve(await realpath(path));
+      return process.platform === "win32" ? real.toLowerCase() : real;
+    } catch {
+      return null;
+    }
+  };
   // An uninitialized gitlink directory may otherwise discover the parent repo.
   // Its index object remains authoritative until a distinct submodule worktree exists.
-  if (head.status !== 0 || top.status !== 0 || !sameRoot(top.stdout.trim(), root)) {
+  if (head.status !== 0 || top.status !== 0) return stableHash({ index, state: "unavailable" });
+  const [actualTop, expectedTop] = await Promise.all([canonical(top.stdout.trim()), canonical(root)]);
+  if (actualTop === null || actualTop !== expectedTop) {
     return stableHash({ index, state: "unavailable" });
   }
   return stableHash({ index, head: head.stdout.trim(), source: await projectSourceIdentity(root) });

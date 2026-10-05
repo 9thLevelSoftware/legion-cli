@@ -1,3 +1,5 @@
+import { stableHash } from "./checkpoint.js";
+import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -147,6 +149,23 @@ export type ToolCallResult = {
   isError?: boolean;
   reason?: McpFailReason;
 };
+export type GovernedToolCallCapture = {
+  result: ToolCallResult;
+  responseDigest: string;
+  responseBytes: number;
+};
+
+type CapturedWireResponse = {
+  complete: boolean;
+  responseDigest: string | null;
+  responseBytes: number;
+  status: number;
+};
+
+type GovernedCaptureScope = {
+  toolName: string;
+  responses: CapturedWireResponse[];
+};
 
 function errorResult(reason: McpFailReason, message: string): ToolCallResult {
   return {
@@ -205,7 +224,16 @@ export async function validateMcpRemoteUrl(
   return (await resolveMcpRemoteUrl(raw, allowLoopback, lookup)).url;
 }
 
-function capResponse(response: Response, onDone: () => void): Response {
+function capResponse(response: Response, onDone: () => void, captured?: CapturedWireResponse): Response {
+  const hash = captured ? createHash("sha256") : null;
+  if (captured) captured.status = response.status;
+  const finish = () => {
+    if (captured && hash) {
+      captured.complete = true;
+      captured.responseDigest = hash.digest("hex");
+      captured.responseBytes = 0;
+    }
+  };
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > MCP_REMOTE_MAX_RESPONSE_BYTES) {
     response.body?.cancel().catch(() => undefined);
@@ -213,6 +241,7 @@ function capResponse(response: Response, onDone: () => void): Response {
     throw new McpClientError("response-too-large", "MCP remote response exceeded size cap");
   }
   if (!response.body) {
+    finish();
     onDone();
     return response;
   }
@@ -222,6 +251,11 @@ function capResponse(response: Response, onDone: () => void): Response {
     async pull(controller) {
       const next = await reader.read();
       if (next.done) {
+        if (captured) {
+          captured.complete = true;
+          captured.responseDigest = hash!.digest("hex");
+          captured.responseBytes = received;
+        }
         controller.close();
         onDone();
         return;
@@ -233,6 +267,7 @@ function capResponse(response: Response, onDone: () => void): Response {
         onDone();
         return;
       }
+      hash?.update(next.value);
       controller.enqueue(next.value);
     },
     cancel(reason) {
@@ -242,8 +277,39 @@ function capResponse(response: Response, onDone: () => void): Response {
   return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 
-function remoteFetch(allowLoopback: boolean, lookup: McpLookup): typeof fetch {
+type CaptureRequest = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => Promise<CapturedWireResponse | undefined>;
+
+function requestBodyText(body: NonNullable<Parameters<typeof fetch>[1]>["body"]): string | null {
+  if (typeof body === "string") return body;
+  if (body instanceof Uint8Array) return new TextDecoder("utf-8", { fatal: true }).decode(body);
+  if (body instanceof ArrayBuffer) return new TextDecoder("utf-8", { fatal: true }).decode(body);
+  return null;
+}
+
+function captureToolRequest(toolName: string, scope: GovernedCaptureScope): CaptureRequest {
   return async (input, init) => {
+    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+    if (method !== "POST") return undefined;
+    let body = requestBodyText(init?.body);
+    if (body === null && input instanceof Request) {
+      try { body = await input.clone().text(); } catch { return undefined; }
+    }
+    if (body === null) return undefined;
+    let parsed: unknown;
+    try { parsed = JSON.parse(body); } catch { return undefined; }
+    const request = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    const params = request?.params && typeof request.params === "object" && !Array.isArray(request.params) ? request.params as Record<string, unknown> : null;
+    if (request?.method !== "tools/call" || params?.name !== toolName) return undefined;
+    const captured: CapturedWireResponse = { complete: false, responseDigest: null, responseBytes: 0, status: 0 };
+    scope.responses.push(captured);
+    return captured;
+  };
+}
+
+
+function remoteFetch(allowLoopback: boolean, lookup: McpLookup, captureRequest?: CaptureRequest): typeof fetch {
+  return async (input, init) => {
+    const captured = await captureRequest?.(input, init);
     const resolved = await resolveMcpRemoteUrl(
       typeof input === "string" || input instanceof URL ? String(input) : input.url,
       allowLoopback,
@@ -288,7 +354,7 @@ function remoteFetch(allowLoopback: boolean, lookup: McpLookup): typeof fetch {
       closeDispatcher();
       throw new McpClientError("policy-denied", `MCP remote redirect HTTP ${response.status} refused`);
     }
-    return capResponse(response, closeDispatcher);
+    return capResponse(response, closeDispatcher, captured);
   };
 }
 
@@ -296,6 +362,7 @@ export async function createMcpClientTransport(
   config: McpServerConfig,
   env: NodeJS.ProcessEnv = process.env,
   lookup: McpLookup = defaultLookup,
+  captureRequest?: CaptureRequest,
 ): Promise<Transport> {
   const transportKind = (config as { transport?: string }).transport ?? "stdio";
   if (transportKind === "stdio") {
@@ -314,7 +381,7 @@ export async function createMcpClientTransport(
     throw new McpClientError("policy-denied", `MCP auth environment variable ${remote.authTokenEnv} is missing`);
   }
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-  const boundedFetch = remoteFetch(remote.allowLoopback, lookup);
+  const boundedFetch = remoteFetch(remote.allowLoopback, lookup, captureRequest);
   if (transportKind === "sse") {
     return new SSEClientTransport(url, {
       requestInit: { headers },
@@ -340,7 +407,7 @@ export async function createMcpClientTransport(
 export type LegionMcpClientPoolOptions = {
   governedHttpToolAllowlist?: readonly string[];
   /** Deterministic fixture seam; production uses the transport-specific factory above. */
-  transportFactory?: (config: McpServerConfig) => Promise<Transport>;
+  transportFactory?: (config: McpServerConfig, captureRequest?: CaptureRequest) => Promise<Transport>;
   /** Deterministic timeout seam; production keeps the bounded default. */
   toolTimeoutMs?: number;
 };
@@ -350,18 +417,21 @@ export class LegionMcpClientPool {
   #transports = new Map<string, Transport>();
   #failures = new Map<string, McpClientError>();
   #inflight = new Map<string, Promise<Client>>();
+  #captureScopes = new Map<string, GovernedCaptureScope>();
+  #captureActive = new Set<string>();
+  #activeToolCalls = new Map<string, number>();
   #configs: McpServersConfig;
   #governedHttpToolAllowlist: Set<string>;
   #reservations = 0;
   #closed = false;
   #generation = 0;
-  #transportFactory: (config: McpServerConfig) => Promise<Transport>;
+  #transportFactory: (config: McpServerConfig, captureRequest?: CaptureRequest) => Promise<Transport>;
   #toolTimeoutMs: number;
 
   constructor(configs: McpServersConfig = {}, options: LegionMcpClientPoolOptions = {}) {
     this.#configs = configs;
     this.#governedHttpToolAllowlist = new Set(options.governedHttpToolAllowlist ?? []);
-    this.#transportFactory = options.transportFactory ?? ((config) => createMcpClientTransport(config));
+    this.#transportFactory = options.transportFactory ?? ((config, captureRequest) => createMcpClientTransport(config, process.env, defaultLookup, captureRequest));
     this.#toolTimeoutMs = options.toolTimeoutMs ?? MCP_TOOL_TIMEOUT_MS;
   }
 
@@ -401,7 +471,11 @@ export class LegionMcpClientPool {
     this.#reservations += 1;
     let transport: Transport;
     try {
-      transport = await this.#transportFactory(config);
+      const captureRequest: CaptureRequest = async (input, init) => {
+        const scope = this.#captureScopes.get(serverName);
+        return scope ? captureToolRequest(scope.toolName, scope)(input, init) : undefined;
+      };
+      transport = await this.#transportFactory(config, captureRequest);
     } catch (err) {
       this.#reservations = Math.max(0, this.#reservations - 1);
       throw err;
@@ -494,7 +568,8 @@ export class LegionMcpClientPool {
     if (colonIdx < 0) return errorResult("unknown-server", "MCP tool name must be server:tool");
     const serverName = namespacedToolName.slice(0, colonIdx);
     const toolName = namespacedToolName.slice(colonIdx + 1);
-
+    if (this.#captureActive.has(serverName)) return errorResult("policy-denied", "MCP server is serving a governed call");
+    this.#activeToolCalls.set(serverName, (this.#activeToolCalls.get(serverName) ?? 0) + 1);
     try {
       const client = await this.getClient(serverName, signal);
       if (!client) return errorResult("unknown-server", `unknown MCP server ${serverName}`);
@@ -509,6 +584,10 @@ export class LegionMcpClientPool {
     } catch (err) {
       const wrapped = asMcpError(err, "tool-error");
       return errorResult(wrapped.reason, wrapped.message);
+    } finally {
+      const count = this.#activeToolCalls.get(serverName) ?? 1;
+      if (count <= 1) this.#activeToolCalls.delete(serverName);
+      else this.#activeToolCalls.set(serverName, count - 1);
     }
   }
 
@@ -538,6 +617,41 @@ export class LegionMcpClientPool {
       return errorResult(wrapped.reason, wrapped.message);
     }
   }
+  async callGovernedHttpToolCaptured(
+    namespacedToolName: string,
+    args: Record<string, unknown>,
+    expectedSchemaFingerprint: string,
+    signal?: AbortSignal,
+  ): Promise<GovernedToolCallCapture | null> {
+    if (!this.#governedHttpToolAllowlist.has(namespacedToolName)) return null;
+    const colonIdx = namespacedToolName.indexOf(":");
+    if (colonIdx < 1) return null;
+    const serverName = namespacedToolName.slice(0, colonIdx);
+    const toolName = namespacedToolName.slice(colonIdx + 1);
+    const config = this.#configs[serverName] as { transport?: string } | undefined;
+    if (config?.transport !== "streamable-http" || this.#captureActive.has(serverName) || (this.#activeToolCalls.get(serverName) ?? 0) > 0) return null;
+    this.#captureActive.add(serverName);
+    try {
+      const listed = (await this.listAllTools(signal)).filter((tool) => tool.readOnly && this.#governedHttpToolAllowlist.has(tool.name));
+      const identity = stableHash(listed.sort((a, b) => a.name.localeCompare(b.name)).map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema, readOnly: tool.readOnly })));
+      if (identity !== expectedSchemaFingerprint || !listed.some((tool) => tool.name === namespacedToolName)) return null;
+      const client = this.#clients.get(serverName);
+      if (!client) return null;
+      const scope: GovernedCaptureScope = { toolName, responses: [] };
+      this.#captureScopes.set(serverName, scope);
+      const result = await client.callTool({ name: toolName, arguments: args }, undefined, { timeout: this.#toolTimeoutMs, signal });
+      const response = scope.responses.length === 1 ? scope.responses[0] : undefined;
+      if (!response || !response.complete || response.status !== 200 || response.responseBytes <= 0 || !response.responseDigest) return null;
+      if (Buffer.byteLength(JSON.stringify(result), "utf8") > MCP_REMOTE_MAX_RESPONSE_BYTES) return null;
+      return { result: result as ToolCallResult, responseDigest: response.responseDigest, responseBytes: response.responseBytes };
+    } catch {
+      return null;
+    } finally {
+      this.#captureScopes.delete(serverName);
+      this.#captureActive.delete(serverName);
+    }
+  }
+
 
   async closeAll(): Promise<void> {
     this.#closed = true;

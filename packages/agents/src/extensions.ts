@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
@@ -9,6 +9,7 @@ import {
   fetchGithubZipball,
   hashTreeFiles,
   legionPaths,
+  overlapsEngineProtectedPath,
   parseGithubRepoSource,
   PathEscapeError,
   readNinthlevelMinisignPub,
@@ -35,6 +36,13 @@ export type ExtensionPermissions = {
   commands: string[];
 };
 
+export type ExtensionComponentRuntime = {
+  kind: "wasi-component";
+  abi: "legion-validator/v1";
+  component: string;
+  sha256: string;
+};
+
 export type ExtensionManifest = {
   ref: `extension:${string}`;
   extensionId: string;
@@ -47,6 +55,7 @@ export type ExtensionManifest = {
   requiredChecks: string[];
   resources: string[];
   permissions: ExtensionPermissions;
+  runtime?: ExtensionComponentRuntime;
   path: string;
   bodyChars: number;
 };
@@ -108,7 +117,8 @@ function validReadRoot(value: string): boolean {
     posix !== ".git" &&
     !posix.startsWith(".git/") &&
     posix !== ".env" &&
-    !posix.startsWith(".env."),
+    !posix.startsWith(".env.") &&
+    !overlapsEngineProtectedPath(posix),
   );
 }
 
@@ -185,6 +195,37 @@ export function parseExtensionFrontmatter(raw: string, path: string): ParsedExte
     if (write.some((entry) => entry !== RUN_WRITE_ROOT)) {
       return fail(path, extensionIdGuess, `extension write permissions must use the evidence run root ${RUN_WRITE_ROOT}`);
     }
+    let runtime: ExtensionComponentRuntime | undefined;
+    if (legion?.runtime !== undefined) {
+      if (Object.keys(data).some((key) => !["name", "description", "license", "compatibility", "allowed-tools", "allowedTools", "metadata"].includes(key)) ||
+          (data["allowed-tools"] !== undefined && data.allowedTools !== undefined) ||
+          Object.keys(legion).some((key) => !["extensionId", "version", "requiredTools", "checks", "resources", "permissions", "runtime"].includes(key)) ||
+          Object.keys(resourcesRaw).some((key) => !["scripts", "references", "assets"].includes(key)) ||
+          Object.values(resourcesRaw).some((entries) => !Array.isArray(entries) || !stringArray(entries)) ||
+          !permissionsRaw || Object.keys(permissionsRaw).some((key) => !["read", "write", "commands"].includes(key)) ||
+          ["read", "write", "commands"].some((key) => !Array.isArray(permissionsRaw[key]))) {
+        return fail(path, extensionIdGuess, "component frontmatter requires strict fields and explicit resource/permission arrays");
+      }
+      const value = record(legion.runtime);
+      if (!value || Object.keys(value).some((key) => !["kind", "abi", "component", "sha256"].includes(key)) ||
+          value.kind !== "wasi-component" || value.abi !== "legion-validator/v1" ||
+          typeof value.component !== "string" || !/^assets\/[A-Za-z0-9._/-]+\.wasm$/.test(value.component) ||
+          value.component.split("/").some((part) => !part || part === "." || part === "..") ||
+          typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256)) {
+        return fail(path, extensionIdGuess, "metadata.legion.runtime must declare a strict wasi-component ABI, assets/*.wasm path, and SHA-256");
+      }
+      if (!(stringArray(resourcesRaw.assets) ?? []).includes(value.component)) {
+        return fail(path, extensionIdGuess, "runtime.component must be a declared assets resource");
+      }
+      if (commands.length || requiredTools.length || allowedTools.some((tool) => tool !== "Read")) {
+        return fail(path, extensionIdGuess, "component runtimes cannot declare commands, host tools, or guest writes");
+      }
+      if (requiredChecks.length > 256 || requiredChecks.some((id) => !EXTENSION_ID_RE.test(id)) ||
+          new Set(requiredChecks).size !== requiredChecks.length) {
+        return fail(path, extensionIdGuess, "component checks must be 1–256 unique lower-case IDs");
+      }
+      runtime = { kind: value.kind, abi: value.abi, component: value.component, sha256: value.sha256 };
+    }
     const body = raw.slice(match[0].length).replace(/^\r?\n/, "");
     return {
       ok: true,
@@ -200,6 +241,7 @@ export function parseExtensionFrontmatter(raw: string, path: string): ParsedExte
         requiredChecks,
         resources,
         permissions: { read, write, commands },
+        ...(runtime ? { runtime } : {}),
         path,
         bodyChars: body.length,
       },
@@ -237,6 +279,20 @@ export async function validateExtensionResources(dir: string, manifest: Extensio
     }
     const leaf = await lstat(current);
     if (!leaf.isFile()) throw new AgentError(`declared resource is not a regular file: ${resource}`);
+    assertResolvedInside(await realpath(dir), await realpath(current), resource);
+  }
+  if (manifest.runtime) {
+    const component = join(dir, ...manifest.runtime.component.split("/"));
+    const size = (await lstat(component)).size;
+    if (size < 1 || size > 16 * 1024 * 1024) throw new AgentError("component resource must be 1–16 MiB");
+    const hash = createHash("sha256");
+    let bytes = 0;
+    for await (const chunk of createReadStream(component)) {
+      bytes += chunk.length;
+      if (bytes > 16 * 1024 * 1024) throw new AgentError("component resource exceeds 16 MiB");
+      hash.update(chunk);
+    }
+    if (hash.digest("hex") !== manifest.runtime.sha256) throw new AgentError("component resource SHA-256 mismatch");
   }
 }
 

@@ -1,0 +1,6 @@
+version: 2
+secret:
+  ignored_paths:
+    # Public, already-published demo attestation (SHA-256 digests and UUID tokens recorded in the
+    # public Sigstore transparency log); it contains no credentials.
+    - "packages/persist/test/fixtures/ci-attestation/**"

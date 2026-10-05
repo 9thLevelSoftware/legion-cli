@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-delivery-export/v1"
+    },
+    "snapshotId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "snapshotDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "requestedOutput": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "attemptId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "attemptedAt": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    },
+    "result": {
+      "type": "string",
+      "enum": [
+        "exported",
+        "failed"
+      ]
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "snapshotId",
+    "snapshotDigest",
+    "requestedOutput",
+    "attemptId",
+    "attemptedAt",
+    "result",
+    "reason"
+  ],
+  "additionalProperties": false
+}

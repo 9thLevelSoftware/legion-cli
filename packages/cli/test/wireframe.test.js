@@ -89,8 +89,6 @@ test("frozen without --restyle refuses; --restyle with fixture keeps h1", async 
   await withTempDir(async (dir) => {
     seedDraft(dir);
     const page = join(dir, ".legion-cli", "specs", "spec-checkin", "wireframes", "home.html");
-    const before = await readFile(page, "utf8");
-    await writeFile(page, before.replace("<h1>home</h1>", "<h1>Keep Me</h1>"), "utf8");
     const refreshed = runCli(["spec", "--project", dir]);
     assert.equal(refreshed.status, 0, `${refreshed.stdout}\n${refreshed.stderr}`);
     const pending = runCli(["spec", "--project", dir, "--json"]);
@@ -118,6 +116,8 @@ test("frozen without --restyle refuses; --restyle with fixture keeps h1", async 
 
     const installed = runCli(["design-system", "install", legionFixture, "--project", dir]);
     assert.equal(installed.status, 0, installed.stderr);
+    const before = await readFile(page, "utf8");
+    await writeFile(page, before.replace("<h1>home</h1>", "<h1>Keep Me</h1>"), "utf8");
     const restyle = runCli(["wireframe", "--restyle", "--project", dir]);
     assert.equal(restyle.status, 0, `${restyle.stdout}\n${restyle.stderr}`);
     assert.match(normalize(restyle.stdout), /Restyled/);

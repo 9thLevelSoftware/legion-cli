@@ -1,5 +1,5 @@
 import type { Task } from "@9thlevelsoftware/legion-cli-schema";
-import { isTerminalTaskStatus, OPEN_TASK_STATUSES } from "./tasks.js";
+import { isTerminalTaskStatus, OPEN_TASK_STATUSES } from "@9thlevelsoftware/legion-cli-schema";
 
 /** Slice (v0) = every task whose specId matches STATE.activeSpecId. */
 export function sliceTasks<T extends { specId: string; id: string }>(

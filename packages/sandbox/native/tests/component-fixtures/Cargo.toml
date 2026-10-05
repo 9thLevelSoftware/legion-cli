@@ -1,0 +1,12 @@
+[package]
+name = "legion-component-fixtures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+wat = "=1.258.3"
+wasm-encoder = "=0.258.3"
+wasmparser = "=0.258.3"
+serde_json.workspace = true

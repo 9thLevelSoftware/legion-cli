@@ -707,6 +707,16 @@ export const WorkflowCommandEvidenceSchema = z
     logPath: z.string().min(1).optional(),
     trustTier: z.string().min(1),
     trustTierNote: z.string().min(1),
+    /** Information-flow mode only: finite label metadata of the protected command output (core `VerificationOutputProvenance`). */
+    informationFlow: z
+      .object({
+        confidentiality: z.enum(["public", "workspace", "sealed"]),
+        integrity: z.enum(["approved", "untrusted"]),
+        origins: z.array(z.string().min(1).max(64)).max(256),
+        joinDigest: Sha256HexSchema,
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type WorkflowCommandEvidence = z.infer<typeof WorkflowCommandEvidenceSchema>;

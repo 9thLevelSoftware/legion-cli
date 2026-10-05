@@ -7,7 +7,27 @@ export type ShipFlags = {
   allowDegradedQa?: boolean;
   pr?: boolean;
   commit?: boolean;
+  bundle?: string;
 };
+
+export type ShipExportFlags = {
+  snapshot: string;
+  out: string;
+};
+
+export async function runShipExport(opts: CliOpts, flags: ShipExportFlags): Promise<number> {
+  const engine = createLegionEngine(opts.project);
+  const result = await engine.exportDeliverySnapshot(flags.snapshot, flags.out);
+  if (opts.json) {
+    writeJson({ ok: true, receipt: result });
+  } else {
+    writeOut(`Delivery snapshot ${result.snapshotId} exported to ${result.directory}`);
+    writeOut(`Manifest SHA-256: ${result.manifestSha256}`);
+    writeOut(`Public predicate SHA-256: ${result.predicateSha256} (predicate.json)`);
+  }
+  return 0;
+}
+
 
 async function confirmShip(preview: ShipPreview, json: boolean): Promise<boolean> {
   if (json) {
@@ -32,6 +52,9 @@ async function confirmShip(preview: ShipPreview, json: boolean): Promise<boolean
 }
 
 export async function runShip(opts: CliOpts, flags: ShipFlags): Promise<number> {
+  if (flags.bundle !== undefined && flags.bundle.trim() === "") {
+    refuse("ship --bundle requires a non-empty directory", HINT.ship);
+  }
   const engine = createLegionEngine(opts.project);
   try {
     await slurpStdin();
@@ -39,19 +62,31 @@ export async function runShip(opts: CliOpts, flags: ShipFlags): Promise<number> 
       allowDegradedQa: Boolean(flags.allowDegradedQa),
       commit: Boolean(flags.commit),
       pr: Boolean(flags.pr),
+      ...(flags.bundle ? { bundleDirectory: flags.bundle } : {}),
       actor: "user",
       confirmSource: process.stdin.isTTY && process.stdout.isTTY ? "tty" : "piped",
       confirm: (preview) => confirmShip(preview, opts.json),
     });
     if (opts.json) {
       writeJson({
-        ok: true,
+        ok: receipt.deliverySnapshot?.status !== "pending",
         receipt,
         next: "legion-cli spec new",
       });
-      return 0;
+      return receipt.deliverySnapshot?.status === "pending" ? 1 : 0;
+    }
+    if (receipt.deliverySnapshot?.status === "pending") {
+      writeOut(`Delivery snapshot ${receipt.snapshotId ?? "(unknown)"} is pending: ${receipt.deliverySnapshot.error}`);
+      writeOut(`Recovery: ${receipt.deliverySnapshot.recoveryHint}`);
     }
     writeOut("Ship receipt written. Next: legion-cli spec new");
+    if (receipt.bundle?.status === "exported") {
+      if (receipt.bundle.warning) writeOut(`Bundle warning: ${receipt.bundle.warning}`);
+      writeOut(`Delivery bundle exported: ${receipt.bundle.path}`);
+    } else if (receipt.bundle?.status === "failed") {
+      writeOut(`Delivery bundle export failed: ${receipt.bundle.reason}`);
+      writeOut(`Recover with: ${receipt.bundle.recoveryHint}`);
+    }
     if (!flags.commit && receipt.staged.length > 0) writeOut("Changes are staged (not committed).");
     if (!flags.commit && !flags.pr) {
       writeOut("Optional: legion-cli ship --pr --commit");
@@ -62,8 +97,10 @@ export async function runShip(opts: CliOpts, flags: ShipFlags): Promise<number> 
     if (receipt.prUrl) {
       writeOut(`PR: ${receipt.prUrl}`);
     }
-    return 0;
+    return receipt.deliverySnapshot?.status === "pending" ? 1 : 0;
   } finally {
     closePrompt();
   }
 }
+
+

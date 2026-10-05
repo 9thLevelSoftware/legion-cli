@@ -1,0 +1,43 @@
+[workspace]
+members = [".", "strict-json", "validators/json-contract", "pack-component", "tests/component-fixtures"]
+default-members = ["."]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96.0"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "=1.0.228", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "=1.0.145", default-features = false, features = ["alloc", "float_roundtrip"] }
+legion-strict-json = { path = "strict-json" }
+
+[package]
+name = "legion-wasi-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+wasmtime = { version = "=49.0.2", default-features = false, features = ["std", "runtime", "cranelift", "component-model"] }
+serde.workspace = true
+serde_json.workspace = true
+legion-strict-json.workspace = true
+sha2 = "=0.10.9"
+base64 = "=0.22.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.190"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Threading"] }
+
+[profile.release]
+panic = "abort"
+lto = "thin"
+strip = "symbols"
+codegen-units = 1

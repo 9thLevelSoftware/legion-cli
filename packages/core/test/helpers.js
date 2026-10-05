@@ -76,6 +76,15 @@ export async function readLatestRunPrompt(dir, skillId) {
   return readFile(join(runsDir, names[names.length - 1], "prompt.md"), "utf8");
 }
 
+
+/**
+ * Run IDs of the execute jails under `.legion-cli/sandbox`, sorted. Only directories are jails: the seatbelt backend
+ * also keeps each jail's `<runId>.sb` profile there (macOS).
+ */
+export async function listJailRunIds(dir) {
+  const entries = await readdir(join(dir, ".legion-cli", "sandbox"), { withFileTypes: true });
+  return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+}
 export async function withFakeAdapter(fn) {
   const previous = process.env.LEGION_CLI_ADAPTER;
   process.env.LEGION_CLI_ADAPTER = "fake";

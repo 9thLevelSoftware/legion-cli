@@ -39,7 +39,29 @@ export {
   toolsForJob,
   validateToolCallArguments,
 } from "./tools.js";
-export type { HttpAgentUsage, HttpToolHost } from "./types.js";
+export type { HttpAgentJob, HttpAgentUsage, HttpToolHost } from "./types.js";
+export { fileOriginId, remoteOriginId } from "./governed.js";
+export { assembleGovernedMcpArguments } from "./mcp-arguments.js";
+export type {
+  ApprovedHttpAssuranceContext,
+  AuthorityBinding,
+  BlockCode,
+  EffectCompletion,
+  EffectIdentity,
+  EffectIntent,
+  FailureCode,
+  GovernedEffectHost,
+  GovernedIdentities,
+  GovernedPermit,
+  GovernedProgram,
+  GovernedState,
+  GovernedValueRecord,
+  HttpGovernedCheckpoint,
+  ProviderPurpose,
+  ProviderUsageReceipt,
+  ValueEvidence,
+} from "./governed-types.js";
+export type { GovernedHttpAgentJob, HttpAgentJobBase, LegacyHttpAgentJob } from "./types.js";
 export {
   buildMcpSpawnEnv,
   closeMcpTransports,
@@ -55,6 +77,7 @@ export {
 } from "./mcp-client.js";
 export type {
   ExternalMcpTool,
+  GovernedToolCallCapture,
   LegionMcpClientPoolOptions,
   McpFailReason,
   McpLookup,

@@ -102,3 +102,20 @@ test("verify and review cannot write QA scores or checklists (F-081)", () => {
   // qa keeps its own roots.
   assert.equal(isAllowedPath(".legion-cli/qa/scores/QA-0001.json", skillContract("qa", { runId: "r1" }).allowedRoots), true);
 });
+
+test("assurance authority stays engine-owned but is never an agent write grant", () => {
+  for (const path of [
+    ".legion-cli/workflow/assurance.yaml",
+    ".LEGION-CLI/WORKFLOW/checks/business.yaml",
+    ".legion-cli/audit/governance/epoch/head.json",
+    ".legion-cli/audit/http-governed/run/authority.json",
+    ".legion-cli/audit/delivery/snapshot/outcome.yaml",
+    ".legion-cli/audit/delivery-export/snapshot.json",
+    ".legion-cli/audit/raw-logs/run/stdout.log",
+  ]) {
+    assert.equal(isEngineOwned(path), true, path);
+    assert.equal(isAllowedPath(path, ["**", ".legion-cli/audit/**", ".legion-cli/workflow/**"]), false, path);
+  }
+  assert.equal(isAllowedPath(".legion-cli/qa/verify.md", skillContract("verify", { runId: "run" }).allowedRoots), true);
+  assert.equal(isAllowedPath(".legion-cli/cache/runs/run/output.json", skillContract("execute", { runId: "run" }).allowedRoots), true);
+});

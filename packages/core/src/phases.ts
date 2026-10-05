@@ -1,29 +1,10 @@
 import { PhaseSchema, type Phase } from "@9thlevelsoftware/legion-cli-schema";
+import { canTransition, UNDO_ONLY_PHASE_TRANSITIONS } from "@9thlevelsoftware/legion-cli-schema";
 import { HINT, refuse } from "./errors.js";
+
 
 /** CONCERNS is lastReadiness on plan_ready, not a phase. */
 export const PHASES: readonly Phase[] = PhaseSchema.options;
-
-export const LEGAL_PHASE_TRANSITIONS: Readonly<Record<Phase, readonly Phase[]>> = {
-  uninitialized: ["initialized"],
-  initialized: ["intent_draft"],
-  intent_draft: ["intent_ready"],
-  intent_ready: ["discussing"],
-  discussing: ["spec_draft"],
-  spec_draft: ["spec_frozen"],
-  spec_frozen: ["planning", "abandoned"],
-  planning: ["plan_failed", "plan_ready", "abandoned"],
-  plan_failed: ["spec_draft", "planning", "abandoned"],
-  plan_ready: ["executing", "abandoned"],
-  executing: ["executing", "ready_to_ship", "shipped", "abandoned"],
-  ready_to_ship: ["shipped", "executing", "abandoned"],
-  shipped: ["intent_draft"],
-  abandoned: ["intent_draft"],
-};
-
-export function canTransition(from: Phase, to: Phase): boolean {
-  return LEGAL_PHASE_TRANSITIONS[from]?.includes(to) ?? false;
-}
 
 export function assertLegalPhase(phase: string): Phase {
   const parsed = PhaseSchema.safeParse(phase);
@@ -53,10 +34,6 @@ export function assertCanTransition(from: Phase, to: Phase): void {
   }
 }
 
-/** Edges only `undo` may take. They are deliberately not in LEGAL_PHASE_TRANSITIONS. */
-export const UNDO_ONLY_PHASE_TRANSITIONS: Readonly<Partial<Record<Phase, readonly Phase[]>>> = {
-  shipped: ["executing"],
-};
 
 export function assertCanUndoTransition(from: Phase, to: Phase): void {
   if (!(UNDO_ONLY_PHASE_TRANSITIONS[from]?.includes(to) ?? false)) {
