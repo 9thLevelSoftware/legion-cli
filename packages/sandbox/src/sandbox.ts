@@ -628,10 +628,11 @@ export function verificationBwrapArgvPrefix(
 }
 
 /**
- * The verification runtime: the node binary, its directory, and on seatbelt its installation prefix (`<prefix>/bin/node`
- * → `<prefix>`), so node-bundled tools such as `npm` (`bin/npm` → `lib/node_modules/npm`) resolve. Each directory is
- * omitted when it is the filesystem root, a home directory, the project, or inside the project; the prefix is also
- * omitted when it contains a home directory.
+ * The verification runtime: the node binary, its directory, and on seatbelt its installation's bundled modules
+ * (`<prefix>/bin/node` → `<prefix>/lib/node_modules`), so node-bundled tools such as `npm` (`bin/npm` →
+ * `lib/node_modules/npm`) resolve without granting a shared prefix such as `/usr/local`. Each directory is omitted when it
+ * is the filesystem root, a home directory, the project, or inside the project; the modules directory is also omitted when
+ * its prefix contains a home directory.
  */
 function verificationExecReadPaths(projectRoot: string): string[] {
   const root = resolve(projectRoot);
@@ -644,7 +645,7 @@ function verificationExecReadPaths(projectRoot: string): string[] {
   paths.push(dir);
   const prefix = dirname(dir);
   if (basename(dir) === "bin" && !isUnsafeDirname(prefix, root) && !homeRealpaths().some((home) => isWithin(prefix, home))) {
-    paths.push(prefix);
+    paths.push(join(prefix, "lib", "node_modules"));
   }
   return paths;
 }

@@ -263,11 +263,9 @@ test("an in-process adapter extension run uses the detected hardened jail instea
     assert.equal(result.backend, detected.backend);
     const required = result.evidence.checks.filter((check) => !check.id.startsWith("tool:"));
     assert.deepEqual(required.map((check) => [check.id, check.status]), [["axe", "passed"], ["keyboard", "passed"]]);
-    // Declared tools missing from this host's PATH are recorded as unavailable rather than dropped.
-    for (const check of result.evidence.checks.filter((entry) => entry.id.startsWith("tool:"))) {
-      assert.equal(check.status, "unavailable", JSON.stringify(check));
-      assert.match(check.detail, /is not available on PATH$/);
-    }
+    // Seatbelt supplies no command wrapper, so the fixture's declared commands are recorded as unavailable.
+    const extra = result.evidence.checks.filter((check) => check.id.startsWith("tool:")).map((check) => [check.id, check.status]);
+    assert.deepEqual(extra, detected.backend === "seatbelt" ? [["tool:command-execution", "unavailable"]] : []);
   });
 });
 

@@ -122,8 +122,11 @@ backend that is unavailable fails closed. Verification never uses a copy jail
 or requires `--allow-no-sandbox`; filtering is not a trust boundary. QA unit
 commands always run on the host. bwrap/seatbelt permit network egress for
 ordinary verification; an adopted `information-flow` assurance plan instead
-requires a hardened backend and runs checks with the network denied and the
-engine's runtime closure read-only.
+requires a hardened backend and runs checks with the network denied. When the
+engine is installed inside the project, the project `node_modules` holding its
+runtime closure is mounted read-only, so tools that write caches there (for
+example `node_modules/.cache` or `.vite`) fail in that mode; point their caches
+outside `node_modules`.
 
 The ship gate evaluates requirement-level evidence:
 

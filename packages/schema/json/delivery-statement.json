@@ -40,7 +40,7 @@
     },
     "predicateType": {
       "type": "string",
-      "const": "https://github.com/9thLevelSoftware/product-engineer-helper/blob/main/docs/design/assurance-integration.md#delivery-v1"
+      "const": "https://github.com/9thLevelSoftware/legion-cli/blob/main/docs/design/assurance-integration.md#delivery-v1"
     },
     "predicate": {
       "type": "object",

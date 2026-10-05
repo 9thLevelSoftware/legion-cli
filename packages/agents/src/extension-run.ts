@@ -119,7 +119,9 @@ function parseEvidence(
   if (missing.length > 0) throw new AgentError(`extension evidence is missing required checks: ${missing.join(", ")}`);
   for (const tool of unavailableTools) {
     const id = `tool:${tool}`;
-    if (!ids.has(id)) checks.push({ id, status: "unavailable", detail: `${tool} is not available on PATH` });
+    if (!ids.has(id)) checks.push({ id, status: "unavailable", detail: tool === "command-execution"
+      ? "declared extension commands cannot run: this sandbox backend provides no command wrapper"
+      : `${tool} is not available on PATH` });
   }
   return { schemaVersion: value.schemaVersion, extension: value.extension, checks };
 }

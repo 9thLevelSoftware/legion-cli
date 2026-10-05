@@ -163,7 +163,7 @@ jobs:
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: public-delivery/manifest.json
-          predicate-type: https://github.com/9thLevelSoftware/product-engineer-helper/blob/main/docs/design/assurance-integration.md#delivery-v1
+          predicate-type: https://github.com/9thLevelSoftware/legion-cli/blob/main/docs/design/assurance-integration.md#delivery-v1
           predicate-path: public-delivery/predicate.json
           show-summary: false
           push-to-registry: false

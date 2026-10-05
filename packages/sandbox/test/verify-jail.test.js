@@ -166,11 +166,14 @@ test("seatbelt profiles grant the macOS runtime node needs without project-exter
       assert.ok(lines.includes('(allow file-read* (subpath "/System/Library/OpenSSL"))'), "node's OpenSSL config is readable");
       assert.equal(lines.some((line) => /\(allow file-read\*\)|\(allow default\)|\(subpath "\/Users"\)|\(subpath "\/"\)/.test(line)), false, "no global or home-wide read grant");
     }
-    // A <prefix>/bin/node toolchain (setup-node, Homebrew) exposes its prefix so node-bundled npm resolves.
+    // A <prefix>/bin/node toolchain (setup-node, Homebrew) exposes only <prefix>/lib/node_modules, never the shared prefix.
     const execDir = dirname(realpathSync(process.execPath));
     const readLine = verificationSeatbeltProfile(dir).split("\n").find((line) => line.startsWith(`(allow file-read* (subpath ${JSON.stringify(realpathSync(dir))})`));
     assert.ok(readLine.includes(`(subpath ${JSON.stringify(execDir)})`));
-    if (basename(execDir) === "bin") assert.ok(readLine.includes(`(subpath ${JSON.stringify(dirname(execDir))})`), readLine);
+    if (basename(execDir) === "bin") {
+      assert.ok(readLine.includes(`(subpath ${JSON.stringify(join(dirname(execDir), "lib", "node_modules"))})`), readLine);
+      assert.ok(!readLine.includes(`(subpath ${JSON.stringify(dirname(execDir))})`), readLine);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

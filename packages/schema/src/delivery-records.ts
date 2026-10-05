@@ -137,7 +137,7 @@ export const DsseEnvelopeSchema = boundedRecord(z.strictObject({
   signatures: z.array(z.strictObject({ keyid: AssuranceSha256Schema, sig: z.string().min(1).max(256).regex(/^[A-Za-z0-9+/_-]+={0,2}$/) })).min(1).max(256),
 }).superRefine((v, ctx) => uniqueBy(v.signatures, (x) => x.keyid, ctx)), 64 * 1024 * 1024);
 export type DsseEnvelope = z.infer<typeof DsseEnvelopeSchema>;
-export const DELIVERY_PREDICATE_TYPE = "https://github.com/9thLevelSoftware/product-engineer-helper/blob/main/docs/design/assurance-integration.md#delivery-v1";
+export const DELIVERY_PREDICATE_TYPE = "https://github.com/9thLevelSoftware/legion-cli/blob/main/docs/design/assurance-integration.md#delivery-v1";
 export const DeliveryStatementSchema = boundedRecord(z.strictObject({
   _type: z.literal("https://in-toto.io/Statement/v1"),
   subject: z.array(z.strictObject({ name: z.literal("manifest.json"), digest: z.strictObject({ sha256: AssuranceSha256Schema }) })).length(1),
