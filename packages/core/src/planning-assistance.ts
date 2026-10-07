@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
-import { extname, isAbsolute, parse, resolve, sep } from "node:path";
+import { extname, isAbsolute, parse, relative, resolve, sep } from "node:path";
 import {
   AssistanceSessionSchema,
   DesignComparisonSchema,
@@ -87,8 +87,14 @@ export async function readIntentSource(projectRoot: string, path: string, now = 
   const root = parse(absolute).root;
   const parts = absolute.slice(root.length).split(sep).filter(Boolean);
   if (!challengeInputPathAllowed(parts.join("/"))) throw new Error("brief path contains a credential or excluded input location");
-  let current = root;
-  for (const part of parts) {
+  const trustedRoot = resolve(projectRoot);
+  const fromProject = relative(trustedRoot, absolute);
+  const insideProject = !isAbsolute(fromProject) && fromProject !== ".." && !fromProject.startsWith(`..${sep}`);
+  // Trust the workspace anchor (e.g. macOS /var -> /private/var), but never links below it.
+  // External briefs retain their filesystem-root checks and original path identity.
+  let current = insideProject ? trustedRoot : root;
+  const checkedParts = insideProject ? fromProject.split(sep).filter(Boolean) : parts;
+  for (const part of checkedParts) {
     current = resolve(current, part);
     const stat = await lstat(current);
     if (stat.isSymbolicLink()) throw new Error("brief input cannot follow symbolic links");

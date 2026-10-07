@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, writeFile, mkdir, symlink, link, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, symlink, link, realpath, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -80,6 +80,57 @@ test("import validates local format, encoding and bounded data; embedded command
     await assert.rejects(readIntentSource(root, "brief.txt"));
     await writeFile(join(root, "empty.txt"), "   ");
     await assert.rejects(readIntentSource(root, "empty.txt"), /empty/);
+  });
+});
+
+test("brief intake trusts project ancestors while refusing links inside the project", async (t) => {
+  await temporary(async (root) => {
+    const actual = join(root, "actual");
+    const project = join(actual, "project");
+    const outside = join(actual, "outside");
+    await mkdir(project, { recursive: true });
+    await mkdir(outside);
+    await mkdir(join(actual, "project-other"));
+    await writeFile(join(project, "brief.md"), "Preserve the public rollback interface.\n");
+    await writeFile(join(outside, "brief.md"), "External source.\n");
+    await writeFile(join(actual, "project-other", "brief.md"), "Sibling source.\n");
+    const alias = join(root, "alias");
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+    try {
+      await symlink(actual, alias, linkType);
+      await symlink(outside, join(project, "linked"), linkType);
+    } catch (error) {
+      if (["EPERM", "ENOTSUP", "EACCES"].includes(error.code)) { t.skip("directory links unavailable"); return; }
+      throw error;
+    }
+    const trustedProject = join(alias, "project");
+    for (const path of ["brief.md", join(trustedProject, "brief.md")]) {
+      const input = await readIntentSource(trustedProject, path);
+      assert.equal(input.text, "Preserve the public rollback interface.\n");
+      assert.equal(input.binding.path, join(trustedProject, "brief.md"));
+    }
+    await assert.rejects(readIntentSource(trustedProject, "linked/brief.md"), /symbolic links/);
+    await assert.rejects(readIntentSource(trustedProject, join(trustedProject, "linked", "brief.md")), /symbolic links/);
+    await assert.rejects(readIntentSource(trustedProject, "../project-other/brief.md"), /symbolic links/);
+  });
+});
+
+test("brief intake retains external absolute and relative paths with excluded-input checks", async () => {
+  await temporary(async (root) => {
+    const canonicalRoot = await realpath(root);
+    const project = join(canonicalRoot, "project");
+    await mkdir(project);
+    await writeFile(join(canonicalRoot, "brief.txt"), "Keep the existing API.\n");
+    await mkdir(join(canonicalRoot, "node_modules"));
+    await writeFile(join(canonicalRoot, "node_modules", "brief.txt"), "Excluded source.\n");
+    await writeFile(join(canonicalRoot, "credentials.txt"), "Excluded source.\n");
+    for (const path of ["../brief.txt", join(canonicalRoot, "brief.txt")]) {
+      const input = await readIntentSource(project, path);
+      assert.equal(input.text, "Keep the existing API.\n");
+      assert.equal(input.binding.path, join(canonicalRoot, "brief.txt"));
+    }
+    await assert.rejects(readIntentSource(project, "../node_modules/brief.txt"), /credential or excluded/);
+    await assert.rejects(readIntentSource(project, join(canonicalRoot, "credentials.txt")), /credential or excluded/);
   });
 });
 
