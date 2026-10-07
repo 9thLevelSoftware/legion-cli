@@ -84,7 +84,9 @@ test("import validates local format, encoding and bounded data; embedded command
 });
 
 test("brief intake trusts project ancestors while refusing links inside the project", async (t) => {
-  await temporary(async (root) => {
+  await temporary(async (temporaryRoot) => {
+    // Isolate the symlink refusal from Windows runner TEMP ancestors such as RUNNER~1.
+    const root = await realpath(temporaryRoot);
     const actual = join(root, "actual");
     const project = join(actual, "project");
     const outside = join(actual, "outside");

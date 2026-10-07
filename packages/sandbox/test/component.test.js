@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { existsSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
 import { chmod, copyFile, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { release, tmpdir } from "node:os";
@@ -109,7 +111,8 @@ async function installedFixture(t, mode = "business", probeChanges = {}) {
   await writeFile(join(root, "package.json"), JSON.stringify({ type: "module", version }));
   const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
   let target;
-  if (process.platform === "darwin") target = `${arch}-apple-darwin`;
+  if (process.platform === "win32") target = "x86_64-pc-windows-msvc";
+  else if (process.platform === "darwin") target = `${arch}-apple-darwin`;
   else {
     const previous = process.report.excludeNetwork;
     let glibc;
@@ -120,7 +123,7 @@ async function installedFixture(t, mode = "business", probeChanges = {}) {
     target = `${arch}-unknown-linux-${gnu ? "gnu" : "musl"}`;
   }
   const settings = { abi: "legion-validator/v1", limits: COMPONENT_LIMITS, memoryGuardBytes: 65536, memoryReservationBytes: 67108864, memoryReservationForGrowthBytes: 0, nanCanonicalization: true, relaxedSimdDeterministic: true, sharedMemory: false, threads: false, wasmtimeVersion: "49.0.2" };
-  const probe = { abi: "legion-validator/v1", version, target, settingsDigest: hash("legion-cli-component-settings/v1\0" + canonicalJson(settings)), guard: "unix-address-space", guardVerified: true, ...probeChanges };
+  const probe = { abi: "legion-validator/v1", version, target, settingsDigest: hash("legion-cli-component-settings/v1\0" + canonicalJson(settings)), guard: process.platform === "win32" ? "windows-job-committed" : "unix-address-space", guardVerified: true, ...probeChanges };
   const binary = join(native, "fixture-host");
   const script = `#!${process.execPath}\nimport { createHash } from 'node:crypto';
 const hash = x => createHash('sha256').update(x).digest('hex');
@@ -143,19 +146,94 @@ if(mode==='masked-error'){out.status='passed';out.observations[0].status='error'
 if(mode==='empty-title')out.recommendations=[{title:'\\u001b[31m\\u001b[0m'}];
 process.stdout.write(JSON.stringify(out));}
 `;
-  await writeFile(binary, script);
+  if (process.platform === "win32") await copyFile(process.execPath, binary);
+  else await writeFile(binary, script);
   await chmod(binary, 0o755);
-  await writeFile(join(native, "manifest.json"), canonicalJson({ schemaVersion: "legion-cli-native-host-manifest/v1", version, abi: "legion-validator/v1", scope: "local", hosts: [{ target, path: "fixture-host", size: Buffer.byteLength(script), sha256: hash(script) }] }));
+  const binaryBytes = await readFile(binary);
+  await writeFile(join(native, "manifest.json"), canonicalJson({ schemaVersion: "legion-cli-native-host-manifest/v1", version, abi: "legion-validator/v1", scope: "local", hosts: [{ target, path: "fixture-host", size: binaryBytes.length, sha256: hash(binaryBytes) }] }));
   const module = Buffer.from([0, 97, 115, 109, 13, 0, 1, 0]);
   const componentPath = join(root, "fixture.wasm");
   await writeFile(componentPath, module);
   const api = await import(pathToFileURL(join(dist, "component.js")).href);
   const content = JSON.stringify({ score: 42, padding: "x".repeat(256 * 1024) });
   const input = { ...packet, files: [{ kind: "file", path: "data.json", mode: "100644", sha256: hash(content), encoding: "utf8", content }] };
-  return { root, native, binary, api, input, options: { componentPath, componentSha256: hash(module) } };
+  return { root, native, binary, script: script.slice(script.indexOf("\n") + 1), api, input, options: { componentPath, componentSha256: hash(module) } };
 }
 
 const processFixturesUnsupported = process.platform === "win32" || !["x64", "arm64"].includes(process.arch) || process.platform === "darwin" && Number.parseInt(release(), 10) < 25;
+
+async function withLockedPrivateImage(fixture, persistent, operation) {
+  const originalSpawn = childProcess.spawn;
+  const originalRm = fsPromises.rm;
+  const images = new Map();
+  const holders = [];
+  childProcess.spawn = function (binary, args, options) {
+    images.set(dirname(binary), binary);
+    // Windows needs a PE executable; run the fixture protocol in its verified Node image.
+    return originalSpawn(binary, ["--input-type=module", "--eval", fixture.script, "--", ...args], options);
+  };
+  fsPromises.rm = async function (root, options) {
+    const binary = images.get(root);
+    if (binary) {
+      images.delete(root);
+      // Reproduce an OS image handle that outlives the completed protocol process.
+      const holder = originalSpawn(binary, ["--eval", "process.stdout.write('locked');setInterval(()=>{},1000)"], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+      const closed = once(holder, "close");
+      const ready = once(holder.stdout, "data");
+      holders.push({ holder, closed, root });
+      await ready;
+      await assert.rejects(originalRm(binary), (error) => error.code === "EBUSY" || error.code === "EPERM", "Fixture must hold an actual Windows executable lock");
+      if (!persistent) setTimeout(() => holder.kill(), 200);
+    }
+    return originalRm(root, options);
+  };
+  syncBuiltinESMExports();
+  try {
+    await operation();
+    assert.equal(holders.length, 1, "The private image cleanup must encounter the executable lock");
+    assert.equal(existsSync(holders[0].root), persistent, "Only an exhausted cleanup may leave its private image behind");
+  } finally {
+    childProcess.spawn = originalSpawn;
+    fsPromises.rm = originalRm;
+    syncBuiltinESMExports();
+    for (const { holder, closed, root } of holders) {
+      if (holder.exitCode === null && holder.signalCode === null) holder.kill();
+      await closed;
+      await originalRm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }
+}
+
+test("transient Windows executable locks preserve resolution, validation and original refusal after cleanup", { skip: process.platform !== "win32" || process.arch !== "x64" }, async (t) => {
+  for (const scenario of ["resolve", "passed", "wrong-id", "bad-probe"]) {
+    const fixture = await installedFixture(t, scenario === "wrong-id" ? scenario : "business", scenario === "bad-probe" ? { guardVerified: false } : {});
+    await withLockedPrivateImage(fixture, false, async () => {
+      if (scenario === "resolve") {
+        assert.equal((await fixture.api.resolveComponentRuntime()).hostSha256, hash(await readFile(fixture.binary)));
+      } else {
+        const result = await fixture.api.runComponentValidator(fixture.input, fixture.options);
+        assert.equal(result.status, scenario === "passed" ? "passed" : "unavailable", result.reason);
+        if (scenario === "wrong-id") assert.match(result.reason, /unrequested check ID/);
+        if (scenario === "bad-probe") assert.doesNotMatch(result.reason, /EBUSY|EPERM|cleanup failed/);
+      }
+    });
+  }
+});
+
+test("persistent Windows executable locks exhaust bounded cleanup and cannot produce evidence", { skip: process.platform !== "win32" || process.arch !== "x64", timeout: 10000 }, async (t) => {
+  for (const resolveOnly of [true, false]) {
+    const fixture = await installedFixture(t);
+    await withLockedPrivateImage(fixture, true, async () => {
+      if (resolveOnly) await assert.rejects(fixture.api.resolveComponentRuntime(), /Component runtime prerequisite:.*EBUSY|EPERM/);
+      else {
+        const result = await fixture.api.runComponentValidator(fixture.input, fixture.options);
+        assert.equal(result.status, "unavailable");
+        assert.equal(result.output, null);
+        assert.match(result.reason, /Private native image cleanup failed:.*EBUSY|EPERM/);
+      }
+    });
+  }
+});
 
 test("framed stdin carries large immutable business input and validates check identity without exposing terminal controls", { skip: processFixturesUnsupported }, async (t) => {
   const fixture = await installedFixture(t);
