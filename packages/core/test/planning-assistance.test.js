@@ -134,6 +134,38 @@ test("brief intake retains external absolute and relative paths with excluded-in
   });
 });
 
+test("brief intake resolves Windows short-name workspace ancestors without admitting short-name inputs", { skip: process.platform !== "win32" }, async () => {
+  await temporary(async (root) => {
+    const actual = join(await realpath(root), "actual");
+    await mkdir(join(actual, "project"), { recursive: true });
+    await writeFile(join(actual, "project", "brief.md"), "Keep the public API.\n");
+    // A junction models the runner's RUNNER~1 workspace ancestor: realpath expands the anchor.
+    const alias = join(root, "RUNNER~1");
+    await symlink(actual, alias, "junction");
+    const project = join(alias, "project");
+    assert.equal(challengeInputPathAllowed("RUNNER~1/project/brief.md"), false);
+    for (const path of ["brief.md", join(project, "brief.md")]) {
+      const input = await readIntentSource(project, path);
+      assert.equal(input.text, "Keep the public API.\n");
+      assert.equal(input.binding.path, join(project, "brief.md"));
+    }
+    await mkdir(join(actual, "project", "INPUT~1"));
+    await writeFile(join(actual, "project", "INPUT~1", "brief.md"), "Not admitted.\n");
+    await assert.rejects(readIntentSource(project, "INPUT~1/brief.md"), /credential or excluded/);
+    await writeFile(join(actual, "project", "credentials.txt"), "Not admitted.\n");
+    await assert.rejects(readIntentSource(project, "credentials.txt"), /credential or excluded/);
+    // A trusted alias still cannot hide a credential-bearing lexical ancestor.
+    const excluded = join(alias, ".ssh");
+    await symlink(join(actual, "project"), excluded, "junction");
+    await assert.rejects(readIntentSource(excluded, "brief.md"), /credential or excluded/);
+    // Literal tilde directory names are not canonical Windows aliases.
+    const literal = join(root, "LOCAL~1");
+    await mkdir(literal);
+    await writeFile(join(literal, "brief.md"), "Not admitted.\n");
+    await assert.rejects(readIntentSource(literal, "brief.md"), /credential or excluded/);
+  });
+});
+
 test("session before allocation resumes, binds, then archives without carrying decision cursor", async () => {
   await temporary(async (root) => {
     const store = new LegionStore(root);

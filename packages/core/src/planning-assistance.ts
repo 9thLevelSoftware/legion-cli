@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import { extname, isAbsolute, parse, relative, resolve, sep } from "node:path";
 import {
   AssistanceSessionSchema,
   DesignComparisonSchema,
   IntentSourceProposalSchema,
+  isShortNameSegment,
   PlanningDecisionSchema,
   type AssistanceSession,
   type DesignComparison,
@@ -86,10 +87,20 @@ export async function readIntentSource(projectRoot: string, path: string, now = 
   if (![".md", ".markdown", ".txt", ".text"].includes(extension)) throw new Error("unsupported brief format; export the brief as .md or .txt");
   const root = parse(absolute).root;
   const parts = absolute.slice(root.length).split(sep).filter(Boolean);
-  if (!challengeInputPathAllowed(parts.join("/"))) throw new Error("brief path contains a credential or excluded input location");
   const trustedRoot = resolve(projectRoot);
   const fromProject = relative(trustedRoot, absolute);
   const insideProject = !isAbsolute(fromProject) && fromProject !== ".." && !fromProject.startsWith(`..${sep}`);
+  let pathAllowed = challengeInputPathAllowed(parts.join("/"));
+  if (!pathAllowed && insideProject && process.platform === "win32") {
+    // Windows temp roots can use 8.3 aliases (RUNNER~1). Expand only the trusted anchor;
+    // keep checking its lexical exclusions and every original path segment below it.
+    const anchorParts = trustedRoot.slice(parse(trustedRoot).root.length).split(sep).filter(Boolean);
+    const lexicalParts = parts.map((part, index) => index < anchorParts.length && isShortNameSegment(part) ? "short-name-anchor" : part);
+    const canonical = resolve(await realpath(trustedRoot), fromProject);
+    const canonicalParts = canonical.slice(parse(canonical).root.length).split(sep).filter(Boolean);
+    pathAllowed = challengeInputPathAllowed(lexicalParts.join("/")) && challengeInputPathAllowed(canonicalParts.join("/"));
+  }
+  if (!pathAllowed) throw new Error("brief path contains a credential or excluded input location");
   // Trust the workspace anchor (e.g. macOS /var -> /private/var), but never links below it.
   // External briefs retain their filesystem-root checks and original path identity.
   let current = insideProject ? trustedRoot : root;
