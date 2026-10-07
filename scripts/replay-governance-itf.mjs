@@ -337,11 +337,13 @@ function assuranceManifest(specId, acceptanceIds, taskIds) {
 async function prepareProject({ engine, dir, baseUrl, providerContext, manifestDir }) {
   await writeFile(join(dir, "README.md"), "# Governance replay fixture\n");
   initGitRepo(dir);
+  // The model starts at plan_ready, outside spec/preparation. Exercise the
+  // supported unmarked-spec adoption path; approvePlan enables focused gates
+  // before any modeled transitions run.
   await engine.init({
     name: "Governance API replay",
     adapter: "http",
     http: { baseUrl, model: "deterministic-loopback", apiKeyEnv: PROVIDER_KEY_ENV, allowLoopback: true },
-    workflowProfile: "focused",
   });
   await engine.beginIntent();
   for (const answers of [
@@ -358,6 +360,7 @@ async function prepareProject({ engine, dir, baseUrl, providerContext, manifestD
   const proposed = await engine.startDiscuss();
   await engine.discuss(proposed.map(({ id }) => ({ id, status: "accepted" })));
   const spec = await engine.draftSpec({ skipWireframes: true });
+  assert.equal(spec.workflowPolicyVersion, undefined, "replay setup must use an unmarked spec before focused adoption");
   const challenge = await engine.prepareSpecChallenge(spec.id);
   if (challenge.status !== "complete" || challenge.pendingConcerns.length !== 0) {
     throw new Error(`loopback spec challenge did not complete cleanly: ${challenge.status}; ${challenge.automationError ?? "no automation error reported"}`);
@@ -393,6 +396,7 @@ async function prepareProject({ engine, dir, baseUrl, providerContext, manifestD
   const acceptanceIds = spec.acceptance.map(({ id }) => id);
   await writeFile(manifestPath, `${JSON.stringify(assuranceManifest(spec.id, acceptanceIds, [...providerContext.taskIds]), null, 2)}\n`);
   await engine.approvePlan(OPERATOR, { assuranceManifestPath: manifestPath, verificationCommands: [integrationCommand()] });
+  assert.equal((await engine.store.readConfig()).workflow?.profile, "focused", "modeled transitions must use focused gates");
   return { taskIds: [...providerContext.taskIds] };
 }
 

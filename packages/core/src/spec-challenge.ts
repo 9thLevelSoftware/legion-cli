@@ -19,8 +19,10 @@ import {
 import { toFsPath, writeTextFile, type LegionStore } from "@9thlevelsoftware/legion-cli-persist";
 import { workflowFingerprint } from "./workflow.js";
 import {
-  CHALLENGE_REPOSITORY_READ_ROOTS,
   challengeReadableFiles,
+  CHALLENGE_REPOSITORY_READ_ROOTS,
+  planningInputInventory,
+  planningContextRoots,
 } from "./spec-challenge-inputs.js";
 
 export const SPEC_CHALLENGE_THINKING_SUFFIX = ".thinking.md";
@@ -191,16 +193,13 @@ async function fingerprintReadableRoots(
 export async function specChallengeReadableFingerprints(
   projectRoot: string,
   activeSpecId: string,
+  declaredRoots: readonly string[] = [],
+  policy2 = false,
 ): Promise<SpecChallengeReadableFingerprints> {
-  const contextRoots = [
-    ".legion-cli/wiki/product",
-    ".legion-cli/discuss",
-    ".legion-cli/decisions",
-    ".legion-cli/map",
-    `.legion-cli/specs/${activeSpecId}`,
-  ];
+  const contextRoots = planningContextRoots(activeSpecId);
+  const inventory = policy2 ? await planningInputInventory(projectRoot, declaredRoots) : null;
   const [repositoryFingerprint, contextFingerprint] = await Promise.all([
-    fingerprintReadableRoots(projectRoot, CHALLENGE_REPOSITORY_READ_ROOTS),
+    fingerprintReadableRoots(projectRoot, inventory?.files ?? CHALLENGE_REPOSITORY_READ_ROOTS),
     fingerprintReadableRoots(projectRoot, contextRoots, (path) => path === `.legion-cli/specs/${activeSpecId}/SPEC.md`),
   ]);
   return { repositoryFingerprint, contextFingerprint };
@@ -294,6 +293,8 @@ export async function parseSpecChallengeAnalysis(
   projectRoot: string,
   raw: string,
   activeSpecId: string,
+  declaredRoots: readonly string[] = [],
+  policy2 = false,
 ): Promise<SpecChallengeConcern[]> {
   let parsed: SpecChallengeAnalysisOutput;
   try {
@@ -301,14 +302,9 @@ export async function parseSpecChallengeAnalysis(
   } catch (err) {
     throw new Error(`invalid spec challenge analysis: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const readableFiles = new Set(await challengeReadableFiles(projectRoot, [
-    ...CHALLENGE_REPOSITORY_READ_ROOTS,
-    ".legion-cli/wiki/product",
-    ".legion-cli/discuss",
-    ".legion-cli/decisions",
-    ".legion-cli/map",
-    `.legion-cli/specs/${activeSpecId}`,
-  ]));
+  const readableFiles = new Set(policy2
+    ? (await planningInputInventory(projectRoot, [...declaredRoots, ...planningContextRoots(activeSpecId)])).files
+    : await challengeReadableFiles(projectRoot, [...CHALLENGE_REPOSITORY_READ_ROOTS, ...planningContextRoots(activeSpecId)]));
   const concerns: SpecChallengeConcern[] = [];
   for (const [index, concern] of parsed.concerns.entries()) {
     const evidence = [];

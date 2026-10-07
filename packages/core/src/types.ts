@@ -148,6 +148,9 @@ export type AcceptanceEvidenceInput = {
   id: string;
   status: "passed" | "failed" | "not_applicable";
   note?: string;
+  methodId?: string;
+  evidenceRef?: string;
+  evidenceDigest?: string;
 };
 
 export type ExecuteWorkflowOptions = {
@@ -181,6 +184,7 @@ export type WorkflowStatus = {
   blocker: string | null;
   next: string;
   assurance?: AssuranceStatus;
+  preparation?: import("./workflow-preparation.js").PreparationValidation;
 };
 
 export type WorkflowExecutionResult = {

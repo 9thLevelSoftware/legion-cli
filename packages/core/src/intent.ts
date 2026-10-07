@@ -151,27 +151,43 @@ export function formatIntentBrief(mapped: IntentMapped): string {
 }
 
 function nextBankQuestions(file: IntentAnswersFile): string[] {
-  if (!hasQuestion(file, INTENT_Q.persona)) return [INTENT_Q.persona, INTENT_Q.problem];
-  if (!hasQuestion(file, INTENT_Q.mustBeTrue)) return [INTENT_Q.mustBeTrue, INTENT_Q.scope];
+  if (file.source) {
+    const questions: Record<string, string> = {
+      personas: INTENT_Q.persona, problem: INTENT_Q.problem, mustBeTrue: INTENT_Q.mustBeTrue,
+      mustNotChange: INTENT_Q.clarifyMustNotChange, outOfScope: INTENT_Q.scope,
+      happyPath: INTENT_Q.happyPath, screens: INTENT_Q.screens, failureLines: INTENT_Q.failure,
+      blockingLines: INTENT_Q.blockers,
+    };
+    const unresolved = [...new Set([...(file.importedConflicts ?? []), ...(file.importedMissing ?? [])])];
+    return unresolved.map((slot) => questions[slot] ?? `Resolve imported requirement: ${slot}`).slice(0, 2);
+  }
+  for (const pair of [[INTENT_Q.persona, INTENT_Q.problem], [INTENT_Q.mustBeTrue, INTENT_Q.scope]]) {
+    const pending = pair.filter((question) => !hasQuestion(file, question));
+    if (pending.length) return pending;
+  }
   const splitPending =
     hasQuestion(file, INTENT_Q.scope) &&
     file.mapped.mustNotChange.length === 0 &&
     !hasQuestion(file, INTENT_Q.clarifyMustNotChange);
   if (splitPending) return [INTENT_Q.clarifyMustNotChange];
-  if (!hasQuestion(file, INTENT_Q.happyPath)) return [INTENT_Q.happyPath, INTENT_Q.failure];
-  if (!hasQuestion(file, INTENT_Q.screens)) return [INTENT_Q.screens, INTENT_Q.platforms];
-  if (!hasQuestion(file, INTENT_Q.brand)) return [INTENT_Q.brand, INTENT_Q.blockers];
+  for (const pair of [[INTENT_Q.happyPath, INTENT_Q.failure], [INTENT_Q.screens, INTENT_Q.platforms], [INTENT_Q.brand, INTENT_Q.blockers]]) {
+    const pending = pair.filter((question) => !hasQuestion(file, question));
+    if (pending.length) return pending;
+  }
   return [];
 }
 
 export function intentProgress(file: IntentAnswersFile): IntentProgress {
-  const canFinishEarly = round2Filled(file.mapped);
+  const canFinishEarly = file.source
+    ? requiredSlotsFilled(file.mapped) && !(file.importedConflicts?.length) && !(file.importedMissing?.length)
+    : round2Filled(file.mapped);
   const atCap = file.rounds.length >= MAX_INTENT_ROUNDS;
-  const nextQuestions = atCap ? [] : nextBankQuestions(file);
+  const pendingQuestions = nextBankQuestions(file);
+  const nextQuestions = atCap ? [] : pendingQuestions;
   return {
     answers: file,
     nextQuestions,
-    readyToConfirm: nextQuestions.length === 0,
+    readyToConfirm: file.source ? pendingQuestions.length === 0 : nextQuestions.length === 0,
     canFinishEarly,
     brief: formatIntentBrief(file.mapped),
     side: { failureLines: [], blockingLines: [] },
@@ -191,6 +207,16 @@ export function applyIntentAnswers(
     questions: [...questions],
     answers: questions.map((_, i) => (answers[i] ?? "").trim()),
   };
+  const lastRound = file.rounds.at(-1);
+  const bankPairs = [[INTENT_Q.persona, INTENT_Q.problem], [INTENT_Q.mustBeTrue, INTENT_Q.scope],
+    [INTENT_Q.happyPath, INTENT_Q.failure], [INTENT_Q.screens, INTENT_Q.platforms], [INTENT_Q.brand, INTENT_Q.blockers]];
+  // Save each answer immediately while retaining the interview's bounded paired rounds.
+  const mergePartialRound = lastRound?.questions.length === 1 && questions.length === 1 &&
+    bankPairs.some((pair) => pair.some((question) => questionVariants(question).includes(lastRound.questions[0])) &&
+      pair.some((question) => questionVariants(question).includes(questions[0])) && lastRound.questions[0] !== questions[0]);
+  const rounds = mergePartialRound && lastRound
+    ? [...file.rounds.slice(0, -1), { n: lastRound.n, questions: [...lastRound.questions, ...recorded.questions], answers: [...lastRound.answers, ...recorded.answers] }]
+    : [...file.rounds, recorded];
 
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
@@ -216,12 +242,27 @@ export function applyIntentAnswers(
 
   return {
     file: {
+      ...file,
       schemaVersion: SCHEMA_VERSION.intentAnswers,
-      rounds: [...file.rounds, recorded],
+      rounds,
       mapped,
+      ...(file.source ? {
+        importedMissing: (file.importedMissing ?? []).filter((slot) => !answeredImportedSlot(slot, questions, recorded.answers)),
+        importedConflicts: (file.importedConflicts ?? []).filter((slot) => !answeredImportedSlot(slot, questions, recorded.answers)),
+      } : {}),
     },
     side,
   };
+}
+
+function answeredImportedSlot(slot: string, questions: string[], answers: string[]): boolean {
+  const question: Record<string, string> = {
+    personas: INTENT_Q.persona, problem: INTENT_Q.problem, mustBeTrue: INTENT_Q.mustBeTrue,
+    mustNotChange: INTENT_Q.clarifyMustNotChange, outOfScope: INTENT_Q.scope,
+    happyPath: INTENT_Q.happyPath, screens: INTENT_Q.screens, failureLines: INTENT_Q.failure,
+    blockingLines: INTENT_Q.blockers,
+  };
+  return questions.some((item, index) => item === (question[slot] ?? `Resolve imported requirement: ${slot}`) && Boolean(answers[index]?.trim()));
 }
 
 export function specIdFromName(name: string): string {

@@ -85,6 +85,60 @@
         "happyPath",
         "screens"
       ]
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "markdown",
+            "text"
+          ]
+        },
+        "provenance": {
+          "type": "string",
+          "const": "local-file"
+        },
+        "importedAt": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "path",
+        "digest",
+        "format",
+        "provenance",
+        "importedAt"
+      ],
+      "additionalProperties": false
+    },
+    "importedMissing": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "importedConflicts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "importedSuggestions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   },
   "required": [

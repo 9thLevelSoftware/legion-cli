@@ -50,3 +50,15 @@ Write only listed files. Link every acceptance test to its criterion with the ca
 If you discover extra work, stop expanding `filesAllowed` and write `.legion-cli/cache/runs/<id>/extra.json`. Extra work is a linked ticket, never an in-place expansion.
 
 When finished, write a short summary to `.legion-cli/cache/runs/<id>/summary.md`.
+
+## Approved testing method and scope
+
+Consume approved outcome coverage and optional testingMethod inside the task
+contract. Test-first exercises new observable behavior, regression-first
+reproduces defects, and existing-checks uses meaningful existing boundaries.
+Report unsuitable or unavailable test interfaces. Run a planned check when its
+evidence is needed; repeat only after implementation changes, concrete failure,
+or explicit retry. Outcome/check references do not create duplicate commands or
+independent checkpoints. Never rewrite tests to manufacture passing evidence.
+All approved tasks, including P1/P2, must complete; external evidence remains
+pending until available.

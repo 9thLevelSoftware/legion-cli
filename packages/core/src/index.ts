@@ -46,6 +46,11 @@ export {
 } from "./recipes.js";
 export type { LoadedRecipe, RecipeExecutionResult } from "./recipes.js";
 export { createLegionEngine, DISTILL_SOURCE_MAX_CHARS, LegionEngine } from "./engine.js";
+export { readWorkflowPreparation, inspectWorkflowPreparation, inspectPreparationRecord, validateWorkflowPreparation,
+  bindPreparationArtifacts, writeWorkflowPreparation } from "./workflow-preparation.js";
+export type { PreparationValidation } from "./workflow-preparation.js";
+export { incompleteApprovedWorkflowTasks } from "./workflow.js";
+export * from "./planning-assistance.js";
 export {
   SPEC_CHALLENGE_THINKING_SUFFIX,
   specChallengeReceiptPath,

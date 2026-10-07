@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-assistance/v1"
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "specId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "guidance": {
+      "type": "string",
+      "enum": [
+        "guided",
+        "balanced",
+        "direct"
+      ]
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "cursor": {
+      "type": "object",
+      "properties": {
+        "stage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "questionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "stage",
+        "round"
+      ],
+      "additionalProperties": false
+    },
+    "decisionIds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "comparisonIds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "sessionId",
+    "specId",
+    "guidance",
+    "paused",
+    "cursor",
+    "decisionIds",
+    "comparisonIds"
+  ],
+  "additionalProperties": false
+}

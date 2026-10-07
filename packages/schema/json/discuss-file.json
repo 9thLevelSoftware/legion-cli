@@ -26,6 +26,149 @@
               "accepted",
               "rejected"
             ]
+          },
+          "planning": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "question": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "preference",
+                  "fact",
+                  "scope",
+                  "design"
+                ]
+              },
+              "blocking": {
+                "type": "boolean"
+              },
+              "prerequisiteIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "observation",
+                        "assumption",
+                        "user_report",
+                        "verified_execution"
+                      ]
+                    },
+                    "statement": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "statement"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "consequence": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label",
+                    "consequence"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "recommendedOptionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "resolution": {
+                "type": "object",
+                "properties": {
+                  "disposition": {
+                    "type": "string",
+                    "enum": [
+                      "answered",
+                      "deferred",
+                      "out_of_scope"
+                    ]
+                  },
+                  "response": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "selectedOptionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "resolvedAt": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "disposition",
+                  "response",
+                  "resolvedAt"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "question",
+              "kind",
+              "blocking",
+              "prerequisiteIds",
+              "evidence",
+              "options"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [

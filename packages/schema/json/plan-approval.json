@@ -22,6 +22,10 @@
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
     },
+    "preparationFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
     "approvalId": {
       "type": "string",
       "minLength": 1

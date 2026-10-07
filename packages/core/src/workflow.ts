@@ -48,6 +48,7 @@ export type WorkflowPlanSnapshot = {
   configFingerprint: string;
   taskIds: string[];
   acceptanceIds: string[];
+  preparationFingerprint?: string;
 };
 
 function stableValue(value: unknown): unknown {
@@ -82,6 +83,7 @@ export function createWorkflowPlanSnapshot(input: {
   project: ProjectFile;
   discoveryContext?: string | null;
   assuranceFingerprint?: string;
+  preparationFingerprint?: string;
 }): WorkflowPlanSnapshot {
   const tasks = input.tasks
     .filter((entry) => entry.data.specId === input.spec.data.id)
@@ -106,6 +108,7 @@ export function createWorkflowPlanSnapshot(input: {
     planBody: input.planBody,
     discoveryContext: input.discoveryContext ?? null,
     ...(input.assuranceFingerprint !== undefined ? { assuranceFingerprint: input.assuranceFingerprint } : {}),
+    ...(input.preparationFingerprint !== undefined ? { preparationFingerprint: input.preparationFingerprint } : {}),
   });
   return {
     specId: input.spec.data.id,
@@ -115,7 +118,22 @@ export function createWorkflowPlanSnapshot(input: {
     configFingerprint,
     taskIds: tasks.map((entry) => entry.data.id),
     acceptanceIds: input.spec.data.acceptance.map((criterion) => criterion.id),
+    ...(input.preparationFingerprint !== undefined ? { preparationFingerprint: input.preparationFingerprint } : {}),
   };
+}
+
+/** Approval covers every task, independent of its priority; completion evidence must cover that same set. */
+export function incompleteApprovedWorkflowTasks(
+  approval: Pick<PlanApprovalReceipt, "taskIds">,
+  tasks: readonly Task[],
+  evidence?: Pick<WorkflowEvidenceReceipt, "completedTaskIds"> | null,
+): string[] {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  return approval.taskIds.filter((id) => {
+    const task = byId.get(id);
+    return !task || (task.status !== "done" && task.status !== "compacted") ||
+      (evidence !== undefined && !evidence?.completedTaskIds.includes(id));
+  });
 }
 
 export async function readWorkflowDiscoveryContext(projectRoot: string): Promise<string | null> {

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { createLegionEngine, WIREFRAME_PALETTE } from "@9thlevelsoftware/legion-cli-core";
-import { normalize, runCli, withTempDir } from "./helpers.js";
+import { allowCopyJailIn, normalize, runCli, withTempDir } from "./helpers.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const legionFixture = join(repoRoot, "design-systems", "_fixture-neutral");
@@ -15,8 +15,9 @@ function acceptDiscuss(dir) {
   return runCli(["discuss", "--project", dir], { input: "Y\nY\nY\n" });
 }
 
-function seedDraft(dir) {
+async function seedDraft(dir) {
   runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+  await allowCopyJailIn(dir);
   const intent = runCli(["intent", "--project", dir, "--done"], {
     input:
       [
@@ -51,7 +52,7 @@ test("wireframe refuses uninitialized and --skip-palette-check", async () => {
     assert.match(normalize(missing.stderr), /no active spec/);
     assert.match(normalize(missing.stderr), /Next: legion-cli spec/);
 
-    seedDraft(dir);
+    await seedDraft(dir);
     const skip = runCli(["wireframe", "--project", dir, "--skip-palette-check"]);
     assert.equal(skip.status, 1);
     assert.match(normalize(skip.stderr), /palettePresent stays hard/);
@@ -61,7 +62,7 @@ test("wireframe refuses uninitialized and --skip-palette-check", async () => {
 
 test("draft regenerate writes two screens after renaming intent answers", async () => {
   await withTempDir(async (dir) => {
-    seedDraft(dir);
+    await seedDraft(dir);
     const engine = createLegionEngine(dir);
     const answers = await engine.store.readIntentAnswers();
     await engine.store.writeIntentAnswers({
@@ -87,7 +88,7 @@ test("draft regenerate writes two screens after renaming intent answers", async 
 
 test("frozen without --restyle refuses; --restyle with fixture keeps h1", async () => {
   await withTempDir(async (dir) => {
-    seedDraft(dir);
+    await seedDraft(dir);
     const page = join(dir, ".legion-cli", "specs", "spec-checkin", "wireframes", "home.html");
     const refreshed = runCli(["spec", "--project", dir]);
     assert.equal(refreshed.status, 0, `${refreshed.stdout}\n${refreshed.stderr}`);
@@ -131,7 +132,7 @@ test("frozen without --restyle refuses; --restyle with fixture keeps h1", async 
 
 test("spawn writing outside wireframes reverts; deny-list HTML is restored", async () => {
   await withTempDir(async (dir) => {
-    seedDraft(dir);
+    await seedDraft(dir);
     const extras = JSON.stringify([{ path: "src/secret.ts", content: "nope\n" }]);
     const extra = runCli(["wireframe", "--spawn", "--project", dir], {
       env: { LEGION_CLI_ADAPTER: "fake", LEGION_CLI_FAKE_ARTIFACTS: extras },

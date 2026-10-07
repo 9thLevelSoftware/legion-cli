@@ -7,6 +7,7 @@ import { release, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import {
@@ -51,6 +52,19 @@ function displayData(text: string): string {
 
 function errorText(error: unknown): string {
   return displayData(error instanceof Error ? error.message : String(error)).slice(0, 4096);
+}
+
+async function removePrivateImage(root: string): Promise<void> {
+  // Windows can retain an executable image lock briefly after the child closes.
+  // Retry at the root only: fs.rm's recursive retries multiply across child paths.
+  for (let retry = 0; ; retry++) {
+    try { await rm(root, { recursive: true, force: true }); return; }
+    catch (error) {
+      const code = error instanceof Error && "code" in error ? error.code : null;
+      if (process.platform !== "win32" || retry >= 5 || !["EBUSY", "EPERM", "ENOTEMPTY", "EMFILE", "ENFILE"].includes(String(code))) throw error;
+      await delay((retry + 1) * 100);
+    }
+  }
 }
 
 function inside(root: string, target: string): boolean {
@@ -140,7 +154,7 @@ async function snapshotNativeBinary(path: string, root: string, expected: { size
     // This private image is not an OS tamper-proof boundary against a hostile same-user process.
     return { path: imagePath, temporaryRoot };
   } catch (error) {
-    await rm(temporaryRoot, { recursive: true, force: true });
+    await removePrivateImage(temporaryRoot);
     throw error;
   }
 }
@@ -275,7 +289,7 @@ async function resolveHost(deadline: number): Promise<ResolvedComponentHost> {
     if (probe.settingsDigest !== componentSettingsDigest()) throw new Error("Packaged native runtime settings mismatch");
     return { ...image, identity: ComponentRuntimeIdentitySchema.parse({ ...probe, hostSha256: host.sha256 }) };
   } catch (error) {
-    await rm(image.temporaryRoot, { recursive: true, force: true });
+    await removePrivateImage(image.temporaryRoot);
     throw error;
   }
 }
@@ -284,7 +298,7 @@ export async function resolveComponentRuntime(): Promise<ComponentRuntimeIdentit
   try {
     const host = await resolveHost(Date.now() + COMPONENT_LIMITS.deadlineMs);
     try { return host.identity; }
-    finally { await rm(host.temporaryRoot, { recursive: true, force: true }); }
+    finally { await removePrivateImage(host.temporaryRoot); }
   }
   catch (error) { throw new Error(`Component runtime prerequisite: ${errorText(error)}`, { cause: error }); }
 }
@@ -350,7 +364,7 @@ export async function runComponentValidator(input: ComponentInput, options: {
     reason = errorText(error);
   } finally {
     if (host) {
-      try { await rm(host.temporaryRoot, { recursive: true, force: true }); }
+      try { await removePrivateImage(host.temporaryRoot); }
       catch (error) {
         status = "unavailable";
         output = null;

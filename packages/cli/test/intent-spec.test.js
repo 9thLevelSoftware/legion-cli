@@ -7,7 +7,7 @@ import test from "node:test";
 import { WIREFRAME_PALETTE } from "@9thlevelsoftware/legion-cli-core";
 import { IntentAnswersFileSchema, SpecSchema } from "@9thlevelsoftware/legion-cli-schema";
 import { parseMarkdownDocument, parseYamlDocument } from "@9thlevelsoftware/legion-cli-persist";
-import { normalize, runCli, withTempDir } from "./helpers.js";
+import { allowCopyJailIn, normalize, runCli, withTempDir } from "./helpers.js";
 
 function yaml(text) {
   return IntentAnswersFileSchema.parse(parseYamlDocument(text));
@@ -54,7 +54,9 @@ test("intent --done writes IntentAnswersFile and requires confirm", async () => 
 test("spec composes a visible greenfield conversation and defaults wireframes off", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const result = runCli(["spec", "--project", dir], {
+      preparationAcceptanceIds: ["AC-P0-01", "AC-P1-01"],
       input: [
         "Teammates who need a simple check-in.",
         "They cannot tell who is available.",
@@ -129,6 +131,7 @@ test("brownfield audit records one selection and reuses it when the spec resumes
 test("discuss + spec templates freeze without a model", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     const intent = runCli(["intent", "--project", dir, "--done"], {
       input: [
         "Teammates who keep missing who's in the office.",
@@ -190,6 +193,7 @@ test("discuss + spec templates freeze without a model", async () => {
 test("spec does not write wireframes unless explicitly requested", async () => {
   await withTempDir(async (dir) => {
     runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     runCli(["intent", "--project", dir, "--done"], {
       input: [
         "Teammates who keep missing who's in the office.",

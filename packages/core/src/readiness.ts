@@ -20,18 +20,21 @@ export function evaluateReadiness(input: {
   hasStories: boolean;
   skipWireframes: boolean;
   openNonBlockingAssumptions: boolean;
+  /** Only explicit new-policy increments replace priority minima with full-scope coverage. */
+  preparationPolicy?: 2;
 }): ReadinessReport {
   const fails: string[] = [];
   const concerns: string[] = [];
 
   if (input.spec.status !== "frozen") fails.push("spec not frozen");
   if (input.spec.mustBeTrue.length === 0) fails.push("mustBeTrue empty");
-  if (!input.spec.acceptance.some((ac) => ac.priority === "P0")) {
+  if (input.preparationPolicy !== 2 && !input.spec.acceptance.some((ac) => ac.priority === "P0")) {
     fails.push("no P0 acceptance criterion");
   }
-  if (!input.tasks.some((task) => task.priority === "P0")) {
+  if (input.preparationPolicy !== 2 && !input.tasks.some((task) => task.priority === "P0")) {
     fails.push("plan did not emit at least one P0 task");
   }
+  if (input.preparationPolicy === 2 && input.tasks.length === 0) fails.push("plan emitted no tasks");
 
   for (const task of input.tasks) {
     if (task.contract.verificationCommands.length === 0) {

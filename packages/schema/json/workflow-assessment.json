@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-workflow-assessment/v1"
+    },
+    "policyVersion": {
+      "type": "number",
+      "const": 2
+    },
+    "specId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inputFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "stageDecisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string",
+            "enum": [
+              "context",
+              "requirements",
+              "user-experience",
+              "functional-design",
+              "architecture",
+              "nfr-design",
+              "infrastructure-design",
+              "delivery-handoff"
+            ]
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "required",
+              "not_applicable"
+            ]
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "stage",
+          "decision",
+          "rationale",
+          "evidenceRefs"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "unresolvedDecisions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "predecessorSpecId": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "policyVersion",
+    "specId",
+    "inputFingerprint",
+    "stageDecisions",
+    "unresolvedDecisions"
+  ],
+  "additionalProperties": false
+}

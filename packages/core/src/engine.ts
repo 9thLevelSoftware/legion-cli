@@ -128,6 +128,7 @@ import {
   ADAPTER_ID_HELP,
   ControlModeSchema,
   AcceptanceReceiptSchema,
+  isConcretePosixRepoRelativePath,
   PlanApprovalReceiptSchema,
   AnyQAScoreSchema,
   QAScoreSchema,
@@ -168,7 +169,17 @@ import {
   type SpecChallengeReceipt,
   type SpecChallengeProposedChange,
   ResumeFileSchema,
+  TaskSchema,
   WorkflowClaimSchema,
+  WorkflowPreparationSchema,
+  type WorkflowPreparation,
+  PlanningDecisionSchema,
+  DesignComparisonSchema,
+  GuidanceModeSchema,
+  PlanningStrategySchema,
+  type GuidanceMode,
+  type PlanningDecision,
+  type PlanningStrategy,
   CheckEvidenceSchema,
   type ComponentRuntimeIdentity,
 } from "@9thlevelsoftware/legion-cli-schema";
@@ -384,6 +395,7 @@ import {
   WORKFLOW_CLAIM_PATH,
   WORKFLOW_REVIEW_PATH,
   createWorkflowPlanSnapshot,
+  incompleteApprovedWorkflowTasks,
   readAcceptanceReceipt,
   readExplicitReviewEvidence,
   readPlanApproval,
@@ -405,7 +417,23 @@ import {
   workflowClaimHolderLive,
   type WorkflowPlanSnapshot,
 } from "./workflow.js";
+import {
+  bindPreparationArtifacts,
+  inspectWorkflowPreparation,
+  inspectPreparationRecord,
+  projectChallengeAcceptanceReferences,
+  readWorkflowPreparation,
+  writeWorkflowPreparation,
+  type PreparationValidation,
+} from "./workflow-preparation.js";
 import { assertDiscoverySelection } from "./discovery.js";
+import { challengeInputPathAllowed, preparationInputRoots, planningContextRoots, planningInputInventory } from "./spec-challenge-inputs.js";
+import {
+  readAssistanceSession, ensureAssistanceSession, updateAssistanceSession, bindAssistanceSession,
+  archiveAssistanceSession, readIntentSource, intentSourceProposalPrompt, parseIntentSourceProposal,
+  applyIntentSourceProposal, nextPlanningDecisionRound, resolvePlanningDecision,
+  sanitizePlanningProposal, validateDesignComparison, selectDesignOption, planningBlockers,
+} from "./planning-assistance.js";
 import {
   brownfieldEntry,
   dagRun,
@@ -972,7 +1000,7 @@ function peekTaskFrontmatter(frontmatter: unknown): { specId?: string; filesAllo
 type EngineSpecDocument = { data: Spec; body: string };
 type EngineSpecChallengeContext =
   | { applicable: false; specId: string; spec: EngineSpecDocument }
-  | { applicable: true; specId: string; spec: EngineSpecDocument; binding: SpecChallengeBinding };
+  | { applicable: true; specId: string; spec: EngineSpecDocument; binding: SpecChallengeBinding; readRoots: string[] };
 function normalizeInjectedQaScore(input: QAScore, spec: Spec, specHash: string, sourceHash: string): QAScore {
   const expected = [...spec.acceptance]
     .map((criterion) => ({ id: criterion.id, priority: criterion.priority }))
@@ -1243,7 +1271,18 @@ export class LegionEngine {
       if (approvalMessage && !specBody.includes(`## Approval note\n\n${approvalMessage}`)) {
         specBody = `${specBody.trimEnd()}\n\n## Approval note\n\n${approvalMessage}\n`;
       }
+      const preparation = spec.workflowPolicyVersion === 2
+        ? await this.#inspectPreparationLocked(spec, "spec", { checkSourceInputs: true })
+        : undefined;
+      if (preparation?.blockers.length) {
+        refuse(preparation.blockers.map((blocker) => blocker.message).join("; "), "legion-cli spec");
+      }
+      const preparationBinding = preparation?.specFingerprint !== undefined
+        ? { specPreparationFingerprint: preparation.specFingerprint }
+        : {};
       if (!resuming) {
+        const blockingDecisions = planningBlockers((await this.#loadDiscuss()).decisions.flatMap((item) => item.planning ? [item.planning] : []));
+        if (blockingDecisions.length) refuse(blockingDecisions.join("; "), HINT.spec);
         await this.#assertFocusedSpecChallengeCompleteLocked(specId);
         const answers = await this.#loadIntentAnswers();
         if (await isBrandViolationBlockingFreeze(this.projectRoot, spec, answers.mapped.screens)) {
@@ -1262,12 +1301,16 @@ export class LegionEngine {
           specFingerprint: workflowFingerprint({ data: frozen, body: specBody }),
           approvedAt: frozen.frozenAt ?? nowIso(),
           approvedBy: actor.id,
+          ...preparationBinding,
         });
       } else {
         const existingApproval = await readSpecApproval(this.store);
         const resumedFingerprint = workflowFingerprint({ data: spec, body: specBody });
         if (existingApproval && existingApproval.specFingerprint !== resumedFingerprint) {
           refuse("the frozen spec differs from its approval receipt", HINT.specApprove);
+        }
+        if (existingApproval && preparation && existingApproval.specPreparationFingerprint !== preparation.specFingerprint) {
+          refuse("the frozen specification preparation differs from its approval receipt", HINT.specNew);
         }
         if (approvalMessage) await this.store.writeSpec(spec, specBody);
         if (!existingApproval) {
@@ -1277,6 +1320,7 @@ export class LegionEngine {
             specFingerprint: resumedFingerprint,
             approvedAt: spec.frozenAt ?? nowIso(),
             approvedBy: spec.frozenBy ?? actor.id,
+            ...preparationBinding,
           });
         }
       }
@@ -1312,6 +1356,7 @@ export class LegionEngine {
       const project = await this.store.readProject();
       await this.store.writeProject({ ...project.data, activeSpecId: null }, project.body);
       await this.store.writeIntentAnswers(emptyIntentAnswers());
+      await archiveAssistanceSession(this.store);
       await this.store.writeDiscuss(
         { schemaVersion: SCHEMA_VERSION.discuss, decisions: [] },
         "Decisions are captured here before planning.\n",
@@ -1697,7 +1742,7 @@ export class LegionEngine {
     return isForbiddenSpawnPath(path);
   }
 
-  async plan(specId?: string, opts?: { adapter?: AdapterId; profile?: string }): Promise<Readiness> {
+  async plan(specId?: string, opts?: { adapter?: AdapterId; profile?: string; inputRoots?: string[] }): Promise<Readiness> {
     const spawnFails: string[] = [];
     let planExitWarning: string | undefined;
     let planAgentExit: { runId: string; code: number | null } | undefined;
@@ -1705,22 +1750,41 @@ export class LegionEngine {
     let current: StateFile | undefined;
     let id: string | undefined;
     let config: LegionConfig | undefined;
+    let preparationOutput: string | undefined;
+    let planSpawnSucceeded = false;
+    let planningRoots: string[] = [];
+    let taskBaseline = new Map<string, string>();
+    let proposedTaskDocuments: Array<{ data: Task; body: string }> = [];
 
     await this.#startLock(() => started, async () => {
       const state = await this.#readState();
-      if (state.phase !== "spec_frozen" && state.phase !== "planning" && state.phase !== "plan_failed") {
+      if (state.phase !== "spec_frozen" && state.phase !== "planning" && state.phase !== "plan_failed" && state.phase !== "plan_ready") {
         refuse("Plan needs a frozen spec first", HINT.spec);
       }
       id = specId ?? state.activeSpecId ?? undefined;
       if (!id) {
         refuse("plan requires an active spec", HINT.spec);
       }
+      if (state.phase === "plan_ready" && (await readPlanApproval(this.store))?.specId === id) {
+        refuse("an approved plan requires task amendment and renewed approval", HINT.plan);
+      }
 
       config = await this.#readConfig();
+      const specDoc = await this.store.readSpec(id);
+      if (specDoc.data.workflowPolicyVersion === 2) taskBaseline = await this.#readPlanTaskBytes(this.projectRoot);
+      planningRoots = [...preparationInputRoots(await readWorkflowPreparation(this.store, id), "plan"),
+        ...planningContextRoots(id), `.legion-cli/plans/${id}`, ...(opts?.inputRoots ?? [])];
+      if (specDoc.data.workflowPolicyVersion === 2) {
+        const preparation = await this.#inspectPreparationLocked(specDoc.data, "spec", { checkSourceInputs: true });
+        const approved = await readSpecApproval(this.store);
+        if (preparation.blockers.length || !approved || approved.specPreparationFingerprint !== preparation.specFingerprint) {
+          refuse("specification preparation changed or is incomplete; start a new increment for revised scope", HINT.specNew);
+        }
+      }
       await this.#assertSkillSpawnable(config, "plan", { cliAdapter: opts?.adapter, cliProfile: opts?.profile });
 
       current = { ...state, activeSpecId: id };
-      if (current.phase === "spec_frozen" || current.phase === "plan_failed") {
+      if (current.phase === "spec_frozen" || current.phase === "plan_failed" || current.phase === "plan_ready") {
         assertCanTransition(current.phase, "planning");
         current = { ...current, phase: "planning" };
         await this.#writeState(current);
@@ -1742,10 +1806,14 @@ export class LegionEngine {
             "Never emit adapter: fake outside tests.",
             `If you discover extra work, write extra.json in the run cache (may include "adapter": "grok"); do not expand filesAllowed.`,
             "Do not write src/** or other product files.",
+            ...(specDoc.data.workflowPolicyVersion === 2
+              ? [this.#preparationPrompt("plan", id, await readWorkflowPreparation(this.store, id))]
+              : []),
           ].join("\n"),
           required: true,
           cliAdapter: opts?.adapter,
           cliProfile: opts?.profile,
+          ...(specDoc.data.workflowPolicyVersion === 2 ? { planningReadRoots: planningRoots } : {}),
         });
       } catch (err) {
         if (err instanceof LegionRefuseError) throw err;
@@ -1759,6 +1827,16 @@ export class LegionEngine {
         spawnFails.push(waited.error instanceof Error ? waited.error.message : String(waited.error));
       }
       const problem = agentExitProblem(waited);
+      planSpawnSucceeded = !waited.error && !problem;
+      if (planSpawnSucceeded) {
+        try {
+          const spec = (await this.store.readSpec(id!)).data;
+          if (spec.workflowPolicyVersion === 2) {
+            preparationOutput = await this.#readPreparationOutput(started);
+            proposedTaskDocuments = await this.#capturePlanTasks(started, id!, taskBaseline);
+          }
+        } catch (error) { spawnFails.push(`plan preparation output unavailable: ${String(error)}`); }
+      }
       if (problem) {
         planAgentExit = { runId: started.runId, code: waited.exitCode ?? null };
         planExitWarning = `plan ${problem} (log: .legion-cli/cache/runs/${started.runId}/stderr.log); readiness decides the result`;
@@ -1796,9 +1874,30 @@ export class LegionEngine {
         await this.#fileExtrasFromRun(runId, specIdLocked);
       }
 
-      await this.#clampPlanTaskStatuses(specIdLocked);
-
       const spec = (await this.store.readSpec(specIdLocked)).data;
+      if (spec.workflowPolicyVersion === 2) {
+        if (!planSpawnSucceeded || preparationOutput === undefined || spawnFails.length) {
+          spawnFails.push("plan preparation requires valid output from a successful agent run");
+        } else {
+          try {
+            const currentTasks = await this.#listGateTasks();
+            const proposedById = new Map(proposedTaskDocuments.map((document) => [document.data.id, document]));
+            const candidateTasks = [...currentTasks.filter((task) => !proposedById.has(task.id)), ...proposedTaskDocuments.map((document) => document.data)];
+            const graph = validateTaskGraph(candidateTasks);
+            if (!graph.valid) refuse(`invalid plan task graph: ${graph.error}`, HINT.plan);
+            const candidateReadiness = evaluateReadiness({ spec, tasks: sliceTasks(candidateTasks, specIdLocked),
+              hasStories: await this.store.pathExists(`.legion-cli/specs/${specIdLocked}/stories.yaml`),
+              skipWireframes: !spec.wireframesIndex, openNonBlockingAssumptions: false, preparationPolicy: 2 });
+            if (candidateReadiness.fails.length) refuse(candidateReadiness.fails.join("; "), HINT.plan);
+            await this.#promotePreparationLocked("plan", specIdLocked, preparationOutput, planningRoots, candidateTasks, false);
+            for (const document of proposedTaskDocuments) await this.#writeTask(document.data, document.body);
+            await this.#promotePreparationLocked("plan", specIdLocked, preparationOutput, planningRoots);
+            if (proposedTaskDocuments.length) await this.#audit("plan_task_proposals", "planning", "agent", { taskIds: proposedTaskDocuments.map((document) => document.data.id) });
+          }
+          catch (error) { spawnFails.push(error instanceof Error ? error.message : String(error)); }
+        }
+      }
+      if (spec.workflowPolicyVersion !== 2 || spawnFails.length === 0) await this.#clampPlanTaskStatuses(specIdLocked);
       const entries = await this.#loadTaskEntries();
       const unreadable = entries.filter(
         (entry): entry is Extract<LoadedTask, { ok: false }> =>
@@ -1819,6 +1918,7 @@ export class LegionEngine {
         hasStories,
         skipWireframes,
         openNonBlockingAssumptions,
+        ...(spec.workflowPolicyVersion === 2 ? { preparationPolicy: 2 as const } : {}),
       });
       const fails = [...spawnFails, ...report.fails];
       for (const bad of unreadable) {
@@ -1850,6 +1950,551 @@ export class LegionEngine {
 
   getLastPlanReport(): ReadinessReport | null {
     return this.#lastPlanReport;
+  }
+
+  async readWorkflowPreparation(specId?: string): Promise<PreparationValidation> {
+    const state = await this.#readState();
+    const id = specId ?? state.activeSpecId;
+    if (!id) refuse("preparation requires an active spec", HINT.spec);
+    const spec = (await this.store.readSpec(id)).data;
+    const approval = await readPlanApproval(this.store);
+    return this.#inspectPreparationLocked(spec, spec.status === "draft" ? "spec" : "plan", {
+      checkSourceInputs: approval?.specId !== id || spec.status === "draft",
+    });
+  }
+
+  async prepareWorkflowSpecification(
+    specId?: string,
+    opts?: { adapter?: AdapterId; profile?: string; inputRoots?: string[] },
+  ): Promise<PreparationValidation> {
+    return this.#prepareWorkflowStage("spec", specId, opts);
+  }
+
+  async prepareWorkflowPlan(
+    specId?: string,
+    opts?: { adapter?: AdapterId; profile?: string; inputRoots?: string[] },
+  ): Promise<PreparationValidation> {
+    // The normal planning path owns task status clamping, readiness and phase changes.
+    await this.plan(specId, opts);
+    return this.readWorkflowPreparation(specId);
+  }
+
+  async getAssistance() {
+    return readAssistanceSession(this.store);
+  }
+
+  async setGuidance(mode: GuidanceMode) {
+    return this.#mutate(async () => {
+      const guidance = GuidanceModeSchema.parse(mode);
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") refuse("guidance requires an initialized project", HINT.init);
+      const result = await ensureAssistanceSession(this.store, { guidance, specId: state.activeSpecId });
+      await this.#audit("planning_guidance", state.phase, "user", { guidance });
+      return result;
+    });
+  }
+
+  async pauseAssistance() {
+    return this.#mutate(async () => updateAssistanceSession(this.store, { paused: true }));
+  }
+
+  async resumeAssistance() {
+    return this.#mutate(async () => updateAssistanceSession(this.store, { paused: false }));
+  }
+
+  async proposeIntentFromSource(path: string) {
+    await this.#assertAssistanceMutable("intent");
+    const source = await readIntentSource(this.projectRoot, path);
+    const existing = await this.#loadIntentAnswers();
+    if (existing.source?.path === source.binding.path && existing.source.digest === source.binding.digest) {
+      return { source: existing.source, mapped: existing.mapped, changed: false, diff: [], inferredSuggestions: existing.importedSuggestions ?? [],
+        missingSlots: existing.importedMissing ?? [], conflictingSlots: existing.importedConflicts ?? [] };
+    }
+    return this.#runPlanningProposal("interview", "intent-source-proposal.json", intentSourceProposalPrompt(source), async (raw) => {
+      const latestSource = await readIntentSource(this.projectRoot, path);
+      if (latestSource.binding.digest !== source.binding.digest) refuse("brief changed during intake; read the current brief again", HINT.spec);
+      const proposal = parseIntentSourceProposal(raw);
+      const current = await this.#loadIntentAnswers();
+      const applied = applyIntentSourceProposal(current, source.binding, proposal);
+      const previousAssumptions = current.source ? (await this.#listAssumptions()).filter((item) =>
+        item.createdIn === `intent-source:${current.source!.digest}` && item.status !== "rejected") : [];
+      if (applied.changed) {
+        for (const assumption of previousAssumptions) {
+          const doc = await this.store.readAssumption(assumption.id);
+          await this.store.writeAssumption({ ...doc.data, status: "rejected", evidence: `Superseded by imported brief ${source.binding.digest}` }, doc.body);
+        }
+      }
+      const priorFailures = previousAssumptions.filter((item) => !item.blocking).map((item) => item.statement);
+      const priorBlockers = previousAssumptions.filter((item) => item.blocking).map((item) => item.statement);
+      const sideDiff = [
+        `failure handling: ${JSON.stringify(priorFailures)} -> ${JSON.stringify(applied.side.failureLines)}`,
+        `blockers: ${JSON.stringify(priorBlockers)} -> ${JSON.stringify(applied.side.blockingLines)}`,
+      ].filter((_, index) => JSON.stringify(index === 0 ? priorFailures : priorBlockers) !== JSON.stringify(index === 0 ? applied.side.failureLines : applied.side.blockingLines));
+      await this.store.writeIntentAnswers(applied.answers);
+      await this.#applyIntentSideEffects(applied.side, `intent-source:${source.binding.digest}`);
+      const state = await this.#readState();
+      if (state.phase === "initialized") await this.#writeState({ ...state, phase: "intent_draft" });
+      await ensureAssistanceSession(this.store);
+      await this.#audit("intent_source_proposed", "intent_draft", "agent", { sourceDigest: source.binding.digest, changed: applied.changed });
+      return { ...proposal, source: source.binding, changed: applied.changed, diff: [...applied.diff, ...sideDiff] };
+    }, "intent");
+  }
+
+  async confirmIntentFromSource(actor: Actor = { id: "user" }) {
+    const answers = await this.#loadIntentAnswers();
+    if (!answers.source) refuse("there is no imported brief to confirm", HINT.spec);
+    const source = await readIntentSource(this.projectRoot, answers.source.path);
+    if (source.binding.digest !== answers.source.digest) refuse("imported brief changed; review its new proposal", HINT.spec);
+    return this.confirmIntent(actor);
+  }
+
+  async proposeIntentRecommendation(question: string): Promise<{ answer: string; rationale: string; consequence: string }> {
+    const intent = await this.getIntentState();
+    if (!intent.nextQuestions.includes(question)) refuse("recommendation must address a current interview question", HINT.spec);
+    return this.#runPlanningProposal("interview", "intent-recommendation.json", [
+      "Propose one answer to the current interview question, using the known context. Return JSON {answer,rationale,consequence}.",
+      "Keep uncertainty explicit. This is a suggestion for human review; do not save it as an answer or claim approval.",
+      `Question: ${JSON.stringify(question)}`, `Current intent: ${JSON.stringify(intent.mapped)}`,
+    ].join("\n"), async (raw) => {
+      const value = JSON.parse(raw) as Record<string, unknown>;
+      for (const key of ["answer", "rationale", "consequence"]) {
+        if (typeof value[key] !== "string" || !value[key].trim() || value[key].length > 8192) {
+          refuse("recommendation needs a bounded answer, rationale and consequence", HINT.spec);
+        }
+      }
+      return { answer: (value.answer as string).trim(), rationale: (value.rationale as string).trim(), consequence: (value.consequence as string).trim() };
+    }, "intent");
+  }
+
+  async explorePlanning(opts: { continueRound?: boolean } = {}) {
+    const saved = await this.#loadDiscuss(true);
+    const session = await readAssistanceSession(this.store);
+    const decisions = saved.decisions.flatMap((decision) => decision.planning ? [decision.planning] : []);
+    const round = session?.cursor.round ?? 0;
+    const unresolved = nextPlanningDecisionRound(decisions, { round: 0, continueRound: true });
+    if (unresolved.length) return { round, decisions: unresolved, canContinue: true };
+    if (round > 0 && !opts.continueRound) return { round, decisions: [], canContinue: true };
+    return this.#runPlanningProposal("discuss", "planning-decisions.json", [
+      "Propose a bounded discovery decision map as JSON {decisions:[PlanningDecision]}. Do not decide for the human.",
+      "Each decision: id,name,question,kind,prerequisiteIds,blocking,evidence,options. kinds follow PlanningDecisionSchema.",
+      "At most three new questions this explicit round. Reuse existing decision identities and preserve human answers.",
+      `Existing canonical decisions: ${JSON.stringify(decisions)}`,
+      "Keep uncertain or unavailable research unresolved; never mark adapter statements as verified execution.",
+    ].join("\n"), async (raw) => {
+      const parsed = JSON.parse(raw) as { decisions: unknown[] };
+      if (!Array.isArray(parsed.decisions) || parsed.decisions.length > 3) refuse("discovery allows at most three proposed questions per round", HINT.spec);
+      const proposed = sanitizePlanningProposal(parsed.decisions.map((item) => PlanningDecisionSchema.parse(item)), decisions);
+      const doc = await this.#loadDiscuss(true);
+      const known = new Set(doc.decisions.map((item) => item.id));
+      if (proposed.some((item) => known.has(item.id))) refuse("discovery proposal cannot replace an existing decision", HINT.spec);
+      const all = [...decisions, ...proposed];
+      nextPlanningDecisionRound(all, { round: 0, continueRound: true });
+      await this.store.writeDiscuss({ ...doc, decisions: [...doc.decisions, ...proposed.map((planning) => ({
+        id: planning.id, statement: planning.question, status: "proposed" as const, planning,
+      }))] }, "Canonical planning decisions; human resolutions are durable.\n");
+      await updateAssistanceSession(this.store, { paused: false, cursor: { stage: "explore", round: round + 1 }, decisionIds: all.map((item) => item.id) });
+      await this.#audit("planning_explore", (await this.#readState()).phase, "agent", { round: round + 1, decisionIds: proposed.map((item) => item.id) });
+      return { round: round + 1, decisions: nextPlanningDecisionRound(all, { round: 0, continueRound: true }), canContinue: proposed.length > 0 };
+    }, "spec");
+  }
+
+  async resolvePlanningDecision(
+    id: string, input: Omit<NonNullable<PlanningDecision["resolution"]>, "resolvedAt">,
+    actor: Actor = { id: "user" },
+  ) {
+    return this.#mutate(async () => {
+      await this.#assertAssistanceMutable("spec");
+      const doc = await this.#loadDiscuss(true);
+      const resolved = resolvePlanningDecision(doc.decisions.flatMap((item) => item.planning ? [item.planning] : []), id, {
+        ...input, resolvedAt: nowIso(),
+      });
+      const byId = new Map(resolved.map((item) => [item.id, item]));
+      await this.store.writeDiscuss({ ...doc, decisions: doc.decisions.map((item) => byId.has(item.id)
+        ? { ...item, planning: byId.get(item.id)!, status: byId.get(item.id)?.resolution ? "accepted" as const : "proposed" as const } : item) }, "Canonical planning decisions.\n");
+      await this.#audit("planning_resolution", (await this.#readState()).phase, actor.id, { decisionId: id, disposition: input.disposition });
+      return resolved.find((item) => item.id === id)!;
+    });
+  }
+
+  async compareDesign(stageId: string, opts?: { adapter?: AdapterId; profile?: string; revision?: string }) {
+    await this.#assertAssistanceMutable("plan");
+    const state = await this.#readState();
+    if (!state.activeSpecId) refuse("design comparison requires an active specification", HINT.spec);
+    const record = await readWorkflowPreparation(this.store, state.activeSpecId);
+    if (!record) refuse("complete specification preparation before design comparison", HINT.spec);
+    const previous = record.comparisons?.find((item) => item.stageId === stageId);
+    if (previous && !opts?.revision) return previous;
+    if (opts?.revision && (!previous || previous.selectedOptionId || previous.revisionCount === 1 || !opts.revision.trim())) {
+      refuse("one requested revision is available for an unselected design comparison", HINT.plan);
+    }
+    return this.#runPlanningProposal("plan", "design-comparison.json", [
+      `Compare exactly two materially different designs for ${stageId}.`,
+      `Return DesignComparison JSON: id,decisionId,stageId:${stageId},alternatives [exactly two {id,name,behavior,usageExample?,constraints,failureImplications,testingApproach,tradeoffs}],recommendation?.`,
+      "Include concrete behavior/examples; suggestions must not set selectedOptionId or human rationale.",
+      "Write only the designated cache proposal. Do not construct tasks, edit scope, execute prototypes, or approve a design.",
+      `Current preparation: ${JSON.stringify(record)}`,
+      ...(opts?.revision ? [`Human-requested revision: ${JSON.stringify(opts.revision)}. Preserve the comparison ID and stage.`] : []),
+    ].join("\n"), async (raw) => {
+      const parsed = DesignComparisonSchema.parse(JSON.parse(raw));
+      const comparison = validateDesignComparison({ ...parsed, selectedOptionId: undefined, rationale: undefined,
+        ...(opts?.revision ? { revisionCount: 1 as const } : {}) });
+      if (comparison.stageId !== stageId) refuse("comparison changed the requested design stage", HINT.plan);
+      const latest = await readWorkflowPreparation(this.store, state.activeSpecId!);
+      if (!latest) refuse("specification preparation is missing", HINT.spec);
+      if (opts?.revision) {
+        const current = latest.comparisons?.find((item) => item.id === previous!.id);
+        if (!current || current.selectedOptionId || current.revisionCount === 1 || comparison.id !== current.id) refuse("comparison revision identity changed", HINT.plan);
+        await this.store.writeYaml(`.legion-cli/workflow/${state.activeSpecId}/comparison-history/${workflowFingerprint(current)}.yaml`, current);
+        await writeWorkflowPreparation(this.store, { ...latest, comparisons: latest.comparisons!.map((item) => item.id === current.id ? comparison : item) });
+      } else {
+        if ((latest.comparisons ?? []).some((item) => item.id === comparison.id)) refuse("comparison identity already exists", HINT.plan);
+        await writeWorkflowPreparation(this.store, { ...latest, comparisons: [...(latest.comparisons ?? []), comparison] });
+      }
+      const session = await ensureAssistanceSession(this.store, { specId: state.activeSpecId });
+      await updateAssistanceSession(this.store, { comparisonIds: [...new Set([...session.comparisonIds, comparison.id])] });
+      await this.#audit("planning_comparison", state.phase, "agent", { comparisonId: comparison.id });
+      return comparison;
+    }, "plan", opts);
+  }
+
+  async selectDesignOption(comparisonId: string, optionId: string, rationale: string, actor: Actor = { id: "user" }) {
+    return this.#mutate(async () => {
+      await this.#assertAssistanceMutable("plan");
+      const state = await this.#readState();
+      const record = await readWorkflowPreparation(this.store, state.activeSpecId!);
+      const comparison = record?.comparisons?.find((item) => item.id === comparisonId);
+      if (!record || !comparison) refuse("unknown design comparison", HINT.plan);
+      const selected = selectDesignOption(comparison, optionId, rationale);
+      await writeWorkflowPreparation(this.store, { ...record, comparisons: record.comparisons!.map((item) => item.id === comparisonId ? selected : item) });
+      await this.#audit("planning_design_selected", state.phase, actor.id, { comparisonId, optionId });
+      return selected;
+    });
+  }
+
+  async configurePlanningStrategy(input: { kind: PlanningStrategy["kind"]; rationale: string; granularity?: "coarse" | "balanced" | "fine" }, actor: Actor = { id: "user" }) {
+    return this.#mutate(async () => {
+      await this.#assertAssistanceMutable("plan");
+      const state = await this.#readState();
+      const record = await readWorkflowPreparation(this.store, state.activeSpecId!);
+      if (!record) refuse("complete specification preparation first", HINT.spec);
+      const strategy = PlanningStrategySchema.parse({ ...input, outcomes: [] });
+      await writeWorkflowPreparation(this.store, { ...record, strategy });
+      await this.#audit("planning_strategy", state.phase, actor.id, { kind: strategy.kind });
+      return strategy;
+    });
+  }
+
+  async #assertAssistanceMutable(gate: "intent" | "spec" | "plan"): Promise<void> {
+    const state = await this.#readState();
+    const allowed = gate === "intent" ? ["initialized", "intent_draft"]
+      : gate === "spec" ? ["initialized", "intent_draft", "intent_ready", "discussing", "spec_draft"]
+        : ["spec_frozen", "planning", "plan_failed", "plan_ready"];
+    if (!allowed.includes(state.phase)) refuse("this planning choice requires a new increment", HINT.specNew);
+    if (gate === "plan" && (await readPlanApproval(this.store))?.specId === state.activeSpecId) {
+      refuse("the plan is already approved; use task amendment and renewed approval", HINT.plan);
+    }
+    if (state.activeSpecId) {
+      const spec = (await this.store.readSpec(state.activeSpecId)).data;
+      if (spec.workflowPolicyVersion !== 2 && spec.status !== "draft") refuse("planning assistance requires a new policy-2 increment", HINT.specNew);
+    }
+  }
+
+  async #runPlanningProposal<T>(
+    skillId: "interview" | "discuss" | "plan", filename: string, prompt: string,
+    apply: (raw: string) => Promise<T>, gate: "intent" | "spec" | "plan",
+    opts?: { adapter?: AdapterId; profile?: string },
+  ): Promise<T> {
+    let started: StartedSkillSpawn | undefined;
+    await this.#startLock(() => started, async () => {
+      await this.#assertAssistanceMutable(gate);
+      const state = await this.#readState();
+      const config = await this.#readConfig();
+      const record = state.activeSpecId ? await readWorkflowPreparation(this.store, state.activeSpecId) : null;
+      started = await startSkillSpawn({ ...this.#skillSpawnFields(), config, skillId,
+        specId: state.activeSpecId ?? undefined,
+        promptBody: `${prompt}\nWrite ${filename} only in this run's cache. Do not modify canonical intent, decisions, tasks, preparation or approvals.`,
+        filesForbidden: [".legion-cli/wiki/product/**", ".legion-cli/discuss/**", ".legion-cli/decisions/**", ".legion-cli/tasks/**", ".legion-cli/plans/**", ".legion-cli/specs/**"],
+        proposalOnly: true,
+        planningReadRoots: [...preparationInputRoots(record, gate === "plan" ? "plan" : "spec"), ...planningContextRoots(state.activeSpecId ?? undefined)],
+        cliAdapter: opts?.adapter, cliProfile: opts?.profile,
+        required: true,
+      });
+    });
+    if (!started?.spawned) refuse("planning automation is unavailable", HINT.spec);
+    const live = started;
+    const waited = await waitStartedSpawn(live);
+    return this.#relock(live.runId, async () => {
+      let raw: string | undefined;
+      let failure: unknown = waited.error ?? agentExitProblem(waited);
+      if (!failure) {
+        try { raw = await this.#readBoundedPlanningOutput(live, filename); }
+        catch (error) { failure = error; }
+      }
+      const revert = await finishStartedSpawn(live);
+      if (revert.incident || revert.extrasReverted.length) refuse("planning proposal violated its bounded contract", HINT.spec);
+      if (failure || raw === undefined) refuse(`planning proposal failed: ${String(failure ?? "missing output")}`, HINT.spec);
+      await this.#assertAssistanceMutable(gate);
+      try { return await apply(raw); }
+      catch (error) {
+        if (error instanceof LegionRefuseError) throw error;
+        refuse(`invalid planning proposal: ${String(error)}`, gate === "plan" ? HINT.plan : HINT.spec);
+      }
+    });
+  }
+
+  async #prepareWorkflowStage(
+    gate: "spec" | "plan",
+    specId?: string,
+    opts?: { adapter?: AdapterId; profile?: string; inputRoots?: string[] },
+  ): Promise<PreparationValidation> {
+    let started: StartedSkillSpawn | undefined;
+    let baseline: Awaited<ReturnType<LegionStore["readSpec"]>> | undefined;
+    let planningRoots: string[] = [];
+    const ready = await this.#startLock(() => started, async () => {
+      const state = await this.#readState();
+      const id = specId ?? state.activeSpecId;
+      if (!id || id !== state.activeSpecId) refuse("preparation requires the active spec", HINT.spec);
+      baseline = await this.store.readSpec(id);
+      if (baseline.data.workflowPolicyVersion !== 2) {
+        if (opts?.inputRoots?.length) refuse("declared preparation inputs require a new policy-2 increment", HINT.specNew);
+        return this.#inspectPreparationLocked(baseline.data, gate);
+      }
+      if (gate === "spec" && baseline.data.status === "draft") {
+        const challenge = await readSpecChallengeReceipt(this.store, id);
+        if (challenge?.application && challenge.status !== "complete") {
+          const challengeContext = await this.#specChallengeContextLocked(id);
+          if (!challengeContext.applicable || !receiptMatchesBinding(challenge, challengeContext.binding)) {
+            refuse("pending challenge application is stale; preparation cannot replace its recovery checkpoint", HINT.spec);
+          }
+          await this.#applySpecChallengeApplicationLocked(challengeContext, challenge);
+          baseline = await this.store.readSpec(id);
+        }
+      }
+      if (gate === "spec" ? baseline.data.status !== "draft" : baseline.data.status !== "frozen") {
+        refuse(`${gate} preparation cannot change this specification revision`, gate === "spec" ? HINT.specNew : HINT.specApprove);
+      }
+      if (gate === "plan" && !["spec_frozen", "planning", "plan_failed", "plan_ready"].includes(state.phase)) {
+        refuse("plan preparation must precede execution", HINT.plan);
+      }
+      const current = await this.#inspectPreparationLocked(baseline.data, gate, { checkSourceInputs: true });
+      const capturedInputs = preparationInputRoots(current.record, gate);
+      const newInputs = opts?.inputRoots?.some((root) => !capturedInputs.some((path) => path === root || path.startsWith(`${root}/`)));
+      if (current.blockers.length === 0 && !newInputs) return current;
+      const config = await this.#readConfig();
+      planningRoots = [...preparationInputRoots(current.record, gate), ...planningContextRoots(id),
+        ...(gate === "plan" ? [`.legion-cli/plans/${id}`] : []), ...(opts?.inputRoots ?? [])];
+      await this.#assertSkillSpawnable(config, gate, { cliAdapter: opts?.adapter, cliProfile: opts?.profile });
+      started = await startSkillSpawn({
+        ...this.#skillSpawnFields(), config, skillId: gate, specId: id,
+        promptBody: this.#preparationPrompt(gate, id, current.record),
+        required: true, cliAdapter: opts?.adapter, cliProfile: opts?.profile,
+        planningReadRoots: planningRoots,
+      });
+      return null;
+    });
+    if (ready) return ready;
+    if (!started?.spawned || !baseline) refuse("preparation automation is unavailable", gate === "spec" ? HINT.spec : HINT.plan);
+    const live = started;
+    const waited = await waitStartedSpawn(live);
+    return this.#relock(live.runId, async () => {
+      let output: string | undefined;
+      let outputError: unknown;
+      if (!waited.error && !agentExitProblem(waited)) {
+        try { output = await this.#readPreparationOutput(live); } catch (error) { outputError = error; }
+      }
+      let revert: Awaited<ReturnType<typeof finishStartedSpawn>>;
+      try { revert = await finishStartedSpawn(live); }
+      finally { if (gate === "spec") await this.#forceSpecDraft(baseline!.data.id, baseline!.data); }
+      if (revert.incident || revert.extrasReverted.length) {
+        refuse("preparation agent violated its file contract", gate === "spec" ? HINT.spec : HINT.plan);
+      }
+      if (waited.error || agentExitProblem(waited) || outputError || output === undefined) {
+        refuse(`preparation generation failed: ${String(waited.error ?? agentExitProblem(waited) ?? outputError ?? "missing output")}`, gate === "spec" ? HINT.spec : HINT.plan);
+      }
+      return this.#promotePreparationLocked(gate, baseline!.data.id, output, planningRoots);
+    });
+  }
+
+  #preparationPrompt(gate: "spec" | "plan", specId: string, previous: WorkflowPreparation | null): string {
+    return [
+      `Prepare the ${gate} gate for ${specId}; this does not approve it.`,
+      `Read .legion-cli/specs/${specId}/SPEC.md, durable intent and decisions, and relevant reviewed discovery.`,
+      "Write preparation.json in this run's cache, using legion-cli-workflow-preparation/v1.",
+      "assessment contains schemaVersion legion-cli-workflow-assessment/v1, policyVersion 2, specId, inputFingerprint, stageDecisions, unresolvedDecisions.",
+      "Select every stage explicitly: context, requirements, user-experience, functional-design, architecture, nfr-design, infrastructure-design, delivery-handoff.",
+      "context and requirements are required; conditional stages require grounded required/not_applicable decisions with rationale and evidenceRefs.",
+      `Write ${gate === "spec" ? `.legion-cli/specs/${specId}/preparation/` : `.legion-cli/plans/${specId}/`} artifact documents; record their stage, path, digest, inputs [{path,digest}], and substantive fields.`,
+      "context fields: goal, affectedPaths, constraints, assumptions. requirements fields: outcomes, invariants, acceptanceIds, qualityAttributes.",
+      "Design fields: decision, interfaces, failureCompatibility, verification. delivery-handoff fields: installation, recovery, externalChecks, operator.",
+      "Use exact SHA256 digests of safe readable input files; never follow links, read credentials, or fabricate results. Label unknown context and unresolved decisions explicitly.",
+      "SPEC.md is separately bound by spec approval. Never declare SPEC.md as an artifact byte input, because freezing changes its metadata. Plan design inputs must include the approved context and requirements artifact digests.",
+      "Every acceptance mapping names criterionId, taskIds, methods [{id,kind,expectedObservation,taskId?,command?,validatorId?,procedure?}]; kinds task_check, integration_check, assurance, manual, external.",
+      "References reuse existing task/check identities and never schedule duplicate checks. Manual/external procedures describe concrete observations. Do not claim they passed.",
+      "A selected strategy has kind outcomes|risk-first|expand-contract|custom, rationale, optional granularity coarse|balanced|fine, and outcomes [{id,statement,acceptanceIds,taskIds}]. Respect the user's selected strategy and granularity.",
+      "risk-first requires risk {uncertainty,probeTaskId,dependentTaskIds}; all dependent tasks must transitively depend on the probe task. expand-contract requires migration {compatibility,transition,retirementTaskIds,prerequisites:[{path,digest}]}; retirement needs existing current prerequisite evidence, otherwise keep retirement outside this increment.",
+      ...(previous ? [`Preserve the approved assessment and specArtifacts exactly: ${JSON.stringify(previous)}`] : []),
+      "Never write .legion-cli/workflow/** or approval receipts. Do not modify frozen SPEC.md or product files.",
+    ].join("\n");
+  }
+
+  async #readPreparationOutput(started: Extract<StartedSkillSpawn, { spawned: true }>): Promise<string> {
+    return this.#readBoundedPlanningOutput(started, "preparation.json");
+  }
+
+  async #readBoundedPlanningOutput(started: Extract<StartedSkillSpawn, { spawned: true }>, filename: string): Promise<string> {
+    const path = `.legion-cli/cache/runs/${started.runId}/${filename}`;
+    const root = started.sandbox?.jailRoot ?? this.projectRoot;
+    return this.#readBoundedProposalFile(root, path);
+  }
+
+  async #readBoundedProposalFile(root: string, path: string): Promise<string> {
+    const file = toFsPath(root, path);
+    await assertNoLinkInPath(file, { root });
+    const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.nlink !== 1 || stat.size > 1024 * 1024) throw new Error("planning output must be an unaliased regular file at most 1 MiB");
+      const bytes = await handle.readFile();
+      if (bytes.length > 1024 * 1024) throw new Error("planning output grew beyond 1 MiB");
+      return bytes.toString("utf8");
+    } finally { await handle.close(); }
+  }
+
+  async #readPlanTaskBytes(root: string): Promise<Map<string, string>> {
+    const path = ".legion-cli/tasks";
+    const directory = toFsPath(root, path);
+    await assertNoLinkInPath(directory, { root });
+    let names: string[];
+    try { names = await readdir(directory); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Map(); throw error; }
+    if (names.length > 1000) throw new Error("planning task inventory exceeds 1000 entries");
+    const documents = new Map<string, string>();
+    let size = 0;
+    for (const name of names.sort()) {
+      if (!name.endsWith(".md")) continue;
+      if (!/^TSK-[A-Za-z0-9_-]+\.md$/.test(name)) throw new Error("planning task filename is not a concrete task identity");
+      const body = await this.#readBoundedProposalFile(root, `${path}/${name}`);
+      size += Buffer.byteLength(body);
+      if (size > 16 * 1024 * 1024) throw new Error("planning task documents exceed 16 MiB");
+      documents.set(name, body);
+    }
+    return documents;
+  }
+
+  async #capturePlanTasks(
+    started: Extract<StartedSkillSpawn, { spawned: true }>, specId: string, baseline: Map<string, string>,
+  ): Promise<Array<{ data: Task; body: string }>> {
+    if (!started.sandbox) throw new Error("policy-2 task proposals require a planning jail");
+    const generated = await this.#readPlanTaskBytes(started.sandbox.jailRoot);
+    const proposals: Array<{ data: Task; body: string }> = [];
+    for (const name of new Set([...baseline.keys(), ...generated.keys()])) {
+      const before = baseline.get(name);
+      const after = generated.get(name);
+      if (before === after) continue;
+      if (after === undefined) throw new Error(`plan cannot remove task ${name}`);
+      const document = parseMarkdownDocument(after);
+      const task = TaskSchema.parse(document.frontmatter);
+      if (`${task.id}.md` !== name || task.specId !== specId) throw new Error(`plan task proposal has a foreign or mismatched identity: ${name}`);
+      const previous = before === undefined ? undefined : TaskSchema.parse(parseMarkdownDocument(before).frontmatter);
+      if (previous && previous.specId !== specId) throw new Error(`plan cannot replace another specification's task: ${name}`);
+      // Agent output cannot claim execution. Preserve existing task state; new tasks start as drafts.
+      proposals.push({ data: { ...task, status: previous?.status ?? "todo" }, body: document.body });
+    }
+    return proposals;
+  }
+
+  async #promotePreparationLocked(
+    gate: "spec" | "plan", specId: string, raw: string, declaredRoots: string[] = [],
+    candidateTasks?: Task[], persist = true,
+  ): Promise<PreparationValidation> {
+    let record: WorkflowPreparation;
+    try { record = WorkflowPreparationSchema.parse(JSON.parse(raw)); }
+    catch (error) { refuse(`invalid preparation proposal: ${String(error)}`, gate === "spec" ? HINT.spec : HINT.plan); }
+    const spec = (await this.store.readSpec(specId)).data;
+    if (spec.workflowPolicyVersion !== 2 || record.assessment.specId !== specId) {
+      refuse("preparation proposal has a different policy or spec identity", HINT.spec);
+    }
+    const existing = await readWorkflowPreparation(this.store, specId);
+    if (gate === "plan" && (!existing ||
+        workflowFingerprint({ assessment: existing.assessment, specArtifacts: existing.specArtifacts, knowledge: existing.knowledge }) !==
+        workflowFingerprint({ assessment: record.assessment, specArtifacts: record.specArtifacts, knowledge: record.knowledge }))) {
+      refuse("plan preparation cannot replace approved specification inputs", HINT.specNew);
+    }
+    if (gate === "plan" && existing) {
+      if (existing.strategy && (!record.strategy || existing.strategy.kind !== record.strategy.kind ||
+          existing.strategy.rationale !== record.strategy.rationale || existing.strategy.granularity !== record.strategy.granularity)) {
+        refuse("plan proposal changed the human-selected planning strategy", HINT.plan);
+      }
+      for (const prior of existing.comparisons ?? []) {
+        const proposed = record.comparisons?.find((item) => item.id === prior.id);
+        if (!proposed || workflowFingerprint(proposed) !== workflowFingerprint(prior)) {
+          refuse("plan proposal changed a saved design comparison or selection", HINT.plan);
+        }
+      }
+    }
+    for (const comparison of record.comparisons ?? []) {
+      if (comparison.selectedOptionId && !existing?.comparisons?.some((prior) => prior.id === comparison.id &&
+          prior.selectedOptionId === comparison.selectedOptionId && prior.rationale === comparison.rationale)) {
+        refuse("an agent cannot select a design on behalf of the human", HINT.plan);
+      }
+    }
+    record = await bindPreparationArtifacts(this.store, record);
+    const inputInventory = await planningInputInventory(this.projectRoot, declaredRoots);
+    const readableInputs = new Set(inputInventory.files);
+    for (const input of [...record.specArtifacts, ...record.planArtifacts].flatMap((artifact) => artifact.inputs)) {
+      if (!readableInputs.has(input.path)) refuse(`preparation input was not declared in the readable inventory: ${input.path}`, gate === "spec" ? HINT.spec : HINT.plan);
+    }
+    if (gate === "plan" && existing && workflowFingerprint(record.specArtifacts) !== workflowFingerprint(existing.specArtifacts)) {
+      refuse("approved specification artifact content changed before planning", HINT.specNew);
+    }
+    const validation = await inspectPreparationRecord(this.store, record, {
+      spec, gate, tasks: sliceTasks(candidateTasks ?? await this.#listGateTasks(), specId),
+      verificationCommands: (await this.#readConfig()).workflow?.verificationCommands ?? [],
+      assuranceValidatorIds: (await loadAssurance(this.store)).manifest?.validators.map((validator) => validator.id) ?? [],
+      intentSource: (await this.#loadIntentAnswers()).source,
+      planningDecisions: (await this.#loadDiscuss(true)).decisions.flatMap((item) => item.planning ? [item.planning] : []),
+      checkSourceInputs: true,
+    });
+    if (validation.blockers.length) refuse(validation.blockers.map((blocker) => blocker.message).join("; "), gate === "spec" ? HINT.spec : HINT.plan);
+    if (!persist) return validation;
+    // Validate live inputs before promoting the only authoritative record.
+    // bindPreparationArtifacts verifies document paths and declared source digests without rebinding them.
+    await writeWorkflowPreparation(this.store, record);
+    const result = await this.#inspectPreparationLocked(spec, gate, { checkSourceInputs: true });
+    await this.#audit("workflow_preparation", (await this.#readState()).phase, "agent", {
+      specId, gate, policyVersion: 2, specPreparationFingerprint: result.specFingerprint,
+      preparationFingerprint: result.planFingerprint,
+    });
+    return result;
+  }
+
+  async #inspectPreparationLocked(
+    spec: Spec, gate: "spec" | "plan" | "ship",
+    options: { checkSourceInputs?: boolean; verificationCommands?: string[]; assuranceValidatorIds?: string[] } = {},
+  ): Promise<PreparationValidation> {
+    const approval = await readPlanApproval(this.store);
+    const config = await this.#readConfig();
+    const specApproval = await readSpecApproval(this.store);
+    if (spec.workflowPolicyVersion !== 2 && (
+      (specApproval?.specId === spec.id && specApproval.specPreparationFingerprint) ||
+      (approval?.specId === spec.id && approval.preparationFingerprint))) {
+      return { record: null, stages: [], blockers: [{ stage: "context", code: "policy_marker",
+        message: "The approved workflow policy marker was removed from SPEC.md", next: HINT.specNew }] };
+    }
+    let decisions: PlanningDecision[] = [];
+    if (spec.workflowPolicyVersion === 2) {
+      try { decisions = (await this.#loadDiscuss(true)).decisions.flatMap((item) => item.planning ? [item.planning] : []); }
+      catch (error) { return { record: null, stages: [], blockers: [{ stage: "requirements", code: "invalid_decisions",
+        message: `Canonical planning decisions cannot be read: ${String(error)}`, next: HINT.spec }] }; }
+    }
+    return inspectWorkflowPreparation(this.store, {
+      spec, gate, tasks: sliceTasks(await this.#listGateTasks(), spec.id),
+      verificationCommands: options.verificationCommands ?? (approval?.specId === spec.id ? approval.verificationCommands : config.workflow?.verificationCommands) ?? [],
+      assuranceValidatorIds: options.assuranceValidatorIds ?? (await loadAssurance(this.store)).manifest?.validators.map((validator) => validator.id) ?? [],
+      checkSourceInputs: options.checkSourceInputs ?? false,
+      intentSource: (await this.#loadIntentAnswers()).source,
+      planningDecisions: decisions,
+    });
   }
 
   async approvePlan(actor: Actor = { id: "user" }, opts: PlanApprovalOptions = {}): Promise<PlanApprovalReceipt> {
@@ -1889,6 +2534,24 @@ export class LegionEngine {
         refuse("adopted assurance manifest changed; replacement requires --assurance", "legion-cli plan approve --assurance <yaml-file>");
       }
       const context = await this.#workflowPlanContext(approvalConfig, assuranceManifest);
+      if (context.spec.workflowPolicyVersion !== 2 && context.preparation?.blockers.length) {
+        refuse(context.preparation.blockers.map((blocker) => blocker.message).join("; "), HINT.plan);
+      }
+      const priorPlanApproval = await readPlanApproval(this.store);
+      const verificationCommands = [
+        ...new Set([
+          ...(context.config.workflow?.verificationCommands ?? []),
+          ...(priorPlanApproval?.specId === context.snapshot.specId ? priorPlanApproval.verificationCommands : []),
+          ...(opts.verificationCommands ?? []),
+        ].map((command) => command.trim()).filter(Boolean)),
+      ];
+      if (context.spec.workflowPolicyVersion === 2) {
+        const preparation = await this.#inspectPreparationLocked(context.spec, "plan", {
+          checkSourceInputs: priorPlanApproval?.specId !== context.spec.id, verificationCommands,
+          assuranceValidatorIds: assuranceManifest?.validators.map((validator) => validator.id) ?? [],
+        });
+        if (preparation.blockers.length) refuse(preparation.blockers.map((blocker) => blocker.message).join("; "), HINT.plan);
+      }
       if (assuranceManifest) {
         await validateAssuranceContext(assuranceManifest, { ...context, projectRoot: this.projectRoot });
       }
@@ -1901,6 +2564,7 @@ export class LegionEngine {
         openNonBlockingAssumptions: (await this.#listAssumptions()).some(
           (assumption) => assumption.status === "open" && !assumption.blocking,
         ),
+        ...(context.spec.workflowPolicyVersion === 2 ? { preparationPolicy: 2 as const } : {}),
       });
       if (readiness.readiness === "FAIL") {
         refuse(`plan is not ready: ${readiness.fails.join("; ")}`, HINT.plan);
@@ -1916,10 +2580,12 @@ export class LegionEngine {
       const approvedSpec = await readSpecApproval(this.store);
       if (approvedSpec &&
           (approvedSpec.specId !== context.snapshot.specId ||
-            approvedSpec.specFingerprint !== context.snapshot.specFingerprint)) {
+            approvedSpec.specFingerprint !== context.snapshot.specFingerprint ||
+            (context.spec.workflowPolicyVersion === 2 && approvedSpec.specPreparationFingerprint !== context.preparation?.specFingerprint))) {
         refuse("the frozen spec changed after approval; restore the approved spec or approve a new spec", HINT.specApprove);
       }
       if (!approvedSpec) {
+        if (context.spec.workflowPolicyVersion === 2) refuse("policy-2 specification approval receipt is missing", HINT.specApprove);
         // Legacy frozen specs had no content-bound receipt. This explicit plan approval imports
         // and binds the current frozen revision instead of silently trusting it during execute.
         await writeSpecApproval(this.store, {
@@ -1931,16 +2597,6 @@ export class LegionEngine {
         });
       }
 
-      const priorPlanApproval = await readPlanApproval(this.store);
-      const verificationCommands = [
-        ...new Set([
-          ...(context.config.workflow?.verificationCommands ?? []),
-          ...(priorPlanApproval?.specId === context.snapshot.specId
-            ? priorPlanApproval.verificationCommands
-            : []),
-          ...(opts.verificationCommands ?? []),
-        ].map((command) => command.trim()).filter(Boolean)),
-      ];
       const configurationChanged = currentConfig.workflow?.profile !== "focused";
       const receipt = PlanApprovalReceiptSchema.parse({
         schemaVersion: SCHEMA_VERSION.planApproval,
@@ -1955,6 +2611,7 @@ export class LegionEngine {
         taskIds: context.snapshot.taskIds,
         acceptanceIds: context.snapshot.acceptanceIds,
         verificationCommands,
+        ...(context.snapshot.preparationFingerprint !== undefined ? { preparationFingerprint: context.snapshot.preparationFingerprint } : {}),
       });
       const assuranceApproval = assuranceManifest
         ? await prepareAssuranceApproval(assuranceManifest, receipt, this.projectRoot, nativeHost)
@@ -2052,6 +2709,8 @@ export class LegionEngine {
           skillId: "spec-challenge",
           specId: context.specId,
           promptBody: this.#specChallengePrompt("analysis", context.specId, null),
+          planningReadRoots: context.readRoots,
+          planningPolicy2: context.spec.data.workflowPolicyVersion === 2,
           cliAdapter: opts?.adapter,
           required: false,
         });
@@ -2107,6 +2766,8 @@ export class LegionEngine {
           this.projectRoot,
           await this.#readChallengeSpawnOutput(liveAnalysis, specChallengeAnalysisPath(liveAnalysis.runId)),
           context.specId,
+          context.readRoots,
+          context.spec.data.workflowPolicyVersion === 2,
         );
       } catch (err) {
         await finishStartedSpawn(liveAnalysis);
@@ -2296,6 +2957,8 @@ export class LegionEngine {
           skillId: "spec-challenge",
           specId: context.specId,
           promptBody: this.#specChallengePrompt("synthesis", context.specId, receipt),
+          planningReadRoots: context.readRoots,
+          planningPolicy2: context.spec.data.workflowPolicyVersion === 2,
           cliAdapter: opts?.adapter,
           required: false,
         });
@@ -2411,6 +3074,10 @@ export class LegionEngine {
     if (["initialized", "intent_draft", "intent_ready", "discussing", "spec_draft"].includes(state.phase)) {
       let next = "legion-cli spec";
       let blocker: string | null = null;
+      const spec = (await this.store.readSpec(state.activeSpecId)).data;
+      const preparation = spec.workflowPolicyVersion === 2
+        ? await this.#inspectPreparationLocked(spec, "spec", { checkSourceInputs: true })
+        : undefined;
       if (state.phase === "spec_draft") {
         const config = await this.#readConfig();
         if (config.workflow?.profile === "focused") {
@@ -2428,6 +3095,10 @@ export class LegionEngine {
           next = "legion-cli spec approve";
         }
       }
+      if (preparation?.blockers.length) {
+        blocker = preparation.blockers[0]!.message;
+        next = preparation.blockers[0]!.next;
+      }
       return {
         stage: "spec",
         planApproval: "missing",
@@ -2435,16 +3106,22 @@ export class LegionEngine {
         acceptance: { required: [], passed: [], failed: [], pending: [], notApplicable: [] },
         blocker,
         next,
+        ...(preparation ? { preparation } : {}),
       };
     }
     if (["spec_frozen", "planning", "plan_failed"].includes(state.phase)) {
+      const spec = (await this.store.readSpec(state.activeSpecId)).data;
+      const preparation = spec.workflowPolicyVersion === 2
+        ? await this.#inspectPreparationLocked(spec, "plan", { checkSourceInputs: true })
+        : undefined;
       return {
         stage: "plan",
         planApproval: "missing",
         execution: "not_started",
         acceptance: { required: [], passed: [], failed: [], pending: [], notApplicable: [] },
-        blocker: state.phase === "plan_failed" ? "plan checks failed" : null,
+        blocker: preparation?.blockers[0]?.message ?? (state.phase === "plan_failed" ? "plan checks failed" : null),
         next: "legion-cli plan",
+        ...(preparation ? { preparation } : {}),
       };
     }
 
@@ -2453,7 +3130,7 @@ export class LegionEngine {
     let assurance = bindAssuranceApproval(context.assurance, approval, context.snapshot.planFingerprint);
     const planApproval = !approval
       ? "missing" as const
-      : assurance?.status !== "invalid" && approval.specId === context.snapshot.specId && approval.planFingerprint === context.snapshot.planFingerprint
+      : !context.preparation?.blockers.length && assurance?.status !== "invalid" && approval.specId === context.snapshot.specId && approval.planFingerprint === context.snapshot.planFingerprint
         ? "valid" as const
         : "stale" as const;
     if (planApproval !== "valid" || !approval) {
@@ -2465,12 +3142,13 @@ export class LegionEngine {
         ...(assurance ? { assurance } : {}),
         execution: "not_started",
         acceptance: this.#workflowAcceptanceStatus(context.spec, null),
-        blocker: assurance?.blocker ?? (missingPlanBody
+        blocker: context.preparation?.blockers[0]?.message ?? assurance?.blocker ?? (missingPlanBody
           ? `create .legion-cli/plans/${context.snapshot.specId}.md before approving the plan`
           : planApproval === "stale"
             ? "plan approval is stale"
             : null),
-        next: "legion-cli plan approve",
+        next: context.preparation?.blockers[0]?.next ?? "legion-cli plan approve",
+        ...(context.preparation ? { preparation: context.preparation } : {}),
       };
     }
     const governedExecution = await this.#governedExecutionEvidence(context.assurance, context.tasks);
@@ -2529,6 +3207,8 @@ export class LegionEngine {
           : evidence.status === "running"
             ? "running"
             : "blocked";
+    const incompleteTasks = incompleteApprovedWorkflowTasks(approval, context.tasks, evidence);
+    if (execution === "complete" && incompleteTasks.length) execution = "blocked";
     if (assurance?.mode === "information-flow" && assurance.informationFlow !== "enforced") execution = "blocked";
     const acceptanceReceipt = await readAcceptanceReceipt(this.store);
     const acceptanceFresh = Boolean(
@@ -2536,7 +3216,8 @@ export class LegionEngine {
       acceptanceReceipt.specId === approval.specId &&
       acceptanceReceipt.planFingerprint === approval.planFingerprint &&
       acceptanceReceipt.approvalId === approval.approvalId &&
-      acceptanceReceipt.productFingerprint === productFingerprint,
+      acceptanceReceipt.productFingerprint === productFingerprint &&
+      await this.#acceptanceReferencesFresh(acceptanceReceipt),
     );
     const acceptance = this.#workflowAcceptanceStatus(context.spec, acceptanceFresh ? acceptanceReceipt : null);
     const ready = execution === "complete" && acceptance.failed.length === 0 && acceptance.pending.length === 0;
@@ -2550,6 +3231,8 @@ export class LegionEngine {
       );
     const blockedTask = context.tasks.find((task) => task.status === "blocked");
     const blocker = assuranceEvidence?.units.find((unit) => unit.status === "unknown")?.reason ??
+      (incompleteTasks.length && evidence?.status === "complete"
+        ? `approved tasks lack current completion evidence: ${incompleteTasks.join(", ")}` : null) ??
       staleGovernedBlocker ??
       assuranceEvidence?.checks.find((check) => check.decision === "blocked")?.reason ??
       (execution === "stale"
@@ -2591,6 +3274,7 @@ export class LegionEngine {
             : evidenceFresh && evidence?.status === "complete" && assurance?.traceStatus !== "valid"
               ? "legion-cli plan evidence"
               : "legion-cli execute",
+      ...(context.preparation ? { preparation: context.preparation } : {}),
     };
   }
 
@@ -2761,6 +3445,8 @@ export class LegionEngine {
           !await workflowReviewEvidenceFresh(this.projectRoot, evidence.review)) {
         refuse("complete, fresh workflow evidence is required before acceptance", "legion-cli execute");
       }
+      const incomplete = incompleteApprovedWorkflowTasks(context.approval, context.tasks, evidence);
+      if (incomplete.length) refuse(`approved tasks are incomplete: ${incomplete.join(", ")}`, HINT.execute);
       if (context.assurance.manifest) {
         const assuranceEvidence = await inspectAssuranceEvidence(this.store, context.assurance, context.spec.acceptance.map((criterion) => criterion.id), await this.#componentPolicyPosture(context.assurance, context.tasks));
         const failed = assuranceEvidence.criteria.find((criterion) => criterion.status === "failed");
@@ -2770,11 +3456,54 @@ export class LegionEngine {
         }
       }
       const validIds = new Set(context.spec.acceptance.map((criterion) => criterion.id));
+      const preparedEntries: AcceptanceEvidenceInput[] = [];
       for (const entry of entries) {
         if (!validIds.has(entry.id)) refuse(`unknown acceptance criterion ${entry.id}`, "legion-cli spec");
         if ((entry.status === "failed" || entry.status === "not_applicable") && !entry.note?.trim()) {
           refuse(`${entry.status} acceptance evidence requires --note`, "legion-cli plan acceptance --help");
         }
+        let prepared = { ...entry };
+        if (context.spec.workflowPolicyVersion === 2) {
+          const mapping = context.preparation?.record?.acceptanceMappings.find((item) => item.criterionId === entry.id);
+          if (!mapping) refuse(`acceptance ${entry.id} has no approved evidence method`, HINT.plan);
+          const method = entry.methodId
+            ? mapping.methods.find((item) => item.id === entry.methodId)
+            : mapping.methods.length === 1 ? mapping.methods[0] : undefined;
+          if (!method) refuse(`acceptance ${entry.id} requires an approved --method`, "legion-cli plan acceptance --help");
+          prepared.methodId = method.id;
+          if (entry.status === "not_applicable") {
+            const criterion = context.spec.acceptance.find((item) => item.id === entry.id)!;
+            if (!criterion.notApplicableWhen || criterion.notApplicableWhen !== mapping.notApplicableWhen) {
+              refuse(`${entry.id} has no approved not-applicable condition`, HINT.specNew);
+            }
+          }
+          if (entry.status === "passed" || entry.status === "not_applicable") {
+            if (!entry.note?.trim()) refuse(`${entry.id} requires a concrete observed result with --note`, "legion-cli plan acceptance --help");
+            if (method.kind === "integration_check" && !evidence.integration.some((run) => run.command.trim() === method.command?.trim() && run.ok)) {
+              refuse(`${entry.id} lacks its approved passing integration check`, HINT.execute);
+            }
+            if (method.kind === "assurance" && !context.assurance.manifest) {
+              refuse(`${entry.id} requires its adopted assurance validator`, HINT.plan);
+            }
+            if (method.kind === "manual" || method.kind === "external" || entry.status === "not_applicable") {
+              if (!entry.evidenceRef?.trim()) refuse(`${entry.id} requires a current --evidence reference`, "legion-cli plan acceptance --help");
+            }
+            if (entry.evidenceRef?.trim()) {
+              if (method.kind === "external" && /^(?:https?:\/\/|external:|report:|urn:)/i.test(entry.evidenceRef.trim())) {
+                if (!method.procedure?.trim()) refuse("external evidence requires an approved procedure", HINT.plan);
+                prepared.evidenceRef = entry.evidenceRef.trim();
+                delete prepared.evidenceDigest;
+              } else {
+                let digest: string;
+                try { digest = await this.#localAcceptanceDigest(entry.evidenceRef.trim()); }
+                catch (error) { refuse(`invalid acceptance evidence: ${String(error)}`, "legion-cli plan acceptance --help"); }
+                if (entry.evidenceDigest && entry.evidenceDigest !== digest) refuse("acceptance evidence digest is stale", "legion-cli plan acceptance --help");
+                prepared = { ...prepared, evidenceRef: entry.evidenceRef.trim(), evidenceDigest: digest };
+              }
+            }
+          }
+        }
+        preparedEntries.push(prepared);
       }
       const previous = await readAcceptanceReceipt(this.store);
       const reusable = previous &&
@@ -2783,7 +3512,7 @@ export class LegionEngine {
         previous.approvalId === context.approval.approvalId &&
         previous.productFingerprint === productFingerprint;
       const merged = new Map((reusable ? previous.entries : []).map((entry) => [entry.id, entry]));
-      for (const entry of entries) merged.set(entry.id, { ...entry, ...(entry.note?.trim() ? { note: entry.note.trim() } : {}) });
+      for (const entry of preparedEntries) merged.set(entry.id, { ...entry, ...(entry.note?.trim() ? { note: entry.note.trim() } : {}) });
       const receipt = AcceptanceReceiptSchema.parse({
         schemaVersion: SCHEMA_VERSION.acceptanceReceipt,
         specId: context.approval.specId,
@@ -2801,6 +3530,32 @@ export class LegionEngine {
       });
       return receipt;
     }));
+  }
+
+  async #localAcceptanceDigest(path: string): Promise<string> {
+    if (isAbsolute(path) || !isConcretePosixRepoRelativePath(path) || !challengeInputPathAllowed(path)) {
+      throw new Error("evidence must be a safe concrete project-relative file");
+    }
+    const absolute = toFsPath(this.projectRoot, path);
+    await assertNoLinkInPath(absolute, { root: this.projectRoot });
+    const file = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const info = await file.stat();
+      if (!info.isFile() || info.nlink > 1 || info.size > 4 * 1024 * 1024) throw new Error("evidence must be a regular file at most 4 MiB without hard-link aliases");
+      const bytes = await file.readFile();
+      if (bytes.length > 4 * 1024 * 1024) throw new Error("evidence exceeds 4 MiB");
+      return createHash("sha256").update(bytes).digest("hex");
+    } finally { await file.close(); }
+  }
+
+  async #acceptanceReferencesFresh(receipt: AcceptanceReceipt): Promise<boolean> {
+    for (const entry of receipt.entries) {
+      if (!entry.evidenceDigest) continue;
+      if (!entry.evidenceRef) return false;
+      try { if (await this.#localAcceptanceDigest(entry.evidenceRef) !== entry.evidenceDigest) return false; }
+      catch { return false; }
+    }
+    return true;
   }
 
   async approveAction(options: GovernedActionApprovalOptions) {
@@ -2914,6 +3669,10 @@ export class LegionEngine {
     ): Promise<WorkflowEvidenceReceipt> => {
       return this.#withLockOrRefuse(() => this.#governanceMutation(action, async () => {
         context = await this.#requireCurrentPlanApproval();
+        if (status === "complete") {
+          const incomplete = incompleteApprovedWorkflowTasks(context.approval, context.tasks);
+          if (incomplete.length) refuse(`approved tasks are incomplete: ${incomplete.join(", ")}`, HINT.execute);
+        }
         const currentProductFingerprint = await workflowProductFingerprint(this.projectRoot, context.tasks);
         productFingerprint = boundProductFingerprint ?? currentProductFingerprint;
         completedTaskIds = context.tasks
@@ -3520,6 +4279,7 @@ export class LegionEngine {
           const promptBody = [
             `Task: ${task.id} ${task.title}`,
             `Priority: ${task.priority}`,
+            await this.#taskTestingPrompt(task),
             opts.fix ? "This is a fix run. Keep the reproducing test. Do not delete tests." : "",
             `Read .legion-cli/specs/${task.specId}/SPEC.md.`,
             "Write only the files listed in FileContract. Do not git add or git commit.",
@@ -4890,7 +5650,7 @@ export class LegionEngine {
       if (trimmed.length === 0 || trimmed.every((item) => item.length === 0)) {
         refuse("intent requires answers", HINT.intent);
       }
-      const questions = progress.nextQuestions;
+      const questions = progress.nextQuestions.slice(0, trimmed.length);
       const applied = applyIntentAnswers(existing, questions, trimmed);
       await this.store.writeIntentAnswers(applied.file);
       await this.#applyIntentSideEffects(applied.side);
@@ -4908,7 +5668,11 @@ export class LegionEngine {
       const progress = intentProgress(answers);
       const allowed = progress.readyToConfirm || (Boolean(opts?.done) && progress.canFinishEarly);
       if (!allowed) {
-        refuse("intent confirmation requires rounds 1–4 or --done after round 2", HINT.intentConfirm);
+        refuse(answers.source ? "resolve missing or conflicting imported requirements, or revise the brief if the interview limit is reached"
+          : "intent confirmation requires rounds 1–4 or --done after round 2", HINT.intentConfirm);
+      }
+      if (answers.source && ((answers.importedMissing?.length ?? 0) || (answers.importedConflicts?.length ?? 0))) {
+        refuse("resolve missing or conflicting imported requirements before confirmation", HINT.intent);
       }
       await this.#assertAgentAvailable("interview");
       void actor;
@@ -4940,12 +5704,13 @@ export class LegionEngine {
       }
       const mapped = (await this.#loadIntentAnswers()).mapped;
       const context = (await this.store.readContext()).data;
-      let discuss = await this.#loadDiscuss();
+      let discuss = await this.#loadDiscuss(Boolean(await readAssistanceSession(this.store)));
       if (discuss.decisions.length === 0) {
         discuss = { schemaVersion: SCHEMA_VERSION.discuss, decisions: templateDecisions(mapped, context) };
         await this.store.writeDiscuss(discuss, "Proposed decisions. Human accepts or rejects each.\n");
       }
       const priorStatus = new Map(discuss.decisions.map((item) => [item.id, item.status]));
+      const priorPlanning = new Map(discuss.decisions.filter((item) => item.planning).map((item) => [item.id, item]));
       const project = await this.store.readProject();
       const specId = await this.#allocateSpecId(project.data.name, { allowExistingDraft: true });
       await this.#optionalSpawn(
@@ -4961,10 +5726,15 @@ export class LegionEngine {
         discuss = { schemaVersion: SCHEMA_VERSION.discuss, decisions: templateDecisions(mapped, context) };
       }
       const reset = discuss.decisions.map((item) => {
+        const saved = priorPlanning.get(item.id);
+        if (saved) return saved;
+        // Ordinary discussion output cannot create resolutions or replace the canonical exploration graph.
+        const { planning: _planning, ...proposed } = item;
         const prior = priorStatus.get(item.id);
-        if (prior === "accepted" || prior === "rejected") return { ...item, status: prior };
-        return { ...item, status: "proposed" as const };
+        if (prior === "accepted" || prior === "rejected") return { ...proposed, status: prior };
+        return { ...proposed, status: "proposed" as const };
       });
+      for (const [id, saved] of priorPlanning) if (!reset.some((item) => item.id === id)) reset.push(saved);
       await this.store.writeDiscuss(
         { schemaVersion: SCHEMA_VERSION.discuss, decisions: reset },
         "Proposed decisions. Human accepts or rejects each.\n",
@@ -5028,7 +5798,7 @@ export class LegionEngine {
           const existing = await this.store.readSpec(state.activeSpecId);
           if (existing.data.status === "draft") return existing.data;
         } catch {
-          // A missing draft is reconstructed below from durable interview context.
+          refuse("the active draft is missing or unreadable; restore it before continuing", HINT.specNew);
         }
       }
       await this.#assertAgentAvailable("spec");
@@ -5037,7 +5807,8 @@ export class LegionEngine {
       const specId = state.activeSpecId ?? (await this.#allocateSpecId(project.data.name));
       const answers = await this.#loadIntentAnswers();
       const extraAcceptance = (await this.#listAssumptions())
-        .filter((item) => item.createdIn === "intent" && item.blocking === false)
+        .filter((item) => (item.createdIn === "intent" ||
+          (answers.source && item.createdIn === `intent-source:${answers.source.digest}` && item.status !== "rejected")) && item.blocking === false)
         .map((item, i) => ({
           id: `AC-P1-${String(i + 1).padStart(2, "0")}`,
           statement: item.statement,
@@ -5062,7 +5833,12 @@ export class LegionEngine {
         decisions: discuss.decisions,
         failureCases,
       });
+      // The marker is allocated by the engine, never defaulted while parsing old drafts.
+      if (!state.activeSpecId && (await this.#readConfig()).workflow?.profile === "focused") {
+        spec.workflowPolicyVersion = 2;
+      }
       await this.store.writeSpec(spec, specMarkdownBody(spec));
+      if (await readAssistanceSession(this.store)) await bindAssistanceSession(this.store, specId);
       await mkdir(join(this.store.paths.specsDir, specId), { recursive: true });
       await writeTextFile(join(this.store.paths.specsDir, specId, "prd.md"), prdBody(answers.mapped), {
         root: this.projectRoot,
@@ -5079,7 +5855,7 @@ export class LegionEngine {
         await this.#writeState({ ...current, activeSpecId: specId });
       }
       await this.store.writeProject({ ...project.data, activeSpecId: specId }, project.body);
-      await this.#optionalSpawn(
+      try { await this.#optionalSpawn(
         "spec",
         specId,
         [
@@ -5089,7 +5865,7 @@ export class LegionEngine {
           "Keep the palette: background #f5f5f0, ink #222, accent #c45c26, muted #888.",
           "Do not set status to frozen. The human runs legion-cli spec approve.",
         ].join("\n"),
-      );
+      ); } finally { await this.#forceSpecDraft(specId, spec); }
       if (!skipWireframes) {
         await this.#ensureWireframePalette(specId, answers.mapped.screens);
       }
@@ -5527,6 +6303,7 @@ export class LegionEngine {
       const promptBody = [
         `Task: ${task.id} ${task.title}`,
         `Priority: ${task.priority}`,
+        await this.#taskTestingPrompt(task),
         opts.fix ? "This is a fix run. Keep the reproducing test. Do not delete tests." : "",
         `Read .legion-cli/specs/${task.specId}/SPEC.md.`,
         "Write only the files listed in FileContract. Do not git add or git commit.",
@@ -6096,7 +6873,7 @@ export class LegionEngine {
 
   async #assertSkillSpawnable(
     config: LegionConfig,
-    skillId: "plan" | "execute" | "review",
+    skillId: "spec" | "plan" | "execute" | "review",
     opts?: { cliAdapter?: AdapterId; taskAdapter?: AdapterId; cliProfile?: string; taskProfile?: string },
   ): Promise<void> {
     const resolution = resolveAdapterId({
@@ -6116,7 +6893,7 @@ export class LegionEngine {
       refuse(spawnableAdapterRefuseMessage(skillId, resolution), HINT.doctor);
     }
     const skillsDir = this.#skillsDir ?? findSkillsDir();
-    const hint = skillId === "execute" ? HINT.execute : skillId === "review" ? HINT.review : HINT.plan;
+    const hint = skillId === "execute" ? HINT.execute : skillId === "review" ? HINT.review : skillId === "spec" ? HINT.spec : HINT.plan;
     const resolved = await resolveSkillDir({
       projectRoot: this.projectRoot,
       skillId,
@@ -6537,10 +7314,13 @@ export class LegionEngine {
     return this.store.readIntentAnswers();
   }
 
-  async #loadDiscuss() {
+  async #loadDiscuss(strict = false) {
     try {
-      return (await this.store.readDiscuss()).data;
-    } catch {
+      const data = (await this.store.readDiscuss()).data;
+      if (strict && data.decisions.some((item) => item.planning && item.id !== item.planning.id)) throw new Error("canonical planning decision IDs do not match");
+      return data;
+    } catch (error) {
+      if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       return { schemaVersion: SCHEMA_VERSION.discuss, decisions: [] as DiscussDecision[] };
     }
   }
@@ -6550,7 +7330,7 @@ export class LegionEngine {
     failureLines: string[];
     brand?: string;
     blockingLines: string[];
-  }): Promise<void> {
+  }, createdIn = "intent"): Promise<void> {
     if (side.platforms) {
       const context = await this.store.readContext();
       await this.store.writeContext({ ...context.data, platforms: side.platforms }, context.body);
@@ -6579,7 +7359,7 @@ export class LegionEngine {
         status: "open",
         blocking: line.blocking,
         escalatesTo: "user",
-        createdIn: "intent",
+        createdIn,
       };
       await this.store.writeAssumption(assumption, `${line.statement}\n`);
     }
@@ -6634,8 +7414,11 @@ export class LegionEngine {
       await this.store.writeSpec(restored, specMarkdownBody(restored));
       return restored;
     }
-    if (data.status !== "draft" || data.frozenAt || data.frozenBy) {
-      const restored = { ...data, status: "draft" as const, frozenAt: null, frozenBy: null };
+    if (data.id !== fallback.id || data.status !== "draft" || data.frozenAt || data.frozenBy ||
+        data.workflowPolicyVersion !== fallback.workflowPolicyVersion) {
+      const restored = { ...data, id: fallback.id, status: "draft" as const, frozenAt: null, frozenBy: null,
+        ...(fallback.workflowPolicyVersion === 2 ? { workflowPolicyVersion: 2 as const } : {}) };
+      if (fallback.workflowPolicyVersion === undefined) delete restored.workflowPolicyVersion;
       await this.store.writeSpec(restored, body);
       return restored;
     }
@@ -6831,13 +7614,15 @@ export class LegionEngine {
       return { applicable: false, specId: selected, spec };
     }
     const intent = await this.#loadIntentAnswers();
-    const discuss = await this.#loadDiscuss();
+    const discuss = await this.#loadDiscuss(spec.data.workflowPolicyVersion === 2);
     const discovery = await readWorkflowDiscoveryContext(this.projectRoot);
-    const readable = await specChallengeReadableFingerprints(this.projectRoot, selected);
+    const readRoots = spec.data.workflowPolicyVersion === 2 ? preparationInputRoots(await readWorkflowPreparation(this.store, selected)) : [];
+    const readable = await specChallengeReadableFingerprints(this.projectRoot, selected, readRoots, spec.data.workflowPolicyVersion === 2);
     return {
       applicable: true,
       specId: selected,
       spec,
+      readRoots,
       binding: createSpecChallengeBinding({
         specId: selected,
         spec,
@@ -6940,6 +7725,16 @@ export class LegionEngine {
     body: string,
   ): Promise<SpecChallengeReceipt> {
     const now = nowIso();
+    let preparation: NonNullable<SpecChallengeReceipt["application"]>["preparation"];
+    if (base.data.workflowPolicyVersion === 2) {
+      const record = await readWorkflowPreparation(this.store, base.data.id);
+      if (!record) refuse("challenge preparation is missing", HINT.spec);
+      await this.#requireChallengePreparationValidLocked(record, base.data);
+      const projected = projectChallengeAcceptanceReferences(record, base.data, applied.spec, applied.changes);
+      await this.#requireChallengePreparationValidLocked(projected, applied.spec);
+      preparation = { baseFingerprint: workflowFingerprint(record), expectedFingerprint: workflowFingerprint(projected),
+        acceptanceIdsBefore: record.specArtifacts.find((artifact) => artifact.stage === "requirements")!.fields.acceptanceIds };
+    }
     const next: SpecChallengeReceipt = {
       ...receipt,
       synthesis: { ...receipt.synthesis, status: "complete", completedAt: now },
@@ -6951,6 +7746,7 @@ export class LegionEngine {
         body,
         changes: applied.changes,
         draftDiff: applied.draftDiff,
+        ...(preparation ? { preparation } : {}),
       },
       changes: applied.changes,
       draftDiff: applied.draftDiff,
@@ -6996,6 +7792,31 @@ export class LegionEngine {
           workflowFingerprint({ changes: application.changes, draftDiff: application.draftDiff })) {
       refuse("invalid spec challenge application checkpoint", "legion-cli spec");
     }
+    let preparationToWrite: WorkflowPreparation | undefined;
+    if (application.baseSpec.workflowPolicyVersion === 2) {
+      if (!application.preparation) refuse("challenge preparation checkpoint is missing", HINT.spec);
+      const record = await readWorkflowPreparation(this.store, context.specId);
+      if (!record) refuse("challenge preparation is missing", HINT.spec);
+      const binding = application.preparation;
+      const currentPreparationFingerprint = workflowFingerprint(record);
+      const alreadyProjected = currentPreparationFingerprint === binding.expectedFingerprint;
+      let basePreparation = record;
+      if (alreadyProjected) {
+        basePreparation = { ...record, specArtifacts: record.specArtifacts.map((artifact) => artifact.stage === "requirements"
+          ? { ...artifact, fields: { ...artifact.fields, acceptanceIds: binding.acceptanceIdsBefore } } : artifact) };
+      } else if (currentPreparationFingerprint !== binding.baseFingerprint) {
+        refuse("challenge preparation changed after its application checkpoint", HINT.spec);
+      }
+      if (workflowFingerprint(basePreparation) !== binding.baseFingerprint ||
+          basePreparation.specArtifacts.find((artifact) => artifact.stage === "requirements")?.fields.acceptanceIds !== binding.acceptanceIdsBefore) {
+        refuse("invalid challenge preparation application checkpoint", HINT.spec);
+      }
+      const projected = projectChallengeAcceptanceReferences(basePreparation, application.baseSpec, replayed.spec, replayed.changes);
+      if (workflowFingerprint(projected) !== binding.expectedFingerprint) refuse("invalid challenge preparation projection checkpoint", HINT.spec);
+      await this.#requireChallengePreparationValidLocked(basePreparation, application.baseSpec);
+      await this.#requireChallengePreparationValidLocked(projected, replayed.spec);
+      if (!alreadyProjected) preparationToWrite = projected;
+    }
     const currentFingerprint = workflowFingerprint(context.spec);
     if (currentFingerprint === receipt.initialDraftFingerprint) {
       await this.store.writeSpec(replayed.spec, replayedBody);
@@ -7003,6 +7824,7 @@ export class LegionEngine {
     } else if (currentFingerprint !== application.expectedDraftFingerprint) {
       return challengeResult(context.specId, receipt, "stale");
     }
+    if (preparationToWrite) await writeWorkflowPreparation(this.store, preparationToWrite);
     const applied: AppliedSpecChallenge = {
       spec: replayed.spec,
       changes: replayed.changes,
@@ -7010,6 +7832,13 @@ export class LegionEngine {
     };
     const completed = await this.#completeSpecChallengeLocked(receipt, applied, replayedBody);
     return challengeResult(context.specId, completed);
+  }
+
+  async #requireChallengePreparationValidLocked(record: WorkflowPreparation, spec: Spec): Promise<void> {
+    const inspected = await inspectPreparationRecord(this.store, record, { spec, gate: "spec", checkSourceInputs: true,
+      intentSource: (await this.#loadIntentAnswers()).source,
+      planningDecisions: (await this.#loadDiscuss(true)).decisions.flatMap((decision) => decision.planning ? [decision.planning] : []) });
+    if (inspected.blockers.length) refuse(`challenge preparation is not current: ${inspected.blockers.map((blocker) => blocker.message).join("; ")}`, HINT.spec);
   }
 
   async #completeSpecChallengeLocked(
@@ -7084,6 +7913,7 @@ export class LegionEngine {
     tasks: Task[];
     config: LegionConfig;
     assurance: AssuranceState;
+    preparation?: PreparationValidation;
   }> {
     const state = await this.#readState();
     const specId = state.activeSpecId;
@@ -7099,6 +7929,12 @@ export class LegionEngine {
     const assurance = assuranceOverride === undefined
       ? await loadAssurance(this.store)
       : { manifest: assuranceOverride, approval: null, ...(assuranceOverride ? { fingerprint: assuranceManifestDigest(assuranceOverride) } : {}) };
+    const planApproval = await readPlanApproval(this.store);
+    const inspectedPreparation = await this.#inspectPreparationLocked(specDoc.data, "plan", {
+        assuranceValidatorIds: assurance.manifest?.validators.map((validator) => validator.id) ?? [],
+        checkSourceInputs: planApproval?.specId !== specId,
+      });
+    const preparation = specDoc.data.workflowPolicyVersion === 2 || inspectedPreparation.blockers.length ? inspectedPreparation : undefined;
     const snapshot = createWorkflowPlanSnapshot({
       spec: specDoc,
       tasks: taskDocs,
@@ -7107,8 +7943,9 @@ export class LegionEngine {
       project,
       discoveryContext: await readWorkflowDiscoveryContext(this.projectRoot),
       ...(assurance.fingerprint !== undefined ? { assuranceFingerprint: assurance.fingerprint } : {}),
+      ...(preparation?.planFingerprint !== undefined ? { preparationFingerprint: preparation.planFingerprint } : {}),
     });
-    return { snapshot, spec: specDoc.data, tasks, config, assurance };
+    return { snapshot, spec: specDoc.data, tasks, config, assurance, ...(preparation ? { preparation } : {}) };
   }
 
   async #requireCurrentPlanApproval(): Promise<{
@@ -7118,10 +7955,21 @@ export class LegionEngine {
     tasks: Task[];
     config: LegionConfig;
     assurance: AssuranceState;
+    preparation?: PreparationValidation;
   }> {
     const approval = await readPlanApproval(this.store);
     if (!approval) refuse("plan approval is required before execute", "legion-cli plan approve");
     const context = await this.#workflowPlanContext();
+    if (context.preparation?.blockers.length) {
+      refuse(context.preparation.blockers.map((blocker) => blocker.message).join("; "), "legion-cli plan");
+    }
+    if (context.spec.workflowPolicyVersion === 2) {
+      const specApproval = await readSpecApproval(this.store);
+      if (!specApproval || specApproval.specPreparationFingerprint !== context.preparation?.specFingerprint ||
+          specApproval.specFingerprint !== context.snapshot.specFingerprint) {
+        refuse("specification preparation approval is missing or stale", HINT.specNew);
+      }
+    }
     const assurance = bindAssuranceApproval(context.assurance, approval, context.snapshot.planFingerprint);
     if (assurance?.status === "invalid") refuse(assurance.blocker ?? "assurance approval is invalid", "legion-cli plan approve");
     if (context.assurance.manifest) {
@@ -7197,7 +8045,7 @@ export class LegionEngine {
     const state = await this.#readState();
     const planApproval = await readPlanApproval(this.store);
     const currentApproval = planApproval && planApproval.specId === context.snapshot.specId &&
-      planApproval.planFingerprint === context.snapshot.planFingerprint;
+      planApproval.planFingerprint === context.snapshot.planFingerprint && !context.preparation?.blockers.length;
     const runStates = await liveRuns(this.projectRoot);
     const taskOwners = new Map<string, { owner: string; liveness: "live" | "dead" | "unknown" }>();
     for (const marker of [...runStates.dead, ...runStates.live]) {
@@ -8095,6 +8943,17 @@ export class LegionEngine {
       onWait: this.#fakeOnWait,
       handlePid: this.#fakeHandlePid,
     };
+  }
+  async #taskTestingPrompt(task: Task): Promise<string> {
+    if ((await this.store.readSpec(task.specId)).data.workflowPolicyVersion !== 2) return "";
+    const preparation = await readWorkflowPreparation(this.store, task.specId);
+    const method = preparation?.testingMethods?.find((item) => item.taskId === task.id);
+    return method ? [
+      `Approved testing method: ${method.method}.`,
+      `Observable behavior: ${method.behavior}. Existing test interface: ${method.testInterface}.`,
+      `Limitations: ${method.limitations.join("; ") || "none declared"}.`,
+      "Follow this method within the FileContract; do not create an additional execution loop or repeat a successful unchanged suite.",
+    ].join("\n") : "";
   }
   async #governedExecuteSpawnOptions(
     task: Task,

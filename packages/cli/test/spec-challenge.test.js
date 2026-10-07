@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
-import { normalize, runCli, withTempDir } from "./helpers.js";
+import { allowCopyJailIn, normalize, runCli, withTempDir } from "./helpers.js";
 
 function completeIntentAndDiscuss(dir) {
   const intent = runCli(["intent", "--project", dir, "--done"], {
@@ -21,6 +23,7 @@ function completeIntentAndDiscuss(dir) {
 test("focused spec exposes pending challenge JSON, resumes manual answers, and guides status", async () => {
   await withTempDir(async (dir) => {
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     assert.equal(init.status, 0, init.stderr);
     completeIntentAndDiscuss(dir);
 
@@ -60,14 +63,24 @@ test("focused spec exposes pending challenge JSON, resumes manual answers, and g
       input: [
         "When unavailable, preserve the check-in attempt and show a retry message.",
         "Keep authentication unchanged and exclude payroll from this increment.",
-        "I acknowledge",
+        "i acknowledge",
       ].join("\n") + "\n",
     });
     assert.equal(resumed.status, 0, `${resumed.stdout}\n${resumed.stderr}`);
 
     const complete = runCli(["spec", "--project", dir, "--json"]);
     assert.equal(complete.status, 0, complete.stderr);
-    assert.equal(JSON.parse(complete.stdout).challenge.status, "complete");
+    const completed = JSON.parse(complete.stdout);
+    assert.equal(completed.challenge.status, "complete");
+    assert.deepEqual(completed.preparation.blockers, []);
+    const requirements = completed.preparation.record.specArtifacts.find((artifact) => artifact.stage === "requirements");
+    assert.ok(requirements.fields.acceptanceIds.split(/[\s,;]+/).includes("AC-CH-01"));
+    const specFile = join(dir, ".legion-cli", "specs", completed.specId, "SPEC.md");
+    const beforeRetry = await readFile(specFile, "utf8");
+    const repeatedManual = runCli(["spec", "--project", dir, "--manual-review"], { input: "" });
+    assert.equal(repeatedManual.status, 0, `${repeatedManual.stdout}\n${repeatedManual.stderr}`);
+    assert.match(repeatedManual.stdout, /Challenge review is complete/);
+    assert.equal(await readFile(specFile, "utf8"), beforeRetry);
 
     const approved = runCli(["spec", "approve", "--project", dir]);
     assert.equal(approved.status, 0, `${approved.stdout}\n${approved.stderr}`);
