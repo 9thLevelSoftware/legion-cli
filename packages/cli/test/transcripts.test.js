@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
 import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
 import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
+import { WORKFLOW_STAGE_FIELDS } from "@9thlevelsoftware/legion-cli-schema";
 import { allowCopyJail, allowCopyJailIn, normalize, readGolden, runCli, withTempDir } from "./helpers.js";
 
 function quoteArg(value) {
@@ -702,6 +704,7 @@ test("Checkin session key lines match the design-doc walkthrough (golden)", asyn
   await withTempDir(async (dir) => {
     const fake = { env: { LEGION_CLI_ADAPTER: "fake" } };
     const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    await allowCopyJailIn(dir);
     assert.equal(init.status, 0, init.stderr);
 
     const intent = runCli(["intent", "--project", dir, "--done"], {
@@ -751,7 +754,33 @@ test("Checkin session key lines match the design-doc walkthrough (golden)", asyn
       "Implement the in/out button.\n",
     );
 
-    const plan = runCli(["plan", "--project", dir], fake);
+    const preparation = (await engine.readWorkflowPreparation()).record;
+    const tasks = await engine.listSliceTasks();
+    const frozenSpec = (await engine.store.readSpec("spec-checkin")).data;
+    const designFields = {
+      decision: "Keep the existing check-in interaction and task-owned scaffold/button components",
+      interfaces: "Scaffold owns src/main.ts; button task owns src/button.ts; no shared ownership",
+      failureCompatibility: "Preserve authentication, confirm recorded check-in, and expose retry when unavailable",
+      verification: "Run the approved task checks and independently review the check-in interaction",
+      installation: "Deliver the local source change; production deployment is outside this fixture scope",
+      recovery: "Revert the bounded local change if the recorded interaction fails review",
+      externalChecks: "No provider rollout is approved by this local transcript fixture",
+      operator: "The project maintainer reviews and accepts the local delivery",
+    };
+    const designOutputs = preparation.assessment.stageDecisions
+      .filter((item) => item.decision === "required" && !["context", "requirements"].includes(item.stage))
+      .map((item) => {
+        const fields = Object.fromEntries(WORKFLOW_STAGE_FIELDS[item.stage].map((key) => [key, designFields[key]]));
+        const content = `# ${item.stage}\n\n${Object.entries(fields).map(([key, value]) => `${key}: ${value}`).join("\n")}\n`;
+        const path = `.legion-cli/plans/spec-checkin/${item.stage}.md`;
+        return { path, content, artifact: { stage: item.stage, path, digest: createHash("sha256").update(content).digest("hex"), inputs: preparation.specArtifacts.map((artifact) => ({ path: artifact.path, digest: artifact.digest })), fields } };
+      });
+    const plannedPreparation = { ...preparation, planArtifacts: designOutputs.map((item) => item.artifact),
+      acceptanceMappings: frozenSpec.acceptance.map((criterion) => ({ criterionId: criterion.id, taskIds: tasks.map((task) => task.id), methods: tasks.map((task) => ({ id: `${criterion.id}-${task.id}`, kind: "task_check", taskId: task.id, command: task.contract.verificationCommands[0], expectedObservation: `The approved task check completes for ${task.title}; independent review still assesses ${criterion.statement}` })) })) };
+    const planArtifacts = [...designOutputs.map(({ path, content }) => ({ path, content })),
+      { path: ".legion-cli/plans/spec-checkin.md", content: "# Checkin plan\n\nImplement the approved tasks.\n" },
+      { path: ".legion-cli/cache/runs/<id>/preparation.json", content: JSON.stringify(plannedPreparation) }];
+    const plan = runCli(["plan", "--project", dir], { env: { ...fake.env, LEGION_CLI_FAKE_ARTIFACTS: JSON.stringify(planArtifacts) } });
     assert.equal(plan.status, 0, `${plan.stdout}\n${plan.stderr}`);
 
     await writeFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "# Checkin plan\n\nImplement the approved tasks.\n", "utf8");

@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "mapped": {
+      "type": "object",
+      "properties": {
+        "personas": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "problem": {
+          "type": "string"
+        },
+        "mustBeTrue": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mustNotChange": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "outOfScope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "happyPath": {
+          "type": "string"
+        },
+        "screens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "personas",
+        "problem",
+        "mustBeTrue",
+        "mustNotChange",
+        "outOfScope",
+        "happyPath",
+        "screens"
+      ],
+      "additionalProperties": false
+    },
+    "inferredSuggestions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "missingSlots": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "conflictingSlots": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failureLines": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "blockingLines": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "mapped",
+    "inferredSuggestions",
+    "missingSlots",
+    "conflictingSlots",
+    "failureLines",
+    "blockingLines"
+  ],
+  "additionalProperties": false
+}

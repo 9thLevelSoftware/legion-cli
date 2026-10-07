@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ConcretePosixPathSchema, PosixAllowedRootSchema } from "./paths.js";
+import { IntentSourceBindingSchema, PlanningDecisionSchema } from "./workflow-preparation.js";
 import {
   ADAPTER_IDS,
   AdapterIdSchema,
@@ -110,10 +111,20 @@ export const IntentMappedSchema = z.object({
 });
 export type IntentMapped = z.infer<typeof IntentMappedSchema>;
 
+export const IntentSourceProposalSchema = z.object({
+  mapped: IntentMappedSchema, inferredSuggestions: z.array(z.string()), missingSlots: z.array(z.string()),
+  conflictingSlots: z.array(z.string()), failureLines: z.array(z.string()), blockingLines: z.array(z.string()),
+}).strict();
+export type IntentSourceProposal = z.infer<typeof IntentSourceProposalSchema>;
+
 export const IntentAnswersFileSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.intentAnswers),
   rounds: z.array(IntentRoundSchema),
   mapped: IntentMappedSchema,
+  source: IntentSourceBindingSchema.optional(),
+  importedMissing: z.array(z.string()).optional(),
+  importedConflicts: z.array(z.string()).optional(),
+  importedSuggestions: z.array(z.string()).optional(),
 });
 export type IntentAnswersFile = z.infer<typeof IntentAnswersFileSchema>;
 
@@ -465,6 +476,7 @@ export const AcceptanceCriterionSchema = z.object({
   statement: z.string().min(1),
   kind: z.enum(["behavior", "test", "rubric"]),
   priority: PrioritySchema,
+  notApplicableWhen: z.string().trim().min(1).optional(),
 });
 export type AcceptanceCriterion = z.infer<typeof AcceptanceCriterionSchema>;
 
@@ -472,11 +484,13 @@ export const DiscussDecisionSchema = z.object({
   id: z.string().min(1),
   statement: z.string().min(1),
   status: z.enum(["proposed", "accepted", "rejected"]),
+  planning: PlanningDecisionSchema.optional(),
 });
 export type DiscussDecision = z.infer<typeof DiscussDecisionSchema>;
 
 export const SpecSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION.spec),
+  workflowPolicyVersion: z.literal(2).optional(),
   id: z.string().min(1),
   title: z.string().min(1),
   problem: z.string().optional(),
@@ -631,6 +645,11 @@ export const SpecChallengeApplicationCheckpointSchema = z
     body: z.string(),
     changes: z.array(SpecChallengeChangeSchema),
     draftDiff: z.string(),
+    preparation: z.object({
+      baseFingerprint: Sha256HexSchema,
+      expectedFingerprint: Sha256HexSchema,
+      acceptanceIdsBefore: z.string().min(1),
+    }).strict().optional(),
   })
   .strict();
 export type SpecChallengeApplicationCheckpoint = z.infer<typeof SpecChallengeApplicationCheckpointSchema>;
@@ -672,6 +691,7 @@ export const SpecApprovalReceiptSchema = z
     schemaVersion: z.literal(SCHEMA_VERSION.specApproval),
     specId: z.string().min(1),
     specFingerprint: Sha256HexSchema,
+    specPreparationFingerprint: Sha256HexSchema.optional(),
     approvedAt: z.string().min(1),
     approvedBy: z.string().min(1),
   })
@@ -685,6 +705,7 @@ export const PlanApprovalReceiptSchema = z
     approvedAt: z.string().min(1),
     approvedBy: z.string().min(1),
     planFingerprint: Sha256HexSchema,
+    preparationFingerprint: Sha256HexSchema.optional(),
     approvalId: z.string().min(1),
     specFingerprint: Sha256HexSchema,
     taskFingerprint: Sha256HexSchema,
@@ -756,6 +777,9 @@ export const AcceptanceEvidenceEntrySchema = z
     id: z.string().min(1),
     status: AcceptanceEvidenceStatusSchema,
     note: z.string().min(1).optional(),
+    methodId: z.string().min(1).optional(),
+    evidenceRef: z.string().min(1).optional(),
+    evidenceDigest: Sha256HexSchema.optional(),
   })
   .strict();
 export type AcceptanceEvidenceEntry = z.infer<typeof AcceptanceEvidenceEntrySchema>;

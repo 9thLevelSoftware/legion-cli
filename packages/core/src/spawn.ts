@@ -94,7 +94,7 @@ import type { GovernedMcpDescriptor } from "./assurance-flow.js";
 import { buildSessionBrief, renderSessionBrief } from "@9thlevelsoftware/legion-cli-wiki";
 import { isAllowedPath, SKILL_CONTRACTS, skillContract } from "./contracts.js";
 import { HINT, refuse } from "./errors.js";
-import { CHALLENGE_REPOSITORY_READ_ROOTS, challengeReadableFiles } from "./spec-challenge-inputs.js";
+import { challengeReadableFiles, planningInputInventory, planningContextRoots } from "./spec-challenge-inputs.js";
 import { createHttpToolHost, httpAllowedWrites } from "./http-host.js";
 import { projectSourceIdentity } from "./qa-evidence.js";
 import {
@@ -318,6 +318,12 @@ export type SkillSpawnOpts = {
   taskId?: string;
   promptBody: string;
   fileContract?: FileContract;
+  /** Engine-owned planning jobs may emit proposals only in their own run cache. */
+  proposalOnly?: boolean;
+  /** Explicit captured planning inputs, shared by source reads, citations and freshness. */
+  planningReadRoots?: readonly string[];
+  /** Validated active SPEC marker; absent preserves the original challenge input identity. */
+  planningPolicy2?: boolean;
   extraAllowedRoots?: readonly string[];
   filesForbidden?: readonly string[];
   skillsDir?: string;
@@ -900,6 +906,13 @@ async function assembleSpawnPrompt(opts: {
 }
 
 export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkillSpawn> {
+  if (opts.planningReadRoots !== undefined && !["interview", "discuss", "spec", "plan", "spec-challenge"].includes(opts.skillId)) {
+    refuse("declared planning reads require a planning skill", HINT.spec);
+  }
+  if (opts.proposalOnly && (!["interview", "discuss", "spec", "plan"].includes(opts.skillId) ||
+      opts.extraAllowedRoots?.length || opts.fileContract || opts.governed)) {
+    refuse("planning proposals permit only their own run-cache output and no additional write contract", HINT.spec);
+  }
   if (opts.skillId === "spec-challenge" &&
       (opts.extraAllowedRoots?.length || opts.fileContract)) {
     refuse("spec-challenge permits only its run-cache output", HINT.spec);
@@ -1002,7 +1015,11 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
     opts.extraAllowedRoots ??
     (opts.fileContract ? [...opts.fileContract.filesAllowed, ...opts.fileContract.expectedArtifacts] : []);
   const filesForbidden = opts.filesForbidden ?? opts.fileContract?.filesForbidden;
-  const allowedRoots = [...contract.allowedRoots, ...extraAllowedRoots];
+  const allowedRoots = opts.proposalOnly
+    ? [`.legion-cli/cache/runs/${runId}/**`]
+    : [...contract.allowedRoots, ...extraAllowedRoots];
+  const inputInventory = opts.proposalOnly || opts.skillId === "spec-challenge" || opts.planningReadRoots !== undefined
+    ? await planningInputInventory(opts.projectRoot, opts.planningReadRoots ?? [], opts.skillId !== "spec-challenge" || opts.planningPolicy2 === true) : undefined;
 
   let promptPath: string | undefined;
   if (!opts.governed) {
@@ -1020,7 +1037,9 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       skillId: opts.skillId,
       skillDir: skillDir!,
       skillsDir,
-      promptBody: opts.promptBody.replaceAll("<id>", runId),
+      promptBody: [opts.promptBody.replaceAll("<id>", runId),
+        ...(inputInventory?.limitations.length ? ["Repository input limitations:", ...inputInventory.limitations] : []),
+      ].join("\n"),
       allowedRoots,
       fileContract: opts.fileContract,
       store: opts.store,
@@ -1074,6 +1093,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       skillId: opts.skillId,
       fileContract: opts.fileContract ?? null,
       filesForbidden: opts.filesForbidden ?? [],
+      ...(opts.proposalOnly ? { proposalOnly: true } : {}),
     }),
   };
   await writeResumeRecord(opts.projectRoot, resume);
@@ -1082,7 +1102,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
   let allowedWrites: string[] = [];
   let governedMcp: Awaited<ReturnType<typeof governedHttpMcpCapability>> | undefined;
   let mcpBridge: GovernedMcpBridge | undefined;
-  const jailed = isJailedSpawn(opts.skillId, opts.config.sandbox.skills, resolution.id);
+  const jailed = Boolean(opts.proposalOnly) || opts.planningReadRoots !== undefined || isJailedSpawn(opts.skillId, opts.config.sandbox.skills, resolution.id);
   if (opts.governed && !jailed) {
     refuse("information-flow execution requires a sandboxed HTTP jail", HINT.allowNoSandbox);
   }
@@ -1092,11 +1112,16 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       try {
         assertExecuteSandbox(opts.config, { allowNoSandbox: opts.allowNoSandbox });
       } catch (err) {
-        if (err instanceof SandboxError) refuse(err.message, HINT.allowNoSandbox);
+        if (err instanceof SandboxError) refuse(err.message,
+          opts.proposalOnly || opts.planningReadRoots !== undefined
+            ? "legion-cli doctor; configure an available planning sandbox backend or explicitly permitted copy jail"
+            : HINT.allowNoSandbox);
         throw err;
       }
       const filtered = filterSpawnEnv(process.env, adapter.id, adapter.binary);
-      allowedWrites = opts.governed && opts.skillId === "review"
+      allowedWrites = opts.proposalOnly
+        ? [`.legion-cli/cache/runs/${runId}`]
+        : opts.governed && opts.skillId === "review"
         ? [`.legion-cli/cache/runs/${runId}/review.md`]
         : await sandboxAllowedWrites({
             projectRoot: opts.projectRoot,
@@ -1108,17 +1133,12 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
       const governedAllowedWrites = opts.skillId === "review" && opts.governed
         ? allowedWrites
         : [...(opts.fileContract?.filesAllowed ?? [])];
-      const readSet = opts.skillId === "spec-challenge"
-        ? await challengeReadableFiles(opts.projectRoot, [
+      const readSet = inputInventory
+        ? [...new Set([...inputInventory.files, ...await challengeReadableFiles(opts.projectRoot, [
             `.legion-cli/cache/skills/${runId}`,
             `.legion-cli/cache/runs/${runId}`,
-            ...CHALLENGE_REPOSITORY_READ_ROOTS,
-            ".legion-cli/wiki/product",
-            ".legion-cli/discuss",
-            ".legion-cli/decisions",
-            ".legion-cli/map",
-            ...(opts.specId ? [`.legion-cli/specs/${opts.specId}`] : []),
-          ])
+            ...planningContextRoots(opts.specId),
+          ])])]
         : sandboxReadSet({
             projectRoot: opts.projectRoot,
             runId,
@@ -1398,6 +1418,7 @@ export async function preserveStartedHttpSpawnForRecovery(
 export async function resumeHttpSkillSpawn(
   opts: SkillSpawnOpts & { runId: string },
 ): Promise<Extract<StartedSkillSpawn, { spawned: true }>> {
+  if (opts.proposalOnly) refuse("planning proposals do not use execute resume; request another explicit planning round", HINT.spec);
   const raw = await readFile(runResumePath(opts.projectRoot, opts.runId), "utf8").catch(() => "");
   let resumeJson: unknown = null;
   try {

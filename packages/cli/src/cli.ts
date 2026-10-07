@@ -284,9 +284,10 @@ export function createProgram(): Command {
 
   addGlobalOptions(program.command("intent").description("Interview me about the product"))
     .option("--done", "finish after round 2 (still requires confirm)")
+    .addOption(new Option("--guidance <mode>", "assistance presentation").choices(["guided", "balanced", "direct"]))
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { done?: boolean };
+      const flags = opts as { done?: boolean; guidance?: "guided" | "balanced" | "direct" };
       const code = await runIntent(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
@@ -301,10 +302,14 @@ export function createProgram(): Command {
   const spec = addGlobalOptions(program.command("spec").description("Discuss and write the short contract"))
     .option("--wireframes", "also generate HTML wireframes")
     .option("--manual-review", "complete explicit fallback after failed challenge automation")
+    .addOption(new Option("--guidance <mode>", "assistance presentation").choices(["guided", "balanced", "direct"]))
+    .option("--from <path>", "propose intent from a local Markdown/text brief; --json does not prompt")
+    .option("--explore", "resume a bounded round of up to three planning decisions")
+    .option("--input <path>", "safe repository source file or directory (repeatable)", (value: string, previous: string[]) => [...previous, value], [])
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { wireframes?: boolean; manualReview?: boolean };
-      const code = await runSpecDraft(resolveOpts(cmd), { skipWireframes: !flags.wireframes, manualReview: Boolean(flags.manualReview) });
+      const flags = opts as { wireframes?: boolean; manualReview?: boolean; guidance?: "guided" | "balanced" | "direct"; from?: string; explore?: boolean; input?: string[] };
+      const code = await runSpecDraft(resolveOpts(cmd), { skipWireframes: !flags.wireframes, manualReview: Boolean(flags.manualReview), guidance: flags.guidance, from: flags.from, explore: flags.explore, inputRoots: flags.input });
       process.exitCode = code;
     });
 
@@ -355,9 +360,15 @@ export function createProgram(): Command {
   const plan = addGlobalOptions(program.command("plan").description("Break approved work into reviewable tasks"))
     .option("--adapter <id>", ADAPTER_ID_HELP)
     .option("--profile <name>", "named adapter profile")
+    .option("--compare", "compare two design alternatives before generating tasks")
+    .addOption(new Option("--design-stage <stage>", "required design stage to compare").choices(["user-experience", "functional-design", "architecture", "nfr-design", "infrastructure-design", "delivery-handoff"]).default("functional-design"))
+    .addOption(new Option("--strategy <kind>", "task decomposition strategy").choices(["outcomes", "risk-first", "expand-contract", "custom"]))
+    .option("--rationale <text>", "human strategy rationale (required for custom)")
+    .addOption(new Option("--granularity <level>", "task grouping before approval").choices(["coarse", "balanced", "fine"]))
+    .option("--input <path>", "safe repository source file or directory (repeatable)", (value: string, previous: string[]) => [...previous, value], [])
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { adapter?: string; profile?: string };
+      const flags = opts as Parameters<typeof runPlan>[1];
       const code = await runPlan(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
@@ -376,10 +387,12 @@ export function createProgram(): Command {
     .option("--pass <ids...>", "acceptance criterion IDs that passed")
     .option("--fail <ids...>", "acceptance criterion IDs that failed")
     .option("--not-applicable <ids...>", "acceptance criterion IDs that do not apply")
-    .option("--note <text>", "evidence note")
+    .option("--note <text>", "evidence observation or reason")
+    .option("--method <id>", "approved acceptance evidence method ID")
+    .option("--evidence <reference>", "local file (evidence/report.md) or external identity (report:provider-run-123, external:, urn:, https://)")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { pass?: string[]; fail?: string[]; notApplicable?: string[]; note?: string };
+      const flags = opts as { pass?: string[]; fail?: string[]; notApplicable?: string[]; note?: string; method?: string; evidence?: string };
       process.exitCode = await runPlanAcceptance(resolveOpts(cmd), flags);
     });
 

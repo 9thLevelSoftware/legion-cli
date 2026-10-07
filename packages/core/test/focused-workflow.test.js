@@ -19,6 +19,7 @@ import {
   acquireWorkflowClaim,
   releaseWorkflowClaim,
   workflowFingerprint,
+  incompleteApprovedWorkflowTasks,
 } from "../dist/workflow.js";
 import {
   initGitRepo,
@@ -76,6 +77,16 @@ async function seedFocusedPlan(store, dir, opts = {}) {
 async function readWorkflowYaml(store, path, schema) {
   return store.readYaml(path, schema);
 }
+
+test("approved completion requires every priority and matching task evidence", () => {
+  const first = makeTask({ id: "TSK-0001", status: "done", priority: "P1" });
+  const second = makeTask({ id: "TSK-0002", status: "ready", priority: "P2" });
+  const approval = { taskIds: [first.id, second.id] };
+  assert.deepEqual(incompleteApprovedWorkflowTasks(approval, [first, second], { completedTaskIds: [first.id, second.id] }), [second.id]);
+  assert.deepEqual(incompleteApprovedWorkflowTasks(approval, [first], { completedTaskIds: [first.id, second.id] }), [second.id]);
+  assert.deepEqual(incompleteApprovedWorkflowTasks(approval, [first, { ...second, status: "compacted" }], { completedTaskIds: [first.id] }), [second.id]);
+  assert.deepEqual(incompleteApprovedWorkflowTasks(approval, [first, { ...second, status: "done" }], { completedTaskIds: [first.id, second.id] }), []);
+});
 
 test("focused low-level execute and ship both require the approved workflow", async () => {
   await withFakeAdapter(async () => {

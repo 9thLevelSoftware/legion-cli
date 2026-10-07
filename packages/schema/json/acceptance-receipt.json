@@ -50,6 +50,18 @@
           "note": {
             "type": "string",
             "minLength": 1
+          },
+          "methodId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidenceRef": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidenceDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
           }
         },
         "required": [

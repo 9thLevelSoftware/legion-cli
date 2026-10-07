@@ -12,7 +12,7 @@ export const LEGAL_PHASE_TRANSITIONS: Readonly<Record<Phase, readonly Phase[]>> 
   spec_frozen: ["planning", "abandoned"],
   planning: ["plan_failed", "plan_ready", "abandoned"],
   plan_failed: ["spec_draft", "planning", "abandoned"],
-  plan_ready: ["executing", "abandoned"],
+  plan_ready: ["planning", "executing", "abandoned"],
   executing: ["executing", "ready_to_ship", "shipped", "abandoned"],
   ready_to_ship: ["shipped", "executing", "abandoned"],
   shipped: ["intent_draft"],

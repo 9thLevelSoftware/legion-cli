@@ -103,3 +103,28 @@ parallel-execution, and delivery checks remain in force.
 
 These are Windows-local checks, with deterministic adapters for agent-dependent
 scenarios; they do not certify live vendor behavior or the remote CI platforms.
+
+## 2026-10-07 preparation and assistance validation boundary
+
+The implementation adds policy-2 preparation and optional guidance, local brief
+intake, resumable bounded exploration, comparison, and strategy controls inside
+the same five commands. Affected builds, schema emission, and workspace typecheck
+passed. Targeted tests total 377 passed, 7 platform skips, and no unresolved
+failures across the initial runs and scoped repairs. Challenge-added acceptance
+criteria now update only the validated preparation reference index, with exact
+before/after checkpoint identity and recovery before regeneration. All 24
+affected challenge/recovery checks and the three previously failing CLI scenarios
+passed after the authorized repair. Final independent review has no outstanding
+material findings. Implementation and targeted local verification are complete.
+
+The [implementation ledger](../superpowers/plans/2026-10-07-workflow-implementation-status.md)
+records subsystem results, preserved failure/repair logs, and external gates.
+These checks used Windows, Node 24.19.0, pnpm 9.15.9, and deterministic adapters;
+they are not the full workspace test suite or CI matrix.
+
+Usability acceptance separately exercises a guided rough idea, direct complete
+brief, partial brief, explain/recommend/edit/unsure/pause controls, resumed
+decisions, two-option selection, and a non-JavaScript refactor. Fake adapters
+verify orchestration, not explanation quality. Live adapter and representative
+user trials, cross-platform CI, and required external delivery evidence remain
+separate gates until their concrete results are recorded.

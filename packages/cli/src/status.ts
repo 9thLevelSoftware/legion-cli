@@ -167,7 +167,11 @@ export async function runStatus(
   if (workflow?.assurance?.coverage?.some((criterion) => criterion.status === "unknown") && workflow.assurance.traceStatus === "valid") {
     workflow = { ...workflow, assurance: { ...workflow.assurance, traceStatus: "incomplete" } };
   }
+  const preparation = state.activeSpecId && await engine.store.pathExists(`.legion-cli/specs/${state.activeSpecId}/SPEC.md`)
+    ? await engine.readWorkflowPreparation(state.activeSpecId)
+    : null;
   const blockers = collectBlockers(state.lastReadiness, state.lastReview, slice);
+  for (const item of preparation?.blockers ?? []) blockers.push({ kind: "workflow", detail: item.message });
   if (workflow?.blocker) blockers.push({ kind: "workflow", detail: workflow.blocker });
   const auditProblem = state.phase === "uninitialized" ? null : await auditChainProblem(opts.project);
   if (auditProblem) {
@@ -176,7 +180,7 @@ export async function runStatus(
   const { viewer, live: viewerLive } = await liveViewer(opts.project);
   const legacyCode = statusExitCode(state.lastReadiness, slice);
   const code =
-    workflow?.execution === "blocked" || workflow?.execution === "stale" || workflow?.planApproval === "stale"
+    preparation?.blockers.length || workflow?.execution === "blocked" || workflow?.execution === "stale" || workflow?.planApproval === "stale"
       ? 2
       : workflow?.assurance?.coverage?.some((criterion) => criterion.status === "unknown") || workflow?.assurance?.traceStatus === "incomplete"
         ? 2
@@ -197,6 +201,8 @@ export async function runStatus(
   );
   const workflowNext = advisoryBlocksNext
     ? ADVISORY_EXECUTION_NEXT
+    : preparation?.blockers[0]
+      ? { run: preparation.blockers[0].next, hint: preparation.blockers[0].message }
     : legacyExecuting
       ? { run: "legion-cli plan approve", hint: "approve the implementation plan before execution." }
       : workflow
@@ -221,6 +227,7 @@ export async function runStatus(
       viewerLive,
       runs,
       pendingGovernedActions,
+      preparation,
       ...(workflow?.assurance ? { assurance: workflow.assurance } : {}),
       ...jsonExtra,
     };

@@ -14,6 +14,10 @@
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
     },
+    "specPreparationFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
     "approvedAt": {
       "type": "string",
       "minLength": 1

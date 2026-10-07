@@ -13,6 +13,7 @@ export type IntentFlags = {
   done?: boolean;
   quiet?: boolean;
   keepPrompt?: boolean;
+  guidance?: "guided" | "balanced" | "direct";
 };
 
 function printQuestions(state: IntentState, intro: boolean): void {
@@ -32,6 +33,9 @@ function printQuestions(state: IntentState, intro: boolean): void {
 export async function runIntent(opts: CliOpts, flags: IntentFlags): Promise<number> {
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir() });
   try {
+    if (flags.guidance) await engine.setGuidance(flags.guidance);
+    const assistance = await engine.getAssistance();
+    if (assistance?.paused) await engine.resumeAssistance();
     await slurpStdin();
     let state = await engine.beginIntent();
 
@@ -40,11 +44,40 @@ export async function runIntent(opts: CliOpts, flags: IntentFlags): Promise<numb
     for (;;) {
       while (state.nextQuestions.length > 0) {
         if (skipRest && state.canFinishEarly && state.answers.rounds.length > 0) break;
-        if (!opts.json) printQuestions(state, intro);
+        if (!opts.json) {
+          if (assistance) {
+            if (intro && assistance.guidance !== "direct") writeOut("Answer one decision at a time. Use explain, recommend, edit, unsure, or pause when needed.");
+            writeOut(state.nextQuestions[0]);
+          } else printQuestions(state, intro);
+        }
         intro = false;
         const answers: string[] = [];
-        for (let i = 0; i < state.nextQuestions.length; i++) {
-          const line = await readLine("> ");
+        for (let i = 0; i < (assistance ? 1 : state.nextQuestions.length); i++) {
+          let line = await readLine(assistance ? "> [explain/recommend/edit/unsure/pause] " : "> ");
+          while (assistance && ["explain", "recommend", "edit", "unsure"].includes(line.toLowerCase())) {
+            if (line.toLowerCase() === "explain") writeOut(`This answer defines the intent for approval: ${state.nextQuestions[i]}`);
+            else if (line.toLowerCase() === "recommend") {
+              const recommendation = await engine.proposeIntentRecommendation(state.nextQuestions[i]!);
+              writeOut(`Suggested answer: ${recommendation.answer}`);
+              writeOut(`Reason: ${recommendation.rationale}`);
+              writeOut(`Consequence: ${recommendation.consequence}`);
+              const use = await readLine("Use this answer? [y/N]: ");
+              if (isYes(use)) {
+                line = recommendation.answer;
+                break;
+              }
+              writeOut("Enter your own answer, edit the suggestion, or pause.");
+            }
+            else if (line.toLowerCase() === "unsure") writeOut("You can describe your uncertainty as an open decision or pause to investigate.");
+            else writeOut("Enter the revised answer to the current question.");
+            line = await readLine("> [pause] ");
+          }
+          if (assistance && (!line || line.toLowerCase() === "pause")) {
+            await engine.pauseAssistance();
+            if (opts.json && !flags.quiet) writeJson({ ok: true, paused: true, next: "legion-cli spec" });
+            else writeOut("Progress saved. Intent is not approved. Resume: legion-cli spec");
+            return 0;
+          }
           if (!line) {
             refuse("intent requires answers", HINT.intent);
           }

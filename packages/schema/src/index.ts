@@ -30,6 +30,9 @@ export type {
 } from "./versions.js";
 
 export { isPrivateOrLocalHost } from "./host.js";
+export * from "./workflow-preparation.js";
+export { IntentSourceProposalSchema } from "./schemas.js";
+export type { IntentSourceProposal } from "./schemas.js";
 
 export {
   ConcretePosixPathSchema,

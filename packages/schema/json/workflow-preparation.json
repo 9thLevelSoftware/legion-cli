@@ -1,0 +1,705 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "legion-cli-workflow-preparation/v1"
+    },
+    "assessment": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "string",
+          "const": "legion-cli-workflow-assessment/v1"
+        },
+        "policyVersion": {
+          "type": "number",
+          "const": 2
+        },
+        "specId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "stageDecisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "stage": {
+                "type": "string",
+                "enum": [
+                  "context",
+                  "requirements",
+                  "user-experience",
+                  "functional-design",
+                  "architecture",
+                  "nfr-design",
+                  "infrastructure-design",
+                  "delivery-handoff"
+                ]
+              },
+              "decision": {
+                "type": "string",
+                "enum": [
+                  "required",
+                  "not_applicable"
+                ]
+              },
+              "rationale": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidenceRefs": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": [
+              "stage",
+              "decision",
+              "rationale",
+              "evidenceRefs"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "unresolvedDecisions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "predecessorSpecId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "policyVersion",
+        "specId",
+        "inputFingerprint",
+        "stageDecisions",
+        "unresolvedDecisions"
+      ],
+      "additionalProperties": false
+    },
+    "specArtifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string",
+            "enum": [
+              "context",
+              "requirements",
+              "user-experience",
+              "functional-design",
+              "architecture",
+              "nfr-design",
+              "infrastructure-design",
+              "delivery-handoff"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "path",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "fields": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "stage",
+          "path",
+          "digest",
+          "inputs",
+          "fields"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "planArtifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string",
+            "enum": [
+              "context",
+              "requirements",
+              "user-experience",
+              "functional-design",
+              "architecture",
+              "nfr-design",
+              "infrastructure-design",
+              "delivery-handoff"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "path",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "fields": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "stage",
+          "path",
+          "digest",
+          "inputs",
+          "fields"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "acceptanceMappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "criterionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "taskIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "methods": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "task_check",
+                    "integration_check",
+                    "assurance",
+                    "manual",
+                    "external"
+                  ]
+                },
+                "expectedObservation": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "taskId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "command": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "validatorId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "procedure": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "expectedObservation"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "notApplicableWhen": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "criterionId",
+          "taskIds",
+          "methods"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "strategy": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "outcomes",
+            "risk-first",
+            "expand-contract",
+            "custom"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "granularity": {
+          "type": "string",
+          "enum": [
+            "coarse",
+            "balanced",
+            "fine"
+          ]
+        },
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "statement": {
+                "type": "string",
+                "minLength": 1
+              },
+              "acceptanceIds": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "taskIds": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": [
+              "id",
+              "statement",
+              "acceptanceIds",
+              "taskIds"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "risk": {
+          "type": "object",
+          "properties": {
+            "uncertainty": {
+              "type": "string",
+              "minLength": 1
+            },
+            "probeTaskId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dependentTaskIds": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": [
+            "uncertainty",
+            "probeTaskId",
+            "dependentTaskIds"
+          ],
+          "additionalProperties": false
+        },
+        "migration": {
+          "type": "object",
+          "properties": {
+            "compatibility": {
+              "type": "string",
+              "minLength": 1
+            },
+            "transition": {
+              "type": "string",
+              "minLength": 1
+            },
+            "retirementTaskIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "prerequisites": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "path",
+                  "digest"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "compatibility",
+            "transition",
+            "retirementTaskIds",
+            "prerequisites"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "kind",
+        "rationale",
+        "outcomes"
+      ],
+      "additionalProperties": false
+    },
+    "comparisons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "decisionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "stageId": {
+            "type": "string",
+            "enum": [
+              "context",
+              "requirements",
+              "user-experience",
+              "functional-design",
+              "architecture",
+              "nfr-design",
+              "infrastructure-design",
+              "delivery-handoff"
+            ]
+          },
+          "alternatives": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "behavior": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "usageExample": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "constraints": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "failureImplications": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "testingApproach": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "tradeoffs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "behavior",
+                  "constraints",
+                  "failureImplications",
+                  "testingApproach",
+                  "tradeoffs"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "behavior": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "usageExample": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "constraints": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "failureImplications": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "testingApproach": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "tradeoffs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "behavior",
+                  "constraints",
+                  "failureImplications",
+                  "testingApproach",
+                  "tradeoffs"
+                ],
+                "additionalProperties": false
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "recommendation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "selectedOptionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revisionCount": {
+            "type": "number",
+            "const": 1
+          }
+        },
+        "required": [
+          "id",
+          "decisionId",
+          "stageId",
+          "alternatives"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "knowledge": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?![A-Za-z]:)(?!\\/)(?:(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)(?:\\/(?!\\.git(?:\\/|$))(?!\\.(?:\\/|$))(?!\\.\\.(?:\\/|$))[^\\\\*?[\\]/]+)*$"
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "path",
+          "digest"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "testingMethods": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "test-first",
+              "regression-first",
+              "existing-checks"
+            ]
+          },
+          "behavior": {
+            "type": "string",
+            "minLength": 1
+          },
+          "testInterface": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "taskId",
+          "method",
+          "behavior",
+          "testInterface",
+          "limitations"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "assessment",
+    "specArtifacts",
+    "planArtifacts",
+    "acceptanceMappings"
+  ],
+  "additionalProperties": false
+}

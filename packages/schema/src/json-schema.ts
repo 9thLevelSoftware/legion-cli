@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { WorkflowAssessmentSchema, WorkflowPreparationSchema, AssistanceSessionSchema, PlanningDecisionSchema, DesignComparisonSchema } from "./workflow-preparation.js";
+import { IntentSourceProposalSchema } from "./schemas.js";
 import {
   AssumptionSchema,
   AcceptanceReceiptSchema,
@@ -46,6 +48,12 @@ import { GovernanceProjectionSchema, GovernanceFrameSchema, GovernanceHeadSchema
 import { DeliverySnapshotSchema, DeliveryManifestSchema, DeliveryTrustSchema, DeliveryPredicateSchema, DeliveryOutcomeSchema, DeliveryExportSchema, DeliveryProductSchema, DeliveryArtifactsSchema, DeliveryEvidenceSchema, DsseEnvelopeSchema, DeliveryStatementSchema } from "./delivery-records.js";
 
 const assuranceSchemaByFile = {
+  "workflow-assessment": WorkflowAssessmentSchema,
+  "workflow-preparation": WorkflowPreparationSchema,
+  "assistance": AssistanceSessionSchema,
+  "planning-decision": PlanningDecisionSchema,
+  "design-comparison": DesignComparisonSchema,
+  "intent-source-proposal": IntentSourceProposalSchema,
   "assurance-plan": AssurancePlanSchema,
   "assurance-approval": AssuranceApprovalSchema,
   "check-evidence": CheckEvidenceSchema,

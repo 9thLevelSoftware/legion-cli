@@ -253,3 +253,90 @@ Run focused end-to-end, approval-invalidation, interruption/resume,
 failed-review, and help/transcript tests once for the implementation revision,
 then typecheck and the required platform checks. Repeat only after a concrete
 related change or failure.
+
+## Preparation and planning assistance
+
+New focused specifications use preparation policy 2. Existing unmarked drafts,
+frozen specs, and approved plans retain their identities; spec new starts a new
+policy-2 increment. Context and requirements are mandatory. User experience,
+functional design, architecture, quality attributes, infrastructure, and handoff
+receive explicit applicability decisions with reasons. Relevant safe repository
+inputs and reviewed knowledge are digest-bound. Plan completes applicable
+designs and maps every criterion to an existing check or a concrete observed
+manual/external procedure. Machine validation checks structure and references;
+human approval judges the design.
+
+```sh
+pnpm exec legion-cli spec --guidance guided
+pnpm exec legion-cli spec --from bug.md --guidance direct --json
+pnpm exec legion-cli spec --from bug.md --guidance direct
+pnpm exec legion-cli spec --explore
+pnpm exec legion-cli plan --compare --design-stage functional-design
+pnpm exec legion-cli plan --strategy risk-first --granularity fine
+pnpm exec legion-cli plan --strategy custom --rationale "Batch by module ownership before the shared integration"
+pnpm exec legion-cli plan approve --check "node --test test/behavior.test.js"
+pnpm exec legion-cli plan acceptance --pass AC-01 --method manual-check --note "Observed the documented failure and recovery" --evidence evidence/recovery.md
+```
+
+Guidance guided|balanced|direct changes presentation, never the gates. Interactive
+assistance offers explain, recommend, edit, unsure, and pause; only an actual
+answer is recorded as a resolution. Pausing or closed stdin preserves progress
+and cannot approve intent, decisions, specs, plans, or delivery. Local .md/.txt
+imports distinguish supplied statements, inferred suggestions, and missing
+decisions. --from --json produces a proposal without prompting or approving;
+plain spec --json remains inspection. Repeating identical input resumes, while
+changed input shows a diff. Imports never trust a wiki page or execute embedded
+instructions. URLs continue through ingest.
+
+Explore offers at most three dependency-ready decisions per round and asks
+explicitly before another round. Decisions do not enter the execution DAG, and
+exploration never enlarges the separate zero-to-three-concern challenge. Compare
+presents exactly two materially different designs; a human selects with rationale
+before task generation. Unresolved consequential choices block approval.
+
+Outcomes (default) groups observable behavior; risk-first orders uncertainty
+resolution before dependent work; expand-contract records coexistence, migration,
+and evidenced retirement prerequisites; custom records the human rationale.
+Granularity coarse|balanced|fine is applied before the existing plan approval. Exclusive
+file ownership remains required even for sequential tasks; shared work needs one
+owner or another approved increment. Outcome mappings describe coverage without
+adding a scheduler or duplicate checks. Task testing methods may be test-first,
+regression-first, or existing-checks with an observable boundary and limitations.
+
+Status reports missing, stale, or blocked preparation read-only. Spec-stage
+changes invalidate spec and downstream approval; plan-only design/mapping changes
+invalidate the plan. Intentional approved task source edits retain the reviewed
+preparation baseline. All approved tasks, including P1/P2, require completion
+evidence. Policy-2 manual pass needs its approved method, observation, and current
+evidence reference. Unavailable required provider, deployment, device, physical,
+or other external evidence remains pending and blocks delivery. Out-of-scope
+changes use abandon --message followed by spec new.
+
+Risk-first metadata identifies uncertainty, the probe task, and dependent task
+IDs; validated dependencies establish the order. Expand-contract metadata names
+compatibility, transition, retirement task IDs, and prerequisite evidence
+paths/digests. Missing prerequisite evidence blocks retirement. A comparison
+can be revised once on explicit human feedback before selection; the saved
+alternatives and their selection resume on the next --compare invocation.
+
+For a nonstandard layout, declare source paths on the first preparation run:
+
+```sh
+pnpm exec legion-cli spec --input services/worker --input infrastructure/main.tf
+pnpm exec legion-cli plan --input services/worker --input infrastructure/main.tf
+```
+
+--input is repeatable and accepts repository source files or directories. The
+engine validates and inventories these inputs, preserving credential exclusions
+and link/path protections; the CLI does not read them or change configuration.
+Plain spec --json remains read-only inspection.
+
+Acceptance --evidence uses a digest-bound local file such as evidence/report.md.
+For an approved external method, use an HTTPS URL or an identity beginning with
+external:, report:, or urn:, for example report:provider-run-123. An opaque ID
+without one of these prefixes is interpreted as a local file path. External
+identity records the operator's observation; it does not authenticate the report.
+
+```sh
+pnpm exec legion-cli plan acceptance --pass AC-01 --method provider-check --note "Provider run passed the approved scenario" --evidence report:provider-run-123
+```

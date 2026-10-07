@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decisionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stageId": {
+      "type": "string",
+      "enum": [
+        "context",
+        "requirements",
+        "user-experience",
+        "functional-design",
+        "architecture",
+        "nfr-design",
+        "infrastructure-design",
+        "delivery-handoff"
+      ]
+    },
+    "alternatives": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "behavior": {
+              "type": "string",
+              "minLength": 1
+            },
+            "usageExample": {
+              "type": "string",
+              "minLength": 1
+            },
+            "constraints": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "failureImplications": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "testingApproach": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tradeoffs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "behavior",
+            "constraints",
+            "failureImplications",
+            "testingApproach",
+            "tradeoffs"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "behavior": {
+              "type": "string",
+              "minLength": 1
+            },
+            "usageExample": {
+              "type": "string",
+              "minLength": 1
+            },
+            "constraints": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "failureImplications": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "testingApproach": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tradeoffs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "behavior",
+            "constraints",
+            "failureImplications",
+            "testingApproach",
+            "tradeoffs"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "recommendation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "selectedOptionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revisionCount": {
+      "type": "number",
+      "const": 1
+    }
+  },
+  "required": [
+    "id",
+    "decisionId",
+    "stageId",
+    "alternatives"
+  ],
+  "additionalProperties": false
+}

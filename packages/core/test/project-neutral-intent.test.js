@@ -4,6 +4,17 @@ import test from "node:test";
 import { applyIntentAnswers, emptyIntentAnswers, intentProgress } from "../dist/intent.js";
 import { templateDecisions } from "../dist/discuss.js";
 
+test("saving guided answers singly preserves unanswered question and bounded paired-round transcript", () => {
+  let file = emptyIntentAnswers();
+  const personaQuestion = intentProgress(file).nextQuestions[0];
+  file = applyIntentAnswers(file, [personaQuestion], ["operators"]).file;
+  assert.deepEqual(intentProgress(file).nextQuestions, ["What are they stuck doing today?"]);
+  file = applyIntentAnswers(file, intentProgress(file).nextQuestions, ["deployments fail"]).file;
+  assert.equal(file.rounds.length, 1);
+  assert.deepEqual(file.rounds[0].answers, ["operators", "deployments fail"]);
+  assert.equal(intentProgress(file).nextQuestions[0], "What must be true when this is done?");
+});
+
 const LEGACY = {
   failure: "What does failure look like (empty, error, changed mind)?",
   screens: "What screens or moments must exist in v0?",
