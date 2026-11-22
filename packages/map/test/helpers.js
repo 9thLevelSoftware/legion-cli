@@ -66,6 +66,14 @@ export function spawnMockLspWithLog(logPath) {
   return (_command, _args, cwd) => spawnMock(cwd, { LEGION_MOCK_LSP_LOG: logPath });
 }
 
+export function spawnMockLspErrorOn(pattern) {
+  return (_command, _args, cwd) => spawnMock(cwd, { LEGION_MOCK_LSP_ERROR_MATCH: pattern });
+}
+
+export function spawnMockLspHangOn(pattern) {
+  return (_command, _args, cwd) => spawnMock(cwd, { LEGION_MOCK_LSP_HANG_MATCH: pattern });
+}
+
 export async function writeManyTs(dir, count) {
   const src = join(dir, "src");
   await mkdir(src, { recursive: true });

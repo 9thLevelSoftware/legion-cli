@@ -22,7 +22,9 @@ import {
 import {
   THREE_TS,
   spawnMockLsp,
+  spawnMockLspErrorOn,
   spawnMockLspHangAfter,
+  spawnMockLspHangOn,
   spawnMockLspWithLog,
   withTempDir,
   writeManyTs,
@@ -644,5 +646,227 @@ test("writeMapFile is atomic via writeTextFile (F-016)", async () => {
     const previous = await readFile(first.fingerprintsPath, "utf8");
     await writeMapFile(first.fingerprintsPath, previous, { root: dir });
     assert.equal(await readFile(first.fingerprintsPath, "utf8"), previous);
+  });
+});
+
+test("polyglot monorepo roots and sibling source dirs are walked unless roots are explicitly passed", async () => {
+  const { DEFAULT_MAP_ROOTS } = await import("../dist/walk.js");
+  assert.deepEqual(
+    [...DEFAULT_MAP_ROOTS],
+    ["src", "packages", "apps", "services", "app", "lib", "crates", "cmd", "internal", "pkg", "Sources"],
+  );
+  await withTempDir(async (dir) => {
+    await writeTree(dir, {
+      "src/core.ts": "export function core() {}\n",
+      "apps/web/main.ts": "export function web() {}\n",
+      "services/auth/handler.py": "async def handle():\n    pass\n",
+      "crates/engine/src/lib.rs": "pub fn run() {}\n",
+      "cmd/cli/main.go": "package main\nfunc Run() {}\n",
+      "internal/db/store.go": "package db\nfunc Open() {}\n",
+      "pkg/client/sdk.go": "package client\nfunc NewClient() {}\n",
+      "Sources/App/app.ts": "export function app() {}\n",
+      "workers/bg.ts": "export function bg() {}\n",
+      "main.go": "package main\nfunc Main() {}\n",
+      "target/debug/gen.rs": "pub fn ignored() {}\n",
+      ".venv/lib/site.py": "def ignored():\n    pass\n",
+      "venv/lib/site.py": "def ignored():\n    pass\n",
+      "__pycache__/mod.py": "def ignored():\n    pass\n",
+      ".pytest_cache/x.py": "def ignored():\n    pass\n",
+      ".mypy_cache/x.py": "def ignored():\n    pass\n",
+      ".ruff_cache/x.py": "def ignored():\n    pass\n",
+      ".tox/py312/x.py": "def ignored():\n    pass\n",
+      "vendor/dep/dep.go": "package dep\nfunc Dep() {}\n",
+      ".gradle/cache.ts": "export function x() {}\n",
+      "out/bundle.js": "export function x() {}\n",
+      ".build/artifact.ts": "export function x() {}\n",
+      "DerivedData/build.ts": "export function x() {}\n",
+      "Pods/pod.ts": "export function x() {}\n",
+      ".terraform/tf.ts": "export function x() {}\n",
+      "cdk.out/stack.ts": "export function x() {}\n",
+      "cmd/cli/main_test.go": "package main\nfunc TestMain() {}\n",
+      "services/auth/test_handler.py": "def test_handle():\n    pass\n",
+      "services/auth/handler_test.py": "def test_other():\n    pass\n",
+    });
+
+    const full = await generateMap(dir);
+    const paths = full.fingerprints.modules.map((m) => m.path).sort();
+    assert.deepEqual(paths, [
+      "Sources/App/app.ts",
+      "apps/web/main.ts",
+      "cmd/cli/main.go",
+      "crates/engine/src/lib.rs",
+      "internal/db/store.go",
+      "main.go",
+      "pkg/client/sdk.go",
+      "services/auth/handler.py",
+      "src/core.ts",
+      "workers/bg.ts",
+    ]);
+
+    const scoped = await generateMap(dir, { roots: ["src"] });
+    assert.deepEqual(
+      scoped.fingerprints.modules.map((m) => m.path),
+      ["src/core.ts"],
+    );
+  });
+});
+
+test("parseSource handles Python async def, Go exported vs unexported symbols, and Rust pub modifiers/pub use", () => {
+  const py = parseSource(
+    "services/api/routes.py",
+    [
+      "from .db import get_pool",
+      "from ..core.config import Settings",
+      "import asyncio, json as js",
+      "async def fetch_user():",
+      "    pass",
+      "def sync_helper():",
+      "    pass",
+      "class Router:",
+      "    async def method_not_top_level(self):",
+      "        pass",
+    ].join("\n"),
+  );
+  assert.deepEqual(py.exports.sort(), ["Router", "fetch_user", "sync_helper"]);
+  assert.deepEqual(py.imports.sort(), ["..core.config", ".db", "asyncio", "json"]);
+
+  const go = parseSource(
+    "internal/store/store.go",
+    [
+      "package store",
+      'import "fmt"',
+      "func ExportedFunc() {}",
+      "func unexportedFunc() {}",
+      "func (s *Store[T]) GetItem(id string) {}",
+      "func (s *Store[T]) getItem(id string) {}",
+      "func MapSlice[T any, U any](xs []T) []U { return nil }",
+      "type Store[T any] struct { inner string }",
+      "type hiddenStruct struct {}",
+      "const (",
+      "  PublicConst = 1",
+      "  privateConst = 2",
+      ")",
+      "var ExportedVar = 1",
+      "var hiddenVar = 2",
+    ].join("\n"),
+  );
+  assert.deepEqual(go.exports.sort(), [
+    "ExportedFunc",
+    "ExportedVar",
+    "GetItem",
+    "MapSlice",
+    "PublicConst",
+    "Store",
+  ]);
+
+  const rs = parseSource(
+    "crates/core/src/lib.rs",
+    [
+      "pub use crate::internal::{Alpha, Beta as RenamedBeta, nested::{self, Gamma}};",
+      "pub(crate) use crate::helpers::Assist;",
+      "pub async fn serve() {}",
+      "pub(crate) fn internal_fn() {}",
+      "pub(super) struct SuperStruct {}",
+      "pub const fn build_const() -> usize { 1 }",
+      'pub unsafe extern "C" fn ffi_entry() {}',
+      "pub type UserId = u64;",
+      "pub const MAX_CONN: usize = 32;",
+      "pub static VERSION: &str = \"1\";",
+      "fn completely_private() {}",
+      "struct Hidden {}",
+    ].join("\n"),
+  );
+  assert.deepEqual(rs.exports.sort(), [
+    "Alpha",
+    "Assist",
+    "Gamma",
+    "MAX_CONN",
+    "RenamedBeta",
+    "SuperStruct",
+    "UserId",
+    "VERSION",
+    "build_const",
+    "ffi_entry",
+    "internal_fn",
+    "nested",
+    "serve",
+  ]);
+  assert.ok(rs.imports.includes("crate::helpers::Assist"));
+});
+
+test("detectLspServer discovers pyright-langserver and basedpyright-langserver with --stdio", async () => {
+  const { detectLspServer } = await import("../dist/lsp.js");
+  await withTempDir(async (dir) => {
+    await writeTree(dir, {
+      "pyrightconfig.json": "{}\n",
+      "app/main.py": "def run():\n    pass\n",
+    });
+    const pyright = detectLspServer(dir, null, (name) => (name === "pyright-langserver" ? "/bin/pyright-langserver" : null));
+    assert.ok(pyright);
+    assert.equal(pyright.binary, "pyright-langserver");
+    assert.deepEqual(pyright.args, ["--stdio"]);
+    assert.equal(pyright.languages.has("py"), true);
+
+    const based = detectLspServer(dir, null, (name) =>
+      name === "basedpyright-langserver" ? "/bin/basedpyright-langserver" : null,
+    );
+    assert.ok(based);
+    assert.equal(based.binary, "basedpyright-langserver");
+    assert.deepEqual(based.args, ["--stdio"]);
+    assert.equal(based.languages.has("py"), true);
+  });
+
+  await withTempDir(async (dir) => {
+    await writeTree(dir, {
+      "pyproject.toml": "[project]\nname = 'demo'\n",
+      "src/app.py": "async def serve():\n    pass\n",
+    });
+    const pylsp = detectLspServer(dir, null, (name) => (name === "pylsp" ? "/bin/pylsp" : null));
+    assert.ok(pylsp);
+    assert.equal(pylsp.binary, "pylsp");
+    assert.deepEqual(pylsp.args, []);
+  });
+});
+
+test("per-file documentSymbol error or timeout falls back to regex for that file without discarding other LSP exports", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, {
+      ...THREE_TS,
+      "src/broken.ts": "export function regexFallback() {}\n",
+    });
+    const errored = await generateMap(dir, {
+      lsp: "require",
+      resolveBinary: (name) => (name === "typescript-language-server" ? process.execPath : null),
+      spawnLsp: spawnMockLspErrorOn("broken.ts"),
+    });
+    assert.equal(errored.backend, "lsp");
+    assert.deepEqual(moduleOf(errored, "src/auth.ts").exports, ["alpha", "beta"]);
+    assert.deepEqual(moduleOf(errored, "src/db.ts").exports, ["alpha", "beta"]);
+    assert.deepEqual(moduleOf(errored, "src/index.ts").exports, ["alpha", "beta"]);
+    assert.deepEqual(moduleOf(errored, "src/broken.ts").exports, ["regexFallback"]);
+
+    const timedOut = await generateMap(dir, {
+      lsp: "require",
+      resolveBinary: (name) => (name === "typescript-language-server" ? process.execPath : null),
+      spawnLsp: spawnMockLspHangOn("broken.ts"),
+      lspFileTimeoutMs: 100,
+      lspDeadlineMs: 5000,
+    });
+    assert.equal(timedOut.backend, "lsp");
+    assert.deepEqual(moduleOf(timedOut, "src/auth.ts").exports, ["alpha", "beta"]);
+    assert.deepEqual(moduleOf(timedOut, "src/broken.ts").exports, ["regexFallback"]);
+  });
+});
+
+test("when every file fails documentSymbol, LSP falls back cleanly", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, THREE_TS);
+    const result = await generateMap(dir, {
+      lsp: "require",
+      resolveBinary: (name) => (name === "typescript-language-server" ? process.execPath : null),
+      spawnLsp: spawnMockLspErrorOn("src/"),
+    });
+    assert.equal(result.backend, "fallback");
+    assert.deepEqual(moduleOf(result, "src/auth.ts").exports, ["login", "logout"]);
   });
 });

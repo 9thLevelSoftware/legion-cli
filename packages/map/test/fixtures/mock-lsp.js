@@ -21,6 +21,8 @@ const DEPTH0_FUNCTIONS = [
 ];
 
 const hangAfter = Number(process.env.LEGION_MOCK_LSP_HANG_AFTER || "0");
+const errorMatch = process.env.LEGION_MOCK_LSP_ERROR_MATCH || "";
+const hangMatch = process.env.LEGION_MOCK_LSP_HANG_MATCH || "";
 let symbolReplies = 0;
 
 function floodStderr() {
@@ -56,6 +58,16 @@ function handle(msg) {
   }
   if (msg.method === "textDocument/documentSymbol") {
     symbolReplies += 1;
+    const uri = String(msg.params?.textDocument?.uri || "");
+    if (hangMatch && uri.includes(hangMatch)) return;
+    if (errorMatch && uri.includes(errorMatch)) {
+      encode({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: { code: -32603, message: `simulated error for ${uri}` },
+      });
+      return;
+    }
     if (hangAfter > 0 && symbolReplies > hangAfter) return;
     encode({ jsonrpc: "2.0", id: msg.id, result: DEPTH0_FUNCTIONS });
     return;

@@ -128,15 +128,22 @@ function parseTsJs(source: string): { exports: string[]; imports: string[] } {
 }
 
 function parsePython(source: string): { exports: string[]; imports: string[] } {
+  const imports: string[] = [];
+  for (const mod of capture(source, /^from\s+([.\w]+)/gm)) {
+    imports.push(mod);
+  }
+  for (const clause of capture(source, /^import\s+([^\r\n#]+)/gm)) {
+    for (const part of clause.split(",")) {
+      const mod = part.trim().match(/^([A-Za-z_][\w.]*)/)?.[1];
+      if (mod) imports.push(mod);
+    }
+  }
   return {
     exports: unique([
-      ...capture(source, /^def\s+([A-Za-z_][\w]*)/gm),
-      ...capture(source, /^class\s+([A-Za-z_][\w]*)/gm),
+      ...capture(source, /^(?:async\s+)?def\s+([A-Za-z_]\w*)/gm),
+      ...capture(source, /^class\s+([A-Za-z_]\w*)/gm),
     ]),
-    imports: unique([
-      ...capture(source, /^from\s+(\S+)/gm),
-      ...capture(source, /^import\s+(\S+)/gm),
-    ]),
+    imports: unique(imports),
   };
 }
 
@@ -149,8 +156,8 @@ function parseGo(source: string): { exports: string[]; imports: string[] } {
     imports.push(...capture(block[1] ?? "", /"([^"]+)"/g));
   }
   const exports = [
-    ...capture(source, /^func\s+(?:\([^)]*\)\s+)?([A-Za-z_][\w]*)/gm),
-    ...capture(source, /^type\s+([A-Za-z_][\w]*)/gm),
+    ...capture(source, /^func\s+(?:\([^)]*\)\s+)?([A-Z][\w]*)/gm),
+    ...capture(source, /^type\s+([A-Z][\w]*)/gm),
     ...capture(source, /^(?:var|const)\s+([A-Z][\w]*)/gm),
   ];
   for (const block of source.matchAll(/^(?:var|const)\s*\(([\s\S]*?)\)/gm)) {
@@ -159,10 +166,62 @@ function parseGo(source: string): { exports: string[]; imports: string[] } {
   return { exports: unique(exports), imports: unique(imports) };
 }
 
+function rustPubUseNames(spec: string): string[] {
+  const names: string[] = [];
+
+  function expand(prefix: string, expr: string): void {
+    const trimmed = expr.replace(/\/\/[^\r\n]*/g, "").trim();
+    if (!trimmed) return;
+    const braceStart = trimmed.indexOf("{");
+    if (braceStart !== -1) {
+      const braceEnd = trimmed.lastIndexOf("}");
+      if (braceEnd > braceStart) {
+        const head = trimmed.slice(0, braceStart).replace(/::\s*$/, "").trim();
+        const nextPrefix = head ? (prefix ? `${prefix}::${head}` : head) : prefix;
+        const inner = trimmed.slice(braceStart + 1, braceEnd);
+        let depth = 0;
+        let part = "";
+        for (const ch of `${inner},`) {
+          if (ch === "{") depth += 1;
+          else if (ch === "}") depth = Math.max(0, depth - 1);
+          if (depth === 0 && ch === ",") {
+            expand(nextPrefix, part);
+            part = "";
+          } else {
+            part += ch;
+          }
+        }
+        return;
+      }
+    }
+    const asMatch = trimmed.match(/\bas\s+([A-Za-z_]\w*)$/);
+    if (asMatch?.[1]) {
+      if (asMatch[1] !== "_") names.push(asMatch[1]);
+      return;
+    }
+    const pathPart = trimmed.replace(/\s+as\s+_$/, "").trim();
+    const full = pathPart === "self" ? prefix : pathPart;
+    const seg = full.split("::").pop()?.trim() ?? "";
+    if (!seg || seg === "*" || seg === "self" || seg === "super" || seg === "crate") return;
+    if (/^[A-Za-z_]\w*$/.test(seg)) names.push(seg);
+  }
+
+  expand("", spec);
+  return names;
+}
+
 function parseRust(source: string): { exports: string[]; imports: string[] } {
+  const exports = capture(
+    source,
+    /^\s*pub(?:\([^)]+\))?\s+(?:(?:async|const|unsafe)\s+|extern\s+(?:"[^"]+"\s+)?)*(?:fn|struct|enum|trait|mod|type|const|static)\s+([A-Za-z_]\w*)/gm,
+  );
+  for (const spec of capture(source, /^\s*pub(?:\([^)]+\))?\s+use\s+([^;]+);/gm)) {
+    exports.push(...rustPubUseNames(spec));
+  }
+  const imports = capture(source, /^\s*(?:pub(?:\([^)]+\))?\s+)?use\s+([^;]+);/gm);
   return {
-    exports: unique(capture(source, /^pub\s+(?:fn|struct|enum|trait|mod)\s+([A-Za-z_][\w]*)/gm)),
-    imports: unique(capture(source, /^use\s+([^;]+);/gm)),
+    exports: unique(exports),
+    imports: unique(imports),
   };
 }
 

@@ -13,10 +13,11 @@ import {
 } from "@9thlevelsoftware/legion-cli-schema";
 import { MAP_HINT, refuse } from "./errors.js";
 import { parseSource } from "./parse.js";
-import type { WalkedFile } from "./walk.js";
+import { DEFAULT_MAP_ROOTS, isSkippedDirName, type WalkedFile } from "./walk.js";
 
 export const MAX_LSP_FILES = 500;
 export const LSP_BUDGET_MS = 60_000;
+export const DEFAULT_LSP_FILE_TIMEOUT_MS = 5_000;
 
 export type LspSpawnFn = (command: string, args: readonly string[], cwd: string) => ChildProcess;
 
@@ -78,6 +79,18 @@ const SERVERS: readonly LspServerSpec[] = [
     args: [],
     markers: ["Cargo.toml"],
     languages: ["rs"],
+  },
+  {
+    binary: "pyright-langserver",
+    args: ["--stdio"],
+    markers: ["pyproject.toml", "pyrightconfig.json", "setup.cfg"],
+    languages: ["py"],
+  },
+  {
+    binary: "basedpyright-langserver",
+    args: ["--stdio"],
+    markers: ["pyproject.toml", "pyrightconfig.json", "setup.cfg"],
+    languages: ["py"],
   },
   {
     binary: "pylsp",
@@ -143,11 +156,24 @@ type JsonRpc = {
 };
 
 function uniqueDirs(projectRoot: string, roots: readonly string[] | null): string[] {
-  const dirs = [projectRoot];
+  const seen = new Set<string>();
+  const dirs: string[] = [];
+  const addDir = (dir: string): boolean => {
+    const key = process.platform === "win32" ? dir.toLowerCase() : dir;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    dirs.push(dir);
+    return true;
+  };
+  addDir(projectRoot);
   if (roots) {
-    for (const root of roots) dirs.push(join(projectRoot, ...root.split("/")));
+    for (const root of roots) addDir(join(projectRoot, ...root.split("/")));
+  } else {
+    for (const root of DEFAULT_MAP_ROOTS) {
+      const candidate = join(projectRoot, root);
+      if (existsSync(candidate)) addDir(candidate);
+    }
   }
-  const extra: string[] = [];
   const queue = [...dirs];
   for (let depth = 0; depth < 2 && queue.length > 0; depth += 1) {
     const layer = queue.splice(0, queue.length);
@@ -160,14 +186,13 @@ function uniqueDirs(projectRoot: string, roots: readonly string[] | null): strin
       }
       for (const ent of ents) {
         if (!ent.isDirectory()) continue;
-        if (ent.name.startsWith(".") || ent.name === "node_modules" || ent.name === "dist") continue;
+        if (ent.name.startsWith(".") || isSkippedDirName(ent.name)) continue;
         const child = join(dir, ent.name);
-        extra.push(child);
-        queue.push(child);
+        if (addDir(child)) queue.push(child);
       }
     }
   }
-  return [...dirs, ...extra];
+  return dirs;
 }
 
 function markerPresent(dirs: readonly string[], markers: readonly string[]): boolean {
@@ -494,9 +519,11 @@ export async function collectLspExports(opts: {
   command: string;
   args: readonly string[];
   deadlineMs?: number;
+  fileTimeoutMs?: number;
   spawnLsp?: LspSpawnFn;
 }): Promise<Map<string, string[]> | null> {
   const deadline = Date.now() + (opts.deadlineMs ?? LSP_BUDGET_MS);
+  const fileTimeoutMs = opts.fileTimeoutMs ?? DEFAULT_LSP_FILE_TIMEOUT_MS;
   const files = opts.files.slice(0, MAX_LSP_FILES);
   let child: ChildProcess;
   try {
@@ -536,8 +563,10 @@ export async function collectLspExports(opts: {
     );
     client.notify("initialized", {});
 
+    let lspSucceeded = 0;
     for (const file of files) {
-      if (remaining(deadline) <= 0) return null;
+      const rem = remaining(deadline);
+      if (rem <= 0) return null;
       if (client.dead) return null;
       const uri = pathToFileURL(file.absPath).href;
       client.notify("textDocument/didOpen", {
@@ -548,17 +577,26 @@ export async function collectLspExports(opts: {
           text: file.text,
         },
       });
+      const cappedByDeadline = rem <= fileTimeoutMs;
+      const timeoutMs = cappedByDeadline ? rem : fileTimeoutMs;
       try {
         const result = await client.request(
           "textDocument/documentSymbol",
           { textDocument: { uri } },
-          remaining(deadline),
+          timeoutMs,
         );
         exportsByPath.set(file.path, exportsFromDocumentSymbols(result, file.text, file.path));
-      } catch {
-        return null;
+        lspSucceeded += 1;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const timedOut = /timed out/i.test(message);
+        if (client.dead || remaining(deadline) <= 0 || (cappedByDeadline && timedOut)) {
+          return null;
+        }
+        exportsByPath.set(file.path, parseSource(file.path, file.text).exports);
       }
     }
+    if (files.length > 0 && lspSucceeded === 0) return null;
 
     if (remaining(deadline) > 0 && !client.dead) {
       try {
