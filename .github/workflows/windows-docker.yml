@@ -22,4 +22,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --input-type=module -e 'import { detectSandbox } from "./packages/sandbox/dist/index.js"; const d = detectSandbox(); if (d.backend !== "docker" || !d.hardened) { console.error(JSON.stringify(d)); process.exit(1); }'
       - run: pnpm typecheck
+      - name: Pre-pull sandbox image
+        shell: pwsh
+        run: |
+          docker pull node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: pnpm test

@@ -53,7 +53,7 @@ jobs:
         run: pnpm test
 
       - name: Check publish allowlist
-        run: node scripts/check-publish-allowlist.mjs
+        run: node scripts/check-publish-allowlist.mjs --release-tag "${GITHUB_REF_NAME}"
 
       - name: Publish
         # pnpm runs each package's prepack, which bundles skills/ into @9thlevelsoftware/legion-cli-agents.
