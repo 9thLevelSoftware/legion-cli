@@ -1,7 +1,21 @@
 import { execFile } from "node:child_process";
 import { closeSync, openSync, readSync } from "node:fs";
 import { open } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join } from "node:path";
+
+/** Sanitize optional hostname/platform metadata so control chars cannot reach error messages. */
+export function cleanMarkerHostValue(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || /[\x00-\x1f\x7f]/.test(value)) return undefined;
+  return value;
+}
+
+/** True when a lock or run marker records a hostname or platform differing from this OS process. */
+export function isForeignHostMarker(marker: { hostname?: string; platform?: string }): boolean {
+  if (marker.hostname !== undefined && marker.hostname !== hostname()) return true;
+  if (marker.platform !== undefined && marker.platform !== process.platform) return true;
+  return false;
+}
 
 /**
  * Two start times closer than this are the same process. The lock writer estimates its own

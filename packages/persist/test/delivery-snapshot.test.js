@@ -258,3 +258,29 @@ test("adopted completion requires the frozen valid trace and current head", asyn
   const completed = await locked(store, (lock) => completeDeliverySnapshot(store, confirmationId, completedOutcome, facts.trace, lock));
   assert.equal(completed.state, "complete");
 });
+
+test("stale atomic temp files in delivery directories are ignored on read and unlinked under lock", async (t) => {
+  const { root, store } = await withStore(t);
+  const snapDir = recordDir(root);
+  const preparedDigest = await locked(store, (lock) => prepareDeliverySnapshot(store, prepared(), lock));
+  const snapTmp = join(snapDir, ".0123456789abcdef.tmp");
+  await writeFile(snapTmp, "partial", "utf8");
+  assert.equal((await readDeliverySnapshot(store, confirmationId)).state, "prepared");
+  assert.equal((await readdir(snapDir)).includes(".0123456789abcdef.tmp"), true);
+
+  const rec = terminalOutcome(confirmationId, preparedDigest);
+  await locked(store, (lock) => recordDeliveryOutcome(store, confirmationId, rec, lock));
+  assert.equal((await readdir(snapDir)).includes(".0123456789abcdef.tmp"), false);
+
+  const exportDir = join(root, ".legion-cli", "audit", "delivery-export", digest(confirmationId));
+  const failed = { schemaVersion: SCHEMA_VERSION.deliveryExport, snapshotId: confirmationId, snapshotDigest: preparedDigest, requestedOutput: "bundle.tar", attemptId: "attempt-1", attemptedAt: at, result: "failed", reason: "disk" };
+  await locked(store, (lock) => recordDeliveryExportAttempt(store, failed, lock));
+  const exportTmp = join(exportDir, ".abcdef0123456789.tmp");
+  await writeFile(exportTmp, "partial", "utf8");
+  assert.equal((await readDeliveryExportAttempts(store, confirmationId)).length, 1);
+  assert.equal((await readdir(exportDir)).includes(".abcdef0123456789.tmp"), true);
+
+  await locked(store, (lock) => recordDeliveryExportAttempt(store, { ...failed, attemptId: "attempt-2" }, lock));
+  assert.equal((await readdir(exportDir)).includes(".abcdef0123456789.tmp"), false);
+  assert.equal((await readDeliveryExportAttempts(store, confirmationId)).length, 2);
+});

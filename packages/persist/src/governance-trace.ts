@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, mkdir, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   AssuranceSha256Schema,
@@ -33,6 +33,43 @@ const EPOCHS_PATH = `${ROOT}/epochs.json`;
 const EPOCHS_MAX_BYTES = 4 * 1024 * 1024;
 const EPOCHS_MAX_ENTRIES = 10_000;
 const FRAME_NAME = /^(0|[1-9]\d{0,5})\.json$/;
+const ATOMIC_TMP_NAME = /^\.[0-9a-f]{16}\.tmp$/;
+
+async function isIgnorableAtomicTmp(dirAbs: string, name: string): Promise<boolean> {
+  if (!ATOMIC_TMP_NAME.test(name)) return false;
+  try {
+    const st = await lstat(join(dirAbs, name));
+    return !st.isSymbolicLink() && st.isFile();
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+async function cleanAtomicTmpFiles(dirAbs: string, names: readonly string[], projectRoot: string): Promise<string[]> {
+  const kept: string[] = [];
+  for (const name of names) {
+    if (!ATOMIC_TMP_NAME.test(name)) {
+      kept.push(name);
+      continue;
+    }
+    const tmpAbs = join(dirAbs, name);
+    await assertNoLinkInPath(tmpAbs, { root: projectRoot });
+    try {
+      const st = await lstat(tmpAbs);
+      if (st.isFile() && !st.isSymbolicLink()) {
+        await unlink(tmpAbs).catch((err) => {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        });
+        continue;
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw err;
+    }
+    kept.push(name);
+  }
+  return kept;
+}
 
 export type GovernanceLockOwnership = { assertLockOwned: () => void };
 /** Test-only crash seams: run after the frame file and after the head file are durable. */
@@ -119,7 +156,12 @@ async function readSegment(store: LegionStore, approvalId: string, modelDigest: 
     ({ trace: envelope(approvalId, modelDigest, head?.digest ?? null, frames, "invalid"), head, frames, filesOkay: false, violations: [] });
   try {
     await assertNoLinkInPath(dirAbs, { root: store.projectRoot });
-    const entries = await readdir(dirAbs);
+    const rawEntries = await readdir(dirAbs);
+    const entries: string[] = [];
+    for (const entry of rawEntries) {
+      if (await isIgnorableAtomicTmp(dirAbs, entry)) continue;
+      entries.push(entry);
+    }
     if (entries.length > GOVERNANCE_TRACE_MAX_FRAMES + 1 || !entries.includes("head.json")) return failed(null, []);
     const names = entries.filter((x) => x !== "head.json").sort((a, b) => Number(a.slice(0, -5)) - Number(b.slice(0, -5)));
     if (names.some((name, i) => !FRAME_NAME.test(name) || name !== `${i}.json`) || names.length > GOVERNANCE_TRACE_MAX_FRAMES) return failed(null, []);
@@ -206,7 +248,8 @@ export async function appendGovernanceBegin(store: LegionStore, input: Governanc
   assertOwned(lock);
   const segmentAbs = join(store.projectRoot, governanceTraceDirectory(input.approvalId));
   await assertNoLinkInPath(segmentAbs, { root: store.projectRoot });
-  const existingNames = await readdir(segmentAbs).catch(() => []);
+  const rawExisting = await readdir(segmentAbs).catch(() => []);
+  const existingNames = await cleanAtomicTmpFiles(segmentAbs, rawExisting, store.projectRoot);
   const state = await readSegment(store, input.approvalId, input.modelDigest);
   let sequence = 0;
   let previousDigest: string | null = null;
@@ -251,8 +294,10 @@ export async function reconcileGovernanceTrace(store: LegionStore, approvalId: s
   assertOwned(lock);
   const dirAbs = join(store.projectRoot, governanceTraceDirectory(approvalId));
   await assertNoLinkInPath(dirAbs, { root: store.projectRoot });
-  const entries = await readdir(dirAbs).catch(() => null);
-  if (!entries?.includes("head.json")) return envelope(approvalId, modelDigest, null, [], "invalid");
+  const rawEntries = await readdir(dirAbs).catch(() => null);
+  if (!rawEntries) return envelope(approvalId, modelDigest, null, [], "invalid");
+  const entries = await cleanAtomicTmpFiles(dirAbs, rawEntries, store.projectRoot);
+  if (!entries.includes("head.json")) return envelope(approvalId, modelDigest, null, [], "invalid");
   const names = entries.filter((x) => x !== "head.json");
   const headAbs = join(dirAbs, "head.json");
   await assertNoLinkInPath(headAbs, { root: store.projectRoot });

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { parseCommandLine, runCommand as runArgv, splitCommand } from "@9thlevelsoftware/legion-cli-agents";
 import { createLegionStore, writeTextFile } from "@9thlevelsoftware/legion-cli-persist";
 import type { QAScore, Spec } from "@9thlevelsoftware/legion-cli-schema";
-import { extractJsonPayload, parseTestReport, reportFailClosed } from "./reports.js";
+import { extractJsonPayload, extractJunitXmlPayload, parseTestReport, reportFailClosed } from "./reports.js";
 import { scorePersistedReports, ZERO_TESTS_REASON, type QaMode } from "./score.js";
 import { specHasUi } from "./tags.js";
 
@@ -119,11 +119,24 @@ export type ProjectQaResult = {
 };
 
 async function writeEvidence(projectRoot: string, abs: string, capture: CommandCapture): Promise<unknown> {
-  const payload = extractJsonPayload(capture.stdout) ?? extractJsonPayload(capture.stderr);
+  const xmlPrefix = /^(?:<\?xml\b|<(?:testsuites|testsuite)\b)/i;
+  const junitFirst = xmlPrefix.test(capture.stdout.trim())
+    ? extractJunitXmlPayload(capture.stdout)
+    : xmlPrefix.test(capture.stderr.trim())
+      ? extractJunitXmlPayload(capture.stderr)
+      : null;
+  const payload =
+    junitFirst ??
+    extractJsonPayload(capture.stdout) ??
+    extractJsonPayload(capture.stderr) ??
+    extractJunitXmlPayload(capture.stdout) ??
+    extractJunitXmlPayload(capture.stderr);
   const body =
-    payload !== null
-      ? `${JSON.stringify(payload, null, 2)}\n`
-      : capture.stdout || capture.stderr || `${JSON.stringify({ error: "no reporter json", status: capture.status })}\n`;
+    typeof payload === "string"
+      ? `${payload}\n`
+      : payload !== null
+        ? `${JSON.stringify(payload, null, 2)}\n`
+        : capture.stdout || capture.stderr || `${JSON.stringify({ error: "no reporter json", status: capture.status })}\n`;
   await createLegionStore(projectRoot).withLock(() => writeTextFile(abs, body, { root: projectRoot }));
   return payload;
 }
@@ -212,7 +225,12 @@ export async function runProjectQa(opts: RunProjectQaOptions): Promise<ProjectQa
     await writeCaptureMetadata(opts.projectRoot, join(qaDir, "playwright.meta.json"), "playwright", pwCapture);
     evidencePaths.push(`.legion-cli/qa/runs/${id}/playwright.meta.json`);
     playwrightRan = Boolean(
-      pwCapture.started && !pwCapture.timedOut && pwCapture.status === 0 && playwrightReport && typeof playwrightReport === "object",
+      pwCapture.started &&
+        !pwCapture.timedOut &&
+        pwCapture.status === 0 &&
+        playwrightReport &&
+        (typeof playwrightReport === "object" ||
+          (typeof playwrightReport === "string" && parseTestReport(playwrightReport).length > 0)),
     );
   }
 

@@ -1,10 +1,17 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { isWin32BusyError, retryFsOp } from "./atomic-write.js";
 import { EngineLockedError } from "./errors.js";
 import { DEFAULT_LOCK_TIMEOUT_MS } from "./layout.js";
-import { ownProcessStartedAt, processIdentity, startedAfterRecorded } from "./process-identity.js";
+import {
+  cleanMarkerHostValue,
+  isForeignHostMarker,
+  ownProcessStartedAt,
+  processIdentity,
+  startedAfterRecorded,
+} from "./process-identity.js";
 
 export type HeldLock = {
   release: () => Promise<void>;
@@ -58,7 +65,13 @@ async function unlinkIfOwned(lockPath: string, token: string): Promise<void> {
   await unlinkIfExists(lockPath);
 }
 
-type LockPayload = { pid: number; pidStartedAt?: number; acquiredAt?: string };
+type LockPayload = {
+  pid: number;
+  pidStartedAt?: number;
+  acquiredAt?: string;
+  hostname?: string;
+  platform?: string;
+};
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 
@@ -68,11 +81,19 @@ function parseLock(raw: string): LockPayload | null {
   try {
     const parsed: unknown = JSON.parse(trimmed);
     if (!parsed || typeof parsed !== "object") return null;
-    const rec = parsed as { pid?: unknown; pidStartedAt?: unknown; acquiredAt?: unknown };
+    const rec = parsed as {
+      pid?: unknown;
+      pidStartedAt?: unknown;
+      acquiredAt?: unknown;
+      hostname?: unknown;
+      platform?: unknown;
+    };
     // An out-of-range pid is unparseable (stale after 10 s), never a TypeError from process.kill.
     if (typeof rec.pid !== "number" || !Number.isInteger(rec.pid) || rec.pid <= 0 || rec.pid > MAX_PID) {
       return null;
     }
+    const lockHostname = cleanMarkerHostValue(rec.hostname);
+    const lockPlatform = cleanMarkerHostValue(rec.platform);
     return {
       pid: rec.pid,
       ...(typeof rec.pidStartedAt === "number" && Number.isFinite(rec.pidStartedAt)
@@ -82,6 +103,8 @@ function parseLock(raw: string): LockPayload | null {
       ...(typeof rec.acquiredAt === "string" && ISO_TIMESTAMP.test(rec.acquiredAt)
         ? { acquiredAt: rec.acquiredAt }
         : {}),
+      ...(lockHostname ? { hostname: lockHostname } : {}),
+      ...(lockPlatform ? { platform: lockPlatform } : {}),
     };
   } catch {
     return null;
@@ -91,13 +114,13 @@ function parseLock(raw: string): LockPayload | null {
 type Inspection =
   | { kind: "gone" }
   | { kind: "steal"; raw: string }
-  | { kind: "wait"; holder?: LockPayload; undetermined?: boolean; unparseable?: boolean };
+  | { kind: "wait"; holder?: LockPayload; undetermined?: boolean; unparseable?: boolean; foreignHost?: boolean };
 
 /**
  * Steal only when (a) the lock is empty/unparseable and older than 10 s by mtime, (b) its PID is
- * dead, or (c) with `deep`, its PID is alive but that process started after the recorded start
- * (PID reuse). Never by age while the recorded process is alive; a missing or unreadable start
- * time (e.g. a lock written by an older legion-cli) is waited on, never stolen.
+ * dead on the same host/platform, or (c) with `deep`, its PID is alive but that process started
+ * after the recorded start (PID reuse). Never steal locks owned by a differing hostname/platform
+ * (e.g. Windows <-> WSL2/container), and never steal by age while the recorded process is alive.
  */
 async function inspectLock(lockPath: string, deep: boolean): Promise<Inspection> {
   let raw: string;
@@ -113,6 +136,9 @@ async function inspectLock(lockPath: string, deep: boolean): Promise<Inspection>
   const holder = parseLock(raw);
   if (!holder) {
     return Date.now() - mtimeMs > EMPTY_LOCK_STALE_MS ? { kind: "steal", raw } : { kind: "wait", unparseable: true };
+  }
+  if (isForeignHostMarker(holder)) {
+    return { kind: "wait", holder, undetermined: true, foreignHost: true };
   }
   if (holder.pid === process.pid) {
     // Another store in this process, unless the lock predates us under a reused PID.
@@ -193,10 +219,14 @@ function lockedMessage(lockPath: string, inspection: Inspection | undefined): st
     );
   }
   if (inspection?.kind !== "wait" || !inspection.holder) return undefined;
-  const { pid, acquiredAt } = inspection.holder;
+  const { pid, acquiredAt, hostname: holderHost, platform: holderPlatform } = inspection.holder;
   const check =
     process.platform === "win32" ? `tasklist /FI "PID eq ${pid}"` : `ps -p ${pid} -o pid,lstart,command`;
-  const why = inspection.undetermined ? " Its start time could not be read, so the lock was not cleared." : "";
+  const why = inspection.foreignHost
+    ? ` It belongs to another host or platform (${holderHost ?? "unknown"}/${holderPlatform ?? "unknown"}), so the lock was not cleared.`
+    : inspection.undetermined
+      ? " Its start time could not be read, so the lock was not cleared."
+      : "";
   return (
     `another legion-cli is running. ${lockPath} is held by pid ${pid}` +
     `${acquiredAt ? ` since ${acquiredAt}` : ""}.${why} ` +
@@ -225,6 +255,8 @@ export async function acquireEngineLock(
             pid: process.pid,
             pidStartedAt: ownProcessStartedAt(),
             acquiredAt: new Date().toISOString(),
+            hostname: hostname(),
+            platform: process.platform,
             token,
           })}\n`,
           "utf8",

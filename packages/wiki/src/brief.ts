@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   extractWikiLinks,
   indexDbUsable,
+  sanitizeWikiTitle,
   type LegionReader,
   type LegionStore,
 } from "@9thlevelsoftware/legion-cli-persist";
@@ -91,15 +92,20 @@ async function loadLastQa(store: LegionReader, lastQaId: string | null | undefin
   }
 }
 
+function safeBriefTitle(title: string): string {
+  return sanitizeWikiTitle(title) || "(untitled)";
+}
+
 function wikiEntry(page: WikiPageHead, body: string): SessionBrief["wiki"][number] {
+  const title = safeBriefTitle(page.title);
   if (page.trust === "untrusted") {
-    return { path: page.path, title: page.title, summary: null, trust: "untrusted" };
+    return { path: page.path, title, summary: null, trust: "untrusted" };
   }
   briefCounters.summaries += 1;
   const summary = twoLineSummary(body);
   return {
     path: page.path,
-    title: page.title,
+    title,
     summary: summary.length > 0 ? summary : null,
     trust: "reviewed",
   };
@@ -107,8 +113,8 @@ function wikiEntry(page: WikiPageHead, body: string): SessionBrief["wiki"][numbe
 
 /** Rendered length of a page line when its summary is dropped (the smallest a page can be). */
 function minWikiLineLength(page: Pick<WikiPageHead, "title" | "path" | "trust">): number {
-  const line = page.trust === "untrusted" ? `- ${page.title} (${page.path}) untrusted` : `- ${page.title} (${page.path})`;
-  return line.length + 1;
+  const [line] = wikiLines({ path: page.path, title: page.title, summary: null, trust: page.trust });
+  return (line?.length ?? 0) + 1;
 }
 
 function rankWikiPages(
@@ -117,19 +123,21 @@ function rankWikiPages(
   specLinked: Set<string>,
 ): WikiPageHead[] {
   const score = (page: WikiPageHead): number => {
-    if (hubIds.has(page.id)) return 0;
+    const trustOffset = page.trust === "untrusted" ? 4 : 0;
+    if (hubIds.has(page.id)) return trustOffset + 0;
     if (specLinked.has(page.id) || [...specLinked].some((id) => page.id.endsWith(id) || id.endsWith(page.id))) {
-      return 1;
+      return trustOffset + 1;
     }
-    if (page.trust === "untrusted") return 2;
-    return 3;
+    return trustOffset + 2;
   };
   return [...pages].sort((a, b) => score(a) - score(b) || a.id.localeCompare(b.id));
 }
 
 function wikiLines(page: SessionBrief["wiki"][number]): string[] {
-  if (page.trust === "untrusted") return [`- ${page.title} (${page.path}) untrusted`];
-  const lines = [`- ${page.title} (${page.path})`];
+  const title = safeBriefTitle(page.title);
+  const path = page.path.replace(/[\x00-\x1f\x7f-\x9f]+/g, " ");
+  if (page.trust === "untrusted") return [`- [untrusted title] ${title} (${path})`];
+  const lines = [`- ${title} (${path})`];
   if (page.summary) for (const summaryLine of page.summary.split("\n")) lines.push(`  ${summaryLine}`);
   return lines;
 }

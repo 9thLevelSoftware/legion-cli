@@ -152,16 +152,46 @@ export function duplicateTitleGroups(pages: readonly WikiPageRow[]): WikiPageRow
     .sort((a, b) => (a[0]?.id ?? "").localeCompare(b[0]?.id ?? ""));
 }
 
-export function staleUntrustedPages(pages: readonly WikiPageRow[]): WikiPageRow[] {
-  return pages.filter((page) => page.trust === "untrusted").sort((a, b) => a.id.localeCompare(b.id));
+export type StaleUntrustedOptions = {
+  maxAgeMs?: number;
+  nowMs?: number;
+};
+
+function pageTimestampMs(
+  page: WikiPageRow & { created_at?: number | string; updated_at?: number | string },
+): number | null {
+  const raw = page.updated_at ?? page.created_at;
+  if (typeof raw === "number") return Number.isFinite(raw) && raw > 0 ? raw : null;
+  if (typeof raw === "string") {
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
 }
 
-export function gardenReport(projectRoot: string): GardenReport {
+export function staleUntrustedPages(
+  pages: readonly WikiPageRow[],
+  opts?: StaleUntrustedOptions,
+): WikiPageRow[] {
+  const maxAgeMs = opts?.maxAgeMs;
+  const nowMs = opts?.nowMs ?? Date.now();
+  return pages
+    .filter((page) => {
+      if (page.trust !== "untrusted") return false;
+      if (maxAgeMs === undefined) return true;
+      const ts = pageTimestampMs(page);
+      if (ts === null) return true;
+      return nowMs - ts >= maxAgeMs;
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export function gardenReport(projectRoot: string, opts?: StaleUntrustedOptions): GardenReport {
   const pages = loadWikiPages(projectRoot);
   const links = loadWikiLinks(projectRoot);
   return {
     orphans: orphanPages(pages, links).map(toGardenPage),
     duplicates: duplicateTitleGroups(pages).map((group) => ({ pages: group.map(toGardenPage) })),
-    staleUntrusted: staleUntrustedPages(pages).map(toGardenPage),
+    staleUntrusted: staleUntrustedPages(pages, opts).map(toGardenPage),
   };
 }

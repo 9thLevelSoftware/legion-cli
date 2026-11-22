@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { parseTestReport, runCommand, runProjectQa, scoreQa, splitCommand, ZERO_TESTS_REASON } from "../dist/index.js";
+import { parseTestReport, reportFailClosed, runCommand, runProjectQa, scoreQa, splitCommand, ZERO_TESTS_REASON } from "../dist/index.js";
 
 test("parses Playwright JSON including screenshot-diff failures", () => {
   const report = {
@@ -206,4 +206,72 @@ test("Jest success false with empty testResults is not a 100", () => {
       return true;
     },
   );
+});
+
+test("parses JUnit XML testsuites, failures, errors, skipped, entities, and ignores system-out tags", () => {
+  const xml = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<testsuites tests="5" failures="1" errors="1" skipped="1">',
+    '  <testsuite name="suite &amp; core" tests="5">',
+    '    <testcase name="health &amp; readiness @p0 @ac(AC-01)" classname="api" time="0.01">',
+    '      <system-out><![CDATA[<failure message="not a real failure"/>]]></system-out>',
+    "    </testcase>",
+    '    <testcase name="self closing pass @ac(AC-02)" time="0.01" />',
+    '    <testcase name="renders card @visual @p1" time="0.02">',
+    '      <failure message="toHaveScreenshot mismatch: a &gt; b">diff</failure>',
+    "    </testcase>",
+    '    <testcase name="throws error @p0" time="0.01">',
+    '      <error type="AssertionError" message="boom">stack</error>',
+    "    </testcase>",
+    '    <testcase name="deferred check @p2">',
+    '      <skipped message="wip" />',
+    "    </testcase>",
+    "  </testsuite>",
+    "</testsuites>",
+  ].join("\n");
+  assert.equal(reportFailClosed(xml), false);
+  const parsed = parseTestReport(xml);
+  assert.equal(parsed.length, 5);
+  assert.deepEqual(parsed[0], {
+    title: "health & readiness @p0 @ac(AC-01)",
+    ok: true,
+    skipped: false,
+    visualFailure: false,
+    priority: "P0",
+    acceptanceIds: ["AC-01"],
+  });
+  assert.equal(parsed[1].ok, true);
+  assert.deepEqual(parsed[1].acceptanceIds, ["AC-02"]);
+  assert.equal(parsed[2].ok, false);
+  assert.equal(parsed[2].visualFailure, true);
+  assert.equal(parsed[3].ok, false);
+  assert.equal(parsed[3].priority, "P0");
+  assert.equal(parsed[4].skipped, true);
+  assert.equal(parsed[4].ok, true);
+  assert.equal(parsed[4].priority, "P2");
+
+  const emptyXml = '<testsuite name="empty" tests="0"></testsuite>';
+  assert.deepEqual(parseTestReport(emptyXml), []);
+  assert.equal(reportFailClosed(emptyXml), true);
+});
+
+test("runProjectQa scores JUnit XML unit stdout cleanly", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "legion-qa-junit-"));
+  const script = join(dir, "emit-junit.js");
+  const xml = '<testsuites><testsuite name="unit" tests="1"><testcase name="health @p0 @ac(AC-01)"/></testsuite></testsuites>';
+  await writeFile(script, `process.stdout.write(${JSON.stringify(xml)});`, "utf8");
+  const result = await runProjectQa({
+    projectRoot: dir,
+    spec: {
+      id: "spec-api",
+      acceptance: [{ id: "AC-01", statement: "API returns 200 for health", kind: "test", priority: "P0" }],
+      wireframesIndex: null,
+    },
+    mode: "full",
+    unitCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`,
+    id: "qa-junit",
+    createdAt: "2026-09-01T12:00:00Z",
+  });
+  assert.equal(result.score.pass, true);
+  assert.equal(result.score.total, 100);
 });
