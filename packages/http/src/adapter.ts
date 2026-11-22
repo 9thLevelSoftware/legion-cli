@@ -16,7 +16,7 @@ import {
 } from "./checkpoint.js";
 import { postJsonPinned } from "./client.js";
 import { HttpAdapterError } from "./errors.js";
-import { parseAssistantResponse, toolCallSignature } from "./protocol.js";
+import { isReasoningModel, parseAssistantResponse, toolCallSignature } from "./protocol.js";
 import { httpAdapterNotReadyReason } from "./ssrf.js";
 import {
   dispatchToolCall,
@@ -37,6 +37,7 @@ export function completionsUrl(baseUrl: string): string {
 type ChatMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content?: string | null;
+  reasoning_content?: string;
   tool_calls?: OpenAiToolCall[];
   tool_call_id?: string;
 };
@@ -379,7 +380,10 @@ export class HttpAdapter {
           model: config.model,
           messages,
         };
-        if (job.outputLimit !== undefined) body.max_tokens = job.outputLimit;
+        if (job.outputLimit !== undefined) {
+          if (isReasoningModel(config.model)) body.max_completion_tokens = job.outputLimit;
+          else body.max_tokens = job.outputLimit;
+        }
         if (tools.length > 0) {
           body.tools = tools;
           body.tool_choice = "auto";
@@ -395,10 +399,11 @@ export class HttpAdapter {
           signal,
           allowLoopback: config.allowLoopback,
           lookup: this.#lookup,
+          retryTransient: true,
         });
         checkpoint.usage.requests += 1;
         stdout.push(`HTTP ${res.status} POST /chat/completions round=${round}\n`);
-        const { content, toolCalls, usage } = parseAssistantResponse(res.json);
+        const { content, reasoningContent, toolCalls, usage } = parseAssistantResponse(res.json);
         if (usage) {
           if (usage.inputTokens !== undefined) {
             checkpoint.usage.inputTokens = (checkpoint.usage.inputTokens ?? 0) + usage.inputTokens;
@@ -418,10 +423,10 @@ export class HttpAdapter {
           usageAccounting.tokenTotalIncomplete = true;
           checkpoint.usage.totalTokens = undefined;
         }
+        const requestUsd = job.pricing?.requestUsd ?? 0;
         const completeCostRound = Boolean(
           job.pricing?.inputPerMillionUsd !== undefined &&
           job.pricing.outputPerMillionUsd !== undefined &&
-          job.pricing.requestUsd !== undefined &&
           usage?.inputTokens !== undefined &&
           usage.outputTokens !== undefined
         );
@@ -430,7 +435,7 @@ export class HttpAdapter {
           checkpoint.usage.estimatedCostUsd =
             ((checkpoint.usage.inputTokens ?? 0) / 1_000_000) * job.pricing!.inputPerMillionUsd! +
             ((checkpoint.usage.outputTokens ?? 0) / 1_000_000) * job.pricing!.outputPerMillionUsd! +
-            checkpoint.usage.requests * job.pricing!.requestUsd!;
+            checkpoint.usage.requests * requestUsd;
           checkpoint.usage.costEstimated = true;
         } else {
           checkpoint.usage.estimatedCostUsd = undefined;
@@ -441,6 +446,7 @@ export class HttpAdapter {
         const assistant: ChatMessage = {
           role: "assistant",
           content: content || null,
+          ...(reasoningContent !== undefined ? { reasoning_content: reasoningContent } : {}),
           tool_calls: toolCalls,
         };
         messages.push(assistant);

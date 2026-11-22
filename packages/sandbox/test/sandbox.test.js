@@ -9,7 +9,15 @@ import test from "node:test";
 import { PathEscapeError } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionConfigSchema } from "@9thlevelsoftware/legion-cli-schema";
 
-import { assertExecuteSandbox, detectSandbox, materializeJail, reopenJail, SandboxError } from "../dist/index.js";
+import {
+  assertExecuteSandbox,
+  bwrapArgvPrefix,
+  detectSandbox,
+  dockerContainerName,
+  materializeJail,
+  reopenJail,
+  SandboxError,
+} from "../dist/index.js";
 import {
   DOCKER_HOST_EXEC_REFUSAL,
   DOCKER_PIDS_LIMIT,
@@ -28,22 +36,42 @@ const BWRAP_SKIP = "bwrap not on PATH (CI installs bubblewrap on ubuntu-latest)"
 const ENV_ALLOW = new Set([
   "PATH",
   "TERM",
+  "LANG",
+  "LC_ALL",
   "ComSpec",
   "SYSTEMROOT",
   "WINDIR",
   "SYSTEMDRIVE",
   "PATHEXT",
+  "PSMODULEPATH",
   "TEMP",
   "TMP",
+  "TMPDIR",
   "HOME",
   "USERPROFILE",
   "APPDATA",
   "LOCALAPPDATA",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "XDG_CACHE_HOME",
+  "npm_config_cache",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
   "GIT_DIR",
   "CLAUDE_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
   "GROK_API_KEY",
   "XAI_API_KEY",
   "OPENAI_API_KEY",
+  "CODEX_API_KEY",
+  "MIMO_API_KEY",
   "MINIMAX_API_KEY",
 ]);
 
@@ -1388,5 +1416,178 @@ test("copy-out rechecks a protected-root junction retargeted into a legitimate o
     } finally {
       await handle.destroy();
     }
+  });
+});
+
+test("sandbox env pins jail XDG/TMPDIR/npm_config_cache and forwards safe proxy/CA/locale/PSMODULEPATH vars", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const saved = {
+      LANG: process.env.LANG,
+      LC_ALL: process.env.LC_ALL,
+      HTTPS_PROXY: process.env.HTTPS_PROXY,
+      HTTP_PROXY: process.env.HTTP_PROXY,
+      NO_PROXY: process.env.NO_PROXY,
+      NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS,
+      SSL_CERT_FILE: process.env.SSL_CERT_FILE,
+      SSL_CERT_DIR: process.env.SSL_CERT_DIR,
+      PSMODULEPATH: process.env.PSMODULEPATH,
+      ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN,
+    };
+    process.env.LANG = "C.UTF-8";
+    process.env.LC_ALL = "C.UTF-8";
+    process.env.HTTPS_PROXY = "https://proxy.example:8443";
+    process.env.HTTP_PROXY = "http://proxy.example:8080";
+    process.env.NO_PROXY = "localhost,127.0.0.1";
+    process.env.NODE_EXTRA_CA_CERTS = "/etc/ssl/custom-ca.pem";
+    process.env.SSL_CERT_FILE = "/etc/ssl/cert.pem";
+    process.env.SSL_CERT_DIR = "/etc/ssl/certs";
+    process.env.PSMODULEPATH = "C:\\Modules";
+    process.env.ANTHROPIC_AUTH_TOKEN = "anth-token-secret";
+    let handle;
+    try {
+      handle = await materializeJail(policy(dir, { credentialKeys: ["ANTHROPIC_AUTH_TOKEN"] }));
+      const env = handle.spawnOpts().env;
+      const home = join(handle.jailRoot, ".legion-cli", "sandbox-home");
+      const tmp = join(handle.jailRoot, ".legion-cli", "sandbox-tmp");
+      assert.equal(env.TMPDIR, tmp);
+      assert.equal(env.XDG_CACHE_HOME, tmp);
+      assert.equal(env.npm_config_cache, tmp);
+      assert.equal(env.XDG_CONFIG_HOME, join(home, ".config"));
+      assert.equal(env.XDG_DATA_HOME, join(home, ".local", "share"));
+      assert.equal(env.XDG_STATE_HOME, join(home, ".local", "state"));
+      assert.equal(env.LANG, "C.UTF-8");
+      assert.equal(env.LC_ALL, "C.UTF-8");
+      assert.equal(env.HTTPS_PROXY, "https://proxy.example:8443");
+      assert.equal(env.HTTP_PROXY, "http://proxy.example:8080");
+      assert.equal(env.NO_PROXY, "localhost,127.0.0.1");
+      assert.equal(env.NODE_EXTRA_CA_CERTS, "/etc/ssl/custom-ca.pem");
+      assert.equal(env.SSL_CERT_FILE, "/etc/ssl/cert.pem");
+      assert.equal(env.SSL_CERT_DIR, "/etc/ssl/certs");
+      assert.equal(env.ANTHROPIC_AUTH_TOKEN, "anth-token-secret");
+      if (process.platform === "win32") {
+        assert.equal(env.PSMODULEPATH, "C:\\Modules");
+      }
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      if (handle) await handle.destroy();
+    }
+  });
+});
+
+test("materializeJail scopes staged auth directories by adapterId", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const fakeHome = join(dir, "fake-host-home");
+    await mkdir(join(fakeHome, ".claude"), { recursive: true });
+    await writeFile(join(fakeHome, ".claude", "creds.json"), '{"claude":true}\n', "utf8");
+    await mkdir(join(fakeHome, ".codex"), { recursive: true });
+    await writeFile(join(fakeHome, ".codex", "auth.json"), '{"codex":true}\n', "utf8");
+    const prevHome = process.env.HOME;
+    const prevUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      for (const adapterId of ["http", "fake", "acp", "grok", "mimo", "minimax"]) {
+        const handle = await materializeJail(policy(dir, { runId: `run-auth-${adapterId}`, adapterId }));
+        try {
+          const jailHome = join(handle.jailRoot, ".legion-cli", "sandbox-home");
+          assert.equal(existsSync(join(jailHome, ".claude", "creds.json")), false, `${adapterId} must not stage .claude`);
+          assert.equal(existsSync(join(jailHome, ".codex", "auth.json")), false, `${adapterId} must not stage .codex`);
+        } finally {
+          await handle.destroy();
+        }
+      }
+
+      const claudeHandle = await materializeJail(policy(dir, { runId: "run-auth-claude", adapterId: "claude" }));
+      try {
+        const jailHome = join(claudeHandle.jailRoot, ".legion-cli", "sandbox-home");
+        assert.equal(existsSync(join(jailHome, ".claude", "creds.json")), true);
+        assert.equal(existsSync(join(jailHome, ".codex", "auth.json")), false);
+      } finally {
+        await claudeHandle.destroy();
+      }
+
+      const codexHandle = await materializeJail(policy(dir, { runId: "run-auth-codex", adapterId: "codex" }));
+      try {
+        const jailHome = join(codexHandle.jailRoot, ".legion-cli", "sandbox-home");
+        assert.equal(existsSync(join(jailHome, ".codex", "auth.json")), true);
+        assert.equal(existsSync(join(jailHome, ".claude", "creds.json")), false);
+      } finally {
+        await codexHandle.destroy();
+      }
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevUserProfile;
+    }
+  });
+});
+
+test("materializeJail copies existing allowedWrites files outside readSet and records baseline hash", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    await mkdir(join(dir, "crates", "app", "src"), { recursive: true });
+    await writeFile(join(dir, "crates", "app", "src", "main.rs"), "fn main() {}\n", "utf8");
+    const handle = await materializeJail(
+      policy(dir, {
+        readSet: ["src/read.ts"],
+        allowedWrites: ["crates/app/src/main.rs", "crates/app/src/new.rs"],
+      }),
+    );
+    try {
+      const staged = join(handle.jailRoot, "crates", "app", "src", "main.rs");
+      assert.equal(await readFile(staged, "utf8"), "fn main() {}\n");
+      await writeFile(staged, "fn main() { println!(\"ok\"); }\n", "utf8");
+      await writeFile(join(handle.jailRoot, "crates", "app", "src", "new.rs"), "pub fn helper() {}\n", "utf8");
+      const output = await handle.inspectOutput();
+      const mod = output.changes.find((c) => c.path === "crates/app/src/main.rs");
+      const added = output.changes.find((c) => c.path === "crates/app/src/new.rs");
+      assert.ok(mod && typeof mod.beforeHash === "string", "existing allowedWrites file must have beforeHash");
+      assert.equal(added?.beforeHash, null);
+      const res = await handle.applyOutput(output);
+      assert.deepEqual(res.copied.sort(), ["crates/app/src/main.rs", "crates/app/src/new.rs"]);
+      assert.equal(await readFile(join(dir, "crates", "app", "src", "main.rs"), "utf8"), "fn main() { println!(\"ok\"); }\n");
+    } finally {
+      await handle.destroy();
+    }
+  });
+});
+
+test("bwrapArgvPrefix mounts tmpfs over node_modules/.cache when present and dockerContainerName names container", async () => {
+  await withTempDir(async (dir) => {
+    await seedProject(dir);
+    const jailRoot = join(dir, ".legion-cli", "sandbox", "run-1");
+    const jailHome = join(jailRoot, ".legion-cli", "sandbox-home");
+    await mkdir(join(dir, "node_modules"), { recursive: true });
+    const withoutCache = bwrapArgvPrefix({
+      jailRoot,
+      projectRoot: dir,
+      bindPaths: [],
+      jailHome,
+      authBinds: [],
+    });
+    assert.equal(withoutCache.includes("--tmpfs") && withoutCache.includes(join(jailRoot, "node_modules", ".cache")), false);
+
+    await mkdir(join(dir, "node_modules", ".cache"), { recursive: true });
+    const withCache = bwrapArgvPrefix({
+      jailRoot,
+      projectRoot: dir,
+      bindPaths: [],
+      jailHome,
+      authBinds: [],
+    });
+    const cacheTmpfsIdx = withCache.indexOf(join(jailRoot, "node_modules", ".cache"));
+    assert.ok(cacheTmpfsIdx > 0 && withCache[cacheTmpfsIdx - 1] === "--tmpfs");
+
+    const name = dockerContainerName("run/1:test");
+    assert.match(name, /^legion-[a-zA-Z0-9_.-]+$/);
+    const dockerArgs = dockerArgvPrefix({ jailRoot, containerName: name });
+    const nameIdx = dockerArgs.indexOf("--name");
+    assert.ok(nameIdx > 0 && dockerArgs[nameIdx + 1] === name);
   });
 });

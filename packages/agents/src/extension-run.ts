@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { access, mkdir, open, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { assertAgentPathAllowed, assertNoLinkInPath, atomicWriteFile, canonicalJson, overlapsEngineProtectedPath, parseStrictJson } from "@9thlevelsoftware/legion-cli-persist";
-import { materializeJail, runComponentValidator, snapshotComponentFiles, type ComponentValidationResult } from "@9thlevelsoftware/legion-cli-sandbox";
+import { jailSeatbeltProfile, materializeJail, runComponentValidator, snapshotComponentFiles, type ComponentValidationResult } from "@9thlevelsoftware/legion-cli-sandbox";
 import { ComponentInputSchema, ComponentInvocationSchema, JsonContractConfigurationSchema, jsonContractFiles, validateComponentInvocation, type AdapterProfile, type ComponentInput, type ComponentInvocation, type LegionConfig } from "@9thlevelsoftware/legion-cli-schema";
 import type { HttpToolHost } from "@9thlevelsoftware/legion-cli-http";
 import { AgentError } from "./errors.js";
-import { filterSpawnEnv } from "./env.js";
+import { ADAPTER_CREDENTIAL_KEYS, filterSpawnEnv } from "./env.js";
 import { validateExtensionResources, type ExtensionManifest } from "./extensions.js";
 import { runCachePaths, writeRunPrompt } from "./paths.js";
 import { applyProfileArgs, applyUsagePricing, assertProfileRuntimeSupport, resolveAgentProfile, usageLimitReason, type AgentUsage } from "./profiles.js";
@@ -57,14 +59,6 @@ export type GovernedExtensionResult = {
 export function createExtensionRunId(extensionId: string, now = Date.now(), uuid = randomUUID()): string {
   return `extension-${extensionId}-${now.toString(36)}-${uuid.slice(0, 12)}`;
 }
-
-const CREDENTIALS: Partial<Record<string, readonly string[]>> = {
-  claude: ["CLAUDE_API_KEY"],
-  grok: ["GROK_API_KEY", "XAI_API_KEY"],
-  openai: ["OPENAI_API_KEY"],
-  codex: ["OPENAI_API_KEY"],
-  minimax: ["MINIMAX_API_KEY"],
-};
 
 function readRoot(pattern: string): string | undefined {
   const posix = pattern.replaceAll("\\", "/").replace(/^\.\//, "");
@@ -170,9 +164,73 @@ function extensionPointer(runId: string, manifest: ExtensionManifest): string {
   ].join("\n");
 }
 
+function safeToolchainReadPaths(jailWork: string, env: NodeJS.ProcessEnv, projectRoot?: string): string[] {
+  const paths: string[] = [];
+  const homes = [homedir(), env.HOME, process.env.HOME].filter((v): v is string => Boolean(v)).map((v) => resolve(v));
+  const jailResolved = resolve(jailWork);
+  const projectResolved = projectRoot ? resolve(projectRoot) : undefined;
+  const isRootOrBlocked = (candidate: string): boolean => {
+    const resolved = resolve(candidate);
+    if (resolved === "/" || resolved === dirname(resolved) || resolved === "/Users" || resolved === "/home") return true;
+    if (resolved === jailResolved || resolved.startsWith(`${jailResolved}/`)) return true;
+    if (projectResolved && (resolved === projectResolved || resolved.startsWith(`${projectResolved}/`))) return true;
+    return false;
+  };
+  const isHomeOrWithin = (candidate: string): boolean => {
+    const resolved = resolve(candidate);
+    return homes.some((home) => resolved === home || resolved.startsWith(`${home}/`));
+  };
+  let execReal = process.execPath;
+  try {
+    execReal = realpathSync(process.execPath);
+  } catch {
+    execReal = process.execPath;
+  }
+  paths.push(execReal);
+  const execDir = dirname(execReal);
+  if (!isRootOrBlocked(execDir) && !homes.some((h) => resolve(execDir) === h)) {
+    paths.push(execDir);
+    const prefix = dirname(execDir);
+    if (basename(execDir) === "bin" && !isRootOrBlocked(prefix) && !isHomeOrWithin(prefix)) {
+      const bundledModules = join(prefix, "lib", "node_modules");
+      if (existsSync(bundledModules)) paths.push(bundledModules);
+    }
+  }
+  const rawPath = env.PATH ?? env.Path ?? "";
+  for (const entry of rawPath.split(delimiter).filter(Boolean)) {
+    if (existsSync(entry) && !isRootOrBlocked(entry) && !isHomeOrWithin(entry)) paths.push(entry);
+  }
+  return [...new Set(paths)];
+}
+
+/** Builds a network-denied macOS Seatbelt profile for governed extension command execution inside a jail. */
+export function buildExtensionSeatbeltProfile(
+  jailWork: string,
+  options: {
+    projectRoot?: string;
+    readPaths?: readonly string[];
+    env?: NodeJS.ProcessEnv;
+    tmpDir?: string;
+    runsDir?: string;
+  } = {},
+): string {
+  const runsDir = options.runsDir ?? join(jailWork, ".legion-cli", "extensions", "runs");
+  const jailTmp = options.tmpDir ?? join(jailWork, ".legion-cli", "sandbox-tmp");
+  const reads = [
+    ...safeToolchainReadPaths(jailWork, options.env ?? process.env, options.projectRoot),
+    ...(options.readPaths ?? []),
+  ];
+  return jailSeatbeltProfile(jailWork, reads, {
+    projectRoot: options.projectRoot,
+    allowNetwork: false,
+    writePaths: [runsDir, jailTmp],
+  });
+}
+
 export function extensionCommandSpawnOpts(
   backend: string,
   spawnOpts: { cwd: string; env: NodeJS.ProcessEnv; wrapper?: { bin: string; argvPrefix: string[] } },
+  options?: { projectRoot?: string },
 ): typeof spawnOpts {
   const wrapper = spawnOpts.wrapper;
   const withoutWrapper = (): typeof spawnOpts => ({ cwd: spawnOpts.cwd, env: spawnOpts.env });
@@ -188,7 +246,30 @@ export function extensionCommandSpawnOpts(
     argvPrefix.splice(separator, 0, "--unshare-net");
     return { ...spawnOpts, wrapper: { ...wrapper, argvPrefix } };
   }
-  // Seatbelt's shared profile permits provider traffic, so it is never reused for extension commands.
+  if (backend === "seatbelt" && process.platform === "darwin" && existsSync(spawnOpts.cwd)) {
+    const jailTmp = spawnOpts.env.TMPDIR || spawnOpts.env.TEMP || join(spawnOpts.cwd, ".legion-cli", "sandbox-tmp");
+    const runsDir = join(spawnOpts.cwd, ".legion-cli", "extensions", "runs");
+    mkdirSync(jailTmp, { recursive: true });
+    const profilePath = join(jailTmp, "extension-command.sb");
+    try {
+      const st = lstatSync(profilePath);
+      if (st.isSymbolicLink() || !st.isFile()) return withoutWrapper();
+      rmSync(profilePath, { force: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    writeFileSync(
+      profilePath,
+      buildExtensionSeatbeltProfile(spawnOpts.cwd, {
+        projectRoot: options?.projectRoot,
+        env: spawnOpts.env,
+        tmpDir: jailTmp,
+        runsDir,
+      }),
+      { encoding: "utf8", flag: "wx" },
+    );
+    return { ...spawnOpts, wrapper: { bin: wrapper.bin, argvPrefix: ["-f", profilePath, "--"] } };
+  }
   return withoutWrapper();
 }
 
@@ -430,14 +511,15 @@ export async function runGovernedExtension(opts: {
     runId,
     allowedWrites: [evidenceRoot, `.legion-cli/cache/runs/${runId}`],
     readSet,
+    adapterId: adapter.id,
     // In-process adapters (`(http)`, `(in-process)`) have no executable to bind, as in core's skill spawn.
     adapterBinary: adapter.binary.startsWith("(") ? undefined : adapter.binary,
     backend: opts.config.sandbox.backend,
     allowDegradedCopy: opts.config.sandbox.allowCopyJail,
-    credentialKeys: CREDENTIALS[adapter.id] ?? [],
+    credentialKeys: ADAPTER_CREDENTIAL_KEYS[adapter.id] ?? [],
   });
   const spawnOpts = sandbox.spawnOpts();
-  const commandSpawnOpts = extensionCommandSpawnOpts(sandbox.backend, spawnOpts);
+  const commandSpawnOpts = extensionCommandSpawnOpts(sandbox.backend, spawnOpts, { projectRoot: opts.projectRoot });
   if (opts.manifest.permissions.commands.length > 0 && !commandSpawnOpts.wrapper) {
     unavailableTools.push("command-execution");
   }

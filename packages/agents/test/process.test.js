@@ -250,3 +250,52 @@ test("CI linux-docker and macOS sandbox legs are required", async () => {
   assert.match(ci, /Q-WIN-DOCKER/);
   assert.match(ci, /macos-latest/);
 });
+
+test("ChildAgentHandle populates usage from JSON stdout on exit 0 and applies NoDefaultCurrentDirectoryInExePath on win32", async () => {
+  await withTempDir(async (dir) => {
+    const { job } = await setupRun(dir, { runId: "run-usage-json" });
+    const adapter = new GenericAdapter({
+      binary: process.execPath,
+      args: [
+        "-e",
+        "process.stdout.write(JSON.stringify({ usage: { input_tokens: 120, output_tokens: 45 }, envFlag: process.env.NoDefaultCurrentDirectoryInExePath ?? null }))",
+        "{{pointer}}",
+      ],
+    });
+    const handle = await adapter.spawn(job);
+    const result = await handle.wait();
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(result.usage, { inputTokens: 120, outputTokens: 45, totalTokens: 165 });
+    const parsedStdout = JSON.parse(await readFile(result.stdoutPath, "utf8"));
+    if (process.platform === "win32") {
+      assert.equal(parsedStdout.envFlag, "1");
+    }
+
+    const failJob = (await setupRun(dir, { runId: "run-usage-fail" })).job;
+    const failAdapter = new GenericAdapter({
+      binary: process.execPath,
+      args: ["-e", "process.stdout.write(JSON.stringify({ usage: { input_tokens: 50, output_tokens: 10 } })); process.exit(1);", "{{pointer}}"],
+    });
+    const failResult = await (await failAdapter.spawn(failJob)).wait();
+    assert.equal(failResult.exitCode, 1);
+    assert.equal(failResult.usage, undefined);
+  });
+});
+
+test("spawnInteractiveAgentProcess unwraps Windows .cmd npm shims without EINVAL", { skip: process.platform !== "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const script = join(dir, "stdio-echo.cjs");
+    const cmd = join(dir, "stdio-echo.cmd");
+    await writeFile(script, 'process.stdin.once("data", (d) => { process.stdout.write(d); process.exit(0); });\n', "utf8");
+    await writeFile(cmd, `@ECHO off\r\n"%~dp0\\node.exe" "%~dp0\\stdio-echo.cjs" %*\r\n`, "utf8");
+    const { job } = await setupRun(dir, { runId: "run-interactive-cmd" });
+    const child = spawnInteractiveAgentProcess(cmd, [], job);
+    let out = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { out += chunk; });
+    child.stdin.write("hello-acp\n");
+    const [code] = await once(child, "exit");
+    assert.equal(code, 0);
+    assert.equal(out, "hello-acp\n");
+  });
+});

@@ -107,7 +107,7 @@ export type {
   ExtensionPin,
   ParsedExtension,
 } from "./extensions.js";
-export { createExtensionRunId, extensionCommandSpawnOpts, extensionReadSet, readComponentInvocation, runGovernedExtension } from "./extension-run.js";
+export { buildExtensionSeatbeltProfile, createExtensionRunId, extensionCommandSpawnOpts, extensionReadSet, readComponentInvocation, runGovernedExtension } from "./extension-run.js";
 export type {
   ExtensionCheck,
   ExtensionEvidence,

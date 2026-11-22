@@ -84,15 +84,15 @@ export function applyUsagePricing(usage: AgentUsage, pricing?: AgentPricing): Ag
     inputTokens === undefined ||
     outputTokens === undefined ||
     pricing.inputPerMillionUsd === undefined ||
-    pricing.outputPerMillionUsd === undefined ||
-    pricing.requestUsd === undefined
+    pricing.outputPerMillionUsd === undefined
   ) {
     return normalized;
   }
+  const requestUsd = pricing.requestUsd ?? 0;
   const estimated =
     (inputTokens / 1_000_000) * pricing.inputPerMillionUsd +
     (outputTokens / 1_000_000) * pricing.outputPerMillionUsd +
-    requests * pricing.requestUsd;
+    requests * requestUsd;
   return { ...normalized, estimatedCostUsd: Number(estimated.toFixed(9)), costEstimated: true };
 }
 

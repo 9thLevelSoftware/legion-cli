@@ -337,3 +337,53 @@ test("unwrappable .cmd with a multiline pointer fails closed", { skip: process.p
     await assert.rejects(() => adapter.spawn(job), AgentError);
   });
 });
+
+test("filterSpawnEnv forwards safe XDG/proxy/CA/locale/TMPDIR vars and scopes expanded adapter credentials", () => {
+  const source = {
+    PATH: "/usr/bin",
+    TMP: "/tmp/t",
+    TMPDIR: "/tmp/td",
+    LANG: "en_US.UTF-8",
+    LC_ALL: "C.UTF-8",
+    XDG_CONFIG_HOME: "/home/u/.config",
+    XDG_DATA_HOME: "/home/u/.local/share",
+    XDG_STATE_HOME: "/home/u/.local/state",
+    XDG_CACHE_HOME: "/home/u/.cache",
+    HTTPS_PROXY: "https://proxy:8443",
+    HTTP_PROXY: "http://proxy:8080",
+    NO_PROXY: "localhost",
+    NODE_EXTRA_CA_CERTS: "/etc/ssl/custom.pem",
+    SSL_CERT_FILE: "/etc/ssl/cert.pem",
+    SSL_CERT_DIR: "/etc/ssl/certs",
+    ANTHROPIC_API_KEY: "ak",
+    ANTHROPIC_AUTH_TOKEN: "at",
+    CLAUDE_CODE_OAUTH_TOKEN: "ot",
+    CODEX_API_KEY: "ck",
+    MIMO_API_KEY: "mk",
+    UNRELATED_SECRET: "nope",
+  };
+  const claude = filterSpawnEnv(source, "claude");
+  for (const key of [
+    "TMP", "TMPDIR", "LANG", "LC_ALL",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
+    "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+  ]) {
+    assert.equal(claude[key], source[key], `expected claude env ${key}`);
+  }
+  assert.equal(claude.CODEX_API_KEY, undefined);
+  assert.equal(claude.MIMO_API_KEY, undefined);
+  assert.equal(claude.UNRELATED_SECRET, undefined);
+
+  const codex = filterSpawnEnv(source, "codex");
+  assert.equal(codex.CODEX_API_KEY, "ck");
+  assert.equal(codex.ANTHROPIC_API_KEY, undefined);
+
+  const openai = filterSpawnEnv(source, "openai");
+  assert.equal(openai.CODEX_API_KEY, "ck");
+  assert.equal(openai.MIMO_API_KEY, undefined);
+
+  const mimo = filterSpawnEnv(source, "mimo");
+  assert.equal(mimo.MIMO_API_KEY, "mk");
+  assert.equal(mimo.CODEX_API_KEY, undefined);
+});
