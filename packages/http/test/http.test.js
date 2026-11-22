@@ -24,9 +24,11 @@ import {
   toolCallSignature,
   sha256Text,
   stableHash,
+  validateMcpRemoteUrl,
   writeHttpCheckpoint,
   toolsForJob,
 } from "../dist/index.js";
+import { postJsonPinned } from "../dist/client.js";
 import { capToolResult, MAX_TOOL_RESULT_CHARS } from "../dist/tools.js";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -670,14 +672,21 @@ test("assistant response validation accepts multiple unique valid calls and usag
   assert.deepEqual(parsed.usage, { inputTokens: 10, outputTokens: 4, totalTokens: 14 });
 });
 
-test("assistant response validation requires tool_calls finish reason and consistent integer usage", () => {
+test("assistant response validation accepts stop with tool calls, rejects missing finish_reason, and validates integer usage", () => {
   const call = { id: "call-1", type: "function", function: { name: "read_file", arguments: '{"path":"README.md"}' } };
-  for (const finish_reason of [undefined, "", "stop"]) {
+  for (const finish_reason of [undefined, ""]) {
     assert.throws(
       () => parseAssistantResponse({ choices: [{ finish_reason, message: { role: "assistant", content: null, tool_calls: [call] } }] }),
       /require finish_reason=tool_calls/,
     );
   }
+  const stopToolCalls = parseAssistantResponse({
+    choices: [{ finish_reason: "stop", message: { role: "assistant", content: null, tool_calls: [call] } }],
+    usage: { prompt_tokens: 10, completion_tokens: 15, total_tokens: 25, completion_tokens_details: { reasoning_tokens: 10 } },
+  });
+  assert.equal(stopToolCalls.finishReason, "stop");
+  assert.equal(stopToolCalls.toolCalls.length, 1);
+  assert.deepEqual(stopToolCalls.usage, { inputTokens: 10, outputTokens: 15, totalTokens: 25 });
   assert.throws(
     () => parseAssistantResponse({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "done" } }], usage: { prompt_tokens: "bad", total_tokens: 1 } }),
     /usage\.prompt_tokens/,
@@ -1661,4 +1670,193 @@ test("an abort during a tool-call batch stops the remaining calls", async () => 
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("non-2xx HTTP responses include sanitized error detail, redact secrets, and transient 429/503 retries work", async () => {
+  let retryAttempt = 0;
+  const { server, baseUrl } = await startMock(async (req, res) => {
+    await jsonBody(req);
+    if (req.url === "/v1/fail/chat/completions") {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end('{"error":"bad key sk-supersecret12345 and Bearer tok_abc123\\nline2"}\x00\x07');
+      return;
+    }
+    retryAttempt += 1;
+    if (retryAttempt < 3) {
+      res.writeHead(retryAttempt === 1 ? 429 : 503, { "Content-Type": "text/plain", "Retry-After": "0.02" });
+      res.end("slow down");
+      return;
+    }
+    sendJson(res, 200, assistant("ok after retry"));
+  });
+  try {
+    const controller = new AbortController();
+    await assert.rejects(
+      () =>
+        postJsonPinned({
+          url: new URL(`${baseUrl}/fail/chat/completions`),
+          apiKey: "my-secret-api-key",
+          body: { test: true },
+          allowLoopback: true,
+          signal: controller.signal,
+        }),
+      (err) => {
+        assert.equal(err instanceof HttpAdapterError, true);
+        assert.match(err.message, /HTTP 400:/);
+        assert.doesNotMatch(err.message, /sk-supersecret12345|tok_abc123|[\x00-\x1f]/);
+        assert.match(err.message, /\[REDACTED\]/);
+        return true;
+      },
+    );
+
+    const retried = await postJsonPinned({
+      url: new URL(`${baseUrl}/chat/completions`),
+      apiKey: "my-secret-api-key",
+      body: { test: true },
+      allowLoopback: true,
+      retryTransient: true,
+      signal: controller.signal,
+    });
+    assert.equal(retried.status, 200);
+    assert.equal(retryAttempt, 3);
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("reasoning_content is echoed back across tool rounds, reasoning models use max_completion_tokens, and requestUsd defaults to 0", async () => {
+  const seenBodies = [];
+  const { server, baseUrl } = await startMock(async (req, res) => {
+    const body = await jsonBody(req);
+    seenBodies.push(body);
+    if (seenBodies.length === 1) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: {
+                role: "assistant",
+                content: null,
+                reasoning_content: "internal chain of thought",
+                tool_calls: [toolCall("c1", "read_file", { path: "a.txt", startLine: 2, maxLines: 2 })],
+              },
+            },
+          ],
+          usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 },
+        }),
+      );
+      return;
+    }
+    sendJson(res, 200, {
+      ...assistant("final reply"),
+      usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 },
+    });
+  });
+  try {
+    await withTemp(async (dir) => {
+      const promptPath = join(dir, "prompt.md");
+      await writeFile(promptPath, "reason\n", "utf8");
+      const adapter = new HttpAdapter({ baseUrl, model: "o3-mini", apiKeyEnv: "KEY", allowLoopback: true });
+      const result = await (
+        await adapter.spawn({
+          runId: "run-reasoning",
+          skillId: "execute",
+          promptPath,
+          pointerPrompt: "pointer",
+          cwd: dir,
+          timeoutMs: 10_000,
+          env: { KEY: "secret" },
+          outputLimit: 256,
+          pricing: { inputPerMillionUsd: 1, outputPerMillionUsd: 2 },
+          maxEstimatedCostUsd: 1,
+          httpHost: {
+            jailRoot: dir,
+            readFile: async () => "line1\nline2\nline3\nline4\n",
+            writeFile: async () => undefined,
+            listDir: async () => [],
+          },
+        })
+      ).wait();
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.usage.costEstimated, true);
+      assert.equal(result.usage.estimatedCostUsd, 0.004);
+      assert.equal(seenBodies[0].max_tokens, undefined);
+      assert.equal(seenBodies[0].max_completion_tokens, 256);
+      const secondMessages = seenBodies[1].messages;
+      const assistantMsg = secondMessages.find((m) => m.role === "assistant");
+      const toolMsg = secondMessages.find((m) => m.role === "tool");
+      assert.equal(assistantMsg.reasoning_content, "internal chain of thought");
+      assert.equal(toolMsg.content, "line2\nline3");
+    });
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("read_file pagination preserves default behavior and handles startLine/maxLines", async () => {
+  const host = {
+    ...copyHost(),
+    readFile: async () => "one\ntwo\nthree\n",
+  };
+  assert.equal(
+    await dispatchToolCall(toolCall("r-full", "read_file", { path: "x.txt" }), host, "execute"),
+    "one\ntwo\nthree\n",
+  );
+  assert.equal(
+    await dispatchToolCall(toolCall("r-slice", "read_file", { path: "x.txt", startLine: 2, maxLines: 1 }), host, "execute"),
+    "two",
+  );
+  assert.equal(
+    await dispatchToolCall(toolCall("r-eof", "read_file", { path: "x.txt", startLine: 10 }), host, "execute"),
+    "",
+  );
+  assert.match(
+    await dispatchToolCall(toolCall("r-bad", "read_file", { path: "x.txt", startLine: 0 }), host, "execute"),
+    /positive integer/,
+  );
+});
+
+test("recoverPendingToolOutcome handles ENOENT on interrupted brand-new write_file as uncertain", async () => {
+  const enoent = Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+  const host = {
+    ...copyHost(),
+    readFile: async () => { throw enoent; },
+  };
+  const write = {
+    id: "w-new",
+    name: "write_file",
+    arguments: JSON.stringify({ path: "src/brand-new.ts", contents: "new\n" }),
+    status: "pending",
+  };
+  write.signature = toolCallSignature({
+    id: write.id,
+    type: "function",
+    function: { name: write.name, arguments: write.arguments },
+  });
+  await assert.rejects(
+    () => recoverPendingToolOutcome(write, host, "execute"),
+    (err) => err instanceof HttpAdapterError && /outcome is uncertain/.test(err.message),
+  );
+});
+
+test("validateMcpRemoteUrl checks private literal hosts before DNS lookup", async () => {
+  let lookedUp = 0;
+  const spyLookup = async () => {
+    lookedUp += 1;
+    return [{ address: "93.184.216.34", family: 4 }];
+  };
+  await assert.rejects(
+    () => validateMcpRemoteUrl("https://169.254.169.254/mcp", false, spyLookup),
+    /private address/i,
+  );
+  await assert.rejects(
+    () => validateMcpRemoteUrl("http://[fe80::ffff:7f00:1]/mcp", true, spyLookup),
+    /private address/i,
+  );
+  assert.equal(lookedUp, 0);
 });

@@ -12,6 +12,7 @@ import type {
   StopReason,
   Stream,
 } from "@agentclientprotocol/sdk";
+import { PACKAGE_VERSION } from "./version.js";
 
 /**
  * ACP stays opt-in: callers must explicitly construct this adapter and provide
@@ -159,7 +160,7 @@ export class ExperimentalAcpAdapter {
         clientCapabilities: this.#options.clientCapabilities ?? {},
         clientInfo: {
           name: this.#options.clientName ?? "legion-cli-experimental-acp",
-          version: "0.0.0",
+          version: PACKAGE_VERSION,
         },
       });
       if (initialized.protocolVersion !== acp.PROTOCOL_VERSION) {

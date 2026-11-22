@@ -260,3 +260,47 @@ test("invalid governed output completes with parsed usage and the exact raw resp
   assert.equal(host.completion.responseBody, undefined);
   assert.equal(JSON.stringify(host.completion).includes(content), false);
 });
+
+test("governed planner omits temperature for OpenAI reasoning models and defaults requestUsd to 0", async () => {
+  const fixture = await serverWith({
+    choices: [{ message: { role: "assistant", content: JSON.stringify(program) }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 },
+  });
+  const root = await mkdtemp(join(tmpdir(), "governed-reasoning-"));
+  try {
+    const host = createHost();
+    const context = {
+      runId: "run/../unsafe",
+      taskId: "task-1",
+      identities: { ...identities(fixture.baseUrl), provider: { endpoint: fixture.baseUrl, model: "gpt-5", profile: "profile" } },
+      manifestDigest: hash,
+      plannerInput: {
+        approvedMetadata: { title: "approved" },
+        label: { origins: ["control"], integrity: "approved", confidentiality: "workspace" },
+        taskContract: { description: "fixed" },
+      },
+      policy: {},
+    };
+    const job = {
+      runId: context.runId,
+      skillId: "execute",
+      cwd: root,
+      timeoutMs: 5000,
+      env: { TOKEN: "fixture-secret" },
+      checkpointRoot: root,
+      pricing: { inputPerMillionUsd: 1, outputPerMillionUsd: 2 },
+      assuranceContext: context,
+      effectHost: host,
+    };
+    const adapter = new HttpAdapter({ baseUrl: fixture.baseUrl, model: "gpt-5", apiKeyEnv: "TOKEN", allowLoopback: true });
+    const result = await (await adapter.spawn(job)).wait();
+    assert.equal(result.exitCode, 0);
+    const sent = JSON.parse(fixture.requests[0].toString("utf8"));
+    assert.equal("temperature" in sent, false);
+    assert.equal(host.completion.providerUsage.costAccounting, "complete");
+    assert.equal(host.completion.providerUsage.costUsd, 0.002);
+  } finally {
+    fixture.server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

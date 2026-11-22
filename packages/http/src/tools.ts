@@ -99,8 +99,16 @@ const READ_FILE: OpenAiTool = {
   type: "function",
   function: {
     name: "read_file",
-    description: "Read a jail-relative POSIX file.",
-    parameters: FILE_PATH_PARAM,
+    description: "Read a jail-relative POSIX file. Optional 1-based startLine and maxLines paginate large files.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Jail-relative POSIX path" },
+        startLine: { type: "integer", minimum: 1, description: "Optional 1-based starting line number" },
+        maxLines: { type: "integer", minimum: 1, description: "Optional maximum number of lines to return" },
+      },
+      required: ["path"],
+    },
   },
 };
 
@@ -217,6 +225,16 @@ export function capToolResult(text: string): string {
   return `${text.slice(0, MAX_TOOL_RESULT_CHARS)}\n...truncated`;
 }
 
+function sliceReadFileLines(output: string, startLine?: number, maxLines?: number): string {
+  if (startLine === undefined && maxLines === undefined) return output;
+  const lines = output.split(/\r?\n/);
+  if (output.endsWith("\n")) lines.pop();
+  const start = (startLine ?? 1) - 1;
+  if (start >= lines.length) return "";
+  const end = maxLines !== undefined ? start + maxLines : lines.length;
+  return lines.slice(start, end).join("\n");
+}
+
 function throwIfToolAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new HttpAdapterError("adapter.http tool dispatch aborted", { cause: signal.reason });
@@ -242,7 +260,9 @@ export async function dispatchToolCall(
     if (name === "read_file") {
       const output = await host.readFile(String(args.path ?? ""));
       throwIfToolAborted(signal);
-      return capToolResult(output);
+      const startLine = typeof args.startLine === "number" ? args.startLine : undefined;
+      const maxLines = typeof args.maxLines === "number" ? args.maxLines : undefined;
+      return capToolResult(sliceReadFileLines(output, startLine, maxLines));
     }
     if (name === "write_file") {
       await host.writeFile(String(args.path ?? ""), String(args.contents ?? ""));

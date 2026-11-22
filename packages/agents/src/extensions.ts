@@ -102,7 +102,9 @@ function parseAllowedTools(value: unknown): string[] | undefined {
 
 function normalizedCommand(value: string): string | undefined {
   const tokens = value.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0 || tokens.some((token) => !/^[A-Za-z0-9@._/+\-=]+$/.test(token))) return undefined;
+  if (tokens.length === 0) return undefined;
+  if (!/^[A-Za-z0-9@._/+\-=]+$/.test(tokens[0]!)) return undefined;
+  if (tokens.slice(1).some((token) => !/^[A-Za-z0-9@._/+\-=:]+$/.test(token))) return undefined;
   return tokens.join(" ");
 }
 
@@ -304,12 +306,13 @@ function containsExtension(dir: string): boolean {
 export function findExtensionsDir(from = process.cwd()): string | undefined {
   const env = process.env.LEGION_CLI_EXTENSIONS_DIR?.trim();
   if (env) return env;
-  const starts = [from];
+  const starts: string[] = [];
   try {
     starts.push(dirname(fileURLToPath(import.meta.url)));
   } catch {
     // ignore
   }
+  starts.push(from);
   for (const start of starts) {
     let dir = resolve(start);
     for (let depth = 0; depth < 10; depth += 1) {

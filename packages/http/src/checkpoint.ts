@@ -203,8 +203,13 @@ export async function recoverPendingToolOutcome(
   }
   if (outcome.name === "write_file") {
     const args = parseToolArguments(call);
-    const current = await host.readFile(String(args.path));
-    if (sha256Text(current) === sha256Text(String(args.contents))) {
+    let current: string | undefined;
+    try {
+      current = await host.readFile(String(args.path));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+    }
+    if (current !== undefined && sha256Text(current) === sha256Text(String(args.contents))) {
       return { ...outcome, status: "completed", result: "ok (reconciled)" };
     }
   }

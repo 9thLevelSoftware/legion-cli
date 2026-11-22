@@ -426,3 +426,38 @@ test("macOS seatbelt verification runs node, keeps sensitive paths read-only, hi
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("jailSeatbeltProfile allows real node_modules directory when projectRoot given, omits symlinked node_modules, and supports allowNetwork: false", async (t) => {
+  const dir = await projectWithGitAndLegion();
+  const realDir = realpathSync(dir);
+  try {
+    const jailRoot = join(dir, ".legion-cli", "sandbox", "run-nm");
+    const jailReal = join(realDir, ".legion-cli", "sandbox", "run-nm");
+    await mkdir(join(dir, "node_modules"), { recursive: true });
+    const profileWithRealNm = jailSeatbeltProfile(jailRoot, [], {
+      projectRoot: dir,
+      allowNetwork: false,
+      writePaths: [join(dir, ".legion-cli", "extensions", "runs")],
+    });
+    assert.ok(profileWithRealNm.includes("(deny network*)"));
+    assert.equal(profileWithRealNm.includes("(allow network*)"), false);
+    assert.ok(profileWithRealNm.includes(`(subpath ${JSON.stringify(join(realDir, "node_modules"))})`));
+    assert.ok(profileWithRealNm.includes(`(allow file-write* (subpath ${JSON.stringify(jailReal)}) (subpath ${JSON.stringify(join(realDir, ".legion-cli", "extensions", "runs"))})`));
+
+    await rm(join(dir, "node_modules"), { recursive: true, force: true });
+    const outsideNm = join(dir, "outside-nm");
+    await mkdir(outsideNm, { recursive: true });
+    let linked = true;
+    try {
+      await symlink(outsideNm, join(dir, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+    } catch {
+      linked = false;
+    }
+    if (linked) {
+      const profileWithSymlinkNm = jailSeatbeltProfile(jailRoot, [], { projectRoot: dir });
+      assert.equal(profileWithSymlinkNm.includes(`(subpath ${JSON.stringify(join(realDir, "node_modules"))})`), false);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

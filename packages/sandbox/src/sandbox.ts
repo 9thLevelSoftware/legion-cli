@@ -1,7 +1,7 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, realpathSync, statSync } from "node:fs";
-import { copyFile, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { copyFile, lstat, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
@@ -20,7 +20,7 @@ import {
   type LegionConfig,
   type SandboxConfig,
 } from "@9thlevelsoftware/legion-cli-schema";
-import { dockerArgvPrefix, findRunnableDocker, translateHostPathToDocker } from "./docker.js";
+import { dockerArgvPrefix, dockerContainerName, findRunnableDocker, translateHostPathToDocker } from "./docker.js";
 import { SandboxError } from "./errors.js";
 
 export type SandboxBackend = "bwrap" | "seatbelt" | "copy" | "docker";
@@ -30,6 +30,7 @@ export type SandboxPolicy = {
   runId: string;
   allowedWrites: readonly string[];
   readSet: readonly string[];
+  adapterId?: string;
   adapterBinary?: string;
   backend?: SandboxBackend | "auto";
   /** When LSM bind fails, copy jail is allowed only if a hatch was already granted. */
@@ -125,13 +126,18 @@ const HARDENED_REQUIRED =
 
 const ADAPTER_CREDENTIAL_KEYS = [
   "CLAUDE_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
   "GROK_API_KEY",
   "XAI_API_KEY",
   "OPENAI_API_KEY",
+  "CODEX_API_KEY",
+  "MIMO_API_KEY",
   "MINIMAX_API_KEY",
 ] as const;
 
-const WINDOWS_INHERIT = ["ComSpec", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATHEXT"] as const;
+const WINDOWS_INHERIT = ["ComSpec", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATHEXT", "PSMODULEPATH"] as const;
 
 const SYSTEM_RO_BINDS = [
   "/usr",
@@ -783,14 +789,35 @@ const JAIL_HOME_REL = ".legion-cli/sandbox-home";
 const JAIL_TMP_REL = ".legion-cli/sandbox-tmp";
 const JAIL_IDENTITY_REL = ".legion-cli/sandbox-identity";
 
-const AUTH_HOME_RELS = [
-  ".codex",
+const CLAUDE_AUTH_HOME_RELS = [
   ".claude",
   ".claude.json",
   ".config/claude",
-  ".config/codex",
   ".local/share/claude",
 ] as const;
+
+const CODEX_AUTH_HOME_RELS = [".codex", ".config/codex"] as const;
+
+const ALL_AUTH_HOME_RELS = [...CODEX_AUTH_HOME_RELS, ...CLAUDE_AUTH_HOME_RELS] as const;
+
+function authHomeRelsForPolicy(policy: Pick<SandboxPolicy, "adapterId">): readonly string[] {
+  switch (policy.adapterId) {
+    case "claude":
+      return CLAUDE_AUTH_HOME_RELS;
+    case "codex":
+    case "openai":
+      return CODEX_AUTH_HOME_RELS;
+    case "http":
+    case "fake":
+    case "acp":
+    case "grok":
+    case "mimo":
+    case "minimax":
+      return [];
+    default:
+      return ALL_AUTH_HOME_RELS;
+  }
+}
 
 function isJailMeta(rel: string): boolean {
   return (
@@ -839,6 +866,63 @@ function canonicalBlocked(projectRoot: string, abs: string): boolean {
   }
 }
 
+const SAFE_ENV_ALLOWLIST = [
+  "TERM",
+  "LANG",
+  "LC_ALL",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+] as const;
+
+const FILE_IO_CONCURRENCY = 16;
+
+function readEnvValue(source: NodeJS.ProcessEnv, key: string): string | undefined {
+  if (source[key] !== undefined) return source[key];
+  if (process.platform !== "win32") return undefined;
+  const lower = key.toLowerCase();
+  for (const [candidate, value] of Object.entries(source)) {
+    if (candidate.toLowerCase() === lower) return value;
+  }
+  return undefined;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const count = Math.min(limit, items.length);
+  await Promise.all(
+    Array.from({ length: count }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        results[index] = await worker(items[index]!);
+      }
+    }),
+  );
+  return results;
+}
+
+async function copyFileClone(src: string, dest: string): Promise<void> {
+  try {
+    await copyFile(src, dest, fsConstants.COPYFILE_FICLONE);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOTSUP" || code === "EOPNOTSUPP" || code === "EXDEV" || code === "EINVAL" || code === "ENOSYS") {
+      await copyFile(src, dest);
+      return;
+    }
+    throw err;
+  }
+}
+
 function buildSandboxEnv(
   jailRoot: string,
   credentialKeys: readonly string[] = [],
@@ -851,19 +935,28 @@ function buildSandboxEnv(
   const env: NodeJS.ProcessEnv = {};
   const pathVal = source.PATH ?? source.Path;
   if (pathVal !== undefined) env.PATH = pathVal;
-  if (source.TERM !== undefined) env.TERM = source.TERM;
+  for (const key of SAFE_ENV_ALLOWLIST) {
+    const value = readEnvValue(source, key);
+    if (value !== undefined) env[key] = value;
+  }
   if (process.platform === "win32") {
     for (const key of WINDOWS_INHERIT) {
-      const value = source[key];
+      const value = readEnvValue(source, key);
       if (value !== undefined) env[key] = value;
     }
   }
   env.TEMP = tmp;
   env.TMP = tmp;
+  env.TMPDIR = tmp;
   env.HOME = home;
   env.USERPROFILE = home;
   env.APPDATA = home;
   env.LOCALAPPDATA = home;
+  env.XDG_CONFIG_HOME = join(home, ".config");
+  env.XDG_DATA_HOME = join(home, ".local", "share");
+  env.XDG_STATE_HOME = join(home, ".local", "state");
+  env.XDG_CACHE_HOME = tmp;
+  env.npm_config_cache = tmp;
   env.GIT_DIR = join(jailRoot, ".git-null");
   const allowedCreds = new Set(credentialKeys);
   for (const key of ADAPTER_CREDENTIAL_KEYS) {
@@ -893,16 +986,20 @@ function assertJailRealpath(projectRoot: string, jailRoot: string): void {
 }
 
 async function hashJailFiles(jailRoot: string): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  for (const rel of await listJailFiles(jailRoot)) {
+  const rels = await listJailFiles(jailRoot);
+  const entries = await mapWithConcurrency(rels, FILE_IO_CONCURRENCY, async (rel) => {
     let src: string;
     try {
       src = toFsPath(jailRoot, rel);
     } catch {
-      continue;
+      return undefined;
     }
     const hash = await fileSha256(src);
-    if (hash) out.set(rel, hash);
+    return hash ? ([rel, hash] as const) : undefined;
+  });
+  const out = new Map<string, string>();
+  for (const entry of entries) {
+    if (entry) out.set(entry[0], entry[1]);
   }
   return out;
 }
@@ -945,7 +1042,7 @@ function realpathsToBind(adapterBinary?: string): { paths: string[]; ok: boolean
   return { paths, ok: true };
 }
 
-function bwrapArgvPrefix(opts: {
+export function bwrapArgvPrefix(opts: {
   jailRoot: string;
   projectRoot: string;
   bindPaths: readonly string[];
@@ -978,7 +1075,11 @@ function bwrapArgvPrefix(opts: {
   args.push("--tmpfs", "/tmp", "--bind", opts.jailRoot, opts.jailRoot);
   const nodeModules = join(opts.projectRoot, "node_modules");
   if (existsSync(nodeModules)) {
-    args.push("--ro-bind", nodeModules, join(opts.jailRoot, "node_modules"));
+    const jailNodeModules = join(opts.jailRoot, "node_modules");
+    args.push("--ro-bind", nodeModules, jailNodeModules);
+    if (existsSync(join(nodeModules, ".cache"))) {
+      args.push("--tmpfs", join(jailNodeModules, ".cache"));
+    }
   }
   for (const bind of opts.authBinds) roBind(bind.src, bind.dest);
   args.push("--setenv", "HOME", opts.jailHome);
@@ -990,21 +1091,41 @@ function bwrapArgvPrefix(opts: {
  * Execute-jail seatbelt profile: read/write only the jail, read the adapter binaries and auth sources, plus the
  * macOS runtime. Every path is emitted in the canonical spelling the kernel matches (macOS /var → /private/var).
  */
-export function jailSeatbeltProfile(jailRoot: string, readPaths: readonly string[] = []): string {
+export function jailSeatbeltProfile(
+  jailRoot: string,
+  readPaths: readonly string[] = [],
+  options: { projectRoot?: string; allowNetwork?: boolean; writePaths?: readonly string[] } = {},
+): string {
   const jailReal = canonicalPathSync(jailRoot);
-  const jail = JSON.stringify(jailReal);
-  const reads = [jailReal, ...[...SYSTEM_RO_BINDS, ...readPaths].filter((path) => existsSync(path)).map(canonicalPathSync)];
+  let nodeModulesRead: string | undefined;
+  if (options.projectRoot) {
+    const hostNodeModules = join(options.projectRoot, "node_modules");
+    try {
+      const st = lstatSync(hostNodeModules);
+      if (!st.isSymbolicLink() && st.isDirectory()) {
+        nodeModulesRead = canonicalPathSync(hostNodeModules);
+      }
+    } catch {
+      // ignore missing/unreadable node_modules
+    }
+  }
+  const reads = [
+    jailReal,
+    ...(nodeModulesRead ? [nodeModulesRead] : []),
+    ...[...SYSTEM_RO_BINDS, ...readPaths].filter((path) => existsSync(path)).map(canonicalPathSync),
+  ];
+  const writes = [jailReal, ...(options.writePaths ?? []).map(canonicalPathSync)];
   return [
     "(version 1)",
     "(deny default)",
     "(allow process*)",
     "(allow sysctl-read)",
     ...SEATBELT_DARWIN_RUNTIME_RULES,
-    "(allow network*)",
-    seatbeltAncestorMetadataRule([jailRoot, ...reads]),
+    options.allowNetwork === false ? "(deny network*)" : "(allow network*)",
+    seatbeltAncestorMetadataRule([jailRoot, ...reads, ...writes]),
     `(allow file-read* ${seatbeltSubpaths(reads)})`,
-    `(allow file-write* (subpath ${jail}))`,
-    `(allow file-ioctl (subpath ${jail}))`,
+    `(allow file-write* ${seatbeltSubpaths(writes)})`,
+    `(allow file-ioctl ${seatbeltSubpaths(writes)})`,
     "",
   ].join("\n");
 }
@@ -1016,6 +1137,7 @@ async function copyTree(
   depth = 0,
   seenDest?: Set<string>,
   srcStack?: Set<string>,
+  pendingCopies?: Array<{ src: string; dest: string }>,
 ): Promise<void> {
   if (depth > MAX_COPY_DEPTH) {
     throw new SandboxError(`sandbox copy exceeded ${MAX_COPY_DEPTH} directory levels`);
@@ -1040,7 +1162,7 @@ async function copyTree(
     if (!real) return;
     if (walkSrc.has(resolve(real))) return;
     if (canonicalBlocked(projectRoot, real)) return;
-    await copyTree(real, dest, projectRoot, depth + 1, visitedDest, walkSrc);
+    await copyTree(real, dest, projectRoot, depth + 1, visitedDest, walkSrc, pendingCopies);
     return;
   }
   if (canonicalBlocked(projectRoot, src)) return;
@@ -1066,13 +1188,18 @@ async function copyTree(
           depth + 1,
           visitedDest,
           walkSrc,
+          pendingCopies,
         );
       }
       return;
     }
     if (!st.isFile()) return;
+    if (pendingCopies) {
+      pendingCopies.push({ src, dest });
+      return;
+    }
     await mkdir(dirname(dest), { recursive: true });
-    await copyFile(src, dest);
+    await copyFileClone(src, dest);
   } finally {
     walkSrc.delete(srcKey);
   }
@@ -1114,6 +1241,8 @@ async function copySparsePath(
   jailRoot: string,
   posix: string,
   mkdirIfMissing: boolean,
+  seenDest?: Set<string>,
+  pendingCopies?: Array<{ src: string; dest: string }>,
 ): Promise<void> {
   assertPolicyPath(posix);
   if (isBlockedRel(posix)) return;
@@ -1121,8 +1250,9 @@ async function copySparsePath(
   const src = toFsPath(projectRoot, posix);
   const dest = toFsPath(jailRoot, posix);
   if (lexicalRel(jailRoot, dest) === undefined) throw new PathEscapeError(dest);
+  let st;
   try {
-    await lstat(src);
+    st = await lstat(src);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT" && mkdirIfMissing) {
@@ -1132,8 +1262,57 @@ async function copySparsePath(
     if (code === "ENOENT") return;
     throw err;
   }
+  if (mkdirIfMissing && st.isSymbolicLink()) return;
   if (canonicalBlocked(projectRoot, src)) return;
-  await copyTree(src, dest, projectRoot);
+  await copyTree(src, dest, projectRoot, 0, seenDest, undefined, pendingCopies);
+}
+
+function collectAuthBinds(
+  policy: Pick<SandboxPolicy, "adapterId">,
+  jailHome: string,
+): Array<{ src: string; dest: string }> {
+  const rels = authHomeRelsForPolicy(policy);
+  if (rels.length === 0) return [];
+  const authBinds: Array<{ src: string; dest: string }> = [];
+  const seenDest = new Set<string>();
+  for (const hostHome of homeRealpaths()) {
+    for (const rel of rels) {
+      const dest = join(jailHome, rel);
+      if (seenDest.has(dest)) continue;
+      const src = join(hostHome, rel);
+      if (!existsSync(src)) continue;
+      seenDest.add(dest);
+      authBinds.push({ src, dest });
+    }
+  }
+  return authBinds;
+}
+
+async function stageSeatbeltAuthLinks(
+  authBinds: ReadonlyArray<{ src: string; dest: string }>,
+): Promise<void> {
+  for (const bind of authBinds) {
+    const target = tryRealpath(bind.src) ?? bind.src;
+    await mkdir(dirname(bind.dest), { recursive: true });
+    try {
+      const existing = await lstat(bind.dest);
+      if (existing.isSymbolicLink()) {
+        await rm(bind.dest, { force: true });
+      } else {
+        continue;
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    const targetType = statSync(target).isDirectory() ? "dir" : "file";
+    await symlink(target, bind.dest, targetType);
+  }
+}
+
+async function removeDockerContainerBestEffort(dockerBin: string, containerName: string): Promise<void> {
+  await new Promise<void>((resolvePromise) => {
+    execFile(dockerBin, ["rm", "-f", containerName], { timeout: 5000 }, () => resolvePromise());
+  });
 }
 
 async function listJailFiles(jailRoot: string, allowedWrites: readonly string[] = []): Promise<string[]> {
@@ -1581,7 +1760,11 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
   }
 
   const extraFiles: string[] = [];
+  let dockerCleanup: { bin: string; containerName: string } | undefined;
   const destroyCreated = async () => {
+    if (dockerCleanup) {
+      await removeDockerContainerBestEffort(dockerCleanup.bin, dockerCleanup.containerName);
+    }
     await rm(jailRoot, { recursive: true, force: true });
     for (const file of extraFiles) await rm(file, { force: true });
   };
@@ -1596,23 +1779,24 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
     await mkdir(jailTmp, { recursive: true });
     await mkdir(join(jailRoot, ".git-null"), { recursive: true });
 
+    const seenCopyDest = new Set<string>();
+    const pendingCopies: Array<{ src: string; dest: string }> = [];
     for (const posix of readSet) {
-      await copySparsePath(projectRoot, jailRoot, posix, false);
+      await copySparsePath(projectRoot, jailRoot, posix, false, seenCopyDest, pendingCopies);
     }
     for (const posix of allowedWrites) {
       if (posix.includes("*")) continue;
-      await copySparsePath(projectRoot, jailRoot, posix, true);
+      await copySparsePath(projectRoot, jailRoot, posix, true, seenCopyDest, pendingCopies);
     }
+    const copyDirs = unique(pendingCopies.map((entry) => dirname(entry.dest)));
+    await mapWithConcurrency(copyDirs, FILE_IO_CONCURRENCY, async (dir) => {
+      await mkdir(dir, { recursive: true });
+    });
+    await mapWithConcurrency(pendingCopies, FILE_IO_CONCURRENCY, ({ src, dest }) => copyFileClone(src, dest));
 
-    const authBinds: Array<{ src: string; dest: string }> = [];
-    for (const hostHome of homeRealpaths()) {
-      for (const rel of AUTH_HOME_RELS) {
-        const src = join(hostHome, rel);
-        if (!existsSync(src)) continue;
-        const dest = join(jailHome, rel);
-        await mkdir(dirname(dest), { recursive: true });
-        authBinds.push({ src, dest });
-      }
+    const authBinds = collectAuthBinds(policy, jailHome);
+    for (const bind of authBinds) {
+      await mkdir(dirname(bind.dest), { recursive: true });
     }
 
     const selected = selectJailBackend(policy.backend);
@@ -1655,9 +1839,11 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
       if (!bin) {
         if (!policy.allowDegradedCopy) throw new SandboxError(HARDENED_REQUIRED);
       } else {
+        const containerName = dockerContainerName(runId);
+        dockerCleanup = { bin, containerName };
         wrapper = {
           bin,
-          argvPrefix: dockerArgvPrefix({ jailRoot }),
+          argvPrefix: dockerArgvPrefix({ jailRoot, containerName }),
         };
         backend = "docker";
         hardened = true;
@@ -1678,13 +1864,17 @@ export async function materializeJail(policy: SandboxPolicy): Promise<SandboxHan
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
         }
+        await stageSeatbeltAuthLinks(authBinds);
         // Mirrors the bwrap binds: adapter binaries, their non-sensitive directories, and auth sources.
-        const readPaths = [
+        const readPaths = unique([
           ...binds.paths,
           ...binds.paths.map((path) => dirname(path)).filter((dir) => !isUnsafeDirname(dir, projectRoot)),
-          ...authBinds.map((bind) => bind.src),
-        ];
-        await writeFile(profilePath, jailSeatbeltProfile(jailRoot, readPaths), {
+          ...authBinds.flatMap((bind) => {
+            const real = tryRealpath(bind.src);
+            return real && real !== bind.src ? [bind.src, real] : [bind.src];
+          }),
+        ]);
+        await writeFile(profilePath, jailSeatbeltProfile(jailRoot, readPaths, { projectRoot }), {
           encoding: "utf8",
           flag: "wx",
         });
@@ -1788,18 +1978,13 @@ export async function reopenJail(policy: SandboxPolicy): Promise<SandboxHandle> 
   await assertJailIdentitySentinel(projectRoot, runId, record.nonce);
   const jailHome = join(jailRoot, ...JAIL_HOME_REL.split("/"));
   const jailTmp = join(jailRoot, ...JAIL_TMP_REL.split("/"));
-  const authBinds: Array<{ src: string; dest: string }> = [];
-  for (const hostHome of homeRealpaths()) {
-    for (const rel of AUTH_HOME_RELS) {
-      const src = join(hostHome, rel);
-      if (existsSync(src)) authBinds.push({ src, dest: join(jailHome, rel) });
-    }
-  }
+  const authBinds = collectAuthBinds(policy, jailHome);
   const binds = realpathsToBind(policy.adapterBinary);
   if (record.hardened && !binds.ok) throw new SandboxError("sandbox recovery adapter binary is unavailable");
   const env = buildSandboxEnv(jailRoot, policy.credentialKeys ?? [], process.env, jailHome, jailTmp);
   let wrapper: { bin: string; argvPrefix: string[] } | undefined;
   const extraFiles: string[] = [];
+  let dockerCleanup: { bin: string; containerName: string } | undefined;
   if (record.backend === "bwrap") {
     const bin = findRunnableBwrap();
     if (!bin) throw new SandboxError("retained bwrap jail cannot be reopened");
@@ -1807,15 +1992,21 @@ export async function reopenJail(policy: SandboxPolicy): Promise<SandboxHandle> 
   } else if (record.backend === "docker") {
     const bin = findRunnableDocker();
     if (!bin) throw new SandboxError("retained Docker jail cannot be reopened");
-    wrapper = { bin, argvPrefix: dockerArgvPrefix({ jailRoot }) };
+    const containerName = dockerContainerName(runId);
+    dockerCleanup = { bin, containerName };
+    wrapper = { bin, argvPrefix: dockerArgvPrefix({ jailRoot, containerName }) };
   } else if (record.backend === "seatbelt") {
     const bin = findOnPath("sandbox-exec", true);
     const profilePath = join(legionPaths(projectRoot).sandboxDir, `${runId}.sb`);
     if (!bin || !existsSync(profilePath)) throw new SandboxError("retained seatbelt jail cannot be reopened");
+    await stageSeatbeltAuthLinks(authBinds);
     wrapper = { bin, argvPrefix: ["-f", profilePath, "--"] };
     extraFiles.push(profilePath);
   }
   const destroyCreated = async () => {
+    if (dockerCleanup) {
+      await removeDockerContainerBestEffort(dockerCleanup.bin, dockerCleanup.containerName);
+    }
     await rm(jailRoot, { recursive: true, force: true });
     for (const file of extraFiles) await rm(file, { force: true });
   };

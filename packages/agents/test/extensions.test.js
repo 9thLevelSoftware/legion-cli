@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { detectSandbox } from "@9thlevelsoftware/legion-cli-sandbox";
 import {
+  buildExtensionSeatbeltProfile,
   findExtensionsDir,
   installExtensionOverlay,
   extensionReadSet,
@@ -19,6 +21,8 @@ import {
   runGovernedExtension,
 } from "../dist/index.js";
 import { withTempDir } from "./helpers.js";
+
+const packagedExtensions = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions");
 
 function extensionMarkdown(id = "accessibility") {
   return [
@@ -166,7 +170,7 @@ test("catalog lists packaged extensions and pinned overlay wins", async () => {
     await mkdir(join(packagedDir, "references"), { recursive: true });
     await writeFile(join(packagedDir, "EXTENSION.md"), extensionMarkdown(), "utf8");
     await writeFile(join(packagedDir, "references", "checklist.md"), "# Checklist\n", "utf8");
-    assert.equal(findExtensionsDir(packaged), packaged);
+    assert.equal(findExtensionsDir(packaged), packagedExtensions);
     const listed = await listExtensionCatalog({ projectRoot: dir, packagedExtensionsDir: packaged });
     assert.equal(listed.extensions.length, 1);
     assert.equal(listed.extensions[0].ref, "extension:accessibility");
@@ -263,9 +267,8 @@ test("an in-process adapter extension run uses the detected hardened jail instea
     assert.equal(result.backend, detected.backend);
     const required = result.evidence.checks.filter((check) => !check.id.startsWith("tool:"));
     assert.deepEqual(required.map((check) => [check.id, check.status]), [["axe", "passed"], ["keyboard", "passed"]]);
-    // Seatbelt supplies no command wrapper, so the fixture's declared commands are recorded as unavailable.
     const extra = result.evidence.checks.filter((check) => check.id.startsWith("tool:")).map((check) => [check.id, check.status]);
-    assert.deepEqual(extra, detected.backend === "seatbelt" ? [["tool:command-execution", "unavailable"]] : []);
+    assert.deepEqual(extra, []);
   });
 });
 
@@ -481,5 +484,62 @@ test("component admission rejects invalid invocation, profile, permissions, and 
     }
     await writeFile(join(extensionDir, "assets", "validator.wasm"), "tampered");
     await assert.rejects(runGovernedExtension({ ...opts, componentInvocation: invocation }), /SHA-256 mismatch/);
+  });
+});
+
+test("findExtensionsDir does not shadow packaged extensions with project directory unless LEGION_CLI_EXTENSIONS_DIR is set", async () => {
+  await withTempDir(async (dir) => {
+    const projectExtensions = join(dir, "extensions");
+    await mkdir(join(projectExtensions, "json-contract"), { recursive: true });
+    await writeFile(join(projectExtensions, "json-contract", "SKILL.md"), extensionMarkdown("json-contract"), "utf8");
+    const prev = process.env.LEGION_CLI_EXTENSIONS_DIR;
+    delete process.env.LEGION_CLI_EXTENSIONS_DIR;
+    try {
+      const found = findExtensionsDir(dir);
+      assert.equal(found, packagedExtensions);
+      assert.notEqual(found, projectExtensions);
+
+      process.env.LEGION_CLI_EXTENSIONS_DIR = projectExtensions;
+      assert.equal(findExtensionsDir(dir), projectExtensions);
+    } finally {
+      if (prev === undefined) delete process.env.LEGION_CLI_EXTENSIONS_DIR;
+      else process.env.LEGION_CLI_EXTENSIONS_DIR = prev;
+    }
+  });
+});
+
+test("extension parser allows colon script names in non-first tokens while rejecting metacharacters", () => {
+  for (const [tool, command] of [
+    ["Bash(npm run test:a11y:*)", "npm run test:a11y"],
+    ["Bash(pnpm test:unit:*)", "pnpm test:unit"],
+  ]) {
+    const md = extensionMarkdown()
+      .replace("allowed-tools: Read, Write, Bash(npx axe:*), Bash(npx playwright:*)", `allowed-tools: Read, Write, ${tool}`)
+      .replace("commands: [npx axe, npx playwright]", `commands: [${command}]`);
+    const parsed = parseExtensionFrontmatter(md, "extensions/accessibility/EXTENSION.md");
+    assert.equal(parsed.ok, true, tool);
+    assert.deepEqual(parsed.manifest.permissions.commands, [command]);
+  }
+  for (const bad of ["npm run test;rm", "npm run test|cat", "npm run a&b", "npm run `id`", "npm run $HOME", "cmd:evil arg"]) {
+    const md = extensionMarkdown()
+      .replace("commands: [npx axe, npx playwright]", `commands: ["${bad}"]`);
+    const parsed = parseExtensionFrontmatter(md, "extensions/accessibility/EXTENSION.md");
+    assert.equal(parsed.ok, false, bad);
+  }
+});
+
+test("buildExtensionSeatbeltProfile denies network and allows jail, extensions/runs, and sandbox-tmp writes", async () => {
+  await withTempDir(async (dir) => {
+    const jail = join(dir, ".legion-cli", "sandbox", "run-ext");
+    const runs = join(jail, ".legion-cli", "extensions", "runs");
+    const tmp = join(jail, ".legion-cli", "sandbox-tmp");
+    await mkdir(runs, { recursive: true });
+    await mkdir(tmp, { recursive: true });
+    const profile = buildExtensionSeatbeltProfile(jail, { projectRoot: dir, runsDir: runs, tmpDir: tmp });
+    assert.ok(profile.includes("(deny network*)"));
+    assert.equal(profile.includes("(allow network*)"), false);
+    assert.ok(profile.includes("(allow file-write*"));
+    assert.ok(profile.includes("extensions"));
+    assert.ok(profile.includes("sandbox-tmp"));
   });
 });

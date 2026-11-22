@@ -1,12 +1,13 @@
-import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile, spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createWriteStream, realpathSync, type WriteStream } from "node:fs";
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { translateWrapperInvoke } from "@9thlevelsoftware/legion-cli-sandbox";
 import { AgentError } from "./errors.js";
 import { ABORT_GRACE_MS, DEFAULT_TIMEOUT_MS, type AgentHandle, type AgentJob, type AgentResult } from "./types.js";
-import { cmdScriptLaunch, resolveBinary, unwrapCmdShim } from "./which.js";
+import type { AgentUsage } from "./profiles.js";
+import { cmdScriptLaunch, resolveBinary, unwrapCmdShim, withNoCwdExeSearch } from "./which.js";
 
 function openWrite(path: string): Promise<WriteStream> {
   const stream = createWriteStream(path);
@@ -45,15 +46,35 @@ function powershellExePath(): string {
   return join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
+function extractDockerCleanup(wrapper?: AgentJob["wrapper"]): { bin: string; containerName: string } | undefined {
+  if (!wrapper) return undefined;
+  const nameIdx = wrapper.argvPrefix.indexOf("--name");
+  if (nameIdx < 0) return undefined;
+  const containerName = wrapper.argvPrefix[nameIdx + 1];
+  if (!containerName || !/^legion-[A-Za-z0-9_.-]+$/.test(containerName)) return undefined;
+  return { bin: wrapper.bin, containerName };
+}
+
+/** Removes a named Docker sandbox container best-effort after an interrupted or aborted run. */
+export async function cleanupDockerWrapperContainer(wrapper?: AgentJob["wrapper"]): Promise<void> {
+  const target = extractDockerCleanup(wrapper);
+  if (!target) return;
+  await new Promise<void>((resolve) => {
+    execFile(target.bin, ["rm", "-f", target.containerName], { timeout: 5000, windowsHide: true }, () => resolve());
+  });
+}
+
 function spawnEnv(job: AgentJob): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(job.env)) {
     if (value !== undefined) env[key] = value;
   }
-  return env;
+  return withNoCwdExeSearch(env);
 }
 
-function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: WriteStream, stderr: WriteStream): ChildProcess {
+type SpawnStdio = ["ignore" | "pipe", WriteStream | "pipe", WriteStream | "pipe"];
+
+function spawnTarget(binary: string, args: string[], job: AgentJob, stdio: SpawnStdio): ChildProcess {
   const resolved = resolveBinary(binary) ?? binary;
   const common = {
     cwd: job.cwd,
@@ -72,7 +93,7 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
     invoke = translateWrapperInvoke(job.wrapper, invoke, job.cwd);
     return spawn(job.wrapper.bin, [...job.wrapper.argvPrefix, invoke, ...args], {
       ...common,
-      stdio: ["ignore", stdout, stderr],
+      stdio,
       detached: process.platform !== "win32",
     });
   }
@@ -84,7 +105,7 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
         ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", resolved, ...args],
         {
           ...common,
-          stdio: ["ignore", stdout, stderr],
+          stdio,
           detached: false,
         },
       );
@@ -94,7 +115,7 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
       // Real argv array: cmd.exe would truncate a multiline pointer at the first newline.
       return spawn(unwrapped.command, [...unwrapped.prefixArgs, ...args], {
         ...common,
-        stdio: ["ignore", stdout, stderr],
+        stdio,
         detached: false,
       });
     }
@@ -107,7 +128,7 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
     if ("error" in launch) throw new AgentError(launch.error);
     return spawn(launch.command, launch.args, {
       ...common,
-      stdio: ["ignore", stdout, stderr],
+      stdio,
       detached: false,
       windowsVerbatimArguments: true,
     });
@@ -115,9 +136,13 @@ function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: Wri
 
   return spawn(resolved, args, {
     ...common,
-    stdio: ["ignore", stdout, stderr],
+    stdio,
     detached: process.platform !== "win32",
   });
+}
+
+function spawnCommand(binary: string, args: string[], job: AgentJob, stdout: WriteStream, stderr: WriteStream): ChildProcess {
+  return spawnTarget(binary, args, job, ["ignore", stdout, stderr]);
 }
 
 /** Spawn an interactive stdio adapter through the same wrapper and process-group policy as CLI adapters. */
@@ -126,26 +151,7 @@ export function spawnInteractiveAgentProcess(
   args: string[],
   job: AgentJob,
 ): ChildProcessWithoutNullStreams {
-  const resolved = resolveBinary(binary) ?? binary;
-  const common = {
-    cwd: job.cwd,
-    env: spawnEnv(job),
-    windowsHide: true,
-    shell: false,
-    detached: process.platform !== "win32",
-    stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
-  };
-  if (job.wrapper) {
-    let invoke = resolved;
-    try {
-      invoke = realpathSync(resolved);
-    } catch {
-      invoke = resolved;
-    }
-    invoke = translateWrapperInvoke(job.wrapper, invoke, job.cwd);
-    return spawn(job.wrapper.bin, [...job.wrapper.argvPrefix, invoke, ...args], common);
-  }
-  return spawn(resolved, args, common);
+  return spawnTarget(binary, args, job, ["pipe", "pipe", "pipe"]) as ChildProcessWithoutNullStreams;
 }
 
 /**
@@ -157,8 +163,14 @@ export function spawnInteractiveAgentProcess(
  * `taskkill /F`: the identity-based live-run marker is what makes the next command see a survivor.
  * Mirrors `runCommand`: after killing, let the signal act on us as it would have.
  */
-function killTreeOnInterrupt(child: ChildProcess, pid: number, exited: Promise<unknown>): void {
+function killTreeOnInterrupt(
+  child: ChildProcess,
+  pid: number,
+  exited: Promise<unknown>,
+  wrapper?: AgentJob["wrapper"],
+): void {
   if (pid <= 0) return;
+  const dockerTarget = extractDockerCleanup(wrapper);
   const kill = (): void => {
     // The child already exited: its pid may belong to someone else now.
     if (child.exitCode !== null || child.signalCode !== null) return;
@@ -166,6 +178,17 @@ function killTreeOnInterrupt(child: ChildProcess, pid: number, exited: Promise<u
       terminate(pid, true);
     } catch {
       // best effort: the process may already be gone
+    }
+    if (dockerTarget) {
+      try {
+        spawnSync(dockerTarget.bin, ["rm", "-f", dockerTarget.containerName], {
+          windowsHide: true,
+          timeout: 3000,
+          stdio: "ignore",
+        });
+      } catch {
+        // best effort cleanup
+      }
     }
   };
   const onExit = (): void => kill();
@@ -191,6 +214,61 @@ function killTreeOnInterrupt(child: ChildProcess, pid: number, exited: Promise<u
   void exited.then(remove, remove);
 }
 
+function finiteInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function parseUsageObject(parsed: unknown): AgentUsage | undefined {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const root = parsed as Record<string, unknown>;
+  const rawUsage = root.usage;
+  if (!rawUsage || typeof rawUsage !== "object" || Array.isArray(rawUsage)) return undefined;
+  const u = rawUsage as Record<string, unknown>;
+  const inputTokens = finiteInt(u.input_tokens);
+  const outputTokens = finiteInt(u.output_tokens);
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+  const totalTokens = finiteInt(u.total_tokens) ?? inputTokens + outputTokens;
+  const requests = finiteInt(u.requests) ?? finiteInt(root.num_turns);
+  const model = typeof root.model === "string" && root.model.trim().length > 0 ? root.model.trim() : undefined;
+  const cost =
+    typeof root.total_cost_usd === "number" && Number.isFinite(root.total_cost_usd) && root.total_cost_usd >= 0
+      ? root.total_cost_usd
+      : undefined;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    ...(requests !== undefined ? { requests } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(cost !== undefined ? { estimatedCostUsd: cost, costEstimated: true } : {}),
+  };
+}
+
+function parseStdoutJsonUsage(raw: string): AgentUsage | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith("{")) {
+    try {
+      const direct = parseUsageObject(JSON.parse(trimmed));
+      if (direct) return direct;
+    } catch {
+      // fall through to check trailing JSON lines
+    }
+  }
+  const lines = trimmed.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]?.trim();
+    if (!line || !line.startsWith("{")) continue;
+    try {
+      const fromLine = parseUsageObject(JSON.parse(line));
+      if (fromLine) return fromLine;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
 class ChildAgentHandle implements AgentHandle {
   readonly pid: number;
   readonly #stdoutPath: string;
@@ -198,6 +276,7 @@ class ChildAgentHandle implements AgentHandle {
   readonly #summaryPath: string;
   readonly #stdout: WriteStream;
   readonly #stderr: WriteStream;
+  readonly #wrapper: AgentJob["wrapper"];
   readonly #done: Promise<AgentResult>;
   #exitCode: number | null = null;
   #errorMessage: string | undefined;
@@ -221,6 +300,7 @@ class ChildAgentHandle implements AgentHandle {
     this.#stdoutPath = opts.stdoutPath;
     this.#stderrPath = opts.stderrPath;
     this.#summaryPath = opts.summaryPath;
+    this.#wrapper = opts.job.wrapper;
     this.pid = opts.child.pid ?? 0;
     this.#done = new Promise((resolve) => {
       this.#settle = resolve;
@@ -254,10 +334,12 @@ class ChildAgentHandle implements AgentHandle {
 
   async abort(): Promise<void> {
     this.#aborted = true;
-    if (this.#exited) return;
-    terminate(this.pid, false);
-    const dead = await this.#waitExit(ABORT_GRACE_MS);
-    if (!dead) terminate(this.pid, true);
+    if (!this.#exited) {
+      terminate(this.pid, false);
+      const dead = await this.#waitExit(ABORT_GRACE_MS);
+      if (!dead) terminate(this.pid, true);
+    }
+    await cleanupDockerWrapperContainer(this.#wrapper);
   }
 
   async #waitExit(ms: number): Promise<boolean> {
@@ -281,6 +363,17 @@ class ChildAgentHandle implements AgentHandle {
     } catch {
       summaryPath = undefined;
     }
+    let usage: AgentUsage | undefined;
+    if (this.#exitCode === 0) {
+      try {
+        const info = await stat(this.#stdoutPath);
+        if (info.size > 0 && info.size <= 2 * 1024 * 1024) {
+          usage = parseStdoutJsonUsage(await readFile(this.#stdoutPath, "utf8"));
+        }
+      } catch {
+        usage = undefined;
+      }
+    }
     this.#settle({
       exitCode: this.#exitCode,
       timedOut: this.#timedOut,
@@ -288,6 +381,7 @@ class ChildAgentHandle implements AgentHandle {
       stdoutPath: this.#stdoutPath,
       stderrPath: this.#stderrPath,
       summaryPath,
+      ...(usage ? { usage } : {}),
       ...(this.#errorMessage ? { errorMessage: this.#errorMessage } : {}),
     });
   }
@@ -323,6 +417,6 @@ export async function spawnAgentProcess(opts: {
     stderrPath: opts.stderrPath,
     summaryPath: opts.summaryPath,
   });
-  killTreeOnInterrupt(child, handle.pid, handle.wait());
+  killTreeOnInterrupt(child, handle.pid, handle.wait(), opts.job.wrapper);
   return handle;
 }
