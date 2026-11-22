@@ -41,8 +41,8 @@ function hextetsToIpv4(hi: number, lo: number): number[] {
 }
 
 function normalizeHost(hostname: string): string {
-  // Drop an IPv6 zone id (`fe80::1%eth0`): it names an interface, not a different address.
-  return hostname.replace(/^\[|\]$/g, "").replace(/%.*$/, "").toLowerCase();
+  // Drop brackets, IPv6 zone id (`fe80::1%eth0`), and trailing FQDN dots (`localhost.`).
+  return hostname.replace(/^\[|\]$/g, "").replace(/%.*$/, "").replace(/\.+$/, "").toLowerCase();
 }
 
 /** Expand an IPv6 literal to eight 16-bit words, or null when it is not one. */
@@ -103,13 +103,38 @@ function isPrivateIPv6(host: string): boolean {
   if ((w0 & 0xff00) === 0xff00) return true;
   // 64:ff9b::/96 NAT64: a translator can reach the IPv4 side, so treat it as internal
   if (w0 === 0x64 && w1 === 0xff9b && words.slice(2, 6).every((w) => w === 0)) return true;
+  // RFC 8215 64:ff9b:1::/48 local-use NAT64
+  if (w0 === 0x0064 && w1 === 0xff9b && words[2] === 0x0001) return true;
+  // RFC 4380 2001:0000::/32 Teredo
+  if (w0 === 0x2001 && w1 === 0x0000) return true;
   // 2002::/16 6to4 embeds an IPv4 address and is a relay path
   if (w0 === 0x2002) return true;
   return false;
 }
 
+export function isLoopbackHost(hostname: string): boolean {
+  const host = normalizeHost(hostname);
+  if (!host) return false;
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  const ipv4 = ipv4Octets(host);
+  if (ipv4) return ipv4[0] === 127;
+  const words = ipv6Words(host);
+  if (!words) return false;
+  if (words.slice(0, 7).every((w) => w === 0) && words[7] === 1) return true;
+  // IPv4-mapped (::ffff:0:0/96) and IPv4-compatible (::/96)
+  if (words.slice(0, 5).every((w) => w === 0) && (words[5] === 0xffff || words[5] === 0)) {
+    return hextetsToIpv4(words[6]!, words[7]!)[0] === 127;
+  }
+  // ::ffff:0:0/96 SIIT (IPv4-translated)
+  if (words.slice(0, 4).every((w) => w === 0) && words[4] === 0xffff && words[5] === 0) {
+    return hextetsToIpv4(words[6]!, words[7]!)[0] === 127;
+  }
+  return false;
+}
+
 export function isPrivateOrLocalHost(hostname: string): boolean {
   const host = normalizeHost(hostname);
+  if (!host) return false;
   if (PRIVATE_HOSTS.has(host)) return true;
   if (host.endsWith(".localhost") || host.endsWith(".local")) return true;
   const mapped = embeddedIpv4(host);

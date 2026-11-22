@@ -22,14 +22,23 @@ function stripUndefined(value: unknown): unknown {
   return value;
 }
 
+const EMPTY_FRONTMATTER_RE = /^---[ \t]*\r?\n---[ \t]*(?:\r?\n|$)/;
+const FRONTMATTER_RE = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+
 export function parseMarkdownDocument(input: string): { frontmatter: unknown; body: string } {
   // Windows PowerShell 5.1 `Set-Content -Encoding UTF8` and Notepad prepend a UTF-8 BOM.
   const markdown = input.charCodeAt(0) === 0xfeff ? input.slice(1) : input;
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n)?/.exec(markdown);
+  // Match empty frontmatter first so a subsequent `---` horizontal rule is not consumed as a closing fence.
+  const emptyMatch = EMPTY_FRONTMATTER_RE.exec(markdown);
+  if (emptyMatch) {
+    const body = markdown.slice(emptyMatch[0].length).replace(/^\r?\n/, "");
+    return { frontmatter: {}, body };
+  }
+  const match = FRONTMATTER_RE.exec(markdown);
   if (!match) {
     throw new PersistValidationError("<markdown>", new Error("expected YAML frontmatter"));
   }
-  const frontmatter = parseYaml(match[1]);
+  const frontmatter = match[1]?.trim() === "" ? {} : parseYaml(match[1]);
   const body = markdown.slice(match[0].length).replace(/^\r?\n/, "");
   return { frontmatter, body };
 }

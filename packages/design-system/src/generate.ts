@@ -1,5 +1,4 @@
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { SCHEMA_VERSION, type DesignSystemPackage } from "@9thlevelsoftware/legion-cli-schema";
 import { writeActive } from "./active.js";
@@ -33,6 +32,7 @@ export type GenerateResult = {
 };
 
 const WCAG = new Set(["A", "AA", "AAA"]);
+const MAX_BRAND_FILE_BYTES = 1024 * 1024;
 
 export function parseWcag(raw: string): "A" | "AA" | "AAA" {
   const trimmed = raw.trim().toUpperCase();
@@ -109,8 +109,23 @@ export async function generateFromBrief(opts: {
   if (!/^(none|no|n\/a|-)$/i.test(brandRaw)) {
     const brandPath = resolve(opts.cwd ?? opts.projectRoot, brandRaw);
     assertNoUrlFetch(brandPath, "design-system generate");
-    if (!existsSync(brandPath)) {
-      refuse(`brand file not found: ${brandRaw}`, "path or none");
+    let st;
+    try {
+      st = await lstat(brandPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        refuse(`brand file not found: ${brandRaw}`, "path or none");
+      }
+      throw err;
+    }
+    if (st.isSymbolicLink()) {
+      refuse(`brand file must not be a symlink: ${brandRaw}`, "path or none");
+    }
+    if (!st.isFile()) {
+      refuse(`brand file must be a regular file: ${brandRaw}`, "path or none");
+    }
+    if (st.size > MAX_BRAND_FILE_BYTES) {
+      refuse(`brand file exceeds 1 MiB limit: ${brandRaw}`, "path or none");
     }
     brandText = await readFile(brandPath, "utf8");
     brandNote = `Brand file: ${basename(brandPath)}.`;

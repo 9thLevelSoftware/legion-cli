@@ -899,3 +899,38 @@ test("F-029 assembleSessionBrief matches the drop-from-the-tail reference", () =
   assert.deepEqual(fast.wiki, ref);
   assert.ok(fast.characterCount <= cap);
 });
+
+test("searchWiki tokenizes multi-word queries with AND while boosting exact phrases", async () => {
+  await withStore(async ({ store }) => {
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/scattered.md",
+      wikiFrontmatter("Deploy guide"),
+      "First check the release branch, then run the verification checklist before shipping.\n",
+    );
+    await store.writeWikiPage(
+      ".legion-cli/wiki/ingested/exact-body.md",
+      wikiFrontmatter("Ops notes"),
+      "Follow the release checklist carefully.\n",
+    );
+    await store.rebuild();
+    const hits = searchWiki(store.projectRoot, "release checklist");
+    assert.ok(hits.some((h) => h.id === "ingested/scattered"), "non-contiguous terms should match");
+    assert.ok(hits.some((h) => h.id === "ingested/exact-body"), "contiguous phrase should match");
+    assert.equal(hits[0]?.id, "ingested/exact-body");
+  });
+});
+
+test("staleUntrustedPages supports opt-in maxAgeMs filtering on updated_at / created_at", () => {
+  const now = Date.parse("2026-11-22T00:00:00.000Z");
+  const pages = [
+    { id: "old", path: "old.md", title: "Old", body: "", trust: "untrusted", updated_at: Date.parse("2026-10-01T00:00:00.000Z") },
+    { id: "fresh", path: "fresh.md", title: "Fresh", body: "", trust: "untrusted", updated_at: Date.parse("2026-11-21T00:00:00.000Z") },
+    { id: "iso-old", path: "iso.md", title: "IsoOld", body: "", trust: "untrusted", created_at: "2026-09-01T00:00:00.000Z" },
+    { id: "rev", path: "rev.md", title: "Rev", body: "", trust: "reviewed", updated_at: Date.parse("2026-01-01T00:00:00.000Z") },
+  ];
+  assert.deepEqual(staleUntrustedPages(pages).map((p) => p.id), ["fresh", "iso-old", "old"]);
+  assert.deepEqual(
+    staleUntrustedPages(pages, { maxAgeMs: 14 * 86_400_000, nowMs: now }).map((p) => p.id),
+    ["iso-old", "old"],
+  );
+});

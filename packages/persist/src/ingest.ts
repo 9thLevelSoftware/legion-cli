@@ -8,7 +8,7 @@ import { ingestReceiptPath, MAX_INGEST_FILE_BYTES, MAX_INGEST_TREE_BYTES, wikiPa
 import { parseMarkdownDocument, type MarkdownDoc } from "./markdown.js";
 import { assertInsideProject, resolveProjectPath, toStorePath } from "./paths.js";
 import { redactSecrets } from "./redact.js";
-import { WIKI_PAGE_SCHEMA_VERSION, type WikiPage } from "./wiki-page.js";
+import { sanitizeWikiTitle, WIKI_PAGE_SCHEMA_VERSION, type WikiPage } from "./wiki-page.js";
 
 export type IngestDocument = {
   source: string;
@@ -57,14 +57,23 @@ function titleFromSource(storePath: string, body: string): string {
   try {
     const { frontmatter, body: inner } = parseMarkdownDocument(body);
     const fm = frontmatter && typeof frontmatter === "object" ? (frontmatter as Record<string, unknown>) : {};
-    if (typeof fm.title === "string" && fm.title.trim().length > 0) return fm.title.trim();
+    if (typeof fm.title === "string") {
+      const sanitized = sanitizeWikiTitle(fm.title);
+      if (sanitized.length > 0) return sanitized;
+    }
     const heading = /^#\s+(.+)$/m.exec(inner);
-    if (heading?.[1]) return heading[1].trim();
+    if (heading?.[1]) {
+      const sanitized = sanitizeWikiTitle(heading[1]);
+      if (sanitized.length > 0) return sanitized;
+    }
   } catch {
     const heading = /^#\s+(.+)$/m.exec(body);
-    if (heading?.[1]) return heading[1].trim();
+    if (heading?.[1]) {
+      const sanitized = sanitizeWikiTitle(heading[1]);
+      if (sanitized.length > 0) return sanitized;
+    }
   }
-  return basename(storePath, extname(storePath));
+  return sanitizeWikiTitle(basename(storePath, extname(storePath))) || "Untitled";
 }
 
 function excerptBody(raw: string): string {
@@ -157,7 +166,7 @@ async function upsertWikiPage(opts: {
 
   const page: WikiPage = {
     schemaVersion: WIKI_PAGE_SCHEMA_VERSION,
-    title: opts.title.trim() || titleFromSource(opts.source, body),
+    title: sanitizeWikiTitle(opts.title) || titleFromSource(opts.source, body),
     aliases: existing?.data.aliases ?? [],
     tags: existing?.data.tags ?? [],
     // New or changed bytes are untrusted until a human re-runs wiki trust.

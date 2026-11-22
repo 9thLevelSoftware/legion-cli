@@ -18,7 +18,7 @@ export function isVisualTitle(title: string): boolean {
 }
 
 const UI_AC_RE =
-  /\b(ui|ux|screen|page|button|click|tap|visual|wireframe|board|phone|mobile|desktop|browser|layout)\b/i;
+  /\b(ui|ux|screen|page(?![\s-]+(?:size|fault|table)s?\b)|button|click|tap|visual|wireframe|board|phone|mobile|desktop(?![\s-]+cli\b)|browser|(?<!\b(?:memory|disk)[\s-]+)layout)\b/i;
 
 export function isUiAcceptance(ac: Pick<AcceptanceCriterion, "statement">): boolean {
   return UI_AC_RE.test(ac.statement) || /@visual/i.test(ac.statement);

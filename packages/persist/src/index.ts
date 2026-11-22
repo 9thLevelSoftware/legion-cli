@@ -31,6 +31,7 @@ export { nextFileId } from "./ids.js";
 export {
   clearLiveRun,
   createLiveRun,
+  isForeignHostMarker,
   LIVE_RUN_SCHEMA,
   listLiveRunMarkers,
   liveRunDir,
@@ -98,9 +99,11 @@ export {
   gitBranchCreate,
   gitBranchExists,
   gitCheckIgnore,
+  gitCleanEnv,
   gitCommitIndex,
   gitDiffCached,
   gitDiscoverChanges,
+  gitExecutable,
   gitHasStaged,
   gitHead,
   gitIndexEntries,
@@ -114,7 +117,9 @@ export {
   gitRmWorktree,
   gitStagedPaths,
   gitStatusPorcelain,
+  resolveGitExecutable,
   runGit,
+  runGitBuffer,
   gitWorktreeAdd,
   gitWorktreeRemove,
   isGitRepo,
@@ -123,7 +128,7 @@ export {
   tryGitBranch,
   tryGitHead,
 } from "./git.js";
-export type { GitRunResult, GitWorktree } from "./git.js";
+export type { GitBufferRunResult, GitRunResult, GitWorktree } from "./git.js";
 export { ensureGitignore, GITIGNORE_ENTRIES, GITIGNORE_TEMPLATE } from "./gitignore.js";
 export { ingestDocumentStorePath, ingestFiles } from "./ingest.js";
 export type { IngestDocument } from "./ingest.js";
@@ -245,7 +250,7 @@ export {
   readNinthlevelMinisignPub,
   verifyMinisign,
 } from "./minisign.js";
-export { hasSecretPattern, redactSecrets } from "./redact.js";
+export { hasSecretPattern, redactSecrets, SECRET_SOURCE_PATTERNS } from "./redact.js";
 export { indexDbUsable, INDEX_SCHEMA_VERSION, openIndexDb, queryIndex, rebuildIndex, REBUILD_SQL } from "./sqlite.js";
 export type { IndexRebuildResult } from "./sqlite.js";
 export {
@@ -310,6 +315,8 @@ export {
   DECISION_FILE_SCHEMA_VERSION,
   DecisionFileSchema,
   extractWikiLinks,
+  sanitizeWikiTitle,
+  WIKI_TITLE_MAX_CHARS,
   wikiIdFromStorePath,
   WIKI_PAGE_SCHEMA_VERSION,
   WikiPageSchema,

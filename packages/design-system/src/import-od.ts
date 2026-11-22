@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SCHEMA_VERSION, type DesignSystemPackage } from "@9thlevelsoftware/legion-cli-schema";
 import { DS_HINT, refuse } from "./errors.js";
@@ -15,6 +15,24 @@ export type ImportOdResult = {
   manifest: DesignSystemPackage;
 };
 
+async function assertNoSymlinks(dir: string): Promise<void> {
+  const rootSt = await lstat(dir);
+  if (rootSt.isSymbolicLink() || !rootSt.isDirectory()) {
+    refuse("OpenDesign source directory must not be a symlink", DS_HINT.importOd);
+  }
+  const entries = await readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const abs = join(dir, entry.name);
+    const st = await lstat(abs);
+    if (st.isSymbolicLink()) {
+      refuse(`OpenDesign package must not contain symbolic links (${entry.name})`, DS_HINT.importOd);
+    }
+    if (st.isDirectory()) {
+      await assertNoSymlinks(abs);
+    }
+  }
+}
+
 /** One-way: od-design-system-project/v1 → legion-cli-design-system/v1. Does not activate. */
 export async function importOpenDesign(opts: {
   projectRoot: string;
@@ -23,6 +41,7 @@ export async function importOpenDesign(opts: {
 }): Promise<ImportOdResult> {
   assertInitialized(opts.projectRoot);
   const srcDir = resolveLocalDir(opts.source, opts.cwd ?? process.cwd());
+  await assertNoSymlinks(srcDir);
   const manifestPath = join(srcDir, "manifest.json");
   if (!existsSync(manifestPath)) {
     refuse("OpenDesign import requires manifest.json", DS_HINT.importOd);
@@ -51,11 +70,11 @@ export async function importOpenDesign(opts: {
   const dest = designPaths(opts.projectRoot).packageDir(od.id);
   await mkdir(dest, { recursive: true });
   for (const file of required) {
-    await cp(join(srcDir, file), join(dest, file), { dereference: true, force: true });
+    await cp(join(srcDir, file), join(dest, file), { dereference: false, force: true });
   }
   if (od.files.components && existsSync(join(srcDir, od.files.components))) {
     await cp(join(srcDir, od.files.components), join(dest, od.files.components), {
-      dereference: true,
+      dereference: false,
       force: true,
     });
   }

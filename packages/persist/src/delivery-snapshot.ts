@@ -26,6 +26,7 @@ export const DELIVERY_EXPORT_MAX_ATTEMPTS = 1024;
 const SNAPSHOT_ROOT = ".legion-cli/audit/delivery";
 const EXPORT_ROOT = ".legion-cli/audit/delivery-export";
 const FILES: Record<string, true> = { "prepared.json": true, "outcome.yaml": true, "complete.json": true, "aborted.json": true };
+const ATOMIC_TMP_NAME = /^\.[0-9a-f]{16}\.tmp$/;
 
 export function deliverySnapshotDirectory(confirmationId: string): string {
   assertId(confirmationId, "confirmation ID");
@@ -51,6 +52,33 @@ async function dirNames(abs: string): Promise<string[]> {
   try { return await readdir(abs); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
 }
+async function filterOrCleanAtomicTmp(store: LegionStore, dirAbs: string, rawNames: readonly string[], lock?: DeliverySnapshotLockOwnership): Promise<string[]> {
+  const kept: string[] = [];
+  for (const name of rawNames) {
+    if (!ATOMIC_TMP_NAME.test(name)) {
+      kept.push(name);
+      continue;
+    }
+    const tmpAbs = join(dirAbs, name);
+    if (lock) await assertNoLinkInPath(tmpAbs, { root: store.projectRoot });
+    try {
+      const st = await lstat(tmpAbs);
+      if (st.isFile() && !st.isSymbolicLink()) {
+        if (lock) {
+          await unlink(tmpAbs).catch((error) => {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          });
+        }
+        continue;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    kept.push(name);
+  }
+  return kept;
+}
 async function readRecord<T>(root: string, abs: string, maxBytes: number, schema: { safeParse(value: unknown): { success: boolean; data?: T } }, canonical = false): Promise<T | null> {
   await assertNoLinkInPath(abs, { root });
   let handle: FileHandle | undefined;
@@ -73,12 +101,12 @@ async function readRecord<T>(root: string, abs: string, maxBytes: number, schema
   return parsed.data as T;
 }
 type SnapshotRecords = { prepared: DeliverySnapshot | null; outcome: DeliveryOutcome | null; complete: DeliverySnapshot | null; aborted: DeliverySnapshot | null };
-async function readSnapshotRecords(store: LegionStore, confirmationId: string): Promise<SnapshotRecords> {
+async function readSnapshotRecords(store: LegionStore, confirmationId: string, lock?: DeliverySnapshotLockOwnership): Promise<SnapshotRecords> {
   assertId(confirmationId, "confirmation ID");
   const rel = deliverySnapshotDirectory(confirmationId);
   const abs = join(store.projectRoot, rel);
   await assertNoLinkInPath(abs, { root: store.projectRoot });
-  const names = await dirNames(abs);
+  const names = await filterOrCleanAtomicTmp(store, abs, await dirNames(abs), lock);
   if (names.some((name) => FILES[name] !== true)) throw new Error("Delivery snapshot directory contains unexpected files");
   const prepared = await readRecord(store.projectRoot, join(abs, "prepared.json"), DELIVERY_SNAPSHOT_MAX_BYTES, DeliverySnapshotSchema);
   const outcome = await readRecord(store.projectRoot, join(abs, "outcome.yaml"), 16 * 1024, DeliveryOutcomeSchema, true);
@@ -139,7 +167,7 @@ export async function prepareDeliverySnapshot(store: LegionStore, prepared: Prep
   const validated = DeliverySnapshotSchema.parse({ schemaVersion: SCHEMA_VERSION.deliverySnapshot, state: "prepared", prepared, preparedDigest: "0".repeat(64) });
   const candidate = DeliverySnapshotSchema.parse({ ...validated, preparedDigest: digestPrepared(validated.prepared) });
   const confirmationId = candidate.prepared.confirmationId;
-  const prior = await readSnapshotRecords(store, confirmationId);
+  const prior = await readSnapshotRecords(store, confirmationId, lock);
   if (prior.prepared || prior.complete || prior.aborted || prior.outcome) throw new Error("Delivery snapshot already exists and is immutable");
   await writeImmutable(store, join(snapshotDir(store, confirmationId), "prepared.json"), candidate, lock, DELIVERY_SNAPSHOT_MAX_BYTES);
   return candidate.preparedDigest;
@@ -150,7 +178,7 @@ export async function recordDeliveryOutcome(store: LegionStore, confirmationId: 
   assertOwned(store, lock);
   const validated = DeliveryOutcomeSchema.parse(outcome);
   if (validated.confirmationId !== confirmationId) throw new Error("Delivery outcome identity mismatch");
-  const existing = await readSnapshotRecords(store, confirmationId);
+  const existing = await readSnapshotRecords(store, confirmationId, lock);
   if (!existing.prepared || existing.aborted) throw new Error("Delivery outcome requires a prepared, non-aborted snapshot");
   const prepared = existing.prepared;
   const actualDigest = digestPrepared(prepared.prepared);
@@ -169,7 +197,7 @@ export async function recordDeliveryOutcome(store: LegionStore, confirmationId: 
 export async function completeDeliverySnapshot(store: LegionStore, confirmationId: string, outcome: DeliveryOutcome, completedTrace: GovernanceTrace, lock: DeliverySnapshotLockOwnership): Promise<DeliverySnapshot> {
   assertId(confirmationId, "confirmation ID");
   assertOwned(store, lock);
-  const existing = await readSnapshotRecords(store, confirmationId);
+  const existing = await readSnapshotRecords(store, confirmationId, lock);
   if (!existing.prepared || existing.complete || existing.aborted) throw new Error("Delivery snapshot is missing prepared facts or already terminal");
   const prepared = existing.prepared.prepared;
   const preparedDigest = digestPrepared(prepared);
@@ -185,7 +213,7 @@ export async function completeDeliverySnapshot(store: LegionStore, confirmationI
 export async function abortDeliverySnapshot(store: LegionStore, confirmationId: string, abortedAt: string, reason: Extract<DeliverySnapshot, { state: "aborted" }>["reason"], survivingCommit: string | null, lock: DeliverySnapshotLockOwnership): Promise<DeliverySnapshot> {
   assertId(confirmationId, "confirmation ID");
   assertOwned(store, lock);
-  const existing = await readSnapshotRecords(store, confirmationId);
+  const existing = await readSnapshotRecords(store, confirmationId, lock);
   if (!existing.prepared || existing.complete || existing.aborted || existing.outcome) throw new Error("Delivery snapshot is missing prepared facts or already terminal");
   const prepared = existing.prepared.prepared;
   const preparedDigest = digestPrepared(prepared);
@@ -222,7 +250,7 @@ export async function recordDeliveryExportAttempt(store: LegionStore, record: De
   const dirRel = `${EXPORT_ROOT}/${hash(parsed.snapshotId)}`;
   const dirAbs = join(store.projectRoot, dirRel);
   await assertNoLinkInPath(dirAbs, { root: store.projectRoot });
-  const names = await dirNames(dirAbs);
+  const names = await filterOrCleanAtomicTmp(store, dirAbs, await dirNames(dirAbs), lock);
   if (names.length >= DELIVERY_EXPORT_MAX_ATTEMPTS) throw new Error("Delivery export attempt limit reached");
   if (names.some((name) => !/^[a-f0-9]{64}\.json$/.test(name))) throw new Error("Delivery export directory contains unexpected files");
   const filename = `${hash(parsed.attemptId)}.json`;
@@ -236,7 +264,7 @@ export async function readDeliveryExportAttempts(store: LegionStore, confirmatio
   assertId(confirmationId, "confirmation ID");
   const dirAbs = join(store.projectRoot, `${EXPORT_ROOT}/${hash(confirmationId)}`);
   await assertNoLinkInPath(dirAbs, { root: store.projectRoot });
-  const names = await dirNames(dirAbs);
+  const names = await filterOrCleanAtomicTmp(store, dirAbs, await dirNames(dirAbs));
   if (names.length > DELIVERY_EXPORT_MAX_ATTEMPTS || names.some((name) => !/^[a-f0-9]{64}\.json$/.test(name))) throw new Error("Invalid delivery export attempt directory");
   const records: DeliveryExport[] = [];
   for (const name of names.sort()) {

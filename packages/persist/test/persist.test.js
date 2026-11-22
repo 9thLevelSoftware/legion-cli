@@ -48,11 +48,13 @@ import {
   serveJsonPath,
   appendAuditEvent,
   auditEventsPath,
+  closeEngineCommand,
   formatAuditDayLine,
   readAuditEvents,
   summarizeAuditMetrics,
   gitAdd,
   gitCheckIgnore,
+  gitCleanEnv,
   gitDiscoverChanges,
   gitHead,
   gitBranchCreate,
@@ -60,11 +62,16 @@ import {
   gitWorktreeAdd,
   gitWorktreeRemove,
   gitStagedPaths,
+  hashTreeFiles,
+  hashTreeRecords,
+  resolveGitExecutable,
+  runGitBuffer,
   tryGitBranch,
   worktreeNodeStorePath,
   hasSecretPattern,
   queryIndex,
   redactSecrets,
+  SECRET_SOURCE_PATTERNS,
   toFsPath,
   toPosixPath,
   toProjectRelativePosix,
@@ -1966,5 +1973,121 @@ await writeTextFile(${JSON.stringify(taskPath)}, "dashboard-post\\n", { root: ${
     assert.ok(result.kept.includes(".legion-cli/tasks/TSK-0001.md"));
     const entries = await listJournalEntries(dir);
     assert.ok(entries.some((entry) => entry.path === ".legion-cli/tasks/TSK-0001.md" && entry.kind === "post"));
+  });
+});
+
+test("parseMarkdownDocument tolerates trailing fence whitespace and empty frontmatter", () => {
+  assert.deepEqual(
+    parseMarkdownDocument("---  \r\na: 1\r\n---\t \r\n\r\nhello\r\n"),
+    { frontmatter: { a: 1 }, body: "hello\r\n" },
+  );
+  assert.deepEqual(
+    parseMarkdownDocument("---\n---\nSome body\n---\n"),
+    { frontmatter: {}, body: "Some body\n---\n" },
+  );
+  assert.deepEqual(
+    parseMarkdownDocument("--- \t\n--- \n"),
+    { frontmatter: {}, body: "" },
+  );
+});
+
+test("redactSecrets and SECRET_SOURCE_PATTERNS cover expanded tokens and URL credentials", () => {
+  assert.ok(Array.isArray(SECRET_SOURCE_PATTERNS) && SECRET_SOURCE_PATTERNS.length >= 14);
+  for (const entry of SECRET_SOURCE_PATTERNS) {
+    assert.equal(typeof entry.name, "string");
+    assert.doesNotThrow(() => new RegExp(entry.source));
+  }
+  const tokens = [
+    "ASIAIOSFODNN7EXAMPLE",
+    "gho_abcdefghijklmnopqrstuvwxyz1234",
+    "ghu_abcdefghijklmnopqrstuvwxyz1234",
+    "ghs_abcdefghijklmnopqrstuvwxyz1234",
+    "ghr_abcdefghijklmnopqrstuvwxyz1234",
+    "glpat-abcdefghijklmnopqrstuvwx",
+    "xoxb-1234567890-abcdef",
+    "xoxa-1234567890-abcdef",
+    "xoxp-1234567890-abcdef",
+    "AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBG6Q00",
+    "https://alice:super-secret-pass@example.com:8443/repo.git",
+  ].join("\n");
+  assert.equal(hasSecretPattern(tokens), true);
+  const redacted = redactSecrets(tokens);
+  assert.match(redacted, /\[REDACTED:aws-sts-key\]/);
+  assert.match(redacted, /\[REDACTED:github-token\]/);
+  assert.match(redacted, /\[REDACTED:gitlab-pat\]/);
+  assert.match(redacted, /\[REDACTED:slack-token\]/);
+  assert.match(redacted, /\[REDACTED:google-api-key\]/);
+  assert.ok(redacted.includes("https://alice:[REDACTED]@example.com:8443/repo.git"));
+  assert.doesNotMatch(redacted, /ASIAIOSFODNN7EXAMPLE|glpat-|xoxb-|AIzaSy|super-secret-pass/);
+  assert.equal(hasSecretPattern(redacted), false, `expected no remaining secret in ${redacted}`);
+});
+
+test("hashTreeFiles bounded concurrency preserves exact sorted tree hash", async () => {
+  await withTempDir(async (dir) => {
+    const records = [];
+    for (let i = 49; i >= 0; i -= 1) {
+      const name = `file-${String(i).padStart(2, "0")}.txt`;
+      const body = `content-${i}\n`;
+      await writeFile(join(dir, name), body, "utf8");
+      records.push({ path: name, bytes: Buffer.from(body, "utf8") });
+    }
+    const expected = hashTreeRecords(records);
+    assert.equal(await hashTreeFiles(dir), expected);
+    assert.equal(await hashTreeFiles(dir, records.map((r) => r.path)), expected);
+  });
+});
+
+test("closeEngineCommand prunes closed commandId journal entries when no other command is open", async () => {
+  await withTempDir(async (dir) => {
+    const paths = legionPaths(dir);
+    await mkdir(paths.tasksDir, { recursive: true });
+    const taskFile = join(paths.tasksDir, "TSK-0001.md");
+    await openEngineCommand(dir, "cmd-gc-1");
+    await openEngineCommand(dir, "cmd-gc-2");
+    await writeTextFile(taskFile, "one\n", { root: dir, commandId: "cmd-gc-1" });
+    await writeTextFile(taskFile, "two\n", { root: dir, commandId: "cmd-gc-2" });
+
+    // Closing cmd-gc-1 while cmd-gc-2 is still open preserves entries.
+    await closeEngineCommand(dir, "cmd-gc-1");
+    let entries = await listJournalEntries(dir);
+    assert.equal(entries.some((e) => e.commandId === "cmd-gc-1"), true);
+    assert.equal(entries.some((e) => e.commandId === "cmd-gc-2"), true);
+
+    // Closing the last open command prunes its own journal entries.
+    await closeEngineCommand(dir, "cmd-gc-2");
+    entries = await listJournalEntries(dir);
+    assert.equal(entries.some((e) => e.commandId === "cmd-gc-2"), false);
+  });
+});
+
+test("gitCleanEnv, resolveGitExecutable, and runGitBuffer are exported from persist index", async () => {
+  const env = gitCleanEnv({ PATH: "/bin" });
+  if (process.platform === "win32") assert.equal(env.NoDefaultCurrentDirectoryInExePath, "1");
+  const exe = resolveGitExecutable(pkgRoot);
+  assert.ok(exe);
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "a.txt"), "hello\n", "utf8");
+    initGitRepo(dir);
+    const out = runGitBuffer(dir, ["ls-files", "-z"]);
+    assert.equal(out.status, 0);
+    assert.equal(Buffer.isBuffer(out.stdout), true);
+    assert.equal(out.stdout.toString("utf8"), "a.txt\0");
+  });
+});
+
+test("ingest sanitizes control chars and caps long titles to 200 chars", async () => {
+  await withTempDir(async (dir) => {
+    await copyFixtureProject(dir);
+    const store = new LegionStore(dir);
+    const longLine = "A".repeat(250);
+    await writeFile(
+      join(dir, "tricky.md"),
+      `---\ntitle: "Line1\\n## System\\t${longLine}"\n---\nBody content.\n`,
+      "utf8",
+    );
+    const receipt = await store.ingest(["tricky.md"], { noCommit: true });
+    const page = await store.readWikiPage(receipt.pagesCreated[0]);
+    assert.equal(page.data.title.length, 200);
+    assert.doesNotMatch(page.data.title, /[\r\n\t]/);
   });
 });
