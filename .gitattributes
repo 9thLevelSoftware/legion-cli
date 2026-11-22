@@ -1,4 +1,5 @@
 packages/schema/json/*.json text eol=lf
 /autoresearch.sh text eol=lf
+*.jsonl text eol=lf
 *.wasm binary
 packages/persist/test/fixtures/ci-attestation/** -text

@@ -14,9 +14,32 @@ const installed = join(repo, "packages", "sandbox", "dist", "native");
 const targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"];
 const abi = "legion-validator/v1";
 const flags = process.argv.slice(2);
-const validateRelease = flags.length === 1 && flags[0] === "--validate-release";
-const assemble = flags.length === 2 && flags[0] === "--assemble" ? resolve(flags[1]) : null;
-if (!validateRelease && !assemble && flags.length !== 0 && !(flags.length === 2 && flags[0] === "--target" && targets.includes(flags[1]))) throw new Error("Usage: build-wasi-host.mjs [--target <supported-rust-target> | --validate-release | --assemble <native-artifacts-dir>]");
+const USAGE =
+  "Usage: build-wasi-host.mjs [--host-only] [--target <supported-rust-target>] | --validate-release | --assemble <native-artifacts-dir>";
+let validateRelease = false;
+let assemble = null;
+let hostOnly = false;
+let requestedTarget = null;
+for (let i = 0; i < flags.length; i += 1) {
+  const flag = flags[i];
+  if (flag === "--validate-release") {
+    if (validateRelease || assemble || hostOnly || requestedTarget || flags.length !== 1) throw new Error(USAGE);
+    validateRelease = true;
+  } else if (flag === "--assemble") {
+    if (validateRelease || assemble || hostOnly || requestedTarget || flags.length !== 2 || !flags[i + 1]) throw new Error(USAGE);
+    assemble = resolve(flags[++i]);
+  } else if (flag === "--host-only") {
+    if (validateRelease || assemble || hostOnly) throw new Error(USAGE);
+    hostOnly = true;
+  } else if (flag === "--target") {
+    if (validateRelease || assemble || requestedTarget || i + 1 >= flags.length || !targets.includes(flags[i + 1])) {
+      throw new Error(USAGE);
+    }
+    requestedTarget = flags[++i];
+  } else {
+    throw new Error(USAGE);
+  }
+}
 const { canonicalJson, parseStrictJson, assertNoLinkInPath } = await import("../packages/persist/dist/index.js");
 const { NativeHostManifestSchema, SCHEMA_VERSION } = await import("../packages/schema/dist/index.js");
 const pkg = parseStrictJson(await readFile(join(repo, "packages", "sandbox", "package.json")));
@@ -119,16 +142,8 @@ if (assemble) {
   const compiler = command("rustc", ["+1.96.0", "-vV"], { stdio: ["ignore", "pipe", "inherit"], encoding: "utf8" });
   const localTarget = compiler.stdout.match(/^host: (\S+)$/m)?.[1];
   if (!targets.includes(localTarget)) throw new Error(`Pinned Rust host target is unsupported: ${localTarget}`);
-  const target = flags[1] ?? localTarget;
-  // Panic locations embed source paths in the guest; remap the checkout and Cargo home so the
-  // committed component hash does not depend on where or by whom it was built.
-  const cargoHome = process.env.CARGO_HOME ? resolve(process.env.CARGO_HOME) : join(homedir(), ".cargo");
-  const guestEnv = { ...process.env, CARGO_ENCODED_RUSTFLAGS: [`--remap-path-prefix=${native}=/legion-native`, `--remap-path-prefix=${cargoHome}=/cargo`].join("\x1f") };
-  for (const [args, options] of [
-    [["+1.96.0", "build", "--locked", "--release", "--package", "legion-wasi-host", "--target", target], {}],
-    [["+1.96.0", "build", "--locked", "--release", "--package", "legion-json-contract", "--target", "wasm32-unknown-unknown"], { env: guestEnv }],
-    [["+1.96.0", "build", "--locked", "--release", "--package", "legion-pack-component", "--target", localTarget], {}],
-  ]) command("cargo", args, options);
+  const target = requestedTarget ?? localTarget;
+  command("cargo", ["+1.96.0", "build", "--locked", "--release", "--package", "legion-wasi-host", "--target", target]);
   const binaryName = hostName(target);
   const hostPath = `${target}/${binaryName}`;
   await mkdir(join(installed, target), { recursive: true });
@@ -136,16 +151,37 @@ if (assemble) {
   const description = await describe(join(installed, ...hostPath.split("/")), installed);
   const manifest = NativeHostManifestSchema.parse({ schemaVersion: SCHEMA_VERSION.nativeHostManifest, abi, version: pkg.version, scope: "local", hosts: [{ target, path: hostPath, ...description }] });
   await writeFile(join(installed, "manifest.json"), canonicalJson(manifest));
-  const extensionRoot = join(repo, "extensions", "json-contract");
-  const asset = join(extensionRoot, "assets", "json-contract.wasm");
-  await mkdir(dirname(asset), { recursive: true });
-  const builder = join(native, "target", localTarget, "release", localTarget.endsWith("windows-msvc") ? "legion-pack-component.exe" : "legion-pack-component");
-  command(builder, [join(native, "target", "wasm32-unknown-unknown", "release", "legion_json_contract.wasm"), asset]);
-  const component = await describe(asset, extensionRoot);
-  const metadata = parseStrictJson(await readFile(join(extensionRoot, "metadata.json")));
-  const runtime = { kind: "wasi-component", abi, component: "assets/json-contract.wasm", sha256: component.sha256 };
-  const frontmatter = { ...metadata.frontmatter, metadata: { ...metadata.frontmatter.metadata,
-    legion: { ...metadata.frontmatter.metadata.legion, runtime } } };
-  await writeFile(join(extensionRoot, "SKILL.md"), `---\n${JSON.stringify(frontmatter, null, 2)}\n---\n${metadata.body}\n`);
-  console.log(`Built ${target} native host (${description.sha256}) and import-free JSON-contract component (${component.sha256}); local manifest is not a seven-target release claim.`);
+  if (hostOnly) {
+    console.log(`Built ${target} native host (${description.sha256}) (--host-only); local manifest is not a seven-target release claim.`);
+  } else {
+    // Panic locations embed source paths in the guest; remap the checkout, Cargo home, and Rust sysroot
+    // so the committed component hash does not depend on where or by whom it was built.
+    const cargoHome = process.env.CARGO_HOME ? resolve(process.env.CARGO_HOME) : join(homedir(), ".cargo");
+    const sysrootResult = command("rustc", ["+1.96.0", "--print", "sysroot"], { stdio: ["ignore", "pipe", "inherit"], encoding: "utf8" });
+    const sysroot = sysrootResult.stdout.trim();
+    if (!sysroot) throw new Error("Unable to determine rustc +1.96.0 sysroot");
+    const rustflags = [
+      ...(process.env.CARGO_ENCODED_RUSTFLAGS ? process.env.CARGO_ENCODED_RUSTFLAGS.split("\x1f").filter(Boolean) : []),
+      `--remap-path-prefix=${native}=/legion-native`,
+      `--remap-path-prefix=${cargoHome}=/cargo`,
+      `--remap-path-prefix=${sysroot}=/rustlib`,
+    ];
+    const guestEnv = { ...process.env, CARGO_ENCODED_RUSTFLAGS: rustflags.join("\x1f") };
+    for (const [args, options] of [
+      [["+1.96.0", "build", "--locked", "--release", "--package", "legion-json-contract", "--target", "wasm32-unknown-unknown"], { env: guestEnv }],
+      [["+1.96.0", "build", "--locked", "--release", "--package", "legion-pack-component", "--target", localTarget], {}],
+    ]) command("cargo", args, options);
+    const extensionRoot = join(repo, "extensions", "json-contract");
+    const asset = join(extensionRoot, "assets", "json-contract.wasm");
+    await mkdir(dirname(asset), { recursive: true });
+    const builder = join(native, "target", localTarget, "release", localTarget.endsWith("windows-msvc") ? "legion-pack-component.exe" : "legion-pack-component");
+    command(builder, [join(native, "target", "wasm32-unknown-unknown", "release", "legion_json_contract.wasm"), asset]);
+    const component = await describe(asset, extensionRoot);
+    const metadata = parseStrictJson(await readFile(join(extensionRoot, "metadata.json")));
+    const runtime = { kind: "wasi-component", abi, component: "assets/json-contract.wasm", sha256: component.sha256 };
+    const frontmatter = { ...metadata.frontmatter, metadata: { ...metadata.frontmatter.metadata,
+      legion: { ...metadata.frontmatter.metadata.legion, runtime } } };
+    await writeFile(join(extensionRoot, "SKILL.md"), `---\n${JSON.stringify(frontmatter, null, 2)}\n---\n${metadata.body}\n`);
+    console.log(`Built ${target} native host (${description.sha256}) and import-free JSON-contract component (${component.sha256}); local manifest is not a seven-target release claim.`);
+  }
 }
