@@ -1,6 +1,6 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { LegionStore } from "@9thlevelsoftware/legion-cli-persist";
+import { writeTextFile, type LegionStore } from "@9thlevelsoftware/legion-cli-persist";
 import type { BrownfieldSpecialist } from "@9thlevelsoftware/legion-cli-schema";
 import { HINT, refuse } from "../errors.js";
 import type {
@@ -277,8 +277,8 @@ export async function mergeRun(store: LegionStore, runId: string): Promise<Brown
     recorded = new Map();
   }
   const model = mergeSpecialists(inputs, recorded);
-  await writeFile(runAbs(store.projectRoot, runId, "findings.md"), renderFindingsMd(model, runId, inputs.length), "utf8");
-  await writeFile(assumptionsAbs, renderAssumptionsMd(model, runId), "utf8");
+  await writeTextFile(runAbs(store.projectRoot, runId, "findings.md"), renderFindingsMd(model, runId, inputs.length), { root: store.projectRoot, skipJournal: true });
+  await writeTextFile(assumptionsAbs, renderAssumptionsMd(model, runId), { root: store.projectRoot, skipJournal: true });
   await writeRun(store.projectRoot, { ...run, phase: "assumptions" });
 
   const blockingAssumptions: BrownfieldBlockingAssumption[] = model.assumptions

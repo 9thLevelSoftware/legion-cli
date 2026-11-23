@@ -27,7 +27,6 @@ import {
   renderArchitecture,
   writeMapFile,
 } from "@9thlevelsoftware/legion-cli-map";
-import { spawnSync } from "node:child_process";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { constants, existsSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -66,6 +65,7 @@ import {
   ensureGitignore,
   commitPaths,
   gitAdd,
+  gitBranchExists,
   gitCommitIndex,
   gitDiffCached,
   gitHasStaged,
@@ -74,6 +74,9 @@ import {
   gitRestoreStaged,
   gitStagedPaths,
   isGitRepo,
+  runGit,
+  runGitBuffer,
+  tryGitBranch,
   tryGitHead,
   shipReceiptBody,
   shipReceiptPath,
@@ -307,10 +310,12 @@ import {
   unionDoneFilesAllowed,
   unrelatedDirty,
 } from "./ship.js";
-import { undoLastTask as runUndoLastTask, type UndoResult } from "./undo.js";
+import { restoreInterruptedUndoAuditBackup, undoLastTask as runUndoLastTask, type UndoResult } from "./undo.js";
 import type {
   Actor,
   AmendTaskOptions,
+  BrownfieldAdoptOptions,
+  BrownfieldAdoptResult,
   BrownfieldDagResult,
   BrownfieldEvidenceOptions,
   BrownfieldEvidenceResult,
@@ -435,6 +440,7 @@ import {
   sanitizePlanningProposal, validateDesignComparison, selectDesignOption, planningBlockers,
 } from "./planning-assistance.js";
 import {
+  adoptBrownfieldRun,
   brownfieldEntry,
   dagRun,
   evidenceRun,
@@ -482,13 +488,12 @@ function deliverySubjectDigest(scope: DeliveryProduct["scope"], entries: Deliver
 
 function gitBatchObjects(projectRoot: string, oids: readonly string[]): Map<string, Buffer> {
   if (oids.length === 0) return new Map();
-  const result = spawnSync("git", ["cat-file", "--batch"], {
-    cwd: projectRoot,
-    input: `${oids.join("\n")}\n`,
+  const result = runGitBuffer(projectRoot, ["cat-file", "--batch"], {
+    input: Buffer.from(`${oids.join("\n")}\n`, "utf8"),
     maxBuffer: 256 * 1024 * 1024,
   });
-  if (result.error || result.status !== 0) throw new Error(`git cat-file --batch failed: ${result.error?.message ?? result.stderr?.toString("utf8").slice(0, 512)}`);
-  const bytes = result.stdout as Buffer;
+  if (result.error || result.status !== 0) throw new Error(`git cat-file --batch failed: ${result.error ?? result.stderr.slice(0, 512)}`);
+  const bytes = result.stdout;
   const objects = new Map<string, Buffer>();
   let offset = 0;
   for (const expected of oids) {
@@ -563,13 +568,11 @@ async function nativeProductInventory(projectRoot: string): Promise<DeliveryProd
 }
 
 function gitCommitProductInventory(projectRoot: string, commit: string): DeliveryProduct {
-  const tree = spawnSync("git", ["ls-tree", "-r", "-z", "--full-tree", commit], {
-    cwd: projectRoot,
-    encoding: "buffer",
+  const tree = runGitBuffer(projectRoot, ["ls-tree", "-r", "-z", "--full-tree", commit], {
     maxBuffer: 256 * 1024 * 1024,
   });
-  if (tree.error || tree.status !== 0) throw new Error(`git ls-tree failed: ${tree.error?.message ?? tree.stderr?.toString("utf8").slice(0, 512)}`);
-  const records = (tree.stdout as Buffer).toString("utf8").split("\0").filter(Boolean).map((record) => {
+  if (tree.error || tree.status !== 0) throw new Error(`git ls-tree failed: ${tree.error ?? tree.stderr.slice(0, 512)}`);
+  const records = tree.stdout.toString("utf8").split("\0").filter(Boolean).map((record) => {
     const tab = record.indexOf("\t");
     const [mode, , oid] = record.slice(0, tab).split(" ");
     return { mode: mode!, oid: oid!, path: record.slice(tab + 1).replaceAll("\\", "/") };
@@ -2407,13 +2410,19 @@ export class LegionEngine {
     gate: "spec" | "plan", specId: string, raw: string, declaredRoots: string[] = [],
     candidateTasks?: Task[], persist = true,
   ): Promise<PreparationValidation> {
-    let record: WorkflowPreparation;
-    try { record = WorkflowPreparationSchema.parse(JSON.parse(raw)); }
+    let parsedRaw: unknown;
+    try { parsedRaw = JSON.parse(raw); }
     catch (error) { refuse(`invalid preparation proposal: ${String(error)}`, gate === "spec" ? HINT.spec : HINT.plan); }
+    const rawSpecId = parsedRaw && typeof parsedRaw === "object" && !Array.isArray(parsedRaw)
+      ? (parsedRaw as { assessment?: { specId?: unknown } }).assessment?.specId
+      : undefined;
     const spec = (await this.store.readSpec(specId)).data;
-    if (spec.workflowPolicyVersion !== 2 || record.assessment.specId !== specId) {
+    if (spec.workflowPolicyVersion !== 2 || rawSpecId !== specId) {
       refuse("preparation proposal has a different policy or spec identity", HINT.spec);
     }
+    let record: WorkflowPreparation;
+    try { record = await bindPreparationArtifacts(this.store, parsedRaw); }
+    catch (error) { refuse(`invalid preparation proposal: ${String(error)}`, gate === "spec" ? HINT.spec : HINT.plan); }
     const existing = await readWorkflowPreparation(this.store, specId);
     if (gate === "plan" && (!existing ||
         workflowFingerprint({ assessment: existing.assessment, specArtifacts: existing.specArtifacts, knowledge: existing.knowledge }) !==
@@ -2438,7 +2447,6 @@ export class LegionEngine {
         refuse("an agent cannot select a design on behalf of the human", HINT.plan);
       }
     }
-    record = await bindPreparationArtifacts(this.store, record);
     const inputInventory = await planningInputInventory(this.projectRoot, declaredRoots);
     const readableInputs = new Set(inputInventory.files);
     for (const input of [...record.specArtifacts, ...record.planArtifacts].flatMap((artifact) => artifact.inputs)) {
@@ -2538,11 +2546,17 @@ export class LegionEngine {
         refuse(context.preparation.blockers.map((blocker) => blocker.message).join("; "), HINT.plan);
       }
       const priorPlanApproval = await readPlanApproval(this.store);
+      const configChecks = context.config.workflow?.verificationCommands ?? [];
+      const cliChecks = opts.verificationCommands ?? [];
+      const carryForwardPriorChecks = priorPlanApproval
+        ? (priorPlanApproval.specId === context.snapshot.specId ||
+          (configChecks.length === 0 && cliChecks.length === 0))
+        : false;
       const verificationCommands = [
         ...new Set([
-          ...(context.config.workflow?.verificationCommands ?? []),
-          ...(priorPlanApproval?.specId === context.snapshot.specId ? priorPlanApproval.verificationCommands : []),
-          ...(opts.verificationCommands ?? []),
+          ...configChecks,
+          ...(carryForwardPriorChecks ? priorPlanApproval!.verificationCommands : []),
+          ...cliChecks,
         ].map((command) => command.trim()).filter(Boolean)),
       ];
       if (context.spec.workflowPolicyVersion === 2) {
@@ -2667,7 +2681,7 @@ export class LegionEngine {
 
   async prepareSpecChallenge(
     specId?: string,
-    opts?: { adapter?: AdapterId },
+    opts?: { adapter?: AdapterId; allowNoSandbox?: boolean },
   ): Promise<SpecChallengeResult> {
     let started: StartedSkillSpawn | undefined;
     const prepared = await this.#withLockOrRefuse(async (): Promise<
@@ -2712,6 +2726,7 @@ export class LegionEngine {
           planningReadRoots: context.readRoots,
           planningPolicy2: context.spec.data.workflowPolicyVersion === 2,
           cliAdapter: opts?.adapter,
+          allowNoSandbox: opts?.allowNoSandbox,
           required: false,
         });
       } catch (err) {
@@ -2807,6 +2822,9 @@ export class LegionEngine {
       }
       const response = resolution.response.trim();
       if (!response) refuse("spec challenge resolution requires a response or reason", "legion-cli spec");
+      if (resolution.disposition !== "dismissed" && response.length < 8) {
+        refuse("challenge resolution requires a substantive response of at least 8 characters", "legion-cli spec");
+      }
       const index = receipt.concerns.findIndex((concern) => concern.id === concernId);
       if (index < 0) refuse(`unknown spec challenge concern ${concernId}`, "legion-cli spec");
       const concerns = [...receipt.concerns];
@@ -2864,7 +2882,7 @@ export class LegionEngine {
 
   async finalizeSpecChallenge(
     specId?: string,
-    opts?: { adapter?: AdapterId; manualReview?: SpecChallengeManualReviewInput; actor?: Actor },
+    opts?: { adapter?: AdapterId; allowNoSandbox?: boolean; manualReview?: SpecChallengeManualReviewInput; actor?: Actor },
   ): Promise<SpecChallengeResult> {
     let started: StartedSkillSpawn | undefined;
     const prepared = await this.#withLockOrRefuse(async (): Promise<
@@ -2960,6 +2978,7 @@ export class LegionEngine {
           planningReadRoots: context.readRoots,
           planningPolicy2: context.spec.data.workflowPolicyVersion === 2,
           cliAdapter: opts?.adapter,
+          allowNoSandbox: opts?.allowNoSandbox,
           required: false,
         });
       } catch (err) {
@@ -3988,7 +4007,7 @@ export class LegionEngine {
         filesForbidden: mergeFilesForbidden(contract.filesForbidden),
       };
       const others = (await this.#listTasks()).filter(
-        (task) => task.id !== id && task.status !== "done" && task.status !== "compacted",
+        (task) => task.id !== id && task.specId === doc.data.specId && task.status !== "done" && task.status !== "compacted",
       );
       const overlaps = overlappingFilesAllowed([{ ...doc.data, contract: merged }, ...others]);
       if (overlaps.length > 0) {
@@ -4283,7 +4302,7 @@ export class LegionEngine {
             opts.fix ? "This is a fix run. Keep the reproducing test. Do not delete tests." : "",
             `Read .legion-cli/specs/${task.specId}/SPEC.md.`,
             "Write only the files listed in FileContract. Do not git add or git commit.",
-            "Link tests to SPEC criteria with @ac(AC-ID), and copy AC.priority as @p0/@p1/@p2.",
+            "When using legacy QA with string-titled test runners, link tests to SPEC criteria with @ac(AC-ID) and copy AC.priority as @p0/@p1/@p2; never embed @ac/@p0 in Rust/Go/Python/Java identifiers.",
           ].filter(Boolean).join("\n");
           const governed = await this.#governedExecuteSpawnOptions(task, configured, {
             adapter: opts.adapter,
@@ -4793,7 +4812,7 @@ export class LegionEngine {
           "Optional walkthrough notes. This is not a ship gate.",
           `Active spec: ${specId}`,
           task ? `Task: ${task.id} ${task.title}` : "Walk the slice tasks.",
-          "Write notes to .legion-cli/qa/verify.md (or .legion-cli/qa/verify/<taskId>.md).",
+          "Write notes to .legion-cli/cache/runs/<id>/summary.md.",
           "If you find fix work, file type: fix child tasks under .legion-cli/tasks/ or extra.json.",
           "Do not git add or git commit. Do not write packets.",
         ].join("\n"),
@@ -4846,7 +4865,7 @@ export class LegionEngine {
       return {
         taskId: task?.id,
         spawned: result.spawned,
-        notesPath: await this.#findVerifyNotes(task?.id),
+        notesPath: await this.#findVerifyNotes(task?.id, result.runId),
         createdTaskIds,
         createdTickets: filedExtras?.tickets ?? [],
         extrasReverted: result.revert?.extrasReverted ?? [],
@@ -4898,6 +4917,10 @@ export class LegionEngine {
           adapter: opts?.adapter,
           profile: opts?.profile,
         });
+        const sliceTaskPaths = slice.map((item) => `.legion-cli/tasks/${item.id}.md`);
+        const sliceTaskPrompt = sliceTaskPaths.length > 0
+          ? `Read .legion-cli/specs/${specId}/SPEC.md and active spec task files: ${sliceTaskPaths.join(", ")}.`
+          : `Read .legion-cli/specs/${specId}/SPEC.md.`;
         started = await startSkillSpawn({
           ...this.#skillSpawnFields(),
           config: config!,
@@ -4906,7 +4929,7 @@ export class LegionEngine {
           promptBody: [
             "Spec-level review of a terminal slice.",
             `Active spec: ${specId}`,
-            `Read .legion-cli/specs/${specId}/SPEC.md and .legion-cli/tasks/*.md.`,
+            sliceTaskPrompt,
             "Write notes to .legion-cli/cache/runs/<id>/review.md (the engine keeps them at .legion-cli/qa/review.md).",
             "Include exactly one explicit `Verdict: PASS` or `Verdict: FAIL` line in that report.",
             "If the slice does not meet the spec, file tasks under .legion-cli/tasks/ (type: fix) or extra.json.",
@@ -5210,7 +5233,7 @@ export class LegionEngine {
         refuse("File paths must be concrete (no * or **)", HINT.concretePaths);
       }
       const live = (await this.#listTasks()).filter(
-        (task) => task.status !== "done" && task.status !== "compacted",
+        (task) => task.specId === specId && task.status !== "done" && task.status !== "compacted",
       );
       const probe = ticketFromInput("TSK-probe", specId, {
         title,
@@ -5258,7 +5281,7 @@ export class LegionEngine {
         refuse("File paths must be concrete (no * or **)", HINT.concretePaths);
       }
       const live = (await this.#listTasks()).filter(
-        (task) => task.status !== "done" && task.status !== "compacted",
+        (task) => task.specId === specId && task.status !== "done" && task.status !== "compacted",
       );
       const probe = ticketFromInput("TSK-probe", specId, {
         title,
@@ -5300,7 +5323,21 @@ export class LegionEngine {
     if (opts.pr && !opts.commit) {
       refuse("ship --pr requires --commit", HINT.shipPrRetry);
     }
-    if (opts.pr && !opts.prCreate && !ghAvailable()) {
+    const targetBranch = opts.branch?.trim();
+    if (opts.branch !== undefined && !targetBranch) {
+      refuse("ship --branch requires a non-empty branch name", HINT.ship);
+    }
+    if (targetBranch) {
+      if (!isGitRepo(this.projectRoot)) refuse("ship --branch requires a git repository", HINT.gitRepo);
+      if (targetBranch.startsWith("-")) refuse(`invalid branch name: ${targetBranch}`, HINT.ship);
+      const refCheck = runGit(this.projectRoot, ["check-ref-format", "--branch", targetBranch]);
+      if (refCheck.status !== 0) refuse(`invalid branch name: ${targetBranch}`, HINT.ship);
+      if (gitBranchExists(this.projectRoot, targetBranch)) refuse(`branch ${targetBranch} already exists`, HINT.ship);
+    }
+    if (opts.push && !isGitRepo(this.projectRoot)) {
+      refuse("ship --push requires a git repository", HINT.gitRepo);
+    }
+    if (opts.pr && !opts.prCreate && !ghAvailable(this.projectRoot)) {
       refuse("gh is required for --pr", HINT.shipPr);
     }
     const initialAssurance = await loadAssurance(this.store);
@@ -5517,6 +5554,10 @@ export class LegionEngine {
         }
         await this.#governanceMutation("ship-rollback", async () => {
           if (rollback.priorHead && rollback.commitSha) gitResetMixed(this.projectRoot, rollback.priorHead);
+          if (rollback.priorBranch && rollback.createdBranch) {
+            runGit(this.projectRoot, ["checkout", rollback.priorBranch]);
+            runGit(this.projectRoot, ["branch", "-D", rollback.createdBranch]);
+          }
           let receiptKept: string | undefined;
           if (!rollback.keptRootCommit) {
             try {
@@ -5535,6 +5576,7 @@ export class LegionEngine {
           });
           if (this.#shipProjection) this.#shipProjection = { ...this.#shipProjection, confirmed: false, status: "aborted" };
         });
+        if (!opts.pr && opts.push) refuse(`git push failed: ${rollback.reason}`, HINT.ship);
         refuse(`gh pr create failed: ${rollback.reason}`, HINT.shipPrRetry);
       }
       return completion.receipt;
@@ -6066,6 +6108,13 @@ export class LegionEngine {
   }
 
   async getState(): Promise<StateFile> {
+    if (!this.store.holdsLock() && existsSync(toFsPath(this.projectRoot, ".legion-cli/index/undo-audit-backup.json"))) {
+      try {
+        await this.store.withLock(() => restoreInterruptedUndoAuditBackup(this.projectRoot));
+      } catch (err) {
+        if (!(err instanceof EngineLockedError)) throw err;
+      }
+    }
     return this.#readState();
   }
 
@@ -6222,6 +6271,60 @@ export class LegionEngine {
     });
   }
 
+  async brownfieldAdopt(runId: string, opts: BrownfieldAdoptOptions = {}): Promise<BrownfieldAdoptResult> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (state.phase === "uninitialized") {
+        refuse("brownfield adopt is refused until init", HINT.init);
+      }
+      if (
+        state.phase !== "initialized" &&
+        state.phase !== "intent_draft" &&
+        state.phase !== "intent_ready" &&
+        state.phase !== "discussing" &&
+        state.phase !== "spec_draft" &&
+        state.phase !== "shipped" &&
+        state.phase !== "abandoned"
+      ) {
+        refuse("Start a new spec or finish the active increment before adopting a brownfield run", HINT.specNew);
+      }
+      const adopted = await adoptBrownfieldRun(this.store, runId, {
+        ...opts,
+        allocateSpecId: (name) => this.#allocateSpecId(name),
+      });
+      if (state.activeSpecId && (state.phase === "shipped" || state.phase === "abandoned")) {
+        try {
+          const prevSpec = await this.store.readSpec(state.activeSpecId);
+          if (prevSpec.data.status !== "superseded") {
+            await this.store.writeSpec({ ...prevSpec.data, status: "superseded" }, prevSpec.body);
+          }
+        } catch {
+          // previous spec may already be gone
+        }
+      }
+      await this.store.writeSpec(adopted.spec, adopted.specBody);
+      const project = await this.store.readProject();
+      await this.store.writeProject({ ...project.data, activeSpecId: adopted.result.specId }, project.body);
+      const nextState: StateFile = {
+        ...state,
+        phase: "spec_draft",
+        activeSpecId: adopted.result.specId,
+        currentTaskId: null,
+        lastReadiness: null,
+        lastReview: null,
+        lastQaId: null,
+      };
+      await this.store.writeState(nextState, stateBody(nextState));
+      await this.#audit("brownfield_adopt", "spec_draft", opts.actor?.id ?? "user", {
+        runId: adopted.result.runId,
+        prId: adopted.result.prId,
+        specId: adopted.result.specId,
+        selectionPath: adopted.result.selectionPath,
+      });
+      return adopted.result;
+    });
+  }
+
   async #executeOne(
     taskId: string | "auto",
     opts: { fix: boolean; adapter?: AdapterId; profile?: string; allowNoSandbox?: boolean; config?: LegionConfig; resumeRunId?: string; onProgress?: ExecuteOptions["onProgress"] },
@@ -6307,7 +6410,7 @@ export class LegionEngine {
         opts.fix ? "This is a fix run. Keep the reproducing test. Do not delete tests." : "",
         `Read .legion-cli/specs/${task.specId}/SPEC.md.`,
         "Write only the files listed in FileContract. Do not git add or git commit.",
-        "Link tests to SPEC criteria with @ac(AC-ID), and copy AC.priority as @p0/@p1/@p2.",
+        "When using legacy QA with string-titled test runners, link tests to SPEC criteria with @ac(AC-ID) and copy AC.priority as @p0/@p1/@p2; never embed @ac/@p0 in Rust/Go/Python/Java identifiers.",
       ]
         .filter((line) => line !== "")
         .join("\n");
@@ -6931,7 +7034,16 @@ export class LegionEngine {
     }
   }
 
-  async #findVerifyNotes(taskId?: string): Promise<string | undefined> {
+  async #findVerifyNotes(taskId?: string, runId?: string): Promise<string | undefined> {
+    if (runId) {
+      const runSummary = `.legion-cli/cache/runs/${runId}/summary.md`;
+      try {
+        const raw = await readFile(toFsPath(this.projectRoot, runSummary), "utf8");
+        if (raw.trim().length > 0) return runSummary;
+      } catch {
+        // fall back to qa/verify* paths
+      }
+    }
     const candidates = [
       taskId ? `.legion-cli/qa/verify/${taskId}.md` : undefined,
       ".legion-cli/qa/verify.md",
@@ -7081,7 +7193,9 @@ export class LegionEngine {
     const contractInvalid =
       filesAllowedFailsPlan(ticket.contract.filesAllowed) ||
       expectedArtifactsFailsPlan(ticket.contract.filesAllowed, ticket.contract.expectedArtifacts);
-    const live = tasks.filter((task) => task.status !== "done" && task.status !== "compacted");
+    const live = tasks.filter(
+      (task) => task.specId === specId && task.status !== "done" && task.status !== "compacted",
+    );
     const overlaps = overlappingFilesAllowed([ticket, ...live]);
     let coerced = false;
     if (contractInvalid || overlaps.length > 0) {
@@ -8574,6 +8688,8 @@ export class LegionEngine {
       priorHead: string | null;
       keptRootCommit: boolean;
       commitSha?: string;
+      createdBranch?: string;
+      priorBranch?: string | null;
     };
   }> {
     if (isGitRepo(this.projectRoot)) {
@@ -8660,14 +8776,25 @@ export class LegionEngine {
       ];
       const artifacts = await Promise.all((manifest?.delivery.artifacts ?? []).map(async (artifact) => {
         const descriptor = product.entries.find((entry) => entry.path === artifact.path);
-        if (!descriptor || descriptor.kind === "gitlink" || (descriptor.kind === "blob" && descriptor.mode === "120000")) {
+        if (descriptor && (descriptor.kind === "gitlink" || (descriptor.kind === "blob" && descriptor.mode === "120000"))) {
           throw new Error(`Approved artifact must be a regular product file: ${artifact.path}`);
         }
         const absolute = toFsPath(this.projectRoot, artifact.path);
         await assertNoLinkInPath(absolute, { root: this.projectRoot });
-        const stats = await lstat(absolute);
-        if (!stats.isFile() || stats.isSymbolicLink()) throw new Error(`Approved artifact must be a regular non-symlink file: ${artifact.path}`);
-        return { name: artifact.name, path: artifact.path, sha256: descriptor.sha256, size: descriptor.size };
+        const handle = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        try {
+          const stats = await handle.stat();
+          if (!stats.isFile() || stats.isSymbolicLink()) {
+            throw new Error(`Approved artifact must be a regular non-symlink file: ${artifact.path}`);
+          }
+          if (descriptor) {
+            return { name: artifact.name, path: artifact.path, sha256: descriptor.sha256, size: descriptor.size };
+          }
+          const bytes = await handle.readFile();
+          return { name: artifact.name, path: artifact.path, sha256: sha256Hex(bytes), size: bytes.byteLength };
+        } finally {
+          await handle.close();
+        }
       }));
       const assuranceEvidence = isAdopted
         ? await inspectAssuranceEvidence(this.store, adopted, manifest!.acceptanceIds, await this.#componentPolicyPosture(adopted, sliceTasks(await this.#listGateTasks(), state.activeSpecId)))
@@ -8807,7 +8934,30 @@ export class LegionEngine {
     });
 
     const priorHead = isGitRepo(this.projectRoot) ? tryGitHead(this.projectRoot) : null;
+    const priorBranch = isGitRepo(this.projectRoot) ? tryGitBranch(this.projectRoot) : null;
+    const targetBranch = opts.branch?.trim();
+    let createdBranch: string | undefined;
     if (isGitRepo(this.projectRoot)) {
+      if (targetBranch) {
+        const checkedOut = runGit(this.projectRoot, ["checkout", "-b", targetBranch]);
+        if (checkedOut.status !== 0) {
+          const reason = checkedOut.error ?? ((checkedOut.stderr || checkedOut.stdout).trim() || `git checkout -b ${targetBranch} failed`);
+          return {
+            receipt,
+            rollback: {
+              state,
+              specId,
+              actor,
+              receiptPath,
+              reason,
+              priorHead,
+              keptRootCommit: false,
+            },
+            ...(deliveryId && preparedDigest ? { snapshotId: deliveryId, preparedDigest } : {}),
+          };
+        }
+        createdBranch = targetBranch;
+      }
       // Product paths were staged before confirm. Re-adding a staged deletion fails
       // (`pathspec did not match`); only pick up receipt / STATE / .legion-cli here.
       gitAdd(this.projectRoot, [".legion-cli"]);
@@ -8820,6 +8970,10 @@ export class LegionEngine {
           if (deliveryId) await abortDeliverySnapshot(this.store, deliveryId, nowIso(), "commit-failed", tryGitHead(this.projectRoot), {
             assertLockOwned: () => { if (!this.store.holdsLock()) throw new Error("Engine lock is not owned"); },
           });
+          if (priorBranch && createdBranch) {
+            runGit(this.projectRoot, ["checkout", priorBranch]);
+            runGit(this.projectRoot, ["branch", "-D", createdBranch]);
+          }
           throw error;
         }
       }
@@ -8835,7 +8989,28 @@ export class LegionEngine {
           refuse(SHIP_STAGED_CHANGED, HINT.ship);
         }
       }
-
+      if (opts.push && !opts.prCreate) {
+        const pushed = runGit(this.projectRoot, ["push", "-u", "origin", "HEAD"]);
+        if (pushed.status !== 0) {
+          const reason = pushed.error ?? ((pushed.stderr || pushed.stdout).trim() || "git push failed");
+          const keptRootCommit = Boolean(receipt.commitSha) && !priorHead;
+          return {
+            receipt,
+            rollback: {
+              state,
+              specId,
+              actor,
+              receiptPath,
+              reason,
+              priorHead,
+              keptRootCommit,
+              ...(receipt.commitSha ? { commitSha: receipt.commitSha } : {}),
+              ...(createdBranch ? { createdBranch, priorBranch } : {}),
+            },
+            ...(deliveryId && preparedDigest ? { snapshotId: deliveryId, preparedDigest } : {}),
+          };
+        }
+      }
     }
     if (!isGitRepo(this.projectRoot) && deliveryId) {
       const prepared = await readDeliverySnapshot(this.store, deliveryId);
@@ -8849,12 +9024,26 @@ export class LegionEngine {
     }
     if (opts.pr) {
       const title = shipCommitMessage(specId);
-      const body = [
+      const specDoc = specId ? await this.store.readSpec(specId).catch(() => null) : null;
+      const workflowEvidence = await readWorkflowEvidence(this.store).catch(() => null);
+      const acceptanceReceipt = await readAcceptanceReceipt(this.store).catch(() => null);
+      const shipConfig = await this.#readConfig();
+      const passedChecks = (workflowEvidence?.integration ?? []).filter((run) => run.ok).map((run) => run.command);
+      const accCriteria = acceptanceReceipt?.entries ?? [];
+      const accPassed = accCriteria.filter((entry) => entry.status === "passed").length;
+      const bodyLines = [
         `Ship receipt for ${specId || "spec"}.`,
         `QA mode: ${qaMode ?? "none"}`,
         `QA score: ${qaScore ?? "none"}`,
         `QA pass: ${qaPass}`,
-      ].join("\n");
+      ];
+      if (shipConfig.workflow?.profile === "focused" || workflowEvidence || acceptanceReceipt) {
+        if (specDoc) bodyLines.push(`Spec: ${specDoc.data.title} (${specDoc.data.id})`);
+        bodyLines.push(`Checks passed: ${passedChecks.length > 0 ? passedChecks.join("; ") : "(none)"}`);
+        bodyLines.push(`Review verdict: ${workflowEvidence?.review?.verdict ?? state.lastReview ?? "none"}`);
+        bodyLines.push(`Acceptance: ${accPassed}/${accCriteria.length || specDoc?.data.acceptance.length || 0} passed`);
+      }
+      const body = bodyLines.join("\n");
       let created: { url?: string; error?: string };
       try {
         created = await (opts.prCreate
@@ -8879,6 +9068,7 @@ export class LegionEngine {
             priorHead,
             keptRootCommit,
             ...(receipt.commitSha ? { commitSha: receipt.commitSha } : {}),
+            ...(createdBranch ? { createdBranch, priorBranch } : {}),
           },
           ...(deliveryId && preparedDigest ? { snapshotId: deliveryId, preparedDigest } : {}),
         };
@@ -9384,6 +9574,8 @@ export class LegionEngine {
         async () => {
           let guardError: unknown;
           if (!already) {
+            // Restore any pre-checkout audit backup left behind by an interrupted undo before verifying the chain.
+            await restoreInterruptedUndoAuditBackup(this.projectRoot);
             // Fail closed before any state change if the audit chain is unreadable or rewound.
             await assertAuditChainUsable(this.projectRoot);
             // Writers also get the exact append-time check (full replay only for an old-format chain),

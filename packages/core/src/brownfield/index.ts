@@ -1,3 +1,4 @@
+export { adoptBrownfieldRun } from "./adopt.js";
 export { applyNodeSet, cascadeSkip, dagRun, readDag, summarizeDag, writeDag } from "./dag.js";
 export {
   collectEvidence,

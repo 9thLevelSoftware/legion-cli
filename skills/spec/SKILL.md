@@ -79,15 +79,16 @@ Human answers and selections belong to the engine; pause never implies approval.
 ## Policy-2 preparation.json example
 
 The engine supplies the spec ID and any current preparation record. Preserve
-existing approved identities exactly. Compute SHA256 from each safe input and
-new supporting document's actual bytes; new output hashes are not supplied in
-advance. The engine derives the assessment input fingerprint from the captured
-specification input bindings. In the example below, replace every placeholder,
-including each digest, with the actual ID, file digest, and project-grounded
-content before emitting JSON. Digests must be 64 lowercase hexadecimal characters;
-placeholder text is not valid output. `intent.md` is a source only when it appears
-in the supplied inventory. Use another admitted input or no byte inputs when
-appropriate. A specification proposal has this shape:
+existing approved identities exactly. You may compute SHA256 (64 lowercase hex
+characters) from each safe input and new supporting document's actual bytes, or
+omit / leave non-64-hex placeholder `digest` and `inputFingerprint` values and
+the engine will compute and bind SHA256 digests from the actual files on disk
+(provided every referenced path is a real regular file under its allowed stage
+or safe inventory root; invalid paths or missing files still fail). Replace
+other example placeholders such as `<activeSpecId>` and prose fields with the
+actual ID and project-grounded content before emitting JSON. `intent.md` is a
+source only when it appears in the supplied inventory. Use another admitted input
+or no byte inputs when appropriate. A specification proposal has this shape:
 
 ```json
 {

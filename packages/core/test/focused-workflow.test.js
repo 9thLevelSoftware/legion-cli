@@ -652,3 +652,161 @@ for (const workflowProfile of ["focused", undefined]) {
     }, { skillsDir });
   });
 }
+
+test("spec new carries forward priorPlanApproval.verificationCommands when opts and config checks are empty", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initFocused(engine);
+      await seedFocusedPlan(store, dir, { phase: "executing", taskStatus: "done" });
+      await mkdir(join(dir, "src"), { recursive: true });
+      await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
+      const carriedCheck = passingVerificationCommand();
+      const first = await engine.approvePlan({ id: "owner" }, { verificationCommands: [carriedCheck] });
+      assert.deepEqual(first.verificationCommands, [carriedCheck]);
+
+      await engine.executeWorkflow();
+      await engine.recordAcceptance([{ id: "AC-01", status: "passed" }], { id: "owner" });
+      await engine.ship();
+      await engine.newSpec();
+
+      await writeSpec(store, makeSpec({ id: "spec-v2", status: "draft", title: "Spec v2" }));
+      const projV2 = await store.readProject();
+      await store.writeProject({ ...projV2.data, activeSpecId: "spec-v2" }, projV2.body);
+      await patchState(store, { activeSpecId: "spec-v2", phase: "spec_draft" });
+      await engine.prepareSpecChallenge("spec-v2");
+      await engine.approveSpec("spec-v2", { id: "owner" });
+      await writeTask(store, makeTask({
+        id: "TSK-0002",
+        specId: "spec-v2",
+        status: "done",
+        contract: {
+          filesAllowed: ["src/v2.ts"],
+          expectedArtifacts: ["src/v2.ts"],
+          verificationCommands: [carriedCheck],
+        },
+      }));
+      await writeFile(join(dir, ".legion-cli", "plans", "spec-v2.md"), "# Approved implementation plan\n\nImplement v2.\n", "utf8");
+      await patchState(store, { activeSpecId: "spec-v2", phase: "plan_ready" });
+
+      const second = await engine.approvePlan({ id: "owner" });
+      assert.deepEqual(second.verificationCommands, [carriedCheck]);
+
+      const overrideCheck = `${quoteArg(process.execPath)} -e process.exitCode=0`;
+      await writeSpec(store, makeSpec({ id: "spec-v3", status: "draft", title: "Spec v3" }));
+      const projV3 = await store.readProject();
+      await store.writeProject({ ...projV3.data, activeSpecId: "spec-v3" }, projV3.body);
+      await patchState(store, { activeSpecId: "spec-v3", phase: "spec_draft" });
+      await engine.prepareSpecChallenge("spec-v3");
+      await engine.approveSpec("spec-v3", { id: "owner" });
+      await writeTask(store, makeTask({
+        id: "TSK-0003",
+        specId: "spec-v3",
+        status: "done",
+        contract: {
+          filesAllowed: ["src/v3.ts"],
+          expectedArtifacts: ["src/v3.ts"],
+          verificationCommands: [overrideCheck],
+        },
+      }));
+      await writeFile(join(dir, ".legion-cli", "plans", "spec-v3.md"), "# Approved implementation plan\n\nImplement v3.\n", "utf8");
+      await patchState(store, { activeSpecId: "spec-v3", phase: "plan_ready" });
+      const third = await engine.approvePlan({ id: "owner" }, { verificationCommands: [overrideCheck] });
+      assert.deepEqual(third.verificationCommands, [overrideCheck]);
+    }, {
+      skillsDir,
+      fakeArtifacts: [
+        explicitPassReview,
+        {
+          path: ".legion-cli/cache/runs/<id>/analysis.json",
+          content: `${JSON.stringify({ schemaVersion: "legion-cli-spec-challenge-analysis/v1", concerns: [] })}\n`,
+        },
+      ],
+    });
+  });
+});
+
+test("amendTask, proposeFix, and fix scope overlappingFilesAllowed checks to active-spec open tasks", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initFocused(engine);
+    await seedFocusedPlan(store, dir, {
+      phase: "executing",
+      task: {
+        id: "TSK-0001",
+        specId: "spec-checkin",
+        status: "todo",
+        contract: {
+          filesAllowed: ["src/active.ts"],
+          expectedArtifacts: ["src/active.ts"],
+          verificationCommands: [passingVerificationCommand()],
+        },
+      },
+    });
+    // Foreign spec open task overlaps src/amended.ts, src/main.js, and the regression test paths.
+    await writeTask(store, makeTask({
+      id: "TSK-0099",
+      specId: "spec-other",
+      status: "todo",
+      contract: {
+        filesAllowed: [
+          "src/amended.ts",
+          "src/main.js",
+          "tests/unit/regression/cross-spec-fix.test.mjs",
+          "tests/unit/regression/separate-cross-spec-bug.test.mjs",
+        ],
+        expectedArtifacts: ["src/amended.ts"],
+        verificationCommands: [passingVerificationCommand()],
+      },
+    }));
+
+    await engine.amendTask("TSK-0001", {
+      filesAllowed: ["src/amended.ts"],
+      expectedArtifacts: ["src/amended.ts"],
+      verificationCommands: [passingVerificationCommand()],
+    });
+    assert.deepEqual((await store.readTask("TSK-0001")).data.contract.filesAllowed, ["src/amended.ts"]);
+
+    const proposed = await engine.proposeFix("cross spec fix");
+    assert.equal(proposed.specId, "spec-checkin");
+
+    // Complete the active-spec fix task so fix() only encounters foreign-spec TSK-0099.
+    const proposedDoc = await store.readTask(proposed.id);
+    await writeTask(store, { ...proposedDoc.data, status: "done" }, proposedDoc.body);
+
+    const fixed = await engine.fix("separate cross spec bug");
+    assert.equal(fixed.specId, "spec-checkin");
+  });
+});
+
+test("focused PR body includes spec title/ID, passed checks, review verdict, and acceptance counts", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ engine, store, dir }) => {
+      await initFocused(engine);
+      await seedFocusedPlan(store, dir, { phase: "executing", taskStatus: "done" });
+      await mkdir(join(dir, "src"), { recursive: true });
+      await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n", "utf8");
+      const check = passingVerificationCommand();
+      await engine.approvePlan({ id: "owner" }, { verificationCommands: [check] });
+      await engine.executeWorkflow();
+      await engine.recordAcceptance([{ id: "AC-01", status: "passed" }], { id: "owner" });
+      initGitRepo(dir);
+      let capturedBody = "";
+      await engine.ship({
+        commit: true,
+        pr: true,
+        prCreate: ({ title, body }) => {
+          assert.match(title, /spec-checkin/);
+          capturedBody = body;
+          return { url: "https://example.test/pr/42" };
+        },
+      });
+      assert.match(capturedBody, /^Ship receipt for spec-checkin\./m);
+      assert.match(capturedBody, /^QA mode: /m);
+      assert.match(capturedBody, /^QA score: /m);
+      assert.match(capturedBody, /^QA pass: /m);
+      assert.match(capturedBody, /Spec: .* \(spec-checkin\)/);
+      assert.match(capturedBody, /Checks passed: /);
+      assert.match(capturedBody, /Review verdict: PASS/);
+      assert.match(capturedBody, /Acceptance: 1\/1 passed/);
+    }, { skillsDir, fakeArtifacts: [explicitPassReview] });
+  });
+});

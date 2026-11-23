@@ -4,6 +4,7 @@ import { readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Task } from "@9thlevelsoftware/legion-cli-schema";
 import {
+  assertNoLinkInPath,
   closeEngineCommand,
   isGitRepo,
   listTaskFiles,
@@ -152,6 +153,13 @@ async function snapshotAuditFiles(root: string, extra: readonly string[] = []): 
   return out;
 }
 
+const UNDO_AUDIT_BACKUP_PATH = ".legion-cli/index/undo-audit-backup.json";
+
+type PersistedAuditBackup = {
+  version: 1;
+  entries: Array<{ posix: string; base64: string | null }>;
+};
+
 async function restoreAuditFiles(root: string, snapshot: readonly AuditSnapshot[]): Promise<void> {
   for (const { posix, bytes } of snapshot) {
     const abs = toFsPath(root, posix);
@@ -162,6 +170,48 @@ async function restoreAuditFiles(root: string, snapshot: readonly AuditSnapshot[
       await rm(abs, { force: true });
     }
   }
+}
+
+async function persistAuditBackup(root: string, snapshot: readonly AuditSnapshot[]): Promise<void> {
+  if (snapshot.length === 0) return;
+  const payload: PersistedAuditBackup = {
+    version: 1,
+    entries: snapshot.map((entry) => ({
+      posix: entry.posix,
+      base64: entry.bytes ? entry.bytes.toString("base64") : null,
+    })),
+  };
+  await writeTextFile(toFsPath(root, UNDO_AUDIT_BACKUP_PATH), `${JSON.stringify(payload)}\n`, {
+    root,
+    skipJournal: true,
+  });
+}
+
+async function removeAuditBackup(root: string): Promise<void> {
+  const abs = toFsPath(root, UNDO_AUDIT_BACKUP_PATH);
+  if (existsSync(abs)) {
+    await rm(abs, { force: true });
+  }
+}
+
+/** Restore any pre-checkout audit log backup left behind by an interrupted undo. */
+export async function restoreInterruptedUndoAuditBackup(projectRoot: string): Promise<boolean> {
+  const root = resolve(projectRoot);
+  const abs = toFsPath(root, UNDO_AUDIT_BACKUP_PATH);
+  if (!existsSync(abs)) return false;
+  await assertNoLinkInPath(abs, { root });
+  const raw = JSON.parse(await readFile(abs, "utf8")) as Partial<PersistedAuditBackup>;
+  if (raw?.version !== 1 || !Array.isArray(raw.entries)) {
+    refuse("undo audit backup is malformed", HINT.doctor);
+  }
+  const snapshot: AuditSnapshot[] = raw.entries.map((entry) => {
+    if (!entry || typeof entry.posix !== "string") refuse("undo audit backup has an invalid entry", HINT.doctor);
+    const bytes = entry.base64 === null ? null : Buffer.from(entry.base64, "base64");
+    return { posix: entry.posix, bytes };
+  });
+  await restoreAuditFiles(root, snapshot);
+  await removeAuditBackup(root);
+  return true;
 }
 
 /** Audit files the ship commit changed (the dated summary it appended to, the chain pair). */
@@ -284,6 +334,7 @@ async function rollbackUndo(
     if (gitReverted && priorHead) gitResetHardFn(root, priorHead);
     await restoreUndoPreimages(root, preimages);
     await restoreAuditFiles(root, audit);
+    await removeAuditBackup(root);
   } catch (err) {
     rollbackErr = err;
   }
@@ -363,7 +414,12 @@ async function undoLastTaskLocked(opts: {
       refuse(`cannot undo task ${opts.taskId} from ${target.data.status}`, HINT.undo);
     }
   } else {
+    const activeSpecId = existsSync(stateMdPath(root))
+      ? ((await opts.store.readState().catch(() => null))?.data.activeSpecId ?? null)
+      : null;
     const entries = await listTaskFiles(root);
+    let activeDoneId: string | undefined;
+    let fallbackDoneId: string | undefined;
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i];
       if (!entry) continue;
@@ -371,10 +427,14 @@ async function undoLastTaskLocked(opts: {
         refuse(`task ${entry.id} is not valid: ${entry.error}`, HINT.undo);
       }
       if (entry.task.status === "done") {
-        target = await opts.store.readTask(entry.task.id);
-        break;
+        if (!fallbackDoneId) fallbackDoneId = entry.task.id;
+        if (activeSpecId && entry.task.specId === activeSpecId && !activeDoneId) {
+          activeDoneId = entry.task.id;
+        }
       }
     }
+    const chosenId = activeDoneId ?? fallbackDoneId;
+    if (chosenId) target = await opts.store.readTask(chosenId);
   }
 
   if (!target && !shipCommit) {
@@ -394,6 +454,7 @@ async function undoLastTaskLocked(opts: {
   try {
     try {
       auditSnapshot = await snapshotAuditFiles(root, shipCommit ? [...dirtyAudit, ...auditPathsIn(root, shipCommit.sha)] : []);
+      if (shipCommit) await persistAuditBackup(root, auditSnapshot);
     } catch (err) {
       refuse(`undo could not read the audit log, nothing was changed: ${err instanceof Error ? err.message : String(err)}`, HINT.undo);
     }
@@ -408,6 +469,7 @@ async function undoLastTaskLocked(opts: {
       gitReverted = true;
       commitSha = shipCommit.sha;
       await restoreAuditFiles(root, auditSnapshot);
+      await removeAuditBackup(root);
       commitRevertKeepingAudit(root, trackedAt(root, shipCommit.sha, auditSnapshot.map((s) => s.posix)));
       if (!existsSync(stateMdPath(root))) {
         refuse(`undo removed ${STATE_MD_POSIX}; the revert was rolled back`, "git status");

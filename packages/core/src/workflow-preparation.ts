@@ -101,8 +101,72 @@ async function digestFile(store: LegionStore, path: string): Promise<string> {
     return createHash("sha256").update(bytes).digest("hex");
   } finally { await handle.close(); }
 }
-export async function bindPreparationArtifacts(store: LegionStore, input: WorkflowPreparation): Promise<WorkflowPreparation> {
-  const record = WorkflowPreparationSchema.parse(input);
+const HEX64_RE = /^[a-f0-9]{64}$/;
+
+async function normalizePreparationInput(store: LegionStore, input: unknown): Promise<unknown> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const obj = { ...(input as Record<string, unknown>) };
+  const fillDigest = async (item: unknown): Promise<unknown> => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+    const ref = { ...(item as Record<string, unknown>) };
+    const digest = typeof ref.digest === "string" ? ref.digest : "";
+    if (!HEX64_RE.test(digest) && typeof ref.path === "string" && ref.path.length > 0) {
+      ref.digest = await digestFile(store, ref.path);
+    }
+    return ref;
+  };
+  const normalizeArtifact = async (item: unknown): Promise<unknown> => {
+    const filled = await fillDigest(item);
+    if (!filled || typeof filled !== "object" || Array.isArray(filled)) return filled;
+    const art = { ...(filled as Record<string, unknown>) };
+    if (Array.isArray(art.inputs)) {
+      art.inputs = await Promise.all(art.inputs.map(fillDigest));
+    }
+    return art;
+  };
+  if (Array.isArray(obj.specArtifacts)) {
+    obj.specArtifacts = await Promise.all(obj.specArtifacts.map(normalizeArtifact));
+  }
+  if (Array.isArray(obj.planArtifacts)) {
+    obj.planArtifacts = await Promise.all(obj.planArtifacts.map(normalizeArtifact));
+  }
+  if (Array.isArray(obj.knowledge)) {
+    obj.knowledge = await Promise.all(obj.knowledge.map(fillDigest));
+  }
+  if (obj.strategy && typeof obj.strategy === "object" && !Array.isArray(obj.strategy)) {
+    const strategy = { ...(obj.strategy as Record<string, unknown>) };
+    if (strategy.migration && typeof strategy.migration === "object" && !Array.isArray(strategy.migration)) {
+      const migration = { ...(strategy.migration as Record<string, unknown>) };
+      if (Array.isArray(migration.prerequisites)) {
+        migration.prerequisites = await Promise.all(migration.prerequisites.map(fillDigest));
+      }
+      strategy.migration = migration;
+    }
+    obj.strategy = strategy;
+  }
+  if (obj.assessment && typeof obj.assessment === "object" && !Array.isArray(obj.assessment)) {
+    const assessment = { ...(obj.assessment as Record<string, unknown>) };
+    const fp = typeof assessment.inputFingerprint === "string" ? assessment.inputFingerprint : "";
+    if (!HEX64_RE.test(fp) && Array.isArray(obj.specArtifacts)) {
+      const inputs: Array<{ path: string; digest: string }> = [];
+      for (const art of obj.specArtifacts) {
+        if (!art || typeof art !== "object" || !Array.isArray((art as { inputs?: unknown }).inputs)) continue;
+        for (const item of (art as { inputs: unknown[] }).inputs) {
+          if (item && typeof item === "object" && typeof (item as { path?: unknown }).path === "string" && typeof (item as { digest?: unknown }).digest === "string") {
+            inputs.push({ path: (item as { path: string }).path, digest: (item as { digest: string }).digest });
+          }
+        }
+      }
+      assessment.inputFingerprint = preparationInputFingerprint(inputs);
+    }
+    obj.assessment = assessment;
+  }
+  return obj;
+}
+
+export async function bindPreparationArtifacts(store: LegionStore, input: unknown): Promise<WorkflowPreparation> {
+  const normalized = await normalizePreparationInput(store, input);
+  const record = WorkflowPreparationSchema.parse(normalized);
   const bind = async (artifact: PreparationArtifact): Promise<PreparationArtifact> => {
     if (!artifactPathAllowed(record, artifact)) throw new Error(`artifact outside its stage's draft root: ${artifact.path}`);
     return { ...artifact, digest: await digestFile(store, artifact.path) };

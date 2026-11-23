@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { gitIndexEntries, gitPathTracked, isGitRepo, toFsPath, toPosixPath } from "@9thlevelsoftware/legion-cli-persist";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { filterSpawnEnv } from "@9thlevelsoftware/legion-cli-agents";
+import { gitCleanEnv, gitIndexEntries, gitPathTracked, isGitRepo, toFsPath, toPosixPath } from "@9thlevelsoftware/legion-cli-persist";
 import type { Task } from "@9thlevelsoftware/legion-cli-schema";
 
 const LEGION_PREFIX = ".legion-cli";
@@ -91,9 +93,55 @@ export function shipAddPaths(projectRoot: string, allowedFiles: readonly string[
   return out;
 }
 
+const GH_PASSTHROUGH_KEYS = [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_HOST",
+  "GH_CONFIG_DIR",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+] as const;
+
+function windowsNeutralDir(): string {
+  return join(process.env.SystemRoot || process.env.windir || "C:/Windows", "System32");
+}
+
+function ghCleanEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const scrubbed = filterSpawnEnv(baseEnv);
+  for (const key of GH_PASSTHROUGH_KEYS) {
+    if (baseEnv[key] !== undefined) scrubbed[key] = baseEnv[key];
+  }
+  return gitCleanEnv(scrubbed);
+}
+
+function resolveGhExecutable(projectDir?: string): string | null {
+  if (process.platform !== "win32") return "gh";
+  const found = spawnSync("where.exe", ["gh"], {
+    cwd: windowsNeutralDir(),
+    env: gitCleanEnv(),
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+  });
+  if (found.status !== 0) return null;
+  const rejected = [process.cwd(), ...(projectDir ? [projectDir] : [])].map((dir) => resolve(dir).toLowerCase());
+  const hit = String(found.stdout)
+    .split("\n")
+    .map((line) => line.trim())
+    .find(
+      (abs) => abs.toLowerCase().endsWith(".exe") && isAbsolute(abs) && !rejected.includes(dirname(resolve(abs)).toLowerCase()),
+    );
+  return hit ?? null;
+}
+
 export function tryCreatePullRequest(cwd: string, title: string, body: string): { url?: string; error?: string } {
-  const result = spawnSync("gh", ["pr", "create", "--title", title, "--body", body], {
+  const exe = resolveGhExecutable(cwd);
+  if (exe === null) {
+    return { error: "gh could not be found on PATH (Windows needs gh.exe; shims in the project directory are rejected)" };
+  }
+  const result = spawnSync(exe, ["pr", "create", "--title", title, "--body", body], {
     cwd,
+    env: ghCleanEnv(),
     encoding: "utf8",
     windowsHide: true,
     shell: false,
@@ -110,8 +158,12 @@ export function tryCreatePullRequest(cwd: string, title: string, body: string): 
   return { url };
 }
 
-export function ghAvailable(): boolean {
-  const result = spawnSync("gh", ["--version"], {
+export function ghAvailable(cwd?: string): boolean {
+  const exe = resolveGhExecutable(cwd);
+  if (exe === null) return false;
+  const result = spawnSync(exe, ["--version"], {
+    cwd: process.platform === "win32" ? windowsNeutralDir() : cwd,
+    env: ghCleanEnv(),
     encoding: "utf8",
     windowsHide: true,
     shell: false,

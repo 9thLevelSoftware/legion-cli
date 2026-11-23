@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { isSliceTerminal, LegionEngine, LegionRefuseError } from "../dist/index.js";
+import { parseExplicitReviewVerdict, readExplicitReviewEvidence, writeWorkflowReviewReport } from "../dist/workflow.js";
 import {
   initGitRepo,
   initProject,
@@ -17,6 +18,7 @@ import {
   withEngine,
   withFakeAdapter,
   withReviewNotes,
+  writeTask,
   writeUnspawnableGrok,
 } from "./helpers.js";
 
@@ -522,6 +524,76 @@ test("review prompt.md starts with SessionBrief and has no FileContract heading"
         assert.ok(prompt.indexOf("## SessionBrief") < prompt.indexOf("## SkillContract"));
       },
       withReviewNotes({ skillsDir }),
+    );
+  });
+});
+
+test("parseExplicitReviewVerdict strips fenced code blocks and inline emphasis while rejecting conflicting PASS + FAIL", async () => {
+  assert.equal(parseExplicitReviewVerdict("```md\nVerdict: FAIL\n```\n**Verdict:** PASS\n"), "PASS");
+  assert.equal(parseExplicitReviewVerdict("~~~\nVerdict: FAIL\n~~~\nVerdict: **PASS**\n"), "PASS");
+  assert.equal(parseExplicitReviewVerdict("`Verdict: PASS`\n"), "PASS");
+  assert.equal(parseExplicitReviewVerdict("- **Review Verdict:** `FAIL`\n"), "FAIL");
+  assert.equal(parseExplicitReviewVerdict("Verdict: PASS\nVerdict: FAIL\n"), null);
+
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine);
+    await mkdir(join(dir, ".legion-cli", "qa"), { recursive: true });
+    await writeFile(join(dir, ".legion-cli", "qa", "review.md"), "```md\nVerdict: FAIL\n```\n**Verdict:** PASS\n", "utf8");
+    const ev = await readExplicitReviewEvidence(dir);
+    assert.equal(ev?.verdict, "PASS");
+
+    await writeFile(join(dir, ".legion-cli", "qa", "review.md"), "Verdict: PASS\nVerdict: FAIL\n", "utf8");
+    assert.equal(await readExplicitReviewEvidence(dir), null);
+    await assert.rejects(() => writeWorkflowReviewReport(store, "Verdict: PASS\nVerdict: FAIL\n"), /exactly one explicit verdict/);
+  });
+});
+
+test("review prompt scopes task list to active spec tasks only", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedPlanReady(store, { phase: "executing", task: { status: "done" } });
+        await writeTask(store, makeTask({ id: "TSK-0099", specId: "spec-foreign", status: "done" }));
+        await engine.review();
+        const prompt = await readLatestRunPrompt(dir, "review");
+        assert.match(prompt, /\.legion-cli\/tasks\/TSK-0001\.md/);
+        assert.doesNotMatch(prompt, /TSK-0099/);
+        assert.doesNotMatch(prompt, /\.legion-cli\/tasks\/\*\.md/);
+      },
+      withReviewNotes({ skillsDir }),
+    );
+  });
+});
+
+test("verify notesPath returns non-empty run summary.md and falls back to qa/verify*", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(
+      async ({ engine, store }) => {
+        await initProject(engine);
+        await seedPlanReady(store, { phase: "executing" });
+        const verifyRes = await engine.verify();
+        assert.match(verifyRes.notesPath ?? "", /^\.legion-cli\/cache\/runs\/verify-[^/]+\/summary\.md$/);
+      },
+      {
+        skillsDir,
+        fakeArtifacts: [{ path: ".legion-cli/cache/runs/<id>/summary.md", content: "Walkthrough completed cleanly.\n" }],
+      },
+    );
+
+    await withEngine(
+      async ({ engine, store, dir }) => {
+        await initProject(engine);
+        await seedPlanReady(store, { phase: "executing" });
+        await mkdir(join(dir, ".legion-cli", "qa"), { recursive: true });
+        await writeFile(join(dir, ".legion-cli", "qa", "verify.md"), "Legacy fallback notes\n", "utf8");
+        const verifyRes = await engine.verify();
+        assert.equal(verifyRes.notesPath, ".legion-cli/qa/verify.md");
+      },
+      {
+        skillsDir,
+        fakeOmitSummary: true,
+      },
     );
   });
 });

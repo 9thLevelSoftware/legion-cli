@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { isGitRepo, runResumePath, type LegionStore } from "@9thlevelsoftware/legion-cli-persist";
+import { isGitRepo, runResumePath, writeTextFile, type LegionStore } from "@9thlevelsoftware/legion-cli-persist";
 import {
   BrownfieldDagSchema,
   BrownfieldRunIdSchema,
@@ -80,7 +80,7 @@ export async function writeRun(projectRoot: string, run: BrownfieldRun): Promise
     assertBrownfieldCanTransition(prev.phase, next.phase, HINT.brownfieldState(next.runId));
   }
   await mkdir(dirname(abs), { recursive: true });
-  await writeFile(abs, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  await writeTextFile(abs, `${JSON.stringify(next, null, 2)}\n`, { root: projectRoot, skipJournal: true });
   return next;
 }
 
