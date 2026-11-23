@@ -88,6 +88,7 @@ test("dashboard --no-open --port 0 serves GET / and optional engine POSTs", asyn
       const html = await res.text();
       assert.match(html, /source of truth/);
       assert.match(html, /Read-only viewer/);
+      assert.match(html, /ticket\|wikiTrust\|qaChecklist\|planAcceptance/);
       assert.match(html, /Checkin/);
       assert.match(html, /Kanban/);
       assert.doesNotMatch(html, /legion-cli-token/);

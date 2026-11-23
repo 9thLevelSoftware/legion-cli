@@ -420,3 +420,59 @@ test("ship export uses explicit snapshot arguments and reports JSON refusal for 
     assert.doesNotMatch(result.stdout, /"receipt"/);
   });
 });
+
+test("ship human output omits obsolete optional re-run hint and supports --branch + --push", async () => {
+  await withTempDir(async (dir) => {
+    const bareOrigin = join(dir, "origin.git");
+    const project = join(dir, "project");
+    await mkdir(bareOrigin, { recursive: true });
+    await mkdir(project, { recursive: true });
+    git(bareOrigin, ["init", "--bare"]);
+
+    const engine = await seedReadyToShip(project);
+    initGitRepo(project);
+    git(project, ["remote", "add", "origin", bareOrigin]);
+    await writeFile(join(project, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+    await refreshQaIdentity(engine);
+
+    const noCommitRes = runCli(["ship", "--project", project], { input: "y\n" });
+    assert.equal(noCommitRes.status, 0, `${noCommitRes.stdout}\n${noCommitRes.stderr}`);
+    assert.doesNotMatch(normalize(noCommitRes.stdout), /Optional:\s*legion-cli ship --pr --commit/);
+  });
+
+  await withTempDir(async (dir) => {
+    const bareOrigin = join(dir, "origin.git");
+    const project = join(dir, "project");
+    await mkdir(bareOrigin, { recursive: true });
+    await mkdir(project, { recursive: true });
+    git(bareOrigin, ["init", "--bare"]);
+
+    const engine = await seedReadyToShip(project);
+    initGitRepo(project);
+    git(project, ["remote", "add", "origin", bareOrigin]);
+    await writeFile(join(project, "src", "main.ts"), "export const pushed = true;\n", "utf8");
+    await refreshQaIdentity(engine);
+
+    const result = runCli(
+      ["ship", "--project", project, "--commit", "--branch", "ship/cli-test", "--push"],
+      { input: "y\n" },
+    );
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const out = normalize(result.stdout);
+    assert.doesNotMatch(out, /Optional:\s*legion-cli ship --pr --commit/);
+    assert.match(out, /Branch: ship\/cli-test/);
+    assert.match(out, /Commit: [0-9a-f]+/);
+    assert.match(out, /Pushed: origin HEAD/);
+    assert.equal(git(project, ["rev-parse", "--abbrev-ref", "HEAD"]), "ship/cli-test");
+    const headSha = git(project, ["rev-parse", "HEAD"]);
+    assert.equal(git(bareOrigin, ["rev-parse", "--verify", "refs/heads/ship/cli-test"]), headSha);
+  });
+});
+
+test("help documents ship --branch and --push", () => {
+  const shipHelp = normalize(runCli(["help", "ship"]).stdout);
+  assert.match(shipHelp, /--branch <name>/);
+  assert.match(shipHelp, /--push/);
+  const allHelp = normalize(runCli(["help", "--all"]).stdout);
+  assert.match(allHelp, /--branch <name>, --push/);
+});

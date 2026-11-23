@@ -25,6 +25,7 @@ import {
   IngestReceiptSchema,
   AnyQAScoreSchema,
   SCHEMA_VERSION,
+  WorkflowEvidenceReceiptSchema,
   type AdapterId,
   type AuditEvent,
   type LegionConfig,
@@ -34,6 +35,7 @@ import {
   type StateFile,
   type Task,
   type TaskStatus,
+  type WorkflowEvidenceReceipt,
 } from "@9thlevelsoftware/legion-cli-schema";
 import { ensureWikiIndex } from "@9thlevelsoftware/legion-cli-wiki";
 
@@ -117,11 +119,82 @@ export type DashboardSnapshot = {
   workflowError: string | null;
 };
 
+export type DashboardWorkflowChecks = {
+  status: "none" | "passed" | "failed" | "stale";
+  total: number;
+  passed: number;
+  failed: number;
+  commands: Array<{ command: string; ok: boolean }>;
+};
+
+export type DashboardWorkflowReview = {
+  status: "pending" | "passed" | "failed" | "stale";
+  verdict: "PASS" | "FAIL" | null;
+  evidencePath: string | null;
+};
+
 export type DashboardWorkflow = {
+  stage: WorkflowStatus["stage"];
+  planApproval: WorkflowStatus["planApproval"];
+  execution: WorkflowStatus["execution"];
+  checks: DashboardWorkflowChecks;
+  review: DashboardWorkflowReview;
+  acceptance: WorkflowStatus["acceptance"];
   assurance: WorkflowStatus["assurance"] | null;
   blocker: string | null;
   next: string;
 };
+
+async function readOptionalWorkflowEvidence(store: LegionReader): Promise<WorkflowEvidenceReceipt | null> {
+  const rel = ".legion-cli/workflow/execution.yaml";
+  if (!(await store.pathExists(rel))) return null;
+  try {
+    return await createLegionStore(store.projectRoot).readYaml(rel, WorkflowEvidenceReceiptSchema);
+  } catch {
+    return null;
+  }
+}
+
+function projectGateStatus(
+  status: WorkflowStatus,
+  evidence: WorkflowEvidenceReceipt | null,
+): { checks: DashboardWorkflowChecks; review: DashboardWorkflowReview } {
+  if (status.planApproval !== "valid" || status.execution === "not_started" || !evidence) {
+    return {
+      checks: { status: "none", total: 0, passed: 0, failed: 0, commands: [] },
+      review: { status: "pending", verdict: null, evidencePath: null },
+    };
+  }
+  const commands = evidence.integration.map((run) => ({ command: run.command, ok: run.ok }));
+  const passed = commands.filter((run) => run.ok).length;
+  const failed = commands.length - passed;
+  if (status.execution === "stale") {
+    return {
+      checks: { status: "stale", total: commands.length, passed, failed, commands },
+      review: {
+        status: "stale",
+        verdict: evidence.review?.verdict ?? null,
+        evidencePath: evidence.review?.evidencePath ?? null,
+      },
+    };
+  }
+  return {
+    checks: {
+      status: commands.length === 0 ? "none" : failed > 0 ? "failed" : "passed",
+      total: commands.length,
+      passed,
+      failed,
+      commands,
+    },
+    review: evidence.review
+      ? {
+          status: evidence.review.verdict === "PASS" ? "passed" : "failed",
+          verdict: evidence.review.verdict,
+          evidencePath: evidence.review.evidencePath,
+        }
+      : { status: "pending", verdict: null, evidencePath: null },
+  };
+}
 
 /**
  * Read-only workflow projection with the same guard as `legion-cli status`: legacy executing projects
@@ -147,7 +220,22 @@ export async function loadWorkflowProjection(
   if (assurance?.traceStatus === "valid" && assurance.coverage?.some((criterion) => criterion.status === "unknown")) {
     assurance = { ...assurance, traceStatus: "incomplete" };
   }
-  return { workflow: { assurance, blocker: status.blocker, next: status.next }, workflowError: null };
+  const evidence = await readOptionalWorkflowEvidence(store);
+  const { checks, review } = projectGateStatus(status, evidence);
+  return {
+    workflow: {
+      stage: status.stage,
+      planApproval: status.planApproval,
+      execution: status.execution,
+      checks,
+      review,
+      acceptance: status.acceptance,
+      assurance,
+      blocker: status.blocker,
+      next: status.next,
+    },
+    workflowError: null,
+  };
 }
 
 const UNINITIALIZED: StateFile = {

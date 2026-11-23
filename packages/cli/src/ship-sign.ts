@@ -115,8 +115,9 @@ export async function runShipSign(opts: CliOpts, directory: string, flags: { key
       });
     }
     keyIds = envelope.signatures.map((signature) => signature.keyid);
-  } catch {
-    refuse("ship sign refused the bundle or signing key", SIGN_HINT);
+  } catch (err) {
+    const detail = err instanceof Error && err.message ? `: ${err.message}` : "";
+    refuse(`ship sign refused the bundle or signing key${detail}`, SIGN_HINT);
   } finally {
     passphrase = undefined;
   }

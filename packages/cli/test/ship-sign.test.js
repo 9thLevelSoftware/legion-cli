@@ -77,7 +77,8 @@ test("ship sign refuses an in-project key without writing a signature", async ()
     await writeFile(keyPath, pair.privateKey.export({ format: "pem", type: "pkcs8" }));
     const result = runCli(["ship", "sign", bundle, "--key", keyPath, "--project", project]);
     assert.equal(result.status, 1);
-    assert.match(`${result.stdout}\n${result.stderr}`, /ship sign refused the bundle or signing key/);
+    assert.match(`${result.stdout}\n${result.stderr}`, /ship sign refused the bundle or signing key: /);
+    assert.match(`${result.stdout}\n${result.stderr}`, /external to the bundle/);
     assert.equal(existsSync(join(bundle, "signature.dsse.json")), false);
   });
 });
@@ -95,7 +96,7 @@ test("ship sign refuses a wrong key without exposing its contents", async () => 
       await writeFile(keyPath, keyBytes);
       const result = runCli(["ship", "sign", bundle, "--key", keyPath, "--project", project]);
       assert.equal(result.status, 1);
-      assert.match(`${result.stdout}\n${result.stderr}`, /ship sign refused the bundle or signing key/);
+      assert.match(`${result.stdout}\n${result.stderr}`, /ship sign refused the bundle or signing key: /);
       assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /secret-key-material|NOT-A-PRIVATE-KEY|must-not-leak|PRIVATE KEY/);
       assert.equal(existsSync(join(bundle, "signature.dsse.json")), false);
       assert.equal((await readFile(keyPath, "utf8")), keyBytes.toString());

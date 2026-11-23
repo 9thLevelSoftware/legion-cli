@@ -4,6 +4,7 @@ import {
   createLegionEngine,
   HINT,
   LegionRefuseError,
+  type AcceptanceEvidenceInput,
   type LegionEngine,
   type NewTicket,
 } from "@9thlevelsoftware/legion-cli-core";
@@ -12,7 +13,7 @@ import { EngineLockedError } from "@9thlevelsoftware/legion-cli-persist";
 const MAX_BODY_BYTES = 64 * 1024;
 
 export const WRITE_TOKEN_HEADER = "x-legion-cli-token";
-export const ENGINE_WRITE_METHODS = new Set(["ticket", "wikiTrust", "qaChecklist"]);
+export const ENGINE_WRITE_METHODS = new Set(["ticket", "wikiTrust", "qaChecklist", "planAcceptance"]);
 
 export class EngineWriteError extends Error {
   readonly status: number;
@@ -94,6 +95,58 @@ function parseTicks(body: unknown): string[] {
   return rec.ticks.filter((id): id is string => typeof id === "string");
 }
 
+function optionalNonEmptyString(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new EngineWriteError(400, { error: `planAcceptance ${field} must be a string` });
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseAcceptanceEntry(raw: unknown): AcceptanceEvidenceInput {
+  const rec = asRecord(raw);
+  const rawId =
+    typeof rec.id === "string" ? rec.id : typeof rec.criterionId === "string" ? rec.criterionId : "";
+  const id = rawId.trim();
+  if (!id) {
+    throw new EngineWriteError(400, { error: "planAcceptance requires id or criterionId" });
+  }
+  const status = parseTicketEnum(
+    rec.status,
+    ["passed", "failed", "not_applicable"],
+    "status",
+  );
+  if (!status) {
+    throw new EngineWriteError(400, {
+      error: "planAcceptance requires status (passed | failed | not_applicable)",
+    });
+  }
+  const note = optionalNonEmptyString(rec.note, "note");
+  const methodId = optionalNonEmptyString(rec.methodId, "methodId");
+  const evidenceRef = optionalNonEmptyString(rec.evidenceRef, "evidenceRef");
+  const evidenceDigest = optionalNonEmptyString(rec.evidenceDigest, "evidenceDigest");
+  return {
+    id,
+    status,
+    ...(note !== undefined ? { note } : {}),
+    ...(methodId !== undefined ? { methodId } : {}),
+    ...(evidenceRef !== undefined ? { evidenceRef } : {}),
+    ...(evidenceDigest !== undefined ? { evidenceDigest } : {}),
+  };
+}
+
+function parsePlanAcceptance(body: unknown): AcceptanceEvidenceInput[] {
+  const rec = asRecord(body);
+  if (Object.hasOwn(rec, "entries") && rec.entries !== undefined) {
+    if (!Array.isArray(rec.entries) || rec.entries.length === 0) {
+      throw new EngineWriteError(400, { error: "planAcceptance requires non-empty entries" });
+    }
+    return rec.entries.map(parseAcceptanceEntry);
+  }
+  return [parseAcceptanceEntry(rec)];
+}
+
 export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const raw = await new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -162,6 +215,18 @@ export async function dispatchEngineWrite(
         specId: state.activeSpecId,
         ticks,
         next: "legion-cli qa --mode no-browser",
+      };
+    }
+    if (method === "planAcceptance") {
+      const entries = parsePlanAcceptance(body);
+      const receipt = await engine.recordAcceptance(entries, { id: "dashboard" });
+      const workflow = await engine.getWorkflowStatus();
+      return {
+        ok: workflow.acceptance.failed.length === 0,
+        specId: receipt.specId,
+        receipt,
+        workflow,
+        next: workflow.next,
       };
     }
     throw new EngineWriteError(404, { error: "unknown engine method" });

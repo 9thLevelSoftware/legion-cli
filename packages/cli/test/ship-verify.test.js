@@ -95,8 +95,18 @@ test("ship verify refuses malformed external trust JSON", async () => {
     await writeFile(trust, '{"schemaVersion":"one","schemaVersion":"two"}', "utf8");
     const result = runCli(["ship", "verify", bundle, "--trust-policy", trust]);
     assert.equal(result.status, 1);
-    assert.match(`${result.stdout}\n${result.stderr}`, /external trust file is malformed/);
+    assert.match(`${result.stdout}\n${result.stderr}`, /ship verify external trust file is malformed: JSON contains a duplicate object key/);
     assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /schemaVersion.*one/);
+  });
+});
+
+test("ship verify includes root-cause diagnostics when trust file cannot be read", async () => {
+  await withTempDir(async (dir) => {
+    const bundle = await makeBundle(dir);
+    const missingTrust = join(dir, "missing-trust.json");
+    const result = runCli(["ship", "verify", bundle, "--trust-policy", missingTrust]);
+    assert.equal(result.status, 1);
+    assert.match(`${result.stdout}\n${result.stderr}`, /ship verify could not read the external trust file: /);
   });
 });
 

@@ -12,6 +12,7 @@ import { runAssumeAnswer, runAssumeList } from "./assume.js";
 import { runBrief } from "./brief.js";
 import {
   runBrownfield,
+  runBrownfieldAdopt,
   runBrownfieldDag,
   runBrownfieldEvidence,
   runBrownfieldMerge,
@@ -50,7 +51,7 @@ import {
 import { runMcp } from "./mcp.js";
 import { runNextTasks } from "./next-tasks.js";
 import { runPacketNew, runPacketRespond } from "./packet.js";
-import { runPlan, runPlanAcceptance, runPlanApprove, runPlanEvidence, runPlanImpact } from "./plan.js";
+import { runPlan, runPlanAcceptance, runPlanApprove, runPlanEvidence, runPlanImpact, type PlanAcceptanceFlags } from "./plan.js";
 import { runPromote } from "./run.js";
 import { runQa, runQaChecklist } from "./qa.js";
 import { runReview } from "./review.js";
@@ -306,10 +307,11 @@ export function createProgram(): Command {
     .option("--from <path>", "propose intent from a local Markdown/text brief; --json does not prompt")
     .option("--explore", "resume a bounded round of up to three planning decisions")
     .option("--input <path>", "safe repository source file or directory (repeatable)", (value: string, previous: string[]) => [...previous, value], [])
+    .option("--allow-no-sandbox", "TTY gate to run spec challenge on a copy jail")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { wireframes?: boolean; manualReview?: boolean; guidance?: "guided" | "balanced" | "direct"; from?: string; explore?: boolean; input?: string[] };
-      const code = await runSpecDraft(resolveOpts(cmd), { skipWireframes: !flags.wireframes, manualReview: Boolean(flags.manualReview), guidance: flags.guidance, from: flags.from, explore: flags.explore, inputRoots: flags.input });
+      const flags = opts as { wireframes?: boolean; manualReview?: boolean; guidance?: "guided" | "balanced" | "direct"; from?: string; explore?: boolean; input?: string[]; allowNoSandbox?: boolean };
+      const code = await runSpecDraft(resolveOpts(cmd), { skipWireframes: !flags.wireframes, manualReview: Boolean(flags.manualReview), guidance: flags.guidance, from: flags.from, explore: flags.explore, inputRoots: flags.input, allowNoSandbox: Boolean(flags.allowNoSandbox) });
       process.exitCode = code;
     });
 
@@ -390,9 +392,10 @@ export function createProgram(): Command {
     .option("--note <text>", "evidence observation or reason")
     .option("--method <id>", "approved acceptance evidence method ID")
     .option("--evidence <reference>", "local file (evidence/report.md) or external identity (report:provider-run-123, external:, urn:, https://)")
+    .option("--interactive", "prompt interactively for each pending acceptance criterion (requires TTY)")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { pass?: string[]; fail?: string[]; notApplicable?: string[]; note?: string; method?: string; evidence?: string };
+      const flags = opts as PlanAcceptanceFlags;
       process.exitCode = await runPlanAcceptance(resolveOpts(cmd), flags);
     });
 
@@ -517,10 +520,12 @@ export function createProgram(): Command {
     .option("--allow-degraded-qa", "ship after no-browser QA")
     .option("--pr", "create a GitHub PR with gh (requires --commit)")
     .option("--commit", "create the git commit after an explicit y")
+    .option("--branch <name>", "create and check out a branch before committing")
+    .option("--push", "push the shipped branch to origin")
     .option("--bundle <directory>", "export the completed delivery snapshot locally")
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
-      const flags = opts as { allowDegradedQa?: boolean; pr?: boolean; commit?: boolean; bundle?: string };
+      const flags = opts as { allowDegradedQa?: boolean; pr?: boolean; commit?: boolean; branch?: string; push?: boolean; bundle?: string };
       const code = await runShip(resolveOpts(cmd), flags);
       process.exitCode = code;
     });
@@ -606,7 +611,7 @@ export function createProgram(): Command {
       process.exitCode = code;
     });
 
-  addGlobalOptions(program.command("dashboard").description("Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist); not the source of truth)"))
+  addGlobalOptions(program.command("dashboard").description("Open the visual board (read-only viewer; writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist|planAcceptance); not the source of truth)"))
     .option("--no-open", "do not open a browser")
     .option("--port <port>", "port (default 7420)")
     .option("--expose", "bind 0.0.0.0 (warning)")
@@ -834,6 +839,13 @@ export function createProgram(): Command {
     .allowExcessArguments(false)
     .action(async (opts, cmd: Command) => {
       process.exitCode = await runBrownfieldPatterns(resolveOpts(cmd), opts as { add?: string[]; top?: string });
+    });
+  addGlobalOptions(brownfield.command("adopt").description("Adopt a brownfield run or PR node into an active draft spec"))
+    .argument("<id>", "run id")
+    .option("--pr <node>", "PR node id from dag.json, e.g. pr-1")
+    .allowExcessArguments(false)
+    .action(async (id: string, opts, cmd: Command) => {
+      process.exitCode = await runBrownfieldAdopt(resolveOpts(cmd), id, opts as { pr?: string });
     });
 
   const run = addGlobalOptions(program.command("run").description("Brownfield run artifacts"));

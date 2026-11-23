@@ -113,6 +113,8 @@ test("serve --no-open --no-mcp-http matches dashboard GET / and optional engine 
       const html = await res.text();
       assert.match(html, /source of truth/);
       assert.match(html, /Read-only viewer/);
+      assert.match(html, /ticket\|wikiTrust\|qaChecklist\|planAcceptance/);
+      assert.match(getStdout(), /ticket\|wikiTrust\|qaChecklist\|planAcceptance/);
       assert.match(html, /Checkin/);
       assert.match(html, /Kanban/);
       assert.doesNotMatch(html, /legion-cli-token/);

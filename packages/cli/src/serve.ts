@@ -65,7 +65,7 @@ export async function runServe(opts: CliOpts, flags: ServeFlags): Promise<number
     if (mcpHttp) lines.push(`MCP HTTP: ${handle.url}/mcp (read-only tools).`);
     if (handle.webmcp) lines.push("WebMCP: UI-only tools at /webmcp.js.");
     lines.push(
-      "Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist). CLI remains the source of truth.",
+      "Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist|planAcceptance). CLI remains the source of truth.",
     );
     writeOut(lines.join("\n"));
     if (flags.tokenStdout) writeOut(`Write token: ${handle.token}`);
