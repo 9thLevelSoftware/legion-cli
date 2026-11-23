@@ -133,7 +133,13 @@ export function createHttpToolHost(opts: HttpHostOpts): HttpToolHost {
       }
       const abs = rel === "." ? opts.jailRoot : toFsPath(opts.jailRoot, rel);
       await assertNoSymlink(abs, opts.jailRoot);
-      return readdir(abs);
+      const entries = await readdir(abs);
+      return entries.filter((name) => {
+        const child = rel === "." ? name : `${rel}/${name}`;
+        const low = child.toLowerCase();
+        if (low === ".git-null" || low.startsWith(".legion-cli/sandbox-")) return false;
+        return !isImplicitForbidden(child);
+      });
     },
   };
   if (opts.hardened && opts.spawnOpts.wrapper) {

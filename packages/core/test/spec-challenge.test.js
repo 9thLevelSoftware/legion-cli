@@ -630,3 +630,42 @@ test("held unrelated spawns reject every challenge mutation without changing rec
     }, { skillsDir });
   });
 });
+
+test("recordSpecChallengeResolution enforces >=8 trimmed chars unless dismissed, and allowNoSandbox threads to challenge spawns", async () => {
+  await withFakeAdapter(async () => {
+    const concerns = [{
+      question: "How should failures behave?",
+      why: "Failure behavior needs confirmation.",
+      evidence: [{ kind: "assumption", claim: "Failure mode is unspecified." }],
+    }];
+    await withEngine(async ({ engine, store, dir }) => {
+      const spec = await seedFocusedDraft(engine, store, dir);
+      const prepared = await engine.prepareSpecChallenge(spec.id, { allowNoSandbox: true });
+      assert.equal(prepared.status, "awaiting_resolutions");
+
+      await assert.rejects(
+        () => engine.recordSpecChallengeResolution(spec.id, "C-01", { disposition: "answered", response: "  short  " }, { id: "owner" }),
+        (err) => err instanceof LegionRefuseError && /at least 8 characters/.test(err.message),
+      );
+      await assert.rejects(
+        () => engine.recordSpecChallengeResolution(spec.id, "C-01", { disposition: "risk_accepted", response: "ok" }, { id: "owner" }),
+        (err) => err instanceof LegionRefuseError && /at least 8 characters/.test(err.message),
+      );
+      const dismissed = await engine.recordSpecChallengeResolution(
+        spec.id,
+        "C-01",
+        { disposition: "dismissed", response: "ok" },
+        { id: "owner" },
+      );
+      assert.equal(dismissed.receipt.concerns[0].resolution.disposition, "dismissed");
+      const completed = await engine.finalizeSpecChallenge(spec.id, { allowNoSandbox: true, actor: { id: "owner" } });
+      assert.equal(completed.status, "complete");
+    }, {
+      skillsDir,
+      fakeArtifacts: [
+        analysis(concerns),
+        { path: ".legion-cli/cache/runs/<id>/synthesis.json", content: "{\"schemaVersion\":\"legion-cli-spec-challenge-synthesis/v1\",\"changes\":[]}\n" },
+      ],
+    });
+  });
+});

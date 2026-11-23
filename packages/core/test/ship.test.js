@@ -994,3 +994,141 @@ test("a deleted chain.json over a multi-line log refuses ship (no silent re-chai
     await assert.rejects(() => engine.ship(), (err) => err instanceof LegionRefuseError && /rebaseline-audit/.test(err.message));
   });
 });
+
+test("assurance delivery artifacts hash regular non-symlink untracked files inside projectRoot while still refusing symlinks", async () => {
+  await withFakeAdapter(() => withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine, { workflowProfile: "focused" });
+    await seedPlanReady(store);
+    await writeFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "# Reviewed plan\n\nImplement the approved task.\n", "utf8");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await mkdir(join(dir, "dist"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const value = 1;\n", "utf8");
+    const task = await store.readTask("TSK-0001");
+    await store.writeTask({
+      ...task.data,
+      contract: { ...task.data.contract, verificationCommands: [passingVerificationCommand()] },
+    }, task.body);
+    initGitRepo(dir);
+    const config = await store.readConfig();
+    await store.writeConfig({
+      ...config,
+      workflow: { ...(config.workflow ?? {}), verificationCommands: [passingVerificationCommand()] },
+    });
+    const artifactBody = "built output\n";
+    await writeFile(join(dir, "dist", "bundle.txt"), artifactBody, "utf8");
+    const expectedSha = createHash("sha256").update(artifactBody).digest("hex");
+
+    const draft = join(dir, "assurance-draft.yaml");
+    await writeFile(draft, stringify({
+      schemaVersion: "legion-cli-assurance-plan/v1",
+      specId: "spec-checkin",
+      acceptanceIds: ["AC-01"],
+      taskIds: ["TSK-0001"],
+      security: {
+        mode: "adapter-default",
+        sources: [{ id: "main", path: "src/main.ts", classification: "workspace" }],
+        sinks: [],
+        transformations: [],
+        tasks: [{ taskId: "TSK-0001", readPaths: ["src/main.ts"], transformationIds: [] }],
+        externalCalls: [],
+      },
+      knowledge: [],
+      validators: [],
+      delivery: { artifacts: [{ name: "bundle", path: "dist/bundle.txt" }] },
+    }));
+    await engine.approvePlan({ id: "operator" }, { assuranceManifestPath: draft });
+    await engine.executeWorkflow();
+    await engine.recordAcceptance([{ id: "AC-01", status: "passed" }], { id: "owner" });
+
+    const receipt = await engine.ship({ commit: true, confirm: async () => true });
+    const snapshot = await readDeliverySnapshot(store, receipt.snapshotId);
+    assert.deepEqual(snapshot.prepared.artifacts.artifacts, [
+      { name: "bundle", path: "dist/bundle.txt", sha256: expectedSha, size: Buffer.byteLength(artifactBody) },
+    ]);
+  }, {
+    fakeArtifacts: [
+      { path: "src/main.ts", content: "export const value = 1;\n" },
+      { path: ".legion-cli/cache/runs/<id>/review.md", content: "# Review\n\nVerdict: PASS\n" },
+    ],
+  }));
+
+  await withFakeAdapter(() => withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine, { workflowProfile: "focused" });
+    await seedPlanReady(store);
+    await writeFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "# Reviewed plan\n\nImplement the approved task.\n", "utf8");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await mkdir(join(dir, "dist", "real"), { recursive: true });
+    await writeFile(join(dir, "src", "main.ts"), "export const value = 1;\n", "utf8");
+    await writeFile(join(dir, "dist", "real", "bundle.txt"), "built output\n", "utf8");
+    const task = await store.readTask("TSK-0001");
+    await store.writeTask({
+      ...task.data,
+      contract: { ...task.data.contract, verificationCommands: [passingVerificationCommand()] },
+    }, task.body);
+    initGitRepo(dir);
+    const config = await store.readConfig();
+    await store.writeConfig({
+      ...config,
+      workflow: { ...(config.workflow ?? {}), verificationCommands: [passingVerificationCommand()] },
+    });
+
+    const draft = join(dir, "assurance-draft.yaml");
+    await writeFile(draft, stringify({
+      schemaVersion: "legion-cli-assurance-plan/v1",
+      specId: "spec-checkin",
+      acceptanceIds: ["AC-01"],
+      taskIds: ["TSK-0001"],
+      security: {
+        mode: "adapter-default",
+        sources: [{ id: "main", path: "src/main.ts", classification: "workspace" }],
+        sinks: [],
+        transformations: [],
+        tasks: [{ taskId: "TSK-0001", readPaths: ["src/main.ts"], transformationIds: [] }],
+        externalCalls: [],
+      },
+      knowledge: [],
+      validators: [],
+      delivery: { artifacts: [{ name: "linked-bundle", path: "dist/linked/bundle.txt" }] },
+    }));
+    await engine.approvePlan({ id: "operator" }, { assuranceManifestPath: draft });
+    await engine.executeWorkflow();
+    await engine.recordAcceptance([{ id: "AC-01", status: "passed" }], { id: "owner" });
+
+    await symlink(join(dir, "dist", "real"), join(dir, "dist", "linked"), process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(
+      () => engine.ship({ commit: true, confirm: async () => true }),
+      (err) => err instanceof SymlinkRefusedError || /symlink|junction/i.test(err.message),
+    );
+  }, {
+    fakeArtifacts: [
+      { path: "src/main.ts", content: "export const value = 1;\n" },
+      { path: ".legion-cli/cache/runs/<id>/review.md", content: "# Review\n\nVerdict: PASS\n" },
+    ],
+  }));
+});
+
+test("ship checks out branch before commit and pushes to bare origin when !prCreate", async () => {
+  const bareDir = await mkdtemp(join(tmpdir(), "legion-bare-origin-"));
+  try {
+    git(bareDir, ["init", "--bare"]);
+    await withEngine(async ({ engine, store, dir }) => {
+      await initProject(engine);
+      await mkdir(join(dir, "src"), { recursive: true });
+      await writeFile(join(dir, "src", "main.ts"), "export const shipped = true;\n", "utf8");
+      await seedReadyToShip(store);
+      initGitRepo(dir);
+      git(dir, ["remote", "add", "origin", bareDir]);
+
+      const receipt = await engine.ship({
+        commit: true,
+        branch: "ship/spec-v2",
+        push: true,
+      });
+      assert.equal(receipt.committed, true);
+      assert.equal(git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "ship/spec-v2");
+      assert.equal(git(bareDir, ["rev-parse", "--verify", "refs/heads/ship/spec-v2"]).trim(), receipt.commitSha);
+    });
+  } finally {
+    await rm(bareDir, { recursive: true, force: true });
+  }
+});

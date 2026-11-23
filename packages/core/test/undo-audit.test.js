@@ -217,3 +217,41 @@ test("task recover refuses on an untrusted audit chain before the task moves", a
     assert.equal((await store.readTask("TSK-0001")).data.status, "verifying");
   });
 });
+
+test("interrupted undo restores audit log from undo-audit-backup.json on engine entry and getState", async () => {
+  await withFakeAdapter(async () => {
+    await withEngine(async ({ dir, engine, store }) => {
+      await initProject(engine);
+      await driveToPlanReady(engine, store, dir);
+      initGitRepo(dir);
+      commitAll(dir, "base");
+
+      const eventsPath = join(dir, ".legion-cli", "audit", "events.jsonl");
+      const chainPath = join(dir, ".legion-cli", "audit", "chain.json");
+      const eventsBefore = await readFile(eventsPath);
+      const chainBefore = await readFile(chainPath);
+
+      // Simulate a crash mid-undo after git checkout overwrote audit files.
+      await writeFile(eventsPath, "rewound\n", "utf8");
+      await writeFile(chainPath, "{\"lastDigest\":\"" + "0".repeat(64) + "\",\"length\":0}\n", "utf8");
+      await mkdir(join(dir, ".legion-cli", "index"), { recursive: true });
+      await writeFile(
+        join(dir, ".legion-cli", "index", "undo-audit-backup.json"),
+        JSON.stringify({
+          version: 1,
+          entries: [
+            { posix: ".legion-cli/audit/events.jsonl", base64: eventsBefore.toString("base64") },
+            { posix: ".legion-cli/audit/chain.json", base64: chainBefore.toString("base64") },
+          ],
+        }),
+        "utf8",
+      );
+
+      const state = await engine.getState();
+      assert.equal(state.phase, "plan_ready");
+      assert.deepEqual(await readFile(eventsPath), eventsBefore);
+      assert.deepEqual(await readFile(chainPath), chainBefore);
+      await assert.doesNotReject(() => assertAuditChainUsable(dir));
+    }, { skillsDir });
+  });
+});

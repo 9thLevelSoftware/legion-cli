@@ -31,7 +31,7 @@ export {
   scanChatSessions,
 } from "./chat.js";
 export type { ChatApplyResult, ChatRouteOpts, ChatTurnKind, ChatTurnResult } from "./chat.js";
-export { setUndoGitResetHard, setUndoGitRevert, undoLastTask } from "./undo.js";
+export { setUndoGitResetHard, setUndoGitRevert, undoLastTask, restoreInterruptedUndoAuditBackup } from "./undo.js";
 export type { UndoResult } from "./undo.js";
 export {
   COMMUNITY_RECIPE_LOCK_MESSAGE,
@@ -198,6 +198,8 @@ export type {
   Actor,
   AmendTaskOptions,
   Assumption,
+  BrownfieldAdoptOptions,
+  BrownfieldAdoptResult,
   BrownfieldAnalysisOutputStatus,
   BrownfieldArtifactPaths,
   BrownfieldBlockingAssumption,

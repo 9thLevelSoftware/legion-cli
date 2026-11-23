@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile } from "node:fs/promises";
 import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
 import { runCommand } from "@9thlevelsoftware/legion-cli-agents";
 import { FingerprintFileSchema, type FingerprintFile } from "@9thlevelsoftware/legion-cli-schema";
@@ -8,6 +8,7 @@ import {
   PathEscapeError,
   redactSecrets,
   toProjectRelativePosix,
+  writeTextFile,
   type LegionStore,
 } from "@9thlevelsoftware/legion-cli-persist";
 import type { BrownfieldEvidenceOptions, BrownfieldEvidenceResult } from "../types.js";
@@ -70,7 +71,7 @@ export function isTestFile(rel: string, name: string): boolean {
   return /_test\.go$/i.test(name);
 }
 
-export type Evidence = { sources: string[]; tests: string[]; sourceCount: number; testCount: number };
+export type Evidence = { sources: string[]; tests: string[]; sourceCount: number; testCount: number; truncated: boolean };
 
 export async function collectEvidence(projectRoot: string): Promise<Evidence> {
   const sources: string[] = [];
@@ -110,7 +111,7 @@ export async function collectEvidence(projectRoot: string): Promise<Evidence> {
   }
 
   await walk(projectRoot, "", 0);
-  return { sources, tests, sourceCount, testCount };
+  return { sources, tests, sourceCount, testCount, truncated: visited >= VISIT_CAP };
 }
 
 export async function detectTestRunners(projectRoot: string, tests: readonly string[]): Promise<string[]> {
@@ -181,12 +182,14 @@ export function renderTestsMd(input: {
   gaps: string[];
   gapTotal: number;
   sourceCount: number;
+  truncated?: boolean;
 }): string {
   return [
     "# Evidence: tests",
     "",
     "Deterministic heuristics collected by `legion-cli brownfield evidence`. Verify before citing;",
     "a nearby test file is not proof that behavior is tested.",
+    ...(input.truncated ? ["", `- scan truncated at ${VISIT_CAP} filesystem entries`] : []),
     "",
     "## Runners",
     bullets(input.runners, "(none detected)"),
@@ -516,6 +519,7 @@ export async function evidenceRun(
     gaps: allGaps.slice(0, GAP_CAP),
     gapTotal: allGaps.length,
     sourceCount: evidence.sourceCount,
+    truncated: evidence.truncated,
   });
   const secrets = await scanSecretFindings(root);
   const audit = opts.skipAudit
@@ -523,14 +527,14 @@ export async function evidenceRun(
     : await runLockfileAudit(root, runId);
   const paths = runArtifactPaths(runId);
   await mkdir(runAbs(root, runId, "evidence"), { recursive: true });
-  await writeFile(runAbs(root, runId, "evidence", "tests.md"), testsMd, "utf8");
-  await writeFile(
+  await writeTextFile(runAbs(root, runId, "evidence", "tests.md"), testsMd, { root, skipJournal: true });
+  await writeTextFile(
     runAbs(root, runId, "evidence", "security.md"),
     renderSecurityMd(secrets.findings, audit.lines, secrets.truncated),
-    "utf8",
+    { root, skipJournal: true },
   );
   const docs = await collectDocsEvidence(store);
-  await writeFile(runAbs(root, runId, "evidence", "docs.md"), docs.md, "utf8");
+  await writeTextFile(runAbs(root, runId, "evidence", "docs.md"), docs.md, { root, skipJournal: true });
   return {
     runId,
     files: {

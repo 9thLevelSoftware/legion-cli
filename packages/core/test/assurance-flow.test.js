@@ -1215,3 +1215,147 @@ test("governed MCP admission refuses a data pointer that overlaps the approved f
     await fixture.cleanup();
   }
 });
+
+test("durable governed host matches reasoning models omitting temperature: 0 and rejects temperature: 0", async () => {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    requests.push(body);
+    res.writeHead(200, { "content-type": "application/json" });
+    if (requests.length === 1) {
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: JSON.stringify({
+              operations: [
+                { kind: "read", id: "read-one", path: "src/input.txt" },
+                { kind: "derive", id: "derive-one", transformationId: "summarize", inputs: ["read-one"] },
+                { kind: "finish", id: "finish" },
+              ],
+            }),
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+      }));
+      return;
+    }
+    res.end(JSON.stringify({
+      choices: [{ message: { role: "assistant", content: "summary output" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+    }));
+  });
+  const sourceBytes = new TextEncoder().encode("approved content\n");
+  let projectRoot;
+  let mismatchRoot;
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const endpoint = `http://127.0.0.1:${server.address().port}/v1`;
+    projectRoot = await mkdtemp(join(os.tmpdir(), "legion-reasoning-body-"));
+    mismatchRoot = await mkdtemp(join(os.tmpdir(), "legion-reasoning-mismatch-"));
+    await mkdir(join(projectRoot, "src"), { recursive: true });
+    await writeFile(join(projectRoot, "src", "input.txt"), sourceBytes);
+    const base = durableContext(projectRoot, sourceBytes, false, {}, {
+      sinks: [{ id: "planner", origin: endpoint, classifications: ["workspace"] }],
+      transformations: [{ id: "summarize", instruction: "Summarize the approved input" }],
+    });
+    const context = {
+      ...base,
+      identities: {
+        ...base.identities,
+        provider: { endpoint, model: "gpt-5", profile: "default" },
+      },
+    };
+    const host = await createDurableGovernedHost({
+      store: { projectRoot },
+      withLock: async (callback) => callback(),
+      resolveCurrentContext: async () => context,
+      jailRoot: projectRoot,
+    }, context);
+    const adapter = new HttpAdapter({ baseUrl: endpoint, model: "gpt-5", apiKeyEnv: "GOVERNED_FLOW_KEY", allowLoopback: true });
+    const handle = await adapter.spawn({
+      runId: context.runId,
+      skillId: "execute",
+      cwd: projectRoot,
+      timeoutMs: 30_000,
+      env: { GOVERNED_FLOW_KEY: "governed-flow-key-not-a-secret" },
+      assuranceContext: context,
+      effectHost: host,
+    });
+    const result = await handle.wait();
+    assert.equal(result.exitCode, 0, JSON.stringify(result));
+    const opened = await host.open(context, true);
+    assert.equal(opened.checkpoint.status, "complete");
+    assert.equal(requests.length, 2);
+    assert.equal(requests.every((req) => !("temperature" in req)), true);
+
+    await mkdir(join(mismatchRoot, "src"), { recursive: true });
+    await writeFile(join(mismatchRoot, "src", "input.txt"), sourceBytes);
+    const mismatchBase = durableContext(mismatchRoot, sourceBytes, false, {}, {
+      sinks: [{ id: "planner", origin: endpoint, classifications: ["workspace"] }],
+      transformations: [{ id: "summarize", instruction: "Summarize the approved input" }],
+    });
+    const mismatchContext = {
+      ...mismatchBase,
+      identities: {
+        ...mismatchBase.identities,
+        provider: { endpoint, model: "o3-mini", profile: "default" },
+      },
+    };
+    const mismatchHost = await createDurableGovernedHost({
+      store: { projectRoot: mismatchRoot },
+      withLock: async (callback) => callback(),
+      resolveCurrentContext: async () => mismatchContext,
+      jailRoot: mismatchRoot,
+    }, mismatchContext);
+    const frozen = await mismatchHost.open(mismatchContext, false);
+    const messages = [
+      { role: "system", content: "Produce one strict governed JSON program. Only use the supplied approved metadata and contract. No tools or commands." },
+      { role: "user", content: canonicalJson({ approvedMetadata: mismatchContext.plannerInput.approvedMetadata, taskContract: mismatchContext.plannerInput.taskContract }) },
+    ];
+    const requestBody = new TextEncoder().encode(JSON.stringify({
+      model: "o3-mini",
+      messages,
+      temperature: 0,
+      stream: false,
+    }));
+    const bodyDigest = sha256(requestBody);
+    const withTemp = {
+      kind: "provider",
+      actionId: "planner-call",
+      authority: {
+        programKind: "bootstrap",
+        authorityDigest: frozen.checkpoint.bootstrapAuthorityDigest,
+        programFingerprint: deriveBootstrapFingerprint(mismatchContext),
+      },
+      sinkId: "planner",
+      requestDigest: sha256(new TextEncoder().encode(canonicalJson({
+        version: 1,
+        endpoint: mismatchContext.identities.provider.endpoint,
+        model: "o3-mini",
+        profile: mismatchContext.identities.provider.profile,
+        bodyDigest,
+      }))),
+      valueDigest: sha256(new TextEncoder().encode(canonicalJson(messages))),
+      inputs: [],
+      role: "planner",
+      purpose: { kind: "plan" },
+      endpoint: mismatchContext.identities.provider.endpoint,
+      model: "o3-mini",
+      bodyDigest,
+      requestBytes: requestBody.byteLength,
+      requestBody,
+      inputValues: [],
+      label: mismatchContext.plannerInput.label,
+      usage: { requestCharge: 0, inputTokens: null, outputTokens: null, totalTokens: null, tokenLowerBound: 0, costUsd: null, tokenAccounting: "incomplete", costAccounting: "incomplete" },
+    };
+    await assert.rejects(() => mismatchHost.prepareEffect(frozen.revision, withTemp), /recovery-value-mismatch/);
+  } finally {
+    if (server.listening) await new Promise((resolve) => server.close(resolve));
+    if (projectRoot) await rm(projectRoot, { recursive: true, force: true });
+    if (mismatchRoot) await rm(mismatchRoot, { recursive: true, force: true });
+  }
+});

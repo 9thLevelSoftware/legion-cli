@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { assembleGovernedMcpArguments, dispatchToolCall, MAX_RUN_COMMAND_BYTES, RUN_COMMAND_DENIED_BINS, toolsForJob } from "@9thlevelsoftware/legion-cli-http";
+import { isImplicitForbidden } from "../dist/contracts.js";
 import { createHttpToolHost, engineSotRefuseReason, governedMcpConfigIdentity, governedMcpToolContractIdentity, httpAllowedWrites } from "../dist/index.js";
 import { materializeJail } from "@9thlevelsoftware/legion-cli-sandbox";
 
@@ -418,5 +419,50 @@ test("run_command cancellation kills the wrapper process tree and rejects as abo
     }
     assert.equal(pidIsLive(pids.parent), false);
     assert.equal(pidIsLive(pids.child), false);
+  });
+});
+
+test("http-host forbids sandbox-* and .git-null in readFile and omits them from listDir", async () => {
+  await withTemp(async (dir) => {
+    await mkdir(join(dir, ".legion-cli", "sandbox-home", ".claude"), { recursive: true });
+    await mkdir(join(dir, ".legion-cli", "sandbox-tmp"), { recursive: true });
+    await mkdir(join(dir, ".legion-cli", "sandbox-identity"), { recursive: true });
+    await mkdir(join(dir, ".legion-cli", "specs", "spec-1"), { recursive: true });
+    await mkdir(join(dir, ".git-null"), { recursive: true });
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, ".legion-cli", "sandbox-home", ".claude", ".credentials.json"), "{\"token\":\"secret\"}\n");
+    await writeFile(join(dir, ".legion-cli", "sandbox-tmp", "tmp.txt"), "tmp\n");
+    await writeFile(join(dir, ".legion-cli", "sandbox-identity", "identity.json"), "{}\n");
+    await writeFile(join(dir, ".legion-cli", "specs", "spec-1", "SPEC.md"), "# Spec\n");
+    await writeFile(join(dir, ".git-null", "HEAD"), "ref: refs/heads/main\n");
+    await writeFile(join(dir, "src", "main.ts"), "export const ok = true;\n");
+
+    const host = createHttpToolHost({
+      jailRoot: dir,
+      allowedWrites: [],
+      filesForbidden: [],
+      hardened: false,
+      spawnOpts: { cwd: dir, env: {} },
+    });
+
+    await assert.rejects(() => host.readFile(".legion-cli/sandbox-home/.claude/.credentials.json"), /forbidden/i);
+    await assert.rejects(() => host.readFile(".legion-cli/sandbox-tmp/tmp.txt"), /forbidden/i);
+    await assert.rejects(() => host.readFile(".legion-cli/sandbox-identity/identity.json"), /forbidden/i);
+    await assert.rejects(() => host.readFile(".git-null/HEAD"), /forbidden/i);
+
+    const rootEntries = await host.listDir(".");
+    assert.equal(rootEntries.includes(".git-null"), false);
+    assert.equal(rootEntries.includes("src"), true);
+
+    assert.equal(isImplicitForbidden(".legion-cli/sandbox-home"), true);
+    assert.equal(isImplicitForbidden(".legion-cli/sandbox-home/.claude/.credentials.json"), true);
+    assert.equal(isImplicitForbidden(".legion-cli/sandbox-tmp"), true);
+    assert.equal(isImplicitForbidden(".legion-cli/sandbox-tmp/tmp.txt"), true);
+    assert.equal(isImplicitForbidden(".legion-cli/sandbox-identity"), true);
+    assert.equal(isImplicitForbidden(".git-null"), true);
+    assert.equal(isImplicitForbidden(".git-null/HEAD"), true);
+
+    await assert.rejects(() => host.listDir(".legion-cli"), /forbidden/i);
+    await assert.rejects(() => host.listDir(".legion-cli/sandbox-home"), /forbidden/i);
   });
 });

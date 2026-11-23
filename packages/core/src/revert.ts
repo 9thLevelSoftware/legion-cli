@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import {
   gitDiscoverChanges,
   gitPathExistsAtRef,
+  gitPathTracked,
   gitRestoreWorktree,
   gitRmWorktree,
   isGitRepo,
@@ -163,7 +164,7 @@ async function walk(root: string, rel: string, out: Set<string>): Promise<void> 
     if (isEngineOwned(posix)) continue;
     if (entry.isDirectory()) {
       await walk(root, posix, out);
-    } else if (entry.isFile()) {
+    } else if (entry.isFile() || entry.isSymbolicLink()) {
       out.add(posix);
     }
   }
@@ -224,7 +225,7 @@ export async function snapshotGitPolicy(projectRoot: string): Promise<GitPolicyS
   return { config, hooks, modes, dirs };
 }
 
-async function gitPolicyIncidents(
+export async function gitPolicyIncidents(
   projectRoot: string,
   snapshot: GitPolicySnapshot | undefined,
 ): Promise<string[]> {
@@ -253,7 +254,7 @@ async function gitPolicyIncidents(
  * Acts only inside a real `.git` / `.git/hooks`: behind a symlink or junction a removal would
  * empty the link's target, so the incident stands and nothing is touched.
  */
-async function restoreGitPolicy(
+export async function restoreGitPolicy(
   projectRoot: string,
   snapshot: GitPolicySnapshot,
   names: readonly string[],
@@ -314,6 +315,28 @@ function forbiddenByContract(posixPath: string, filesForbidden: readonly string[
   return filesForbidden.some((pattern) => pattern === posixPath || matchesGlob(pattern, posixPath));
 }
 
+const BENIGN_CACHE_DIRS = new Set([
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+]);
+
+function isBenignCachePath(posixPath: string): boolean {
+  const segments = posixPath.split("/");
+  if (segments.some((part) => BENIGN_CACHE_DIRS.has(part))) return true;
+  const name = segments[segments.length - 1] ?? "";
+  return name === ".eslintcache" || name.endsWith(".tsbuildinfo");
+}
+
+async function isSymbolicLinkAt(projectRoot: string, posixPath: string): Promise<boolean> {
+  try {
+    return (await lstat(toFsPath(projectRoot, posixPath))).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 export async function revertExtras(opts: {
   projectRoot: string;
   preSpawnRef: string | null;
@@ -327,6 +350,7 @@ export async function revertExtras(opts: {
   extraRoots?: readonly string[];
   agentAlive?: boolean;
   jailWritable?: boolean;
+  ignoreBenignCaches?: boolean;
 }): Promise<RevertResult> {
   const extrasReverted: string[] = [];
   const headNow = tryGitHead(opts.projectRoot);
@@ -414,6 +438,14 @@ export async function revertExtras(opts: {
       continue;
     }
     if (opts.dirtyAtStart?.has(posix)) {
+      continue;
+    }
+    if (
+      opts.ignoreBenignCaches &&
+      isBenignCachePath(posix) &&
+      !(await isSymbolicLinkAt(opts.projectRoot, posix)) &&
+      !(git && gitPathTracked(opts.projectRoot, posix))
+    ) {
       continue;
     }
     if (isAllowedPath(posix, opts.allowedRoots) && !forbiddenByContract(posix, opts.filesForbidden)) {

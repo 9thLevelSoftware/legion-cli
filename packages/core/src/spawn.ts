@@ -744,10 +744,41 @@ const CONFIG_READ_SET = [
   "packages",
   "lib",
   "app",
+  "apps",
+  "services",
+  "crates",
+  "benches",
+  "cmd",
+  "internal",
+  "pkg",
+  "Sources",
+  "Tests",
+  "prisma",
+  "migrations",
+  "infra",
   "test",
   "tests",
   "skills",
   "scripts",
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain.toml",
+  "go.mod",
+  "go.sum",
+  "go.work",
+  "pyproject.toml",
+  "uv.lock",
+  "poetry.lock",
+  "requirements.txt",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "Package.swift",
+  "pnpm-workspace.yaml",
+  "tsconfig.base.json",
+  "Makefile",
+  "CMakeLists.txt",
+  "Dockerfile",
 ] as const;
 
 /**
@@ -1151,6 +1182,7 @@ export async function startSkillSpawn(opts: SkillSpawnOpts): Promise<StartedSkil
         runId,
         allowedWrites,
         readSet,
+        adapterId: resolution.id,
         adapterBinary: tmpl.binary.startsWith("(") ? undefined : tmpl.binary,
         backend: opts.config.sandbox.backend,
         allowDegradedCopy:
@@ -1795,6 +1827,12 @@ export async function finishStartedSpawn(
         extraRoots: started.revertCtx.allowedRoots.filter((root) => root.startsWith(".legion-cli/")),
         agentAlive,
         jailWritable,
+        ignoreBenignCaches:
+          !started.sandbox &&
+          (started.skillId === "spec" ||
+            started.skillId === "plan" ||
+            started.skillId === "review" ||
+            started.skillId === "verify"),
       });
     } catch (err) {
       if (err instanceof RestoreRefusedError || err instanceof AuditTamperError) refuse(err.message, HINT.status);

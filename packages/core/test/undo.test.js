@@ -36,6 +36,7 @@ import {
   seedPlanReady,
   withEngine,
   withFakeAdapter,
+  writeSpec,
   writeTask,
 } from "./helpers.js";
 
@@ -894,5 +895,24 @@ test("a refused command after a ship does not block undo; the revert commit keep
     assert.ok(logAfter.startsWith(committed.trimEnd()), "the revert commit carries the log, not an older copy");
     assert.ok(committed.trimEnd().length >= logBefore.trimEnd().length);
     assert.equal((await engine.getState()).phase, "executing");
+  });
+});
+
+test("undoLastTask without taskId prefers done tasks in activeSpecId over done tasks in prior specs", async () => {
+  await withEngine(async ({ engine, store }) => {
+    await initProject(engine);
+    await seedPlanReady(store, { phase: "executing", task: { id: "TSK-0001", specId: "spec-checkin", status: "done" } });
+    await writeSpec(store, {
+      ...(await store.readSpec("spec-checkin")).data,
+      id: "spec-older",
+      status: "shipped",
+    });
+    // Higher task ID on the older/other spec must not shadow activeSpecId's done task.
+    await writeTask(store, makeTask({ id: "TSK-0099", specId: "spec-older", status: "done" }));
+
+    const result = await engine.undoLastTask();
+    assert.equal(result.taskId, "TSK-0001");
+    assert.equal((await store.readTask("TSK-0001")).data.status, "todo");
+    assert.equal((await store.readTask("TSK-0099")).data.status, "done");
   });
 });

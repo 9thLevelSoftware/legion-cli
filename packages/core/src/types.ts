@@ -430,10 +430,27 @@ export type ShipPreview = {
   };
 };
 
+export type BrownfieldAdoptOptions = {
+  prId?: string;
+  actor?: Actor;
+};
+
+export type BrownfieldAdoptResult = {
+  runId: string;
+  prId: string | null;
+  specId: string;
+  specPath: string;
+  selectionPath: string;
+  phase: "spec_draft";
+  selection: { goal: string; affectedArea: string; sourceFingerprint: string };
+};
+
 export type ShipOptions = {
   allowDegradedQa?: boolean;
   commit?: boolean;
   pr?: boolean;
+  branch?: string;
+  push?: boolean;
   actor?: string;
   confirm?: (preview: ShipPreview) => Promise<boolean>;
   /** Where the confirm answer came from; recorded in the ship audit event. */
