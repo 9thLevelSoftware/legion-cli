@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { link, lstat, mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { assertNoLinkInPath, atomicWriteFile } from "./atomic-write.js";
+import { assertNoLinkInPath, atomicWriteFile, retryFsOp } from "./atomic-write.js";
 import { legionPaths } from "./layout.js";
 import { isPidAlive } from "./lock.js";
 import { ownProcessStartedAt, processIdentity, startedAfterRecorded, cleanMarkerHostValue, isForeignHostMarker } from "./process-identity.js";
@@ -127,6 +127,10 @@ export async function createLiveRun(
   };
   const dir = await ensureMarkerDir(projectRoot);
   const target = liveRunMarkerPath(projectRoot, marker.runId);
+  if (process.platform === "win32") {
+    await writeFile(target, body(marker), { encoding: "utf8", flag: "wx" });
+    return marker;
+  }
   const tmp = join(dir, `.${randomBytes(8).toString("hex")}.tmp`);
   await writeFile(tmp, body(marker), { encoding: "utf8", flag: "wx" });
   try {
@@ -159,7 +163,7 @@ export async function recordLiveRunAgent(
 
 export async function clearLiveRun(projectRoot: string, runId: string): Promise<void> {
   try {
-    await unlink(liveRunMarkerPath(projectRoot, runId));
+    await retryFsOp(() => unlink(liveRunMarkerPath(projectRoot, runId)));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }

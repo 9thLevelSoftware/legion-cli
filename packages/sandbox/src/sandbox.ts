@@ -11,6 +11,7 @@ import {
   overlapsEngineProtectedPath,
   PathEscapeError,
   legionPaths,
+  retryFsOp,
   toFsPath,
   toPosixPath,
   toProjectRelativePosix,
@@ -911,6 +912,10 @@ async function mapWithConcurrency<T, R>(
 }
 
 async function copyFileClone(src: string, dest: string): Promise<void> {
+  if (process.platform === "win32") {
+    await retryFsOp(() => copyFile(src, dest));
+    return;
+  }
   try {
     await copyFile(src, dest, fsConstants.COPYFILE_FICLONE);
   } catch (err) {
