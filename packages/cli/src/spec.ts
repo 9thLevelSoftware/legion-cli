@@ -12,6 +12,7 @@ import { specPath } from "@9thlevelsoftware/legion-cli-persist";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 import { runDiscuss } from "./discuss.js";
+import { confirmAllowNoSandbox } from "./execute.js";
 import { runIntent } from "./intent.js";
 import { fakeArtifactsFromEnv } from "./fake-artifacts.js";
 import { closePrompt, isYes, readLine, slurpStdin } from "./prompt.js";
@@ -24,6 +25,7 @@ export type SpecFlags = {
   from?: string;
   explore?: boolean;
   inputRoots?: string[];
+  allowNoSandbox?: boolean;
 };
 
 async function exploreDecisions(engine: ReturnType<typeof createLegionEngine>, opts: CliOpts): Promise<void> {
@@ -98,6 +100,7 @@ async function collectManualReview(
   engine: ReturnType<typeof createLegionEngine>,
   specId: string,
   current: SpecChallengeResult,
+  allowNoSandbox?: boolean,
 ): Promise<SpecChallengeResult> {
   await slurpStdin();
   const existing: Partial<Record<SpecChallengeManualQuestionKey, string>> = current.receipt?.manualReview ?? {};
@@ -117,14 +120,15 @@ async function collectManualReview(
     }
     result = await engine.recordSpecChallengeManualAnswer(specId, key, response, { id: "user" });
   }
-  return engine.finalizeSpecChallenge(specId, { actor: { id: "user" } });
+  return engine.finalizeSpecChallenge(specId, { allowNoSandbox: Boolean(allowNoSandbox), actor: { id: "user" } });
 }
 
 async function resolveChallenge(
   engine: ReturnType<typeof createLegionEngine>,
   specId: string,
+  allowNoSandbox?: boolean,
 ): Promise<SpecChallengeResult> {
-  let result = await engine.prepareSpecChallenge(specId);
+  let result = await engine.prepareSpecChallenge(specId, { allowNoSandbox: Boolean(allowNoSandbox) });
   if (result.status === "manual_required" || result.status === "complete") return result;
   for (const concern of result.pendingConcerns) {
     writeOut(`Challenge ${concern.id}: ${concern.question}`);
@@ -147,7 +151,7 @@ async function resolveChallenge(
     result = await engine.recordSpecChallengeResolution(specId, concern.id, { disposition: selected, response }, { id: "user" });
   }
   if (result.status === "manual_required" || result.status === "complete") return result;
-  return engine.finalizeSpecChallenge(specId, { actor: { id: "user" } });
+  return engine.finalizeSpecChallenge(specId, { allowNoSandbox: Boolean(allowNoSandbox), actor: { id: "user" } });
 }
 
 async function runChallenge(
@@ -168,15 +172,19 @@ async function runChallenge(
     if (current.status !== "manual_required") {
       refuse("--manual-review is available only after challenge automation failed or was unavailable", HINT.spec);
     }
-    return collectManualReview(engine, specId, current);
+    return collectManualReview(engine, specId, current, flags.allowNoSandbox);
   }
-  return resolveChallenge(engine, specId);
+  return resolveChallenge(engine, specId, flags.allowNoSandbox);
 }
 
 export async function runSpecDraft(opts: CliOpts, flags: SpecFlags): Promise<number> {
   const engine = createLegionEngine(opts.project, { skillsDir: findSkillsDir(), fakeArtifacts: fakeArtifactsFromEnv() });
   let state = await engine.getState();
   try {
+    if (flags.allowNoSandbox) {
+      await slurpStdin();
+      await confirmAllowNoSandbox("spec");
+    }
     if (flags.guidance) await engine.setGuidance(flags.guidance);
     if (flags.from && flags.explore) refuse("use --from and --explore in separate resumable steps", HINT.spec);
     if (flags.from) {

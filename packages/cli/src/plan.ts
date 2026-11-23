@@ -1,4 +1,11 @@
-import { ASSURANCE_PLAN_PATH, createLegionEngine, findSkillsDir, refuse } from "@9thlevelsoftware/legion-cli-core";
+import {
+  ASSURANCE_PLAN_PATH,
+  createLegionEngine,
+  findSkillsDir,
+  HINT,
+  refuse,
+  type AcceptanceEvidenceInput,
+} from "@9thlevelsoftware/legion-cli-core";
 import { parseAdapterFlag } from "./adapter-route.js";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
@@ -153,21 +160,116 @@ export async function runPlanApprove(opts: CliOpts, flags: { checks?: string[]; 
   return 0;
 }
 
+export type PlanAcceptanceFlags = {
+  pass?: string[];
+  fail?: string[];
+  notApplicable?: string[];
+  note?: string;
+  method?: string;
+  evidence?: string;
+  interactive?: boolean;
+};
+
+export type PlanAcceptancePromptHooks = {
+  isTty?: () => boolean;
+  readLine?: (question: string) => Promise<string>;
+  closePrompt?: () => void;
+};
+
+function parseInteractiveAcceptanceStatus(raw: string): AcceptanceEvidenceInput["status"] | null {
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "pass" || normalized === "passed" || normalized === "p") return "passed";
+  if (normalized === "fail" || normalized === "failed" || normalized === "f") return "failed";
+  if (normalized === "na" || normalized === "n/a" || normalized === "not_applicable" || normalized === "not-applicable") {
+    return "not_applicable";
+  }
+  refuse(
+    `invalid acceptance status "${raw.trim()}" (expected pass, failed, na, or blank to skip)`,
+    "legion-cli plan acceptance --interactive",
+  );
+}
+
 export async function runPlanAcceptance(
   opts: CliOpts,
-  flags: { pass?: string[]; fail?: string[]; notApplicable?: string[]; note?: string; method?: string; evidence?: string },
+  flags: PlanAcceptanceFlags,
+  hooks?: PlanAcceptancePromptHooks,
 ): Promise<number> {
-  const entries = [
+  const explicitEntries = [
     ...(flags.pass ?? []).map((id) => ({ id, status: "passed" as const })),
     ...(flags.fail ?? []).map((id) => ({ id, status: "failed" as const })),
     ...(flags.notApplicable ?? []).map((id) => ({ id, status: "not_applicable" as const })),
   ];
-  if (entries.length === 0) throw new Error("plan acceptance requires --pass, --fail, or --not-applicable");
+  if (flags.interactive && explicitEntries.length > 0) {
+    refuse(
+      "plan acceptance --interactive cannot be combined with --pass, --fail, or --not-applicable",
+      "legion-cli plan acceptance --interactive",
+    );
+  }
+  if (!flags.interactive && explicitEntries.length === 0) {
+    refuse(
+      "plan acceptance requires --pass, --fail, --not-applicable, or --interactive",
+      "legion-cli plan acceptance --interactive",
+    );
+  }
+
   const engine = createLegionEngine(opts.project);
-  const receipt = await engine.recordAcceptance(
-    entries.map((entry) => ({ ...entry, ...(flags.note ? { note: flags.note } : {}), ...(flags.method ? { methodId: flags.method } : {}), ...(flags.evidence ? { evidenceRef: flags.evidence } : {}) })),
-    { id: "user" },
-  );
+  let entriesToRecord: AcceptanceEvidenceInput[];
+  if (flags.interactive) {
+    const isTty = hooks?.isTty ?? (() => Boolean(process.stdin.isTTY && process.stdout.isTTY));
+    if (!isTty()) {
+      refuse("plan acceptance --interactive requires a TTY", "legion-cli plan acceptance --pass <id...>");
+    }
+    const state = await engine.getState();
+    if (!state.activeSpecId) {
+      refuse("plan acceptance requires an active spec", HINT.spec);
+    }
+    const spec = (await engine.store.readSpec(state.activeSpecId)).data;
+    if (spec.acceptance.length === 0) {
+      refuse("active spec has no acceptance criteria", HINT.spec);
+    }
+    const status = await engine.getWorkflowStatus();
+    const pendingIds = new Set(status.acceptance.pending);
+    const criteria = pendingIds.size > 0
+      ? spec.acceptance.filter((criterion) => pendingIds.has(criterion.id))
+      : spec.acceptance;
+
+    const ask = hooks?.readLine ?? readLine;
+    const finishPrompt = hooks?.closePrompt ?? closePrompt;
+    const collected: AcceptanceEvidenceInput[] = [];
+    try {
+      for (const criterion of criteria) {
+        writeOut(`${criterion.id} (${criterion.priority}): ${criterion.statement}`);
+        const answer = await ask(`Status for ${criterion.id} [pass/failed/na, blank to skip]: `);
+        const parsedStatus = parseInteractiveAcceptanceStatus(answer);
+        if (!parsedStatus) continue;
+        const noteRaw = await ask(`Note for ${criterion.id}${flags.note ? ` [${flags.note}]` : " (optional)"}: `);
+        const note = noteRaw.trim() || flags.note?.trim() || undefined;
+        collected.push({
+          id: criterion.id,
+          status: parsedStatus,
+          ...(note ? { note } : {}),
+          ...(flags.method ? { methodId: flags.method } : {}),
+          ...(flags.evidence ? { evidenceRef: flags.evidence } : {}),
+        });
+      }
+    } finally {
+      finishPrompt();
+    }
+    if (collected.length === 0) {
+      refuse("no acceptance entries recorded", "legion-cli plan acceptance --interactive");
+    }
+    entriesToRecord = collected;
+  } else {
+    entriesToRecord = explicitEntries.map((entry) => ({
+      ...entry,
+      ...(flags.note ? { note: flags.note } : {}),
+      ...(flags.method ? { methodId: flags.method } : {}),
+      ...(flags.evidence ? { evidenceRef: flags.evidence } : {}),
+    }));
+  }
+
+  const receipt = await engine.recordAcceptance(entriesToRecord, { id: "user" });
   const workflow = await engine.getWorkflowStatus();
   if (opts.json) writeJson({ ok: workflow.acceptance.failed.length === 0, receipt, workflow, next: workflow.next });
   else writeOut(`Acceptance evidence recorded. Next: ${workflow.next}`);
