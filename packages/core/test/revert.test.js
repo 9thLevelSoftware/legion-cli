@@ -11,9 +11,11 @@ import { tmpdir } from "node:os";
 import { appendAuditEvent, gitDiscoverChanges, RestoreRefusedError, sha256Content } from "@9thlevelsoftware/legion-cli-persist";
 import { LegionRefuseError } from "../dist/errors.js";
 import {
+  gitPolicyIncidents,
   openEngineCommand,
   restoreChangedTaskFiles,
   restoreEngineState,
+  restoreGitPolicy,
   revertExtras,
   snapshotDirtyPaths,
   snapshotGitPolicy,
@@ -524,5 +526,67 @@ test("revertExtras preserves append-only engine audit records for their validato
     });
     assert.deepEqual(result.extrasReverted, []);
     assert.equal(await readFile(record, "utf8"), "{\"digest\":\"engine-appended\"}\n");
+  });
+});
+
+test("snapshotPaths catches planted symlinks in gitignored dirs and unjailed benign caches are excluded while symlinks are not", async () => {
+  await withEngine(async ({ dir }) => {
+    await writeFile(join(dir, ".gitignore"), "dist/\n__pycache__/\n.pytest_cache/\n", "utf8");
+    await mkdir(join(dir, "dist"), { recursive: true });
+    await mkdir(join(dir, ".git", "hooks"), { recursive: true });
+    await writeFile(join(dir, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n", "utf8");
+
+    const snapshot = await snapshotPaths(dir);
+    await mkdir(join(dir, "src", "__pycache__"), { recursive: true });
+    await writeFile(join(dir, "src", "__pycache__", "mod.cpython-312.pyc"), "pyc", "utf8");
+    await mkdir(join(dir, ".pytest_cache", "v", "cache"), { recursive: true });
+    await writeFile(join(dir, ".pytest_cache", "v", "cache", "nodeids"), "[]", "utf8");
+    await mkdir(join(dir, ".mypy_cache"), { recursive: true });
+    await writeFile(join(dir, ".mypy_cache", "meta.json"), "{}", "utf8");
+    await mkdir(join(dir, ".ruff_cache"), { recursive: true });
+    await writeFile(join(dir, ".ruff_cache", "cache"), "x", "utf8");
+    await writeFile(join(dir, "tsconfig.tsbuildinfo"), "{}", "utf8");
+    await writeFile(join(dir, ".eslintcache"), "{}", "utf8");
+
+    // A junction works unprivileged on Windows and appears as entry.isSymbolicLink() in walk().
+    const junction = join(dir, "dist", "evil-link");
+    await symlink(join(dir, ".git"), junction, process.platform === "win32" ? "junction" : "dir");
+
+    const result = await revertExtras({
+      projectRoot: dir,
+      preSpawnRef: null,
+      allowedRoots: [".legion-cli/cache/runs/r1/**"],
+      snapshot,
+      ignoreBenignCaches: true,
+    });
+    assert.deepEqual(result.extrasReverted, ["dist/evil-link"]);
+    assert.equal(existsSync(junction), false);
+    assert.equal(existsSync(join(dir, "src", "__pycache__", "mod.cpython-312.pyc")), true);
+    assert.equal(existsSync(join(dir, "tsconfig.tsbuildinfo")), true);
+  });
+});
+
+test("gitPolicyIncidents detects symlinked .git/hooks and hook mode changes", async () => {
+  await withEngine(async ({ dir }) => {
+    const hooksDir = join(dir, ".git", "hooks");
+    await mkdir(hooksDir, { recursive: true });
+    await mkdir(join(dir, "outside-hooks"), { recursive: true });
+    await writeFile(join(dir, ".git", "config"), "[core]\n", "utf8");
+    const hookFile = join(hooksDir, "pre-commit");
+    await writeFile(hookFile, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+
+    const before = await snapshotGitPolicy(dir);
+    if (process.platform !== "win32") {
+      await chmod(hookFile, 0o755);
+      const modeIncidents = await gitPolicyIncidents(dir, before);
+      assert.equal(modeIncidents.includes("pre-commit"), true);
+      await restoreGitPolicy(dir, before, modeIncidents);
+      assert.deepEqual(await gitPolicyIncidents(dir, before), []);
+    }
+
+    await rm(hooksDir, { recursive: true, force: true });
+    await symlink(join(dir, "outside-hooks"), hooksDir, process.platform === "win32" ? "junction" : "dir");
+    const linkIncidents = await gitPolicyIncidents(dir, before);
+    assert.equal(linkIncidents.includes(".git/hooks"), true);
   });
 });

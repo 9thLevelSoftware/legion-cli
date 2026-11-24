@@ -5,7 +5,7 @@ import {
   tryGitHead,
 } from "@9thlevelsoftware/legion-cli-persist";
 import type { SandboxApplyResult, SandboxOutput } from "@9thlevelsoftware/legion-cli-sandbox";
-import { snapshotGitPolicy, type RevertResult } from "./revert.js";
+import { gitPolicyIncidents, restoreGitPolicy, type RevertResult } from "./revert.js";
 import {
   updateResumeStage,
   type StartedSkillSpawn,
@@ -18,13 +18,6 @@ export type PreparedSandboxSpawn = {
   output: SandboxOutput;
   revert: RevertResult;
 };
-
-function sameGitPolicy(
-  left: Awaited<ReturnType<typeof snapshotGitPolicy>>,
-  right: Awaited<ReturnType<typeof snapshotGitPolicy>>,
-): boolean {
-  return left.config === right.config && JSON.stringify(left.hooks) === JSON.stringify(right.hooks);
-}
 
 async function persistInspectedOutput(started: LiveStartedSpawn, output: SandboxOutput): Promise<void> {
   const root = join(
@@ -85,8 +78,11 @@ export async function prepareSandboxedSpawn(started: LiveStartedSpawn): Promise<
   await persistInspectedOutput(started, output);
   await started.sandbox.destroy();
 
-  const currentPolicy = await snapshotGitPolicy(started.revertCtx.projectRoot);
-  const gitPolicyChanged = !sameGitPolicy(started.revertCtx.gitPolicy, currentPolicy);
+  const policyIncidents = await gitPolicyIncidents(started.revertCtx.projectRoot, started.revertCtx.gitPolicy);
+  if (started.revertCtx.gitPolicy && policyIncidents.length > 0) {
+    await restoreGitPolicy(started.revertCtx.projectRoot, started.revertCtx.gitPolicy, policyIncidents);
+  }
+  const gitPolicyChanged = policyIncidents.length > 0;
   const headNow = tryGitHead(started.revertCtx.projectRoot);
   const headMoved = (started.revertCtx.preSpawnRef ?? "UNBORN") !== (headNow ?? "UNBORN");
   const engine = await restoreEngineState(started.revertCtx.projectRoot, started.runId, {

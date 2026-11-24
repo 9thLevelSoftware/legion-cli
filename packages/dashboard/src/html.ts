@@ -37,7 +37,7 @@ iframe.wireframes { width:100%; min-height:24rem; border:1px solid var(--ink); b
 `.trim();
 
 export const VIEWER_COPY =
-  "Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist). CLI remains the source of truth.";
+  "Read-only viewer. Writes are CLI or token-gated HTTP POST (ticket|wikiTrust|qaChecklist|planAcceptance). CLI remains the source of truth.";
 
 export type DashboardHtmlOpts = {
   alert?: string;
@@ -136,6 +136,33 @@ const INFORMATION_FLOW_LABELS = {
   enforced: "enforced",
 } as const;
 
+function workflowSection(snapshot: DashboardSnapshot): string {
+  if (snapshot.workflowError) return `<p>Workflow status unavailable: ${escapeHtml(snapshot.workflowError)}</p>`;
+  const workflow = snapshot.workflow;
+  if (!workflow) return `<p class="muted">Focused workflow projection not active.</p>`;
+  const acc = workflow.acceptance;
+  const checkDetail = workflow.checks.total === 0
+    ? "none"
+    : `${workflow.checks.passed}/${workflow.checks.total} passed${workflow.checks.failed > 0 ? `, ${workflow.checks.failed} failed` : ""}`;
+  const reviewDetail = workflow.review.verdict
+    ? `${workflow.review.status} (${workflow.review.verdict})`
+    : workflow.review.status;
+  const accDetail = acc.required.length === 0
+    ? "none required"
+    : `${acc.passed.length}/${acc.required.length} passed · ${acc.pending.length} pending · ${acc.failed.length} failed · ${acc.notApplicable.length} N/A`;
+  const checkItems = workflow.checks.commands.length === 0
+    ? ""
+    : `<ul>${workflow.checks.commands.map((item) => `<li>${escapeHtml(item.ok ? "PASS" : "FAIL")}: <code>${escapeHtml(item.command)}</code></li>`).join("")}</ul>`;
+  return `<p>Stage: <strong>${escapeHtml(workflow.stage)}</strong> · Plan approval: <strong>${escapeHtml(workflow.planApproval)}</strong> · Execution: <strong>${escapeHtml(workflow.execution)}</strong></p>
+      <p>Checks: <strong>${escapeHtml(workflow.checks.status)}</strong> (${escapeHtml(checkDetail)}) · Review: <strong>${escapeHtml(reviewDetail)}</strong></p>
+      <p>Acceptance: <strong>${escapeHtml(accDetail)}</strong></p>
+      ${acc.pending.length > 0 ? `<p class="muted">Pending criteria: ${escapeHtml(acc.pending.join(", "))}</p>` : ""}
+      ${acc.failed.length > 0 ? `<p class="muted">Failed criteria: ${escapeHtml(acc.failed.join(", "))}</p>` : ""}
+      ${workflow.blocker ? `<p>Blocker: ${escapeHtml(workflow.blocker)}</p>` : ""}
+      <p class="muted">Workflow next: <code>${escapeHtml(workflow.next)}</code></p>
+      ${checkItems}`;
+}
+
 function assuranceSection(snapshot: DashboardSnapshot): string {
   if (snapshot.workflowError) return `<p>Workflow status unavailable: ${escapeHtml(snapshot.workflowError)}</p>`;
   const assurance = snapshot.workflow?.assurance;
@@ -197,6 +224,7 @@ export function renderKanban(snapshot: DashboardSnapshot, webmcp = false, live =
       ${snapshot.qaEvidence.staleReason ? `<p class="muted">Stale: ${escapeHtml(snapshot.qaEvidence.staleReason)}</p>` : ""}
       <p class="muted">Criteria: ${snapshot.qaEvidence.criteria.passed}/${snapshot.qaEvidence.criteria.total} passed · Missing: ${escapeHtml(snapshot.qaEvidence.missing.join(", ") || "none")} · Failed: ${escapeHtml(snapshot.qaEvidence.failed.join(", ") || "none")} · Skipped: ${escapeHtml(snapshot.qaEvidence.skipped.join(", ") || "none")}</p>`
     : `<p class="muted">No QA evidence recorded.</p>`;
+  const workflowPanel = workflowSection(snapshot);
   const assurancePanel = assuranceSection(snapshot);
   const controls = live
     ? `<div class="live-controls"><button type="button" data-manual-refresh>Refresh</button><button type="button" data-copy-command="${escapeHtml(snapshot.nextCommand)}">Copy next command</button><code id="dashboard-next">${escapeHtml(snapshot.nextCommand)}</code><span id="dashboard-freshness" class="muted">Live updates connecting…</span></div>`
@@ -218,6 +246,8 @@ ${cols}
     ${runPanel}
     <h2>QA evidence</h2>
     ${qaPanel}
+    <h2 id="workflow">Workflow</h2>
+    <div id="dashboard-workflow">${workflowPanel}</div>
     <h2 id="assurance">Assurance</h2>
     <div id="dashboard-assurance">${assurancePanel}</div>
     <h2 id="timeline">Timeline</h2>

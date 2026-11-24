@@ -449,3 +449,21 @@ test("appending a governance epoch requires lock ownership before any write", as
     assert.equal(await readGovernanceEpochs(store), null);
   });
 });
+
+test("stale atomicWriteFile temp files do not brick read or reconcileGovernanceTrace", async () => {
+  await withTempDir(async (root) => {
+    const store = createLegionStore(root);
+    const dir = segmentPath(root);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, ".0123456789abcdef.tmp"), "torn write", "utf8");
+    await begin(store);
+    await writeFile(join(dir, ".fedcba9876543210.tmp"), "stale temp", "utf8");
+    assert.equal((await readGovernanceTrace(store, approvalId, modelDigest)).status, "incomplete");
+    assert.equal((await readdir(dir)).includes(".fedcba9876543210.tmp"), true, "read-only inspect leaves tmp untouched");
+    const reconciled = await reconcileGovernanceTrace(store, approvalId, modelDigest, lock);
+    assert.equal(reconciled.status, "incomplete");
+    assert.equal((await readdir(dir)).includes(".fedcba9876543210.tmp"), false, "locked reconcile unlinks stale tmp");
+    await end(store);
+    assert.equal((await readGovernanceTrace(store, approvalId, modelDigest)).status, "valid");
+  });
+});

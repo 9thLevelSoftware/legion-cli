@@ -22,7 +22,7 @@ export {
   staleUntrustedPages,
   titlesSimilar,
 } from "./garden.js";
-export type { GardenDuplicateGroup, GardenPage, GardenReport } from "./garden.js";
+export type { GardenDuplicateGroup, GardenPage, GardenReport, StaleUntrustedOptions } from "./garden.js";
 export {
   backlinks,
   hubs,

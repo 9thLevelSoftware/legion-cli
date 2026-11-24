@@ -207,7 +207,23 @@ function gitPaths(projectRoot: string, args: string[]): string[] {
 }
 
 const UNTRACKED_PRODUCT_IGNORES = new Set([
-  "node_modules", "target", "dist", "build", "coverage", ".cache", ".next", ".turbo",
+  "node_modules",
+  "target",
+  "dist",
+  "build",
+  "coverage",
+  ".cache",
+  ".next",
+  ".turbo",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".gradle",
+  ".build",
+  ".terraform",
 ]);
 
 function excludedProductPath(path: string, untracked: boolean): boolean {
@@ -341,18 +357,53 @@ export async function writeAcceptanceReceipt(store: LegionStore, receipt: Accept
   await store.writeYaml(WORKFLOW_ACCEPTANCE_PATH, AcceptanceReceiptSchema.parse(receipt));
 }
 
+/**
+ * Extract an explicit `Verdict: PASS|FAIL` outside fenced code blocks, tolerating Markdown
+ * bullets and inline emphasis (`**Verdict:** PASS`, `` `Verdict: PASS` ``). Returns null when
+ * no verdict or multiple/conflicting verdicts appear.
+ */
+export function parseExplicitReviewVerdict(body: string): "PASS" | "FAIL" | null {
+  const verdicts: Array<"PASS" | "FAIL"> = [];
+  let fenceChar: "`" | "~" | null = null;
+  let fenceLength = 0;
+  for (const rawLine of body.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    const fenceMatch = /^(`{3,}|~{3,})(.*)$/.exec(trimmed);
+    if (fenceMatch) {
+      const marker = fenceMatch[1]!;
+      const char = marker[0] as "`" | "~";
+      if (fenceChar === null) {
+        fenceChar = char;
+        fenceLength = marker.length;
+        continue;
+      }
+      if (char === fenceChar && marker.length >= fenceLength && fenceMatch[2]!.trim() === "") {
+        fenceChar = null;
+        fenceLength = 0;
+        continue;
+      }
+    }
+    if (fenceChar !== null) continue;
+    const withoutBullet = rawLine.replace(/^\s*(?:>\s*)?(?:[-*+]\s+)?/, "");
+    const normalized = withoutBullet.replaceAll(/[*_`]+/g, "").trim();
+    const match = /^(?:review\s+)?verdict\s*:\s*(PASS|FAIL)$/i.exec(normalized);
+    if (match) verdicts.push(match[1]!.toUpperCase() as "PASS" | "FAIL");
+  }
+  return verdicts.length === 1 ? verdicts[0]! : null;
+}
+
 export async function writeWorkflowReviewReport(store: LegionStore, body: string): Promise<{
   verdict: "PASS" | "FAIL";
   evidencePath: string;
   evidenceFingerprint: string;
 }> {
-  const matches = [...body.matchAll(/^\s*(?:[-*]\s*)?(?:review\s+)?verdict\s*:\s*(PASS|FAIL)\s*$/gim)];
-  if (matches.length !== 1) throw new Error("review report must contain exactly one explicit verdict");
+  const verdict = parseExplicitReviewVerdict(body);
+  if (!verdict) throw new Error("review report must contain exactly one explicit verdict");
   await store.withLock(() => writeTextFile(toFsPath(store.projectRoot, WORKFLOW_REVIEW_RECEIPT_PATH), body, {
     root: store.projectRoot,
   }));
   return {
-    verdict: matches[0]?.[1] as "PASS" | "FAIL",
+    verdict,
     evidencePath: WORKFLOW_REVIEW_RECEIPT_PATH,
     evidenceFingerprint: createHash("sha256").update(body).digest("hex"),
   };
@@ -398,10 +449,10 @@ export async function readExplicitReviewEvidence(projectRoot: string): Promise<{
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
   }
-  const matches = [...body.matchAll(/^\s*(?:[-*]\s*)?(?:review\s+)?verdict\s*:\s*(PASS|FAIL)\s*$/gim)];
-  if (matches.length !== 1) return null;
+  const verdict = parseExplicitReviewVerdict(body);
+  if (!verdict) return null;
   return {
-    verdict: matches[0]?.[1] as "PASS" | "FAIL",
+    verdict,
     evidencePath: WORKFLOW_REVIEW_PATH,
     evidenceFingerprint: createHash("sha256").update(body).digest("hex"),
     body,

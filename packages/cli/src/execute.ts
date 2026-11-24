@@ -15,7 +15,7 @@ export function startingTaskLine(
   return `Starting ${taskId}${titleBit}${viaBit}.`;
 }
 
-export async function confirmAllowNoSandbox(verb: "execute" | "fix"): Promise<void> {
+export async function confirmAllowNoSandbox(verb: "execute" | "fix" | "spec"): Promise<void> {
   if (!process.stdin.isTTY) {
     refuse(`${verb} --allow-no-sandbox requires a TTY`, HINT.allowNoSandbox);
   }

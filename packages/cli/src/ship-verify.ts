@@ -1,7 +1,7 @@
 import { open, type FileHandle } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseStrictJson, verifyDeliveryBundle, type DeliveryRequirement, type DeliveryVerificationReport } from "@9thlevelsoftware/legion-cli-persist";
-import { refuse } from "@9thlevelsoftware/legion-cli-core";
+import { LegionRefuseError, refuse } from "@9thlevelsoftware/legion-cli-core";
 import type { CliOpts } from "./io.js";
 import { writeJson, writeOut } from "./io.js";
 
@@ -19,8 +19,9 @@ async function readTrustFile(path: string): Promise<string> {
   let handle: FileHandle;
   try {
     handle = await open(resolve(path), "r");
-  } catch {
-    refuse("ship verify could not read the external trust file", VERIFY_HINT);
+  } catch (err) {
+    const detail = err instanceof Error && err.message ? `: ${err.message}` : "";
+    refuse(`ship verify could not read the external trust file${detail}`, VERIFY_HINT);
   }
   try {
     const stat = await handle.stat();
@@ -36,8 +37,10 @@ async function readTrustFile(path: string): Promise<string> {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytesRead));
     parseStrictJson(text, { maxBytes: MAX_TRUST_BYTES, maxDepth: 32 });
     return text;
-  } catch {
-    refuse("ship verify external trust file is malformed", VERIFY_HINT);
+  } catch (err) {
+    if (err instanceof LegionRefuseError) throw err;
+    const detail = err instanceof Error && err.message ? `: ${err.message}` : "";
+    refuse(`ship verify external trust file is malformed${detail}`, VERIFY_HINT);
   } finally {
     await handle.close();
   }
@@ -58,8 +61,9 @@ export async function runShipVerify(opts: CliOpts, directory: string, flags: Shi
       ...(flags.artifacts === undefined ? {} : { artifactsRoot: resolve(flags.artifacts) }),
       ...(flags.expectApproval === undefined ? {} : { expectedApproval: flags.expectApproval }),
     });
-  } catch {
-    refuse("ship verify could not verify the delivery bundle", VERIFY_HINT);
+  } catch (err) {
+    const detail = err instanceof Error && err.message ? `: ${err.message}` : "";
+    refuse(`ship verify could not verify the delivery bundle${detail}`, VERIFY_HINT);
   }
   if (trustPolicy !== undefined && report.authenticity.reason?.startsWith("Invalid external trust policy:")) {
     refuse("ship verify refused an invalid external trust policy", VERIFY_HINT);

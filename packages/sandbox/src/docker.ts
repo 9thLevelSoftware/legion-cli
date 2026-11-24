@@ -97,8 +97,15 @@ function dockerEnvArgs(env?: Record<string, string>): string[] {
   return args;
 }
 
+export function dockerContainerName(runId: string): string {
+  const sanitized = runId.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
+  return `legion-${(sanitized || "run").slice(0, 56)}`;
+}
+
 export function dockerArgvPrefix(opts: {
   jailRoot: string;
+  runId?: string;
+  containerName?: string;
   image?: string;
   env?: Record<string, string>;
   /** Project-relative paths mounted read-only over the writable project mount (must exist). */
@@ -107,10 +114,12 @@ export function dockerArgvPrefix(opts: {
   hiddenRels?: readonly string[];
 }): string[] {
   const image = pinImage(opts.image);
+  const containerName = opts.containerName ?? (opts.runId ? dockerContainerName(opts.runId) : undefined);
   return [
     "run",
     "--rm",
     "-i",
+    ...(containerName ? ["--name", containerName] : []),
     "--network",
     "none",
     "--cap-drop",

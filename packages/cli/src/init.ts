@@ -1,3 +1,4 @@
+import { ASSUMED_EXTRA_BINARIES } from "@9thlevelsoftware/legion-cli-agents";
 import { createLegionEngine, HINT, refuse } from "@9thlevelsoftware/legion-cli-core";
 import {
   ADAPTER_ID_HELP,
@@ -41,7 +42,7 @@ async function requireValue(
   refuse(message, nextHint);
 }
 
-const ADAPTER_CHOICES: Array<{ id: AdapterId; description: string }> = [
+export const ADAPTER_CHOICES: Array<{ id: Exclude<AdapterId, "fake">; description: string }> = [
   { id: "claude", description: "Claude Code command-line adapter" },
   { id: "codex", description: "Codex command-line adapter" },
   { id: "openai", description: "OpenAI command-line adapter" },
@@ -51,7 +52,6 @@ const ADAPTER_CHOICES: Array<{ id: AdapterId; description: string }> = [
   { id: "generic", description: "an explicit local command and arguments" },
   { id: "http", description: "an OpenAI-compatible HTTP endpoint" },
   { id: "acp", description: "an experimental Agent Client Protocol command (explicit opt-in)" },
-  { id: "fake", description: "deterministic test adapter" },
 ];
 
 export type InitPreflight = {
@@ -60,22 +60,35 @@ export type InitPreflight = {
   sandbox: { ready: boolean; backend: string; detail: string; remediation: string };
 };
 
-function preflightInit(
+function resolvePreflightBinary(
+  adapter: AdapterId,
+  generic: { binary: string; args: string[] } | undefined,
+): string {
+  if (adapter === "generic") return generic?.binary ?? "";
+  if (adapter === "claude") return "claude";
+  if (Object.hasOwn(ASSUMED_EXTRA_BINARIES, adapter)) {
+    return ASSUMED_EXTRA_BINARIES[adapter as keyof typeof ASSUMED_EXTRA_BINARIES];
+  }
+  return adapter;
+}
+
+export function preflightInit(
   adapter: AdapterId,
   generic: { binary: string; args: string[] } | undefined,
   http: { baseUrl: string; model: string; apiKeyEnv: string; allowLoopback: boolean } | undefined,
   acp?: { command: string; args: string[]; enabled: true },
 ): InitPreflight {
+  const binary = resolvePreflightBinary(adapter, generic);
   const adapterReady =
     adapter === "fake" ? true :
     adapter === "http" ? httpAdapterNotReadyReason(http) === null :
     adapter === "acp" ? Boolean(acp?.enabled && isSpawnableBinary(acp.command)) :
-    isSpawnableBinary(adapter === "generic" ? (generic?.binary ?? "") : adapter === "claude" ? "claude" : adapter);
+    isSpawnableBinary(binary);
   const adapterDetail =
     adapter === "fake" ? "deterministic adapter selected" :
     adapter === "http" ? (httpAdapterNotReadyReason(http) ?? "HTTP configuration and environment key are present") :
     adapter === "acp" ? (adapterReady ? `${acp?.command} is on PATH; experimental ACP explicitly enabled` : `${acp?.command ?? "ACP command"} is not on PATH`) :
-    adapterReady ? `${adapter === "generic" ? generic?.binary : adapter} is on PATH` : `${adapter === "generic" ? generic?.binary : adapter} is not on PATH`;
+    adapterReady ? `${binary} is on PATH` : `${binary} is not on PATH`;
   const detected = detectSandbox();
   const sandboxReady = detected.hardened;
   return {

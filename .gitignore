@@ -8,8 +8,11 @@ Thumbs.db
 .env
 .env.*
 .legion-cli/
+.brownfield/
+.claude/worktrees/
 .grok-worktrees/
 scratchpad/
 packages/agents/skills/
+packages/agents/extensions/
 _apalache-out/
 packages/sandbox/native/target/

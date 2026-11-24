@@ -43,7 +43,7 @@ Implicit forbidden still applies: `.git/**`, `.env*`, `.legion-cli/config.yaml`,
 
 ## Task
 
-Walk the slice. Any notes you want to keep go in `.legion-cli/cache/runs/<id>/summary.md`; the engine does not copy verify notes anywhere else yet (known open item), so put actionable findings in fix tasks (below).
+Walk the slice. Write walkthrough notes to `.legion-cli/cache/runs/<id>/summary.md` (the engine returns that run-cache path when non-empty). Put actionable findings in fix tasks (below).
 
 If you find fix work, file a child task (`type: fix`, `parentId`) under `.legion-cli/tasks/` or write `.legion-cli/cache/runs/<id>/extra.json`. Do not expand a live task's `filesAllowed`. Extra work is a linked ticket.
 

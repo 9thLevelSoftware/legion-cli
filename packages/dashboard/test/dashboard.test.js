@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { appendAuditEvent } from "@9thlevelsoftware/legion-cli-persist";
-import { projectSourceIdentity, qaSpecHash } from "@9thlevelsoftware/legion-cli-core";
+import { createLegionEngine, findSkillsDir, projectSourceIdentity, qaSpecHash } from "@9thlevelsoftware/legion-cli-core";
 import { scoreQa } from "@9thlevelsoftware/legion-cli-qa";
 import { ServeFileSchema } from "@9thlevelsoftware/legion-cli-schema";
 import {
@@ -159,14 +159,15 @@ test("package writes via LegionEngine and does not expose execute", async () => 
   assert.match(write, /fileTicket/);
   assert.match(write, /wikiTrust/);
   assert.match(write, /qaChecklist/);
+  assert.match(write, /recordAcceptance/);
   assert.doesNotMatch(write, /\.execute\(/);
   assert.doesNotMatch(write, /\badapter\b/);
   assert.doesNotMatch(server, /\.execute\(/);
   assert.doesNotMatch(server, /Set-Cookie|set-cookie|cookie=/);
 });
 
-test("ENGINE_WRITE_METHODS is exactly ticket, wikiTrust, qaChecklist", () => {
-  assert.deepEqual(ENGINE_WRITE_METHODS, new Set(["ticket", "wikiTrust", "qaChecklist"]));
+test("ENGINE_WRITE_METHODS is exactly ticket, wikiTrust, qaChecklist, planAcceptance", () => {
+  assert.deepEqual(ENGINE_WRITE_METHODS, new Set(["ticket", "wikiTrust", "qaChecklist", "planAcceptance"]));
   assert.equal(ENGINE_WRITE_METHODS.has("execute"), false);
   assert.equal(ENGINE_WRITE_METHODS.has("packet"), false);
   assert.equal(ENGINE_WRITE_METHODS.has("ship"), false);
@@ -198,7 +199,7 @@ test("binds 127.0.0.1, GET kanban/spec/graph/audit/api/state, origin allowlist, 
       assert.match(html, /current task:/);
       assert.match(html, /source of truth/);
       assert.match(html, /Read-only viewer/);
-      assert.match(html, /ticket\|wikiTrust\|qaChecklist/);
+      assert.match(html, /ticket\|wikiTrust\|qaChecklist\|planAcceptance/);
       assertHtmlOmitsToken(html, handle.token);
       assert.doesNotMatch(html, /webmcp\.js/);
       assert.equal(handle.webmcp, false);
@@ -1199,5 +1200,132 @@ test("--expose + webmcp still omits write token from GET HTML", async () => {
       },
       { host: "0.0.0.0", webmcp: true },
     );
+  });
+});
+
+test("dashboard projects focused workflow gates on Kanban board and mutates via POST /engine/planAcceptance", async () => {
+  await withTempDir(async (dir) => {
+    const engine = createLegionEngine(dir, {
+      skillsDir: findSkillsDir(),
+      fakeArtifacts: [{ path: ".legion-cli/cache/runs/<id>/review.md", content: "# Review\n\nVerdict: PASS\n" }],
+    });
+    await engine.init({ name: "Checkin", adapter: "fake", workflowProfile: "focused" });
+    const initConfig = await engine.store.readConfig();
+    await engine.store.writeConfig({
+      ...initConfig,
+      sandbox: { ...initConfig.sandbox, allowCopyJail: true },
+    });
+    await engine.store.writeSpec({
+      schemaVersion: "legion-cli-spec/v1",
+      id: "spec-checkin",
+      title: "Office check-in",
+      status: "frozen",
+      mustBeTrue: ["Check-in responds quickly"],
+      mustNotChange: [],
+      outOfScope: [],
+      acceptance: [
+        { id: "AC-01", statement: "Tap in works", kind: "behavior", priority: "P0" },
+        { id: "AC-02", statement: "Tap out works", kind: "behavior", priority: "P1" },
+      ],
+      personas: ["teammates"],
+      happyPath: "Tap in and out.",
+      frozenAt: "2026-09-01T12:00:00.000Z",
+      frozenBy: "tester",
+    }, "Spec body.\n");
+    const project = await engine.store.readProject();
+    await engine.store.writeProject({ ...project.data, activeSpecId: "spec-checkin" }, project.body);
+    await engine.store.writeTask({
+      schemaVersion: "legion-cli-task/v1",
+      id: "TSK-0001",
+      title: "in/out button",
+      status: "done",
+      type: "feature",
+      priority: "P0",
+      specId: "spec-checkin",
+      blockedBy: [],
+      blocks: [],
+      assignee: "agent",
+      notes: "",
+      contract: {
+        filesAllowed: ["src/main.ts"],
+        filesForbidden: [".git/**"],
+        expectedArtifacts: ["src/main.ts"],
+        verificationCommands: [`${JSON.stringify(process.execPath)} -e process.exit(0)`],
+        maxFilesTouched: 20,
+      },
+    }, "Implement.\n");
+    const state = await engine.store.readState();
+    await engine.store.writeState({ ...state.data, phase: "executing", activeSpecId: "spec-checkin", lastReadiness: "PASS" }, state.body);
+    await mkdir(join(dir, ".legion-cli", "plans"), { recursive: true });
+    await writeFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "# Plan\n\nImplement.\n", "utf8");
+    const checkCmd = `${JSON.stringify(process.execPath)} -e process.exit(0)`;
+    await engine.approvePlan({ id: "owner" }, { verificationCommands: [checkCmd] });
+
+    const prevAdapter = process.env.LEGION_CLI_ADAPTER;
+    process.env.LEGION_CLI_ADAPTER = "fake";
+    try {
+      await engine.executeWorkflow();
+    } finally {
+      if (prevAdapter === undefined) delete process.env.LEGION_CLI_ADAPTER;
+      else process.env.LEGION_CLI_ADAPTER = prevAdapter;
+    }
+
+    await withServer(dir, async ({ handle }) => {
+      const token = handle.token;
+      const stateBefore = await (await fetch(`${handle.url}/api/state`)).json();
+      assert.equal(stateBefore.workflow.stage, "execute");
+      assert.equal(stateBefore.workflow.planApproval, "valid");
+      assert.equal(stateBefore.workflow.execution, "complete");
+      assert.equal(stateBefore.workflow.checks.status, "passed");
+      assert.equal(stateBefore.workflow.checks.passed, 1);
+      assert.equal(stateBefore.workflow.checks.total, 1);
+      assert.equal(stateBefore.workflow.review.status, "passed");
+      assert.equal(stateBefore.workflow.review.verdict, "PASS");
+      assert.deepEqual(stateBefore.workflow.acceptance.pending, ["AC-01", "AC-02"]);
+
+      const htmlBefore = await (await fetch(handle.url)).text();
+      assert.match(htmlBefore, /<h2 id="workflow">Workflow<\/h2>/);
+      assert.match(htmlBefore, /id="dashboard-workflow"/);
+      assert.match(htmlBefore, /Stage: <strong>execute<\/strong>/);
+      assert.match(htmlBefore, /Checks: <strong>passed<\/strong>/);
+      assert.match(htmlBefore, /Review: <strong>passed \(PASS\)<\/strong>/);
+      assert.match(htmlBefore, /Acceptance: <strong>0\/2 passed · 2 pending · 0 failed · 0 N\/A<\/strong>/);
+
+      const noToken = await enginePost(handle, "/engine/planAcceptance", { id: "AC-01", status: "passed" });
+      assert.equal(noToken.status, 403);
+
+      const badStatus = await enginePost(handle, "/engine/planAcceptance", { id: "AC-01", status: "bogus" }, { token });
+      assert.equal(badStatus.status, 400);
+
+      const emptyEntries = await enginePost(handle, "/engine/planAcceptance", { entries: [] }, { token });
+      assert.equal(emptyEntries.status, 400);
+
+      const single = await enginePost(
+        handle,
+        "/engine/planAcceptance",
+        { id: "AC-01", status: "passed", note: "Observed on dashboard" },
+        { token },
+      );
+      assert.equal(single.status, 200, await single.clone().text());
+      const singleJson = await single.json();
+      assert.equal(singleJson.ok, true);
+      assert.equal(singleJson.receipt.recordedBy, "dashboard");
+      assert.deepEqual(singleJson.workflow.acceptance.passed, ["AC-01"]);
+
+      const batch = await enginePost(
+        handle,
+        "/engine/planAcceptance",
+        { entries: [{ criterionId: "AC-02", status: "passed", note: "Observed tap out" }] },
+        { token },
+      );
+      assert.equal(batch.status, 200, await batch.clone().text());
+      const batchJson = await batch.json();
+      assert.equal(batchJson.workflow.stage, "ship");
+      assert.deepEqual(batchJson.workflow.acceptance.passed, ["AC-01", "AC-02"]);
+
+      const htmlAfter = await (await fetch(handle.url)).text();
+      assert.match(htmlAfter, /Stage: <strong>ship<\/strong>/);
+      assert.match(htmlAfter, /Acceptance: <strong>2\/2 passed · 0 pending · 0 failed · 0 N\/A<\/strong>/);
+    });
   });
 });

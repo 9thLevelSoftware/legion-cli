@@ -32,6 +32,8 @@ export type MapOptions = {
   spawnLsp?: LspSpawnFn;
   /** Test hook: LSP file-loop budget (default 60s). */
   lspDeadlineMs?: number;
+  /** Test hook: per-file LSP request timeout (default 5s). */
+  lspFileTimeoutMs?: number;
   /** Test hook: module cap (default 10,000). */
   maxModules?: number;
 };
@@ -193,6 +195,7 @@ export async function generateMap(projectRoot: string, options: MapOptions = {})
         args: detected.args,
         spawnLsp: options.spawnLsp,
         deadlineMs: options.lspDeadlineMs,
+        fileTimeoutMs: options.lspFileTimeoutMs,
       });
       if (lspExports) {
         for (const [path, names] of lspExports) exportsByPath.set(path, names);

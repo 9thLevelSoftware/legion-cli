@@ -10,10 +10,15 @@ export type NormalizedUsage = {
 
 export type ParsedAssistantResponse = {
   content: string;
+  reasoningContent?: string;
   toolCalls: OpenAiToolCall[];
   finishReason: string;
   usage?: NormalizedUsage;
 };
+
+export function isReasoningModel(model: string): boolean {
+  return /^(o1|o3|o4|gpt-5)(?:$|[-_])/i.test(model.trim());
+}
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -44,6 +49,13 @@ export function parseToolArguments(call: OpenAiToolCall): Record<string, unknown
   };
   if (name === "read_file" || name === "list_dir") {
     requireString("path");
+    if (name === "read_file") {
+      for (const opt of ["startLine", "maxLines"] as const) {
+        if (args[opt] !== undefined && (typeof args[opt] !== "number" || !Number.isInteger(args[opt]) || (args[opt] as number) < 1)) {
+          throw new HttpAdapterError(`adapter.http invalid tool arguments for read_file: ${opt} must be a positive integer`);
+        }
+      }
+    }
   } else if (name === "write_file") {
     requireString("path");
     requireString("contents");
@@ -81,6 +93,7 @@ export function parseAssistantResponse(json: unknown): ParsedAssistantResponse {
   if (message.content !== null && message.content !== undefined && typeof message.content !== "string") {
     throw new HttpAdapterError("adapter.http malformed response: message.content must be a string or null");
   }
+  const reasoningContent = typeof message.reasoning_content === "string" ? message.reasoning_content : undefined;
   const rawCalls = message.tool_calls === undefined ? [] : message.tool_calls;
   if (!Array.isArray(rawCalls)) {
     throw new HttpAdapterError("adapter.http malformed response: message.tool_calls must be an array");
@@ -118,7 +131,7 @@ export function parseAssistantResponse(json: unknown): ParsedAssistantResponse {
     if (finishReason !== "stop") {
       throw new HttpAdapterError(`adapter.http incomplete terminal response: finish_reason=${finishReason || "missing"}`);
     }
-  } else if (finishReason !== "tool_calls") {
+  } else if (finishReason !== "tool_calls" && finishReason !== "stop") {
     throw new HttpAdapterError(`adapter.http malformed response: tool calls require finish_reason=tool_calls (received ${finishReason || "missing"})`);
   }
 
@@ -152,5 +165,11 @@ export function parseAssistantResponse(json: unknown): ParsedAssistantResponse {
       ),
     };
   }
-  return { content, toolCalls, finishReason, usage };
+  return {
+    content,
+    ...(reasoningContent !== undefined ? { reasoningContent } : {}),
+    toolCalls,
+    finishReason,
+    usage,
+  };
 }

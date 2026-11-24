@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import * as acp from "@agentclientprotocol/sdk";
 import {
   ExperimentalAcpAdapter,
   experimentalAcpAvailability,
 } from "../dist/index.js";
+import { PACKAGE_VERSION } from "../dist/version.js";
 
 function fixtureAgent(events) {
   return acp
@@ -159,4 +161,20 @@ test("real ACP smoke stays unavailable until an explicit connection target is su
     experimental: true,
     reason: "ACP is disabled by default; explicitly construct ExperimentalAcpAdapter with a connection target",
   });
+});
+
+test("ACP clientInfo reads version dynamically from package.json", async () => {
+  const expectedVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+  assert.equal(PACKAGE_VERSION, expectedVersion);
+  let seenClientInfo;
+  const agent = acp
+    .agent({ name: "version-check" })
+    .onRequest(acp.methods.agent.initialize, ({ params }) => {
+      seenClientInfo = params.clientInfo;
+      return { protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: {} };
+    })
+    .onRequest(acp.methods.agent.session.new, () => ({ sessionId: "s1" }))
+    .onRequest(acp.methods.agent.session.prompt, () => ({ stopReason: "end_turn" }));
+  await new ExperimentalAcpAdapter({ target: agent }).run({ cwd: process.cwd(), prompt: "hi" });
+  assert.equal(seenClientInfo?.version, expectedVersion);
 });

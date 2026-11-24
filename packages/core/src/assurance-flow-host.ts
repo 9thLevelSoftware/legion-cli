@@ -517,11 +517,16 @@ function providerMessages(intent: Extract<EffectIntent, { kind: "provider" }>, c
   ];
 }
 
+function isReasoningModel(model: string): boolean {
+  return /^(o1|o3|o4|gpt-5)(?:$|[-_])/i.test(model.trim());
+}
+
 function expectedProviderBody(intent: Extract<EffectIntent, { kind: "provider" }>, context: ApprovedHttpAssuranceContext, checkpoint: HttpGovernedCheckpoint): Uint8Array {
+  const model = context.identities.provider.model;
   const expected = new TextEncoder().encode(JSON.stringify({
-    model: context.identities.provider.model,
+    model,
     messages: providerMessages(intent, context, checkpoint),
-    temperature: 0,
+    ...(isReasoningModel(model) ? {} : { temperature: 0 }),
     stream: false,
   }));
   if (expected.byteLength > 8 * 1024 * 1024 || expected.byteLength !== intent.requestBody.byteLength ||

@@ -193,3 +193,14 @@ test("reported token thresholds enforce partial input and output lower bounds", 
     null,
   );
 });
+
+test("applyUsagePricing defaults pricing.requestUsd to 0 when token rates are present", () => {
+  const priced = applyUsagePricing(
+    { requests: 2, inputTokens: 1_000_000, outputTokens: 500_000 },
+    { inputPerMillionUsd: 2, outputPerMillionUsd: 10 },
+  );
+  assert.equal(priced.costEstimated, true);
+  assert.equal(priced.estimatedCostUsd, 7);
+  assert.equal(usageLimitReason(priced, { maxEstimatedCostUsd: 10 }), null);
+  assert.match(usageLimitReason(priced, { maxEstimatedCostUsd: 5 }), /estimated cost threshold exceeded/);
+});

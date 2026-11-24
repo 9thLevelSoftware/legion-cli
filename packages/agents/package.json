@@ -35,7 +35,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/9thLevelSoftware/product-engineer-helper.git",
+    "url": "git+https://github.com/9thLevelSoftware/legion-cli.git",
     "directory": "packages/agents"
   },
   "author": {

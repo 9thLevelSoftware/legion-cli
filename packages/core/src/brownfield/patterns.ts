@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { LegionStore } from "@9thlevelsoftware/legion-cli-persist";
+import { writeTextFile, type LegionStore } from "@9thlevelsoftware/legion-cli-persist";
 import {
   BrownfieldPatternsFileSchema,
   SCHEMA_VERSION,
@@ -60,7 +60,7 @@ export async function patternsRun(
   }
   if (added.length > 0) {
     await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, `${JSON.stringify(BrownfieldPatternsFileSchema.parse(data), null, 2)}\n`, "utf8");
+    await writeTextFile(abs, `${JSON.stringify(BrownfieldPatternsFileSchema.parse(data), null, 2)}\n`, { root: store.projectRoot, skipJournal: true });
   }
   const ranked = Object.entries(data.patterns)
     .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))

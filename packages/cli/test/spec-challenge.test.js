@@ -91,3 +91,15 @@ test("focused spec exposes pending challenge JSON, resumes manual answers, and g
     assert.equal(frozenJson.challenge.status, "complete");
   });
 });
+
+test("spec --allow-no-sandbox requires a TTY even with piped Y", async () => {
+  await withTempDir(async (dir) => {
+    const init = runCli(["init", "--project", dir, "--name", "Checkin", "--adapter", "fake"]);
+    assert.equal(init.status, 0, init.stderr);
+    const result = runCli(["spec", "--allow-no-sandbox", "--project", dir], {
+      input: "Y\n",
+    });
+    assert.equal(result.status, 1);
+    assert.match(normalize(result.stderr), /spec --allow-no-sandbox requires a TTY/);
+  });
+});

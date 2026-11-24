@@ -1,18 +1,8 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { SECRET_SOURCE_PATTERNS } from "@9thlevelsoftware/legion-cli-persist";
 
 export const MAX_SECRET_WALK_DEPTH = 16;
-
-const SECRET_PATTERNS: { name: string; source: string }[] = [
-  { name: "aws-access-key", source: "AKIA[0-9A-Z]{16}" },
-  { name: "sk-proj", source: "\\bsk-proj-[A-Za-z0-9_-]{8,}" },
-  { name: "sk-ant", source: "\\bsk-ant-[A-Za-z0-9_-]{8,}" },
-  { name: "sk", source: "\\bsk-[A-Za-z0-9]{20,}" },
-  { name: "xai", source: "\\bxai-[A-Za-z0-9]{20,}" },
-  { name: "private-key", source: "-----BEGIN [A-Z ]*PRIVATE KEY-----" },
-  { name: "ghp", source: "ghp_[A-Za-z0-9]+" },
-  { name: "github_pat", source: "github_pat_[A-Za-z0-9_]+" },
-];
 
 export type SecretHit = {
   file: string;
@@ -62,7 +52,7 @@ export async function scanWikiSecrets(wikiDir: string): Promise<SecretHit[]> {
     } catch {
       continue;
     }
-    for (const pattern of SECRET_PATTERNS) {
+    for (const pattern of SECRET_SOURCE_PATTERNS) {
       if (hasSecret(text, pattern.source)) {
         hits.push({ file, name: pattern.name });
       }

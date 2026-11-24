@@ -55,19 +55,20 @@ resolves and explain its connection to the human response. Preserve all existing
 requirements. Reject new features, unrelated scope expansion, or spec identity,
 status, approval, stories, and wireframe changes. Return no changes if no edit is
 needed. The engine validates and applies changes; the human still approves the spec.
-Preserve the recorded response text verbatim in each statement. Select its
-appropriate section and explain its rationale; do not add behavioral content or
-paraphrase the human's words. The engine conservatively rejects unsupported edits.
+Copy the recorded `resolution.response` verbatim into `changes[].statement` (trimmed,
+with no rewriting, paraphrasing, prefixing, suffixing, or added punctuation).
+Select its appropriate section and explain its rationale; do not add behavioral
+content or expand scope. The engine conservatively rejects unsupported or rewritten edits.
 
-Write the requested synthesis.json using this shape:
+Write the requested synthesis.json using this shape (for example, if C-01's trimmed `resolution.response` is `"Report the failure and preserve saved input"`):
 
 ```json
 {
   "schemaVersion": "legion-cli-spec-challenge-synthesis/v1",
   "changes": [{
     "section": "failureCases",
-    "statement": "An unavailable service reports the failure and preserves saved input.",
-    "rationale": "The human explicitly chose preservation when answering C-01.",
+    "statement": "Report the failure and preserve saved input",
+    "rationale": "The human explicitly chose failure reporting and preservation when answering C-01.",
     "concernIds": ["C-01"]
   }]
 }

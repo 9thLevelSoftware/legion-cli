@@ -160,3 +160,62 @@ test("reviewed knowledge policy also checks Windows case aliases", { skip: proce
     assert.ok(codes(await inspectPreparationRecord(store, bound, context)).includes("unreviewed_knowledge"));
   });
 });
+
+test("bindPreparationArtifacts auto-computes missing/placeholder digests and fails closed on invalid or missing inputs", async () => {
+  await withEngine(async ({ store, dir }) => {
+    const { record, context } = fixture();
+    const specId = context.spec.id;
+    const contextText = "Context preparation body.\n";
+    const reqText = "Requirements preparation body.\n";
+    const srcText = "export const hello = 1;\n";
+    await mkdir(join(dir, `.legion-cli/specs/${specId}/preparation`), { recursive: true });
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, `.legion-cli/specs/${specId}/preparation/context.md`), contextText, "utf8");
+    await writeFile(join(dir, `.legion-cli/specs/${specId}/preparation/requirements.md`), reqText, "utf8");
+    await writeFile(join(dir, "src/app.ts"), srcText, "utf8");
+
+    const draft = {
+      ...record,
+      assessment: { ...record.assessment, inputFingerprint: "<auto>" },
+      specArtifacts: [
+        {
+          ...record.specArtifacts[0],
+          digest: "<actual context document sha256>",
+          inputs: [{ path: "src/app.ts", digest: "<placeholder>" }],
+        },
+        {
+          ...record.specArtifacts[1],
+          // intentionally omit digest
+          digest: undefined,
+          inputs: [],
+        },
+      ],
+    };
+    const bound = await bindPreparationArtifacts(store, draft);
+    assert.equal(bound.specArtifacts[0].digest, hash(contextText));
+    assert.equal(bound.specArtifacts[1].digest, hash(reqText));
+    assert.equal(bound.specArtifacts[0].inputs[0].digest, hash(srcText));
+    assert.equal(bound.assessment.inputFingerprint, preparationInputFingerprint([{ path: "src/app.ts", digest: hash(srcText) }]));
+
+    await assert.rejects(
+      () => bindPreparationArtifacts(store, {
+        ...draft,
+        specArtifacts: [
+          { ...draft.specArtifacts[0], inputs: [{ path: "src/missing.ts", digest: "<placeholder>" }] },
+          draft.specArtifacts[1],
+        ],
+      }),
+    );
+    await writeFile(join(dir, ".env"), "SECRET=1\n", "utf8");
+    await assert.rejects(
+      () => bindPreparationArtifacts(store, {
+        ...draft,
+        specArtifacts: [
+          { ...draft.specArtifacts[0], inputs: [{ path: ".env", digest: "<placeholder>" }] },
+          draft.specArtifacts[1],
+        ],
+      }),
+      /unsafe preparation input/i,
+    );
+  });
+});

@@ -13,6 +13,11 @@ const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 
 let resolvedGit: string | undefined;
 
+/** Return an env map for spawning git safely (prevents Win32 CreateProcess CWD exe search). */
+export function gitCleanEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return process.platform === "win32" ? { ...baseEnv, NoDefaultCurrentDirectoryInExePath: "1" } : { ...baseEnv };
+}
+
 /**
  * Windows: resolve `git` to an absolute path once, from a neutral cwd and never a hit in the
  * project. A bare `git` makes CreateProcess look in the child's cwd (the audited repo) first.
@@ -23,7 +28,7 @@ export function gitExecutable(projectDir?: string): string | null {
   if (resolvedGit !== undefined) return resolvedGit;
   const found = spawnSync("where.exe", ["git"], {
     cwd: join(process.env.SystemRoot || process.env.windir || "C:/Windows", "System32"),
-    env: { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" },
+    env: gitCleanEnv(),
     encoding: "utf8",
     windowsHide: true,
     shell: false,
@@ -42,7 +47,10 @@ export function gitExecutable(projectDir?: string): string | null {
   return resolvedGit ?? null;
 }
 
+export const resolveGitExecutable = gitExecutable;
+
 export type GitRunResult = { status: number; stdout: string; stderr: string; error?: string };
+export type GitBufferRunResult = { status: number; stdout: Buffer; stderr: string; error?: string };
 
 export function runGit(cwd: string, args: string[], opts: { maxBuffer?: number } = {}): GitRunResult {
   const exe = gitExecutable(cwd);
@@ -52,7 +60,7 @@ export function runGit(cwd: string, args: string[], opts: { maxBuffer?: number }
   }
   const result = spawnSync(exe, args, {
     cwd,
-    env: process.platform === "win32" ? { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" } : process.env,
+    env: gitCleanEnv(),
     encoding: "utf8",
     windowsHide: true,
     shell: false,
@@ -65,6 +73,37 @@ export function runGit(cwd: string, args: string[], opts: { maxBuffer?: number }
     status: result.error ? 1 : (result.status ?? 1),
     stdout: result.stdout ?? "",
     stderr: error ?? result.stderr ?? "",
+    ...(error ? { error } : {}),
+  };
+}
+
+export function runGitBuffer(
+  cwd: string,
+  args: string[],
+  opts: { input?: string | Buffer; maxBuffer?: number } = {},
+): GitBufferRunResult {
+  const exe = gitExecutable(cwd);
+  if (exe === null) {
+    const error = "git could not be found on PATH (Windows needs git.exe; git.cmd shims are not supported)";
+    return { status: 1, stdout: Buffer.alloc(0), stderr: error, error };
+  }
+  const result = spawnSync(exe, args, {
+    cwd,
+    env: gitCleanEnv(),
+    input: opts.input,
+    encoding: "buffer",
+    windowsHide: true,
+    shell: false,
+    maxBuffer: opts.maxBuffer ?? GIT_MAX_BUFFER,
+  });
+  const error = result.error
+    ? `git ${args[0] ?? ""} could not complete (${(result.error as NodeJS.ErrnoException).code ?? result.error.name}): ${result.error.message}`
+    : undefined;
+  const stderr = error ?? (result.stderr ? result.stderr.toString("utf8") : "");
+  return {
+    status: result.error ? 1 : (result.status ?? 1),
+    stdout: (result.stdout as Buffer | null | undefined) ?? Buffer.alloc(0),
+    stderr,
     ...(error ? { error } : {}),
   };
 }

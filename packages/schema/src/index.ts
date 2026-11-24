@@ -29,7 +29,7 @@ export type {
   TaskStatus,
 } from "./versions.js";
 
-export { isPrivateOrLocalHost } from "./host.js";
+export { isLoopbackHost, isPrivateOrLocalHost } from "./host.js";
 export * from "./workflow-preparation.js";
 export { IntentSourceProposalSchema } from "./schemas.js";
 export type { IntentSourceProposal } from "./schemas.js";

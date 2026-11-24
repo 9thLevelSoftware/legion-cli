@@ -12,6 +12,7 @@ import {
   BrownfieldRunSchema,
 } from "@9thlevelsoftware/legion-cli-schema";
 import {
+  collectEvidence,
   computeRoster,
   LegionEngine,
   LegionRefuseError,
@@ -20,6 +21,7 @@ import {
   orderRunPages,
   parsePrPlan,
   parseReview,
+  renderTestsMd,
   reviewerSlots,
   reviewStatus,
   section,
@@ -1066,5 +1068,83 @@ test("run promote copies nested run pages untrusted, intent first, no snapshots"
     assert.equal(trusted.trust, "reviewed");
     const again = await engine.promoteRun("21212121");
     assert.equal((await store.readWikiPage(again.pages[0])).data.trust, "untrusted");
+  });
+});
+
+test("collectEvidence and renderTestsMd report truncation notice when entry count hits VISIT_CAP", async () => {
+  const rendered = renderTestsMd({
+    runners: ["node --test"],
+    tests: [],
+    testCount: 0,
+    gaps: [],
+    gapTotal: 0,
+    sourceCount: 1,
+    truncated: true,
+  });
+  assert.match(rendered, /scan truncated at 5000 filesystem entries/);
+
+  const root = await mkdtemp(join(tmpdir(), "legion-visit-cap-"));
+  try {
+    await mkdir(join(root, "src"), { recursive: true });
+    await Promise.all(
+      Array.from({ length: 5005 }, (_, i) => writeFile(join(root, "src", `f-${i}.ts`), "", "utf8")),
+    );
+    const ev = await collectEvidence(root);
+    assert.equal(ev.truncated, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("brownfieldAdopt converts run artifacts and PR node into selection.json, draft SPEC.md, and STATE spec_draft", async () => {
+  await withEngine(async ({ engine, store, dir }) => {
+    await initProject(engine, { mode: "brownfield", brownfieldGoal: "audit" });
+    initGitRepo(dir);
+    const run = await engine.brownfield({ effort: 2, context: "Harden auth tokens" });
+    const runId = run.runId;
+    const runDir = join(dir, ".legion-cli", "runs", runId);
+    await writeFile(join(runDir, "intent.md"), "# Brownfield Intent\n\n## Goal\nHarden auth token validation\n", "utf8");
+    await writeFile(join(runDir, "findings.md"), "# Findings\n\n### F-01\nMissing expiration check in auth.ts\n", "utf8");
+    await writeFile(
+      join(runDir, "design.md"),
+      [
+        "# Design",
+        "",
+        "## PR Plan",
+        "",
+        "### PR 1: Validate auth token expiry",
+        "- Depends on: none",
+        "- Files: src/auth.ts, test/auth.test.js",
+        "- Traces to: F-01",
+        "- Risk: Reject expired session tokens cleanly",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await mkdir(join(runDir, "reviews"), { recursive: true });
+    await writeFile(join(runDir, "reviews", "design-review.md"), "# Design Review\n\nNo open issues.\n", "utf8");
+    await engine.brownfieldState(runId, ["phase=design"]);
+    await engine.brownfieldPrPlan(runId);
+
+    const adopted = await engine.brownfieldAdopt(runId, { prId: "pr-1" });
+    assert.equal(adopted.runId, runId);
+    assert.equal(adopted.prId, "pr-1");
+    assert.equal(adopted.phase, "spec_draft");
+    assert.equal(adopted.selectionPath, ".legion-cli/map/selection.json");
+
+    const state = await engine.getState();
+    assert.equal(state.phase, "spec_draft");
+    assert.equal(state.activeSpecId, adopted.specId);
+
+    const selectionRaw = JSON.parse(await readFile(join(dir, ".legion-cli", "map", "selection.json"), "utf8"));
+    assert.equal(selectionRaw.schemaVersion, "legion-cli-discovery-selection/v1");
+    assert.match(selectionRaw.affectedArea, /src\/auth\.ts/);
+
+    const specDoc = await store.readSpec(adopted.specId);
+    assert.equal(specDoc.data.status, "draft");
+    assert.match(specDoc.body, /## Brownfield trace/);
+
+    await engine.approveSpec(adopted.specId, { id: "owner" });
+    assert.equal((await engine.getState()).phase, "spec_frozen");
   });
 });

@@ -9,6 +9,7 @@ import type { McpServerConfig, McpServersConfig } from "@9thlevelsoftware/legion
 import { isLoopbackHttpHost, isPrivateOrLocalHost } from "./ssrf.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { Agent } from "undici";
+import { PACKAGE_VERSION } from "./version.js";
 
 export const MCP_POOL_MAX = 32;
 export const MCP_CONNECT_TIMEOUT_MS = 10_000;
@@ -201,7 +202,20 @@ async function resolveMcpRemoteUrl(
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw new McpClientError("policy-denied", "MCP remote URL must use https");
   }
-  const records = await lookup(url.hostname);
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (isPrivateOrLocalHost(host)) {
+    const hostLoopback = isLoopbackHttpHost(host);
+    if (!allowLoopback) {
+      if (url.protocol === "http:") {
+        throw new McpClientError("policy-denied", "MCP remote URL must use https (http is allowed only for loopback fixtures)");
+      }
+      throw new McpClientError("policy-denied", "MCP remote URL is a private address");
+    }
+    if (!hostLoopback) {
+      throw new McpClientError("policy-denied", "MCP remote URL is a non-loopback private address");
+    }
+  }
+  const records = await lookup(host);
   if (records.length === 0) throw new McpClientError("policy-denied", "MCP remote URL did not resolve");
   const loopback = records.every((entry) => isLoopbackHttpHost(entry.address));
   if (url.protocol === "http:" && !(allowLoopback && loopback)) {
@@ -249,7 +263,13 @@ function capResponse(response: Response, onDone: () => void, captured?: Captured
   let received = 0;
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
-      const next = await reader.read();
+      let next;
+      try {
+        next = await reader.read();
+      } catch (err) {
+        onDone();
+        throw err;
+      }
       if (next.done) {
         if (captured) {
           captured.complete = true;
@@ -262,7 +282,7 @@ function capResponse(response: Response, onDone: () => void, captured?: Captured
       }
       received += next.value.byteLength;
       if (received > MCP_REMOTE_MAX_RESPONSE_BYTES) {
-        await reader.cancel();
+        await reader.cancel().catch(() => undefined);
         controller.error(new McpClientError("response-too-large", "MCP remote response exceeded size cap"));
         onDone();
         return;
@@ -333,28 +353,28 @@ function remoteFetch(allowLoopback: boolean, lookup: McpLookup, captureRequest?:
     const closeDispatcher = () => {
       if (closed) return;
       closed = true;
-      void dispatcher.close();
+      void dispatcher.close().catch(() => undefined);
     };
     const timeout = AbortSignal.timeout(MCP_TOOL_TIMEOUT_MS);
     const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
-    let response: Response;
+    let handoffToStream = false;
     try {
-      response = await fetch(resolved.url, {
+      const response = await fetch(resolved.url, {
         ...init,
         signal,
         redirect: "manual",
         dispatcher,
       } as RequestInit & { dispatcher: Agent });
-    } catch (err) {
-      closeDispatcher();
-      throw err;
+      if (response.status >= 300 && response.status < 400) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new McpClientError("policy-denied", `MCP remote redirect HTTP ${response.status} refused`);
+      }
+      const capped = capResponse(response, closeDispatcher, captured);
+      handoffToStream = true;
+      return capped;
+    } finally {
+      if (!handoffToStream) closeDispatcher();
     }
-    if (response.status >= 300 && response.status < 400) {
-      response.body?.cancel().catch(() => undefined);
-      closeDispatcher();
-      throw new McpClientError("policy-denied", `MCP remote redirect HTTP ${response.status} refused`);
-    }
-    return capResponse(response, closeDispatcher, captured);
   };
 }
 
@@ -486,7 +506,7 @@ export class LegionMcpClientPool {
       throw abortReason(signal);
     }
 
-    const client = new Client({ name: "legion-cli", version: "0.0.0" }, { capabilities: {} });
+    const client = new Client({ name: "legion-cli", version: PACKAGE_VERSION }, { capabilities: {} });
     try {
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {

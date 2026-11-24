@@ -45,7 +45,7 @@ Implicit forbidden still applies: `.git/**`, `.env*`, `.legion-cli/config.yaml`,
 
 Read the FileContract and spec in prompt.md.
 
-Write only listed files. Link every acceptance test to its criterion with the canonical title tag `@ac(AC-ID)`; repeat the tag when one test covers multiple criteria. Also copy each linked criterion's `priority` into the title as `@p0` / `@p1` / `@p2`. Untagged passing tests do not supply acceptance coverage. Visual tests also use `@visual`.
+Write only listed files. When using legacy QA with string-titled test runners, link each acceptance test to its criterion with the title tag `@ac(AC-ID)` (repeat when one test covers multiple criteria) and copy the criterion's `priority` as `@p0` / `@p1` / `@p2` (plus `@visual` for visual tests); untagged passing tests do not supply legacy acceptance coverage. Never embed `@ac(...)` or `@p0`/`@p1`/`@p2` inside Rust/Go/Python/Java function or identifier names where `@`/`()`/`-` is invalid syntax.
 
 If you discover extra work, stop expanding `filesAllowed` and write `.legion-cli/cache/runs/<id>/extra.json`. Extra work is a linked ticket, never an in-place expansion.
 

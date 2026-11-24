@@ -133,6 +133,10 @@ export function isImplicitForbidden(posixPath: string): boolean {
   if (canon === ".legion-cli/workflow" || canon.startsWith(".legion-cli/workflow/")) return true;
   if (canon === ".legion-cli/tasks" || canon.startsWith(".legion-cli/tasks/")) return true;
   if (canon.startsWith(".legion-cli/index/") || canon === ".legion-cli/index") return true;
+  if (canon === ".legion-cli/sandbox-home" || canon.startsWith(".legion-cli/sandbox-home/")) return true;
+  if (canon === ".legion-cli/sandbox-tmp" || canon.startsWith(".legion-cli/sandbox-tmp/")) return true;
+  if (canon === ".legion-cli/sandbox-identity" || canon.startsWith(".legion-cli/sandbox-identity/")) return true;
+  if (canon === ".git-null" || canon.startsWith(".git-null/")) return true;
   if (segments.some((part) => isEnvBasename(part))) return true;
   return IMPLICIT_FORBIDDEN.some((pattern) => matchesGlob(pattern, canon));
 }

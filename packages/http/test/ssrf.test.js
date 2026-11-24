@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { isPrivateOrLocalHost as fromSchema } from "@9thlevelsoftware/legion-cli-schema";
 import { isPrivateOrLocalHost as fromPersist } from "../../persist/dist/index.js";
-import { isPrivateOrLocalHost as fromHttp } from "../dist/index.js";
+import { isLoopbackHttpHost, isPrivateOrLocalHost as fromHttp } from "../dist/index.js";
 import { assertHttpBaseUrlAllowed } from "../dist/ssrf.js";
 
 const PRIVATE = [
@@ -64,4 +64,20 @@ test("adapter base URL gate refuses the new ranges", () => {
   for (const host of ["198.18.0.1", "224.0.0.1", "[64:ff9b::a00:1]"]) {
     assert.throws(() => assertHttpBaseUrlAllowed({ baseUrl: `https://${host}/v1`, allowLoopback: false }), /public HTTPS/);
   }
+});
+
+test("isLoopbackHttpHost rejects link-local IPv6 embedding 127.0.0.1 ([fe80::ffff:7f00:1])", () => {
+  assert.equal(isLoopbackHttpHost("[fe80::ffff:7f00:1]"), false);
+  assert.equal(fromHttp("[fe80::ffff:7f00:1]"), true);
+  assert.equal(isLoopbackHttpHost("::ffff:7f00:1"), true);
+  assert.equal(isLoopbackHttpHost("[::1]"), true);
+  assert.equal(isLoopbackHttpHost("127.0.0.1"), true);
+  assert.throws(
+    () => assertHttpBaseUrlAllowed({ baseUrl: "http://[fe80::ffff:7f00:1]/v1", allowLoopback: true }),
+    /https:/,
+  );
+  assert.throws(
+    () => assertHttpBaseUrlAllowed({ baseUrl: "https://[fe80::ffff:7f00:1]/v1", allowLoopback: true }),
+    /public HTTPS/,
+  );
 });

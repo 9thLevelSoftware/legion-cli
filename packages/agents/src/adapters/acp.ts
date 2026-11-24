@@ -9,7 +9,7 @@ import type { AcpAdapterConfig } from "@9thlevelsoftware/legion-cli-schema";
 import type { StopReason } from "@agentclientprotocol/sdk";
 import { AdapterConfigError } from "../errors.js";
 import { runCachePaths } from "../paths.js";
-import { spawnInteractiveAgentProcess, terminateAgentProcessTree } from "../process.js";
+import { cleanupDockerWrapperContainer, spawnInteractiveAgentProcess, terminateAgentProcessTree } from "../process.js";
 import { isSpawnableBinary, resolveBinary, versionOf } from "../which.js";
 import type { AgentAdapter, AgentHandle, AgentJob, AgentResult, DetectResult } from "../types.js";
 
@@ -22,6 +22,7 @@ export function acpStopExitCode(reason: StopReason): number | null {
 class AcpProcessHandle implements AgentHandle {
   readonly pid: number | null;
   readonly #child: ChildProcessWithoutNullStreams;
+  readonly #wrapper: AgentJob["wrapper"];
   readonly #controller = new AbortController();
   readonly #result: Promise<AgentResult>;
   #timedOut = false;
@@ -29,6 +30,7 @@ class AcpProcessHandle implements AgentHandle {
 
   constructor(child: ChildProcessWithoutNullStreams, job: AgentJob, paths: ReturnType<typeof runCachePaths>) {
     this.#child = child;
+    this.#wrapper = job.wrapper;
     this.pid = child.pid ?? null;
     child.once("exit", () => { this.#exited = true; });
     const timer = job.timeoutMs > 0
@@ -105,10 +107,14 @@ class AcpProcessHandle implements AgentHandle {
   }
 
   async #terminate(): Promise<void> {
-    if (this.#exited || !this.#child.pid) return;
-    terminateAgentProcessTree(this.#child.pid);
-    for (let attempt = 0; attempt < 20 && !this.#exited; attempt += 1) await delay(50);
-    if (!this.#exited) terminateAgentProcessTree(this.#child.pid, true);
+    if (!this.#exited && this.#child.pid) {
+      terminateAgentProcessTree(this.#child.pid);
+      for (let attempt = 0; attempt < 20 && !this.#exited; attempt += 1) await delay(50);
+      if (!this.#exited) terminateAgentProcessTree(this.#child.pid, true);
+    }
+    if (this.#timedOut || this.#controller.signal.aborted) {
+      await cleanupDockerWrapperContainer(this.#wrapper);
+    }
   }
 }
 

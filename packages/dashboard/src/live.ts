@@ -39,6 +39,28 @@ export const DASHBOARD_SCRIPT = `
     if (path) path.querySelectorAll("li").forEach((li) => li.classList.toggle("current", li.textContent === snapshot.path.current));
     const evidence = $("#dashboard-evidence");
     if (evidence) evidence.textContent = "Evidence: " + text(snapshot.evidenceCoverage);
+    const wfEl = $("#dashboard-workflow");
+    if (wfEl) {
+      if (snapshot.workflowError) {
+        const p = document.createElement("p"); p.textContent = "Workflow status unavailable: " + text(snapshot.workflowError); wfEl.replaceChildren(p);
+      } else if (!snapshot.workflow) {
+        const p = document.createElement("p"); p.className = "muted"; p.textContent = "Focused workflow projection not active."; wfEl.replaceChildren(p);
+      } else {
+        const wf = snapshot.workflow;
+        const p1 = document.createElement("p");
+        p1.textContent = "Stage: " + text(wf.stage) + " · Plan approval: " + text(wf.planApproval) + " · Execution: " + text(wf.execution);
+        const p2 = document.createElement("p");
+        const checkDetail = wf.checks.total === 0 ? "none" : wf.checks.passed + "/" + wf.checks.total + " passed" + (wf.checks.failed > 0 ? ", " + wf.checks.failed + " failed" : "");
+        const reviewDetail = wf.review.verdict ? wf.review.status + " (" + wf.review.verdict + ")" : wf.review.status;
+        p2.textContent = "Checks: " + text(wf.checks.status) + " (" + checkDetail + ") · Review: " + reviewDetail;
+        const p3 = document.createElement("p");
+        const acc = wf.acceptance;
+        p3.textContent = "Acceptance: " + (acc.required.length === 0 ? "none required" : acc.passed.length + "/" + acc.required.length + " passed · " + acc.pending.length + " pending · " + acc.failed.length + " failed · " + acc.notApplicable.length + " N/A");
+        const nodes = [p1, p2, p3];
+        if (wf.blocker) { const b = document.createElement("p"); b.textContent = "Blocker: " + text(wf.blocker); nodes.push(b); }
+        wfEl.replaceChildren(...nodes);
+      }
+    }
     const next = $("#dashboard-next");
     if (next) next.textContent = text(snapshot.nextCommand);
     document.querySelectorAll("[data-copy-command]").forEach((button) => { button.dataset.copyCommand = text(snapshot.nextCommand || "legion-cli status"); });

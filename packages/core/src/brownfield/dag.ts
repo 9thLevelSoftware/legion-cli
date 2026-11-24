@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { LegionStore } from "@9thlevelsoftware/legion-cli-persist";
+import { writeTextFile, type LegionStore } from "@9thlevelsoftware/legion-cli-persist";
 import {
   BrownfieldDagNodeStatusSchema,
   BrownfieldDagSchema,
@@ -39,7 +39,7 @@ export async function writeDag(projectRoot: string, runId: string, dag: Brownfie
   const valid = BrownfieldDagSchema.parse(dag);
   const abs = runAbs(projectRoot, runId, DAG_FILE);
   await mkdir(dirname(abs), { recursive: true });
-  await writeFile(abs, `${JSON.stringify(valid, null, 2)}\n`, "utf8");
+  await writeTextFile(abs, `${JSON.stringify(valid, null, 2)}\n`, { root: projectRoot, skipJournal: true });
 }
 
 export function applyNodeSet(dag: BrownfieldDag, nodeId: string, pairs: [string, unknown][], hint: string): BrownfieldDag {

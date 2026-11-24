@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { GovernedProgramSchema } from "@9thlevelsoftware/legion-cli-schema";
 import { postJsonPinned } from "./client.js";
+import { isReasoningModel } from "./protocol.js";
 import type { HttpAdapterConfig } from "@9thlevelsoftware/legion-cli-schema";
 import type { GovernedHttpAgentJob, HttpAgentResult, HttpAgentUsage, SsrfLookup } from "./types.js";
 import type { EffectIntent, FailureCode, GovernedState, ProviderUsageReceipt, GovernedValueRecord, HttpGovernedCheckpoint } from "./governed-types.js";
@@ -71,7 +72,14 @@ function transformationRequest(
     { role: "system", content: "Produce only the requested governed transformation result. No tools or commands." },
     { role: "user", content: canonical({ transformationId: operation.transformationId, instruction, inputs: inputs.map(({ record, content }) => ({ id: record.id, digest: record.digest, ...retainedValue(content) })) }) },
   ];
-  const requestBody = new TextEncoder().encode(JSON.stringify({ model: provider.model, messages, temperature: 0, stream: false }));
+  const requestBody = new TextEncoder().encode(
+    JSON.stringify({
+      model: provider.model,
+      messages,
+      ...(isReasoningModel(provider.model) ? {} : { temperature: 0 }),
+      stream: false,
+    }),
+  );
   const bodyDigest = digest(requestBody);
   return {
     requestBody,
@@ -188,8 +196,9 @@ function providerUsage(root: Record<string, unknown>, job: GovernedHttpAgentJob)
   const reportedTotal = count("total_tokens");
   const totalTokens = reportedTotal ?? (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
   const price = job.pricing;
-  const costUsd = inputTokens !== null && outputTokens !== null && price?.inputPerMillionUsd !== undefined && price.outputPerMillionUsd !== undefined && price.requestUsd !== undefined
-    ? inputTokens * price.inputPerMillionUsd / 1_000_000 + outputTokens * price.outputPerMillionUsd / 1_000_000 + price.requestUsd
+  const requestUsd = price?.requestUsd ?? 0;
+  const costUsd = inputTokens !== null && outputTokens !== null && price?.inputPerMillionUsd !== undefined && price.outputPerMillionUsd !== undefined
+    ? inputTokens * price.inputPerMillionUsd / 1_000_000 + outputTokens * price.outputPerMillionUsd / 1_000_000 + requestUsd
     : null;
   return {
     requestCharge: 1, inputTokens, outputTokens, totalTokens,
@@ -242,7 +251,7 @@ export async function runGovernedHttp(job: GovernedHttpAgentJob, signal: AbortSi
           { role: "system", content: "Produce one strict governed JSON program. Only use the supplied approved metadata and contract. No tools or commands." },
           { role: "user", content: canonical({ approvedMetadata: job.assuranceContext.plannerInput.approvedMetadata, taskContract: job.assuranceContext.plannerInput.taskContract }) },
         ],
-        temperature: 0,
+        ...(isReasoningModel(job.assuranceContext.identities.provider.model) ? {} : { temperature: 0 }),
         stream: false,
       };
       const bodyBytes = new TextEncoder().encode(JSON.stringify(bodyObject));
@@ -523,7 +532,7 @@ export async function runGovernedHttp(job: GovernedHttpAgentJob, signal: AbortSi
             { role: "system", content: "Return only the opaque response for this approved external call. No tools or commands." },
             { role: "user", content: canonical(packet) },
           ],
-          temperature: 0,
+          ...(isReasoningModel(job.assuranceContext.identities.provider.model) ? {} : { temperature: 0 }),
           stream: false,
         };
         const requestBody = new TextEncoder().encode(JSON.stringify(bodyObject));

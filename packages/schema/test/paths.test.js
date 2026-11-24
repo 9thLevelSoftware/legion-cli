@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   isConcretePosixRepoRelativePath,
+  isLoopbackHost,
   isPrivateOrLocalHost,
   normalizePathKey,
 } from "../dist/index.js";
@@ -63,19 +64,63 @@ test("shared SSRF classifier is exported from schema and covers the reserved ran
     "ff02::ffff:808:808",
     "fe80::ffff:8.8.8.8",
     "::ffff:127.0.0.1",
+    "localhost.",
+    "app.localhost.",
+    "foo.local.",
+    "metadata.google.internal.",
+    "64:ff9b:1::1",
+    "64:ff9b:1::a00:1",
+    "2001::1",
+    "2001:0000:4136:e378:8000:63bf:3fff:fdd2",
   ]) {
     assert.equal(isPrivateOrLocalHost(host), true, host);
   }
   for (const host of [
+    "",
+    ".",
     "8.8.8.8",
     "1.1.1.1",
     "198.17.0.1",
     "198.20.0.1",
     "2606:4700:4700::1111",
     "example.com",
+    "example.com.",
     "::ffff:8.8.8.8",
     "::ffff:808:808",
   ]) {
     assert.equal(isPrivateOrLocalHost(host), false, host);
+  }
+});
+
+test("isLoopbackHost identifies loopback names, IPv4, IPv6, and anchored mapped IPv4", () => {
+  for (const host of [
+    "localhost",
+    "localhost.",
+    "app.localhost",
+    "app.localhost.",
+    "127.0.0.1",
+    "127.255.255.254",
+    "::1",
+    "[::1]",
+    "0:0:0:0:0:0:0:1",
+    "::ffff:127.0.0.1",
+    "[::ffff:127.0.0.1]",
+    "::ffff:7f00:1",
+    "::127.0.0.1",
+  ]) {
+    assert.equal(isLoopbackHost(host), true, host);
+  }
+  for (const host of [
+    "",
+    ".",
+    "::",
+    "10.0.0.1",
+    "169.254.169.254",
+    "fe80::1",
+    "[fe80::ffff:7f00:1]",
+    "example.com",
+    "::ffff:8.8.8.8",
+  ]) {
+    assert.equal(isLoopbackHost(host), false, host);
   }
 });

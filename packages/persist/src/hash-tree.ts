@@ -42,16 +42,26 @@ export function hashTreeRecords(files: ReadonlyArray<{ path: string; bytes: Buff
   return hash.digest("hex");
 }
 
+const HASH_CONCURRENCY = 16;
+
 /** SHA-256 hex of canonical sorted relative paths and file bytes. */
 export async function hashTreeFiles(dir: string, files?: readonly string[]): Promise<string> {
   const list = files ? [...files].map(toPosixPath).sort() : await listTreeFiles(dir);
-  const records = await Promise.all(
-    list.map(async (path) => {
+  const records: Array<{ path: string; bytes: Buffer }> = new Array(list.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(HASH_CONCURRENCY, list.length);
+  async function worker(): Promise<void> {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= list.length) return;
+      const path = list[index]!;
       const abs = toFsPath(dir, path);
       const st = await lstat(abs);
       if (st.isSymbolicLink() || !st.isFile()) throw new PathEscapeError(path);
-      return { path, bytes: await readFile(abs) };
-    }),
-  );
+      records[index] = { path, bytes: await readFile(abs) };
+    }
+  }
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return hashTreeRecords(records);
 }

@@ -7,6 +7,8 @@ export type ShipFlags = {
   allowDegradedQa?: boolean;
   pr?: boolean;
   commit?: boolean;
+  branch?: string;
+  push?: boolean;
   bundle?: string;
 };
 
@@ -62,6 +64,8 @@ export async function runShip(opts: CliOpts, flags: ShipFlags): Promise<number> 
       allowDegradedQa: Boolean(flags.allowDegradedQa),
       commit: Boolean(flags.commit),
       pr: Boolean(flags.pr),
+      ...(flags.branch !== undefined ? { branch: flags.branch } : {}),
+      push: Boolean(flags.push),
       ...(flags.bundle ? { bundleDirectory: flags.bundle } : {}),
       actor: "user",
       confirmSource: process.stdin.isTTY && process.stdout.isTTY ? "tty" : "piped",
@@ -88,11 +92,18 @@ export async function runShip(opts: CliOpts, flags: ShipFlags): Promise<number> 
       writeOut(`Recover with: ${receipt.bundle.recoveryHint}`);
     }
     if (!flags.commit && receipt.staged.length > 0) writeOut("Changes are staged (not committed).");
-    if (!flags.commit && !flags.pr) {
-      writeOut("Optional: legion-cli ship --pr --commit");
+    const receiptWithRemote = receipt as typeof receipt & { branch?: unknown; pushed?: unknown };
+    const branch = typeof receiptWithRemote.branch === "string" && receiptWithRemote.branch
+      ? receiptWithRemote.branch
+      : flags.branch?.trim();
+    if (branch) {
+      writeOut(`Branch: ${branch}`);
     }
     if (receipt.committed && receipt.commitSha) {
       writeOut(`Commit: ${receipt.commitSha}`);
+    }
+    if (receiptWithRemote.pushed === true || flags.push) {
+      writeOut("Pushed: origin HEAD");
     }
     if (receipt.prUrl) {
       writeOut(`PR: ${receipt.prUrl}`);

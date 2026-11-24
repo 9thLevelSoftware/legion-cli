@@ -21,6 +21,7 @@ function bm25(
   avgLength: number,
   totalDocuments: number,
   documentFrequency: ReadonlyMap<string, number>,
+  rawQuery = "",
 ): number {
   if (queryTerms.length === 0) return 0;
   const text = `${page.title} ${page.path} ${page.body}`.toLocaleLowerCase();
@@ -36,6 +37,10 @@ function bm25(
     const k1 = 1.2;
     const b = 0.75;
     score += idf * (count * (k1 + 1)) / (count + k1 * (1 - b + b * (length / Math.max(avgLength, 1))));
+  }
+  const needle = rawQuery.trim().toLocaleLowerCase();
+  if (needle.length > 0 && queryTerms.length > 1 && text.includes(needle)) {
+    score += 1;
   }
   return score;
 }
@@ -53,8 +58,10 @@ function wholeTitleOrPathMatch(page: WikiPageRow, q: string): boolean {
   return values.includes(needle);
 }
 
-function ftsPhrase(q: string): string {
-  return `"${q.trim().replaceAll('"', '""')}"`;
+function ftsQuery(q: string): string {
+  const tokens = terms(q);
+  if (tokens.length === 0) return `"${q.trim().replaceAll('"', '""')}"`;
+  return tokens.map((token) => `"${token.replaceAll('"', '""')}"`).join(" AND ");
 }
 
 function titleOrPathMatches(page: WikiPageRow, q: string): boolean {
@@ -143,7 +150,7 @@ export function searchWiki(
        FROM pages_fts
        JOIN pages ON pages.rowid = pages_fts.rowid
        WHERE pages_fts MATCH ?`,
-      [ftsPhrase(query)],
+      [ftsQuery(query)],
     );
   } catch {
     const needle = `%${query.replaceAll("%", "")}%`;
@@ -163,7 +170,7 @@ export function searchWiki(
     seen.add(page.id);
     scored.push({
       hit: { id: page.id, path: page.path, title: page.title, trust: page.trust, snippet: snippetFor(page, includeUntrusted, query), via: "fts" },
-      score: bm25(page, queryTerms, avgLength, pages.length, documentFrequency),
+      score: bm25(page, queryTerms, avgLength, pages.length, documentFrequency, query),
       exact: wholeTitleOrPathMatch(page, query),
       titleOrPath: titleOrPathMatches(page, query),
     });
@@ -178,7 +185,7 @@ export function searchWiki(
       seen.add(neighborId);
       scored.push({
         hit: { id: page.id, path: page.path, title: page.title, trust: page.trust, snippet: page.trust === "reviewed" || includeUntrusted ? twoLineFromBody(page.body) : "", via: "neighbor" },
-        score: bm25(page, queryTerms, avgLength, pages.length, documentFrequency),
+        score: bm25(page, queryTerms, avgLength, pages.length, documentFrequency, query),
         exact: wholeTitleOrPathMatch(page, query),
         titleOrPath: titleOrPathMatches(page, query),
       });

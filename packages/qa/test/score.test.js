@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   formatQaScore,
+  isUiAcceptance,
   parseTestReport,
   scoreQa,
   scoreSpecReports,
@@ -295,4 +296,36 @@ test("no-browser checklist evidence covers a missing criterion but cannot overri
   });
   assert.equal(failed.criteria[0].outcome, "failed");
   assert.equal(failed.reportFailures, 1);
+});
+
+test("isUiAcceptance ignores non-UI technical terms while preserving genuine UI detection", () => {
+  for (const statement of [
+    "Respect configured page size limits",
+    "Handle page fault recovery cleanly",
+    "Update page table entries atomically",
+    "Preserve struct memory layout alignment",
+    "Validate disk layout checksums",
+    "Exit cleanly on keyboard interrupt",
+    "Support desktop cli installation on Windows",
+    "Configure server-side view engine rendering",
+  ]) {
+    assert.equal(isUiAcceptance({ statement }), false, `expected non-UI for: ${statement}`);
+  }
+  assert.equal(
+    specHasUi({
+      acceptance: [{ id: "AC-01", statement: "Configure page size and memory layout in desktop cli", kind: "test", priority: "P0" }],
+      wireframesIndex: null,
+    }),
+    false,
+  );
+  for (const statement of [
+    "Tap in or out on a phone",
+    "Login page shows validation errors in browser",
+    "Responsive grid layout on desktop and mobile",
+    "Clicking submit button saves form",
+    "Render task board columns",
+    "Screen transitions smoothly @visual",
+  ]) {
+    assert.equal(isUiAcceptance({ statement }), true, `expected UI for: ${statement}`);
+  }
 });

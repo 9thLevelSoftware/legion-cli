@@ -401,10 +401,46 @@ export async function openEngineCommand(
   return record;
 }
 
+async function pruneJournalEntriesForCommand(projectRoot: string, commandId: string): Promise<void> {
+  await withJournalLock(async () => {
+    const paths = legionPaths(projectRoot);
+    await assertStoreRoot(paths.journalDir, paths.indexDir);
+    let names: string[];
+    try {
+      names = await readdir(paths.journalDir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+    for (const name of names) {
+      if (!name.endsWith(".json") || name === "commands") continue;
+      const abs = join(paths.journalDir, name);
+      try {
+        const st = await lstat(abs);
+        if (!st.isFile() || st.isSymbolicLink()) continue;
+        const parsed = JSON.parse(await readFile(abs, "utf8")) as Partial<JournalEntry>;
+        if (parsed?.commandId === commandId) {
+          await unlink(abs).catch(() => undefined);
+        }
+      } catch {
+        continue;
+      }
+    }
+  });
+}
+
 export async function closeEngineCommand(projectRoot: string, commandId: string): Promise<void> {
   const existing = await readCommandRecord(projectRoot, commandId);
   if (!existing) return;
   await writeCommandRecord(projectRoot, { ...existing, closedAt: new Date().toISOString() });
+  try {
+    const open = await listOpenCommandIds(projectRoot);
+    if (open.length === 0) {
+      await pruneJournalEntriesForCommand(projectRoot, commandId);
+    }
+  } catch {
+    // best-effort journal GC
+  }
 }
 
 function newEntryId(): string {

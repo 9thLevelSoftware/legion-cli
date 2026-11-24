@@ -744,3 +744,137 @@ test("mergeCssVars lets brand win", () => {
   assert.equal(merged["--legion-bg"], "#f5f5f0");
   assert.deepEqual(overridden, ["--legion-ink"]);
 });
+
+test("importOpenDesign refuses directory symbolic links and junctions in source directory", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const src = join(dir, "od-src");
+    const outside = join(dir, "outside");
+    await mkdir(join(src, "nested"), { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, "secret.txt"), "SECRET\n", "utf8");
+    await writeFile(join(src, "DESIGN.md"), "# Acme\n", "utf8");
+    await writeFile(join(src, "tokens.css"), ":root { --legion-ink: #111; }\n", "utf8");
+    await writeFile(
+      join(src, "manifest.json"),
+      JSON.stringify({
+        schemaVersion: "od-design-system-project/v1",
+        id: "acme",
+        name: "Acme",
+        category: "brand",
+        source: { type: "local", path: src },
+        files: { design: "DESIGN.md", tokens: "tokens.css" },
+      }),
+      "utf8",
+    );
+    await symlink(
+      outside,
+      join(src, "nested", "linked-dir"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    await assert.rejects(
+      () => importOpenDesign({ projectRoot: dir, source: src }),
+      (err) => isRefuse(err, /symbolic link/i, /import-od/),
+    );
+  });
+});
+
+test("importOpenDesign refuses file symbolic links in source directory", async (t) => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const src = join(dir, "od-file-link");
+    const outside = join(dir, "secret.md");
+    await mkdir(src, { recursive: true });
+    await writeFile(outside, "SECRET\n", "utf8");
+    await writeFile(join(src, "tokens.css"), ":root { --legion-ink: #111; }\n", "utf8");
+    await writeFile(
+      join(src, "manifest.json"),
+      JSON.stringify({
+        schemaVersion: "od-design-system-project/v1",
+        id: "acme",
+        name: "Acme",
+        category: "brand",
+        source: { type: "local", path: src },
+        files: { design: "DESIGN.md", tokens: "tokens.css" },
+      }),
+      "utf8",
+    );
+    try {
+      await symlink(outside, join(src, "DESIGN.md"), "file");
+    } catch (error) {
+      if (process.platform === "win32" && ["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) {
+        t.skip("Windows host does not permit unprivileged file symlinks");
+        return;
+      }
+      throw error;
+    }
+    await assert.rejects(
+      () => importOpenDesign({ projectRoot: dir, source: src }),
+      (err) => isRefuse(err, /symbolic link/i, /import-od/),
+    );
+  });
+});
+
+test("generateFromBrief refuses directories, junctions, and brand files over 1 MiB", async () => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const brandDir = join(dir, "brand-dir");
+    await mkdir(brandDir, { recursive: true });
+    await assert.rejects(
+      () =>
+        generateFromBrief({
+          projectRoot: dir,
+          brief: { name: "Checkin", workType: "UI", platforms: "web", wcag: "AA", brand: brandDir },
+        }),
+      (err) => isRefuse(err, /regular file/, /path or none/),
+    );
+
+    const linkedBrand = join(dir, "brand-junction");
+    await symlink(brandDir, linkedBrand, process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(
+      () =>
+        generateFromBrief({
+          projectRoot: dir,
+          brief: { name: "Checkin", workType: "UI", platforms: "web", wcag: "AA", brand: linkedBrand },
+        }),
+      (err) => isRefuse(err, /symlink/, /path or none/),
+    );
+
+    const bigBrand = join(dir, "huge-brand.css");
+    await writeFile(bigBrand, "x".repeat(1024 * 1024 + 1), "utf8");
+    await assert.rejects(
+      () =>
+        generateFromBrief({
+          projectRoot: dir,
+          brief: { name: "Checkin", workType: "UI", platforms: "web", wcag: "AA", brand: bigBrand },
+        }),
+      (err) => isRefuse(err, /1 MiB/, /path or none/),
+    );
+  });
+});
+
+test("generateFromBrief refuses file symlinks for brand", async (t) => {
+  await withTempDir(async (dir) => {
+    await initStub(dir);
+    const target = join(dir, "real-brand.css");
+    const linkBrand = join(dir, "link-brand.css");
+    await writeFile(target, ":root { --ink: #111; }\n", "utf8");
+    try {
+      await symlink(target, linkBrand, "file");
+    } catch (error) {
+      if (process.platform === "win32" && ["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) {
+        t.skip("Windows host does not permit unprivileged file symlinks");
+        return;
+      }
+      throw error;
+    }
+    await assert.rejects(
+      () =>
+        generateFromBrief({
+          projectRoot: dir,
+          brief: { name: "Checkin", workType: "UI", platforms: "web", wcag: "AA", brand: linkBrand },
+        }),
+      (err) => isRefuse(err, /symlink/, /path or none/),
+    );
+  });
+});

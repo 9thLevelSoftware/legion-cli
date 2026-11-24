@@ -125,6 +125,7 @@ test("docs and help match registered commands and do not advertise surgical", ()
   const readme = readFileSync(join(repoRoot, "README.md"), "utf8");
   const agents = readFileSync(join(repoRoot, "AGENTS.md"), "utf8");
   const help = normalize(runCli(["help", "--all"]).stdout);
+  const specHelp = normalize(runCli(["help", "spec"]).stdout);
   const executeHelp = normalize(runCli(["help", "execute"]).stdout);
   const fixHelp = normalize(runCli(["help", "fix"]).stdout);
   const replHelp = normalize(runCli(["help", "repl"]).stdout);
@@ -135,10 +136,13 @@ test("docs and help match registered commands and do not advertise surgical", ()
   assert.doesNotMatch(readme, /guarded\|surgical\|advisory/);
   assert.doesNotMatch(agents, /guarded\|surgical\|advisory/);
   assert.match(help, /guarded\|advisory/);
+  const specRow = rows.find((row) => row.path === "spec");
   const executeRow = rows.find((row) => row.path === "execute");
   const fixRow = rows.find((row) => row.path === "fix");
+  assert.match(specRow?.description ?? "", /allow-no-sandbox \(TTY confirmation\)/);
   assert.match(executeRow?.description ?? "", /allow-no-sandbox \(TTY confirmation\)/);
   assert.match(fixRow?.description ?? "", /allow-no-sandbox \(TTY confirmation\)/);
+  assert.match(specHelp, /allow-no-sandbox/);
   assert.match(executeHelp, /allow-no-sandbox/);
   assert.match(fixHelp, /allow-no-sandbox/);
   assert.match(replHelp, /NO SANDBOX/i);

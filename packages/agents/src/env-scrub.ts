@@ -24,6 +24,10 @@ const ALWAYS_SCRUBBED = new Set([
   "DOCKER_AUTH_CONFIG",
   "GIT_ASKPASS",
   "SSH_ASKPASS",
+  "NODE_OPTIONS",
+  "LD_PRELOAD",
+  "DYLD_INSERT_LIBRARIES",
+  "GIT_SSH_COMMAND",
 ]);
 
 /** `PWD` (and `OLDPWD`) is the working directory on POSIX, not a password. */

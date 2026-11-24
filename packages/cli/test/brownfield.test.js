@@ -285,8 +285,33 @@ test("legion-cli brownfield --effort 6 refuses", async () => {
 test("brownfield --help lists the bookkeeping subcommands", () => {
   const result = runCli(["brownfield", "--help"]);
   assert.equal(result.status, 0, result.stderr);
-  for (const sub of ["init", "state", "roster", "evidence", "merge", "review-status", "pr-plan", "dag", "worktree", "patterns"]) {
+  for (const sub of ["init", "state", "roster", "evidence", "merge", "review-status", "pr-plan", "dag", "worktree", "patterns", "adopt"]) {
     assert.match(result.stdout, new RegExp(`^  ${sub} `, "m"), sub);
   }
   assert.doesNotMatch(result.stdout, /--run-id/);
+});
+
+test("brownfield adopt converts a run and PR node into an active draft spec", async () => {
+  await withTempDir(async (dir) => {
+    await seedBrownfield(dir);
+    cliJson(["brownfield", "init", "--project", dir, "--run-id", "dddddddd", "--execute", "fix checkout"]);
+    await seedRunFile(dir, "dddddddd", "design.md", DESIGN);
+    await seedRunFile(dir, "dddddddd", "reviews/design-review.md", "# Design Review\n");
+    cliJson(["brownfield", "pr-plan", "dddddddd", "--project", dir]);
+
+    const adoptedJson = cliJson(["brownfield", "adopt", "dddddddd", "--pr", "pr-1", "--project", dir]);
+    assert.equal(adoptedJson.runId, "dddddddd");
+    assert.equal(adoptedJson.prId, "pr-1");
+    assert.equal(adoptedJson.phase, "spec_draft");
+    assert.equal(adoptedJson.selectionPath, ".legion-cli/map/selection.json");
+    assert.match(adoptedJson.specPath, /^\.legion-cli\/specs\/.*\/SPEC\.md$/);
+    assert.match(adoptedJson.next, /^legion-cli spec --project /);
+    assert.equal(await exists(join(dir, ...adoptedJson.specPath.split("/"))), true);
+    assert.equal(await exists(join(dir, ".legion-cli", "map", "selection.json")), true);
+
+    const human = runCli(["brownfield", "adopt", "dddddddd", "--pr", "pr-2", "--project", dir]);
+    assert.equal(human.status, 0, `${human.stdout}\n${human.stderr}`);
+    assert.match(human.stdout, /Spec .+ created at \.legion-cli\/specs\/.*\/SPEC\.md/);
+    assert.match(human.stdout, /Next: legion-cli spec/);
+  });
 });

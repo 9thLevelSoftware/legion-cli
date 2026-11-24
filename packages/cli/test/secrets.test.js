@@ -51,3 +51,34 @@ test("scanWikiSecrets does not walk past the depth bound", async () => {
     assert.equal(hits.length, 0, "depth-bound");
   });
 });
+
+test("scanWikiSecrets reuses SECRET_SOURCE_PATTERNS for expanded token classes", async () => {
+  await withTempDir(async (dir) => {
+    const wiki = join(dir, "wiki");
+    await mkdir(join(wiki, "ingested"), { recursive: true });
+    await writeFile(
+      join(wiki, "ingested", "expanded.md"),
+      [
+        "ASIAIOSFODNN7EXAMPLE",
+        "gho_0123456789abcdefghij0123456789",
+        "glpat-0123456789abcdefghij",
+        "xoxb-0123456789-abcdefghij",
+        "AIzaSyD0123456789abcdefghijklmnopqrstuvw",
+        "https://alice:supersecretpass@example.com/repo",
+      ].join("\n"),
+      "utf8",
+    );
+    const hits = await scanWikiSecrets(wiki);
+    const names = new Set(hits.map((hit) => hit.name));
+    for (const expected of [
+      "aws-sts-key",
+      "github-token",
+      "gitlab-pat",
+      "slack-token",
+      "google-api-key",
+      "url-credentials",
+    ]) {
+      assert.ok(names.has(expected), `expected ${expected} in ${JSON.stringify([...names])}`);
+    }
+  });
+});

@@ -8,11 +8,30 @@ import { languageFromPath, MAX_FILE_BYTES, type SourceLanguage } from "./parse.j
 
 export const MAX_MODULES = 10_000;
 
-export const DEFAULT_MAP_ROOTS = ["src", "packages", "app", "lib"] as const;
+export const DEFAULT_MAP_ROOTS = [
+  "src",
+  "packages",
+  "apps",
+  "services",
+  "app",
+  "lib",
+  "crates",
+  "cmd",
+  "internal",
+  "pkg",
+  "Sources",
+] as const;
 
-export const DEFAULT_IGNORE = ["**/*.test.*", "**/*.spec.*", "**/dist/**"] as const;
+export const DEFAULT_IGNORE = [
+  "**/*.test.*",
+  "**/*.spec.*",
+  "**/dist/**",
+  "**/*_test.go",
+  "**/test_*.py",
+  "**/*_test.py",
+] as const;
 
-/** Brownfield SKIP_DIR_NAMES plus entire `.legion-cli/`. */
+/** Brownfield SKIP_DIR_NAMES plus polyglot build/venv/tooling dirs and `.legion-cli/`. */
 export const SKIP_DIR_NAMES = new Set([
   ".git",
   "node_modules",
@@ -23,6 +42,22 @@ export const SKIP_DIR_NAMES = new Set([
   ".next",
   ".turbo",
   ".cache",
+  "target",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".tox",
+  "vendor",
+  ".gradle",
+  "out",
+  ".build",
+  "DerivedData",
+  "Pods",
+  ".terraform",
+  "cdk.out",
 ]);
 
 const SKIP_DIR_LOWER = new Set([...SKIP_DIR_NAMES].map((name) => name.toLowerCase()));
@@ -70,7 +105,7 @@ function isIgnored(posixPath: string, rules: readonly RegExp[]): boolean {
   return rules.some((rule) => rule.test(posixPath));
 }
 
-function isSkippedDirName(name: string): boolean {
+export function isSkippedDirName(name: string): boolean {
   if (SKIP_DIR_NAMES.has(name)) return true;
   if (process.platform === "win32") return SKIP_DIR_LOWER.has(name.toLowerCase());
   return false;
@@ -89,13 +124,12 @@ export function assertMapRoot(raw: string): string {
   return parsed.data;
 }
 
-export function resolveMapRoots(projectRoot: string, requested: readonly string[] | undefined): string[] | null {
+export function resolveMapRoots(_projectRoot: string, requested: readonly string[] | undefined): string[] | null {
   if (requested !== undefined) {
     if (requested.length === 0) return null;
     return requested.map(assertMapRoot);
   }
-  const existing = DEFAULT_MAP_ROOTS.filter((root) => existsSync(join(projectRoot, root)));
-  return existing.length > 0 ? [...existing] : null;
+  return null;
 }
 
 function looksBinary(buf: Buffer): boolean {

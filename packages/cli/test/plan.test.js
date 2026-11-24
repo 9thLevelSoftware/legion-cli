@@ -4,8 +4,9 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createLegionEngine } from "@9thlevelsoftware/legion-cli-core";
-import { normalize, runCli, withNamedAdapter, withTempDir, withUnspawnableGrok } from "./helpers.js";
+import { createLegionEngine, findSkillsDir } from "@9thlevelsoftware/legion-cli-core";
+import { runPlanAcceptance } from "../dist/plan.js";
+import { allowCopyJail, normalize, runCli, withNamedAdapter, withTempDir, withUnspawnableGrok } from "./helpers.js";
 
 function makeTask(overrides = {}) {
   const { contract, ...rest } = overrides;
@@ -624,5 +625,128 @@ test("context trace validate passes an adopted epoch and fails after a frame is 
     const traceText = runCli(["context", "trace", "--project", dir]);
     assert.equal(traceText.status, 0, traceText.stderr);
     assert.match(normalize(traceText.stdout), /Next: legion-cli plan approve/);
+  });
+});
+
+test("plan acceptance refuses missing flags and non-TTY --interactive", async () => {
+  await withTempDir(async (dir) => {
+    await seedFrozen(dir, { mustNotChange: [] });
+    const bare = runCli(["plan", "acceptance", "--project", dir]);
+    assert.equal(bare.status, 1);
+    assert.match(normalize(bare.stderr), /requires --pass, --fail, --not-applicable, or --interactive/);
+
+    const conflict = runCli(["plan", "acceptance", "--interactive", "--pass", "AC-01", "--project", dir]);
+    assert.equal(conflict.status, 1);
+    assert.match(normalize(conflict.stderr), /cannot be combined/);
+
+    const noTty = runCli(["plan", "acceptance", "--interactive", "--project", dir], { input: "pass\nok\n" });
+    assert.equal(noTty.status, 1);
+    assert.match(normalize(noTty.stderr), /--interactive requires a TTY/);
+  });
+
+  const help = normalize(runCli(["help", "plan acceptance"]).stdout);
+  assert.match(help, /--interactive/);
+});
+
+test("runPlanAcceptance --interactive walks criteria on TTY, supports skip/pass, and closes prompt", async () => {
+  await withTempDir(async (dir) => {
+    const engine = createLegionEngine(dir, {
+      skillsDir: findSkillsDir(),
+      fakeArtifacts: [{ path: ".legion-cli/cache/runs/<id>/review.md", content: "# Review\n\nVerdict: PASS\n" }],
+    });
+    await engine.init({ name: "Checkin", adapter: "fake", workflowProfile: "focused" });
+    await allowCopyJail(engine.store);
+    await engine.store.writeSpec({
+      schemaVersion: "legion-cli-spec/v1",
+      id: "spec-checkin",
+      title: "Office check-in",
+      status: "frozen",
+      mustBeTrue: ["Tap in or out completes quickly"],
+      mustNotChange: [],
+      outOfScope: [],
+      acceptance: [
+        { id: "AC-01", statement: "Tap in works", kind: "behavior", priority: "P0" },
+        { id: "AC-02", statement: "Tap out works", kind: "behavior", priority: "P1" },
+      ],
+      personas: ["teammates"],
+      happyPath: "Tap in then tap out.",
+      frozenAt: "2026-09-01T12:00:00.000Z",
+      frozenBy: "tester",
+    }, "Spec body.\n");
+    const project = await engine.store.readProject();
+    await engine.store.writeProject({ ...project.data, activeSpecId: "spec-checkin" }, project.body);
+    await engine.store.writeTask(makeTask({ status: "done" }), "Implement.\n");
+    const state = await engine.store.readState();
+    await engine.store.writeState({ ...state.data, phase: "executing", activeSpecId: "spec-checkin", lastReadiness: "PASS" }, state.body);
+    await mkdir(join(dir, ".legion-cli", "plans"), { recursive: true });
+    await writeFile(join(dir, ".legion-cli", "plans", "spec-checkin.md"), "# Plan\n\nImplement.\n", "utf8");
+    const passCheck = `${JSON.stringify(process.execPath)} -e process.exit(0)`;
+    await engine.approvePlan({ id: "owner" }, { verificationCommands: [passCheck] });
+    const prevAdapter = process.env.LEGION_CLI_ADAPTER;
+    process.env.LEGION_CLI_ADAPTER = "fake";
+    try {
+      await engine.executeWorkflow();
+    } finally {
+      if (prevAdapter === undefined) delete process.env.LEGION_CLI_ADAPTER;
+      else process.env.LEGION_CLI_ADAPTER = prevAdapter;
+    }
+
+    // All blank skips -> refuses cleanly AND still calls closePrompt.
+    let closedAllBlank = 0;
+    const blankInputs = ["", ""];
+    await assert.rejects(
+      () => runPlanAcceptance(
+        { project: dir, json: false, yes: false, verbose: false, blockers: false, plain: false },
+        { interactive: true },
+        {
+          isTty: () => true,
+          readLine: async () => blankInputs.shift() ?? "",
+          closePrompt: () => { closedAllBlank += 1; },
+        },
+      ),
+      /no acceptance entries recorded/,
+    );
+    assert.equal(closedAllBlank, 1);
+
+    // Record AC-01 as pass with note, skip AC-02.
+    let closedRecorded = 0;
+    const answers = ["pass", "Verified tap-in behavior", ""];
+    const code = await runPlanAcceptance(
+      { project: dir, json: false, yes: false, verbose: false, blockers: false, plain: false },
+      { interactive: true },
+      {
+        isTty: () => true,
+        readLine: async () => answers.shift() ?? "",
+        closePrompt: () => { closedRecorded += 1; },
+      },
+    );
+    assert.equal(code, 0);
+    assert.equal(closedRecorded, 1);
+    const afterFirst = await engine.getWorkflowStatus();
+    assert.deepEqual(afterFirst.acceptance.passed, ["AC-01"]);
+    assert.deepEqual(afterFirst.acceptance.pending, ["AC-02"]);
+
+    // Second interactive run only prompts for pending AC-02.
+    let closedPendingOnly = 0;
+    const promptsSeen = [];
+    const pendingAnswers = ["failed", "Tap-out timed out"];
+    await runPlanAcceptance(
+      { project: dir, json: false, yes: false, verbose: false, blockers: false, plain: false },
+      { interactive: true },
+      {
+        isTty: () => true,
+        readLine: async (q) => {
+          promptsSeen.push(q);
+          return pendingAnswers.shift() ?? "";
+        },
+        closePrompt: () => { closedPendingOnly += 1; },
+      },
+    );
+    assert.equal(closedPendingOnly, 1);
+    assert.equal(promptsSeen.length, 2);
+    assert.match(promptsSeen[0], /AC-02/);
+    const afterSecond = await engine.getWorkflowStatus();
+    assert.deepEqual(afterSecond.acceptance.passed, ["AC-01"]);
+    assert.deepEqual(afterSecond.acceptance.failed, ["AC-02"]);
   });
 });

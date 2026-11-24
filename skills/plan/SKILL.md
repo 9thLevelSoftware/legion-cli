@@ -131,13 +131,13 @@ explicit new-increment path.
 
 The engine supplies the spec ID and any current preparation record. Preserve
 approved assessment, specification artifacts, knowledge, and human selections
-exactly. Compute SHA256 from actual safe input and new supporting-document bytes;
-new output hashes are not supplied in advance. The engine derives the assessment
-input fingerprint from captured specification inputs. Replace every example
-placeholder with the actual ID, 64-character lowercase hexadecimal digest, and
-project-grounded content before emitting JSON; placeholder text is invalid.
-`intent.md` is a source only when admitted by the supplied inventory. The
-specification-stage record carried into planning has this shape:
+exactly. You may supply actual 64 lowercase hex SHA256 digests or omit / leave
+non-64-hex placeholder `digest` and `inputFingerprint` values and the engine will
+compute and bind the real SHA256 digests from files on disk (missing files or
+invalid paths still fail closed). Replace non-digest example placeholders such as
+`<activeSpecId>` and prose fields with the actual ID and project-grounded content
+before emitting JSON. `intent.md` is a source only when admitted by the supplied
+inventory. The specification-stage record carried into planning has this shape:
 
 ```json
 {

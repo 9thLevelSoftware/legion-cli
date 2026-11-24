@@ -211,3 +211,19 @@ export async function runBrownfieldPatterns(opts: CliOpts, flags: { add?: string
     ...(result.top.length > 0 ? result.top.map((p) => `  ${p.count}× ${p.pattern}`) : ["(no recorded patterns)"]),
   ]);
 }
+
+export async function runBrownfieldAdopt(
+  opts: CliOpts,
+  runId: string,
+  flags: { pr?: string },
+): Promise<number> {
+  const result = await createLegionEngine(opts.project).brownfieldAdopt(runId, {
+    ...(flags.pr ? { prId: flags.pr } : {}),
+    actor: { id: "user" },
+  });
+  return emit(opts, { ...result, next: "legion-cli spec" }, [
+    `Spec ${result.specId} created at ${result.specPath}${result.prId ? ` (from ${result.runId}/${result.prId})` : ` (from ${result.runId})`}`,
+    `Selection: ${result.selectionPath}`,
+    "Next: legion-cli spec",
+  ]);
+}

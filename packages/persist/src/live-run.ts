@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { link, lstat, mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join } from "node:path";
-import { assertNoLinkInPath, atomicWriteFile } from "./atomic-write.js";
+import { assertNoLinkInPath, atomicWriteFile, retryFsOp } from "./atomic-write.js";
 import { legionPaths } from "./layout.js";
 import { isPidAlive } from "./lock.js";
-import { ownProcessStartedAt, processIdentity, startedAfterRecorded } from "./process-identity.js";
+import { ownProcessStartedAt, processIdentity, startedAfterRecorded, cleanMarkerHostValue, isForeignHostMarker } from "./process-identity.js";
+export { isForeignHostMarker };
 
 /**
  * One marker per spawned run at `.legion-cli/cache/live-spawn/<runId>.json`. It records the
@@ -34,6 +36,8 @@ export type LiveRunMarker = {
   agentPid: number | null;
   agentStartedAt?: number;
   startedAt: string;
+  hostname?: string;
+  platform?: string;
   /** Set for runs detected without a marker (resume.json): the file the refusal should name. */
   evidence?: string;
   /** Set for an unparseable marker file that is too fresh to call dead. */
@@ -65,6 +69,8 @@ function parseMarker(raw: string): LiveRunMarker | null {
     if (!parsed || typeof parsed !== "object") return null;
     if (typeof parsed.runId !== "string" || !RUN_ID_PATTERN.test(parsed.runId)) return null;
     if (typeof parsed.skillId !== "string" || !isCount(parsed.enginePid)) return null;
+    const markerHostname = cleanMarkerHostValue(parsed.hostname);
+    const markerPlatform = cleanMarkerHostValue(parsed.platform);
     return {
       schemaVersion: LIVE_RUN_SCHEMA,
       runId: parsed.runId,
@@ -75,6 +81,8 @@ function parseMarker(raw: string): LiveRunMarker | null {
       agentPid: isCount(parsed.agentPid) ? parsed.agentPid : null,
       ...(typeof parsed.agentStartedAt === "number" ? { agentStartedAt: parsed.agentStartedAt } : {}),
       startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : new Date(0).toISOString(),
+      ...(markerHostname ? { hostname: markerHostname } : {}),
+      ...(markerPlatform ? { platform: markerPlatform } : {}),
     };
   } catch {
     return null;
@@ -114,9 +122,15 @@ export async function createLiveRun(
     engineStartedAt: ownProcessStartedAt(),
     agentPid: null,
     startedAt: new Date().toISOString(),
+    hostname: hostname(),
+    platform: process.platform,
   };
   const dir = await ensureMarkerDir(projectRoot);
   const target = liveRunMarkerPath(projectRoot, marker.runId);
+  if (process.platform === "win32") {
+    await writeFile(target, body(marker), { encoding: "utf8", flag: "wx" });
+    return marker;
+  }
   const tmp = join(dir, `.${randomBytes(8).toString("hex")}.tmp`);
   await writeFile(tmp, body(marker), { encoding: "utf8", flag: "wx" });
   try {
@@ -149,7 +163,7 @@ export async function recordLiveRunAgent(
 
 export async function clearLiveRun(projectRoot: string, runId: string): Promise<void> {
   try {
-    await unlink(liveRunMarkerPath(projectRoot, runId));
+    await retryFsOp(() => unlink(liveRunMarkerPath(projectRoot, runId)));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
@@ -191,7 +205,9 @@ async function pidHoldsIdentity(pid: number | null, recordedAt: number | undefin
 export type LiveRunState = { engineAlive: boolean; agentAlive: boolean; live: boolean };
 
 export async function liveRunState(marker: LiveRunMarker): Promise<LiveRunState> {
-  if (marker.unknown) return { engineAlive: true, agentAlive: false, live: true };
+  if (marker.unknown || isForeignHostMarker(marker)) {
+    return { engineAlive: true, agentAlive: marker.agentPid !== null, live: true };
+  }
   const created = Date.parse(marker.startedAt);
   const fallback = Number.isFinite(created) ? created : undefined;
   const engineAlive = await pidHoldsIdentity(marker.enginePid, marker.engineStartedAt ?? fallback);
@@ -210,9 +226,13 @@ export function liveRunFromResume(resume: {
   pid?: number | null;
   enginePid?: number | null;
   startedAt: string;
+  hostname?: string;
+  platform?: string;
 }): LiveRunMarker {
   const parsed = Date.parse(resume.startedAt);
   const recorded = Number.isFinite(parsed) ? parsed : undefined;
+  const markerHostname = cleanMarkerHostValue(resume.hostname);
+  const markerPlatform = cleanMarkerHostValue(resume.platform);
   return {
     schemaVersion: LIVE_RUN_SCHEMA,
     runId: resume.runId,
@@ -222,6 +242,8 @@ export function liveRunFromResume(resume: {
     ...(recorded !== undefined ? { engineStartedAt: recorded, agentStartedAt: recorded } : {}),
     agentPid: resume.pid ?? null,
     startedAt: resume.startedAt,
+    ...(markerHostname ? { hostname: markerHostname } : {}),
+    ...(markerPlatform ? { platform: markerPlatform } : {}),
     evidence: `.legion-cli/cache/runs/${resume.runId}/resume.json`,
   };
 }

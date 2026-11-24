@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -94,5 +94,32 @@ test("legacy marker publication failure retains its guard and refuses the read",
     await assert.rejects(() => liveRuns(dir));
     assert.equal(await readFile(legacy, "utf8"), contents);
     assert.equal(await readFile(join(cache, "live-spawn"), "utf8"), "operator file\n");
+  });
+});
+
+test("live-run markers record hostname/platform and foreign markers remain active across ESRCH", async () => {
+  await withDir(async (dir) => {
+    const marker = await createLiveRun(dir, { runId: "execute-host", skillId: "execute", taskId: null });
+    assert.equal(marker.hostname, hostname());
+    assert.equal(marker.platform, process.platform);
+
+    const foreignHost = { ...marker, enginePid: 2_000_000_000, hostname: `${hostname()}-other` };
+    assert.equal((await liveRunState(foreignHost)).live, true);
+
+    const foreignPlatform = {
+      ...marker,
+      enginePid: 2_000_000_000,
+      platform: process.platform === "win32" ? "linux" : "win32",
+    };
+    assert.equal((await liveRunState(foreignPlatform)).live, true);
+
+    await writeFile(
+      join(dir, ".legion-cli", "cache", "live-spawn", "execute-foreign.json"),
+      `${JSON.stringify({ ...foreignHost, runId: "execute-foreign" })}\n`,
+      "utf8",
+    );
+    const listed = await liveRuns(dir, { clearDead: true });
+    assert.equal(listed.live.some((m) => m.runId === "execute-foreign"), true);
+    assert.equal(listed.dead.some((m) => m.runId === "execute-foreign"), false);
   });
 });

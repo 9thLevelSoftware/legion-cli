@@ -167,6 +167,221 @@ function parseNdjson(text: string, acc: ParsedTest[]): boolean {
   return found;
 }
 
+const VISUAL_FAILURE_MESSAGE_RE =
+  /toHaveScreenshot|toMatchSnapshot|screenshot comparison|snapshot comparison/i;
+
+function decodeXmlEntities(text: string): string {
+  return text.replace(
+    /&(?:#(\d+)|#x([0-9a-fA-F]+)|quot|apos|lt|gt|amp);/g,
+    (match, dec?: string, hex?: string) => {
+      if (dec) {
+        const code = Number.parseInt(dec, 10);
+        return Number.isFinite(code) && code >= 0 && code <= 0x10ffff
+          ? String.fromCodePoint(code)
+          : match;
+      }
+      if (hex) {
+        const code = Number.parseInt(hex, 16);
+        return Number.isFinite(code) && code >= 0 && code <= 0x10ffff
+          ? String.fromCodePoint(code)
+          : match;
+      }
+      switch (match) {
+        case "&quot;":
+          return '"';
+        case "&apos;":
+          return "'";
+        case "&lt;":
+          return "<";
+        case "&gt;":
+          return ">";
+        case "&amp;":
+          return "&";
+        default:
+          return match;
+      }
+    },
+  );
+}
+
+function findXmlTagClose(xml: string, start: number): number {
+  let quote: string | null = null;
+  for (let i = start; i < xml.length; i += 1) {
+    const ch = xml[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === ">") {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function parseXmlAttributes(raw: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const attrRe = /\b([A-Za-z_][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  let match: RegExpExecArray | null;
+  while ((match = attrRe.exec(raw)) !== null) {
+    const key = match[1]?.toLowerCase();
+    if (!key) continue;
+    attrs[key] = decodeXmlEntities(match[2] ?? match[3] ?? "");
+  }
+  return attrs;
+}
+
+function parseJunitXml(text: string, acc: ParsedTest[]): boolean {
+  if (!/<(?:testsuites|testsuite)\b/i.test(text)) return false;
+  let sawSuite = false;
+  let currentCase: {
+    title: string;
+    statusAttr: string;
+    failed: boolean;
+    skipped: boolean;
+    visualFailure: boolean;
+    failureText: string;
+  } | null = null;
+  let ignoredDepth = 0;
+  let inFailureTag = false;
+
+  const finalizeCase = (): void => {
+    if (!currentCase) return;
+    const statusSkipped =
+      currentCase.statusAttr === "skipped" ||
+      currentCase.statusAttr === "disabled" ||
+      currentCase.statusAttr === "ignored" ||
+      currentCase.statusAttr === "pending";
+    const statusFailed =
+      currentCase.statusAttr === "failed" || currentCase.statusAttr === "error";
+    const skipped = currentCase.skipped || statusSkipped;
+    const failed = !skipped && (currentCase.failed || statusFailed);
+    const ok = !failed;
+    const visualFailure =
+      currentCase.visualFailure ||
+      (failed && VISUAL_FAILURE_MESSAGE_RE.test(currentCase.failureText)) ||
+      (isVisualTitle(currentCase.title) && failed);
+    pushTest(acc, currentCase.title, ok, skipped, visualFailure);
+    currentCase = null;
+    ignoredDepth = 0;
+    inFailureTag = false;
+  };
+
+  let pos = 0;
+  while (pos < text.length) {
+    const lt = text.indexOf("<", pos);
+    if (lt < 0) {
+      if (currentCase && ignoredDepth === 0 && inFailureTag) {
+        currentCase.failureText += decodeXmlEntities(text.slice(pos));
+      }
+      break;
+    }
+    if (lt > pos && currentCase && ignoredDepth === 0 && inFailureTag) {
+      currentCase.failureText += decodeXmlEntities(text.slice(pos, lt));
+    }
+    if (text.startsWith("<!--", lt)) {
+      const end = text.indexOf("-->", lt + 4);
+      pos = end < 0 ? text.length : end + 3;
+      continue;
+    }
+    if (text.startsWith("<![CDATA[", lt)) {
+      const end = text.indexOf("]]>", lt + 9);
+      const body = text.slice(lt + 9, end < 0 ? text.length : end);
+      if (currentCase && ignoredDepth === 0 && inFailureTag) {
+        currentCase.failureText += body;
+      }
+      pos = end < 0 ? text.length : end + 3;
+      continue;
+    }
+    if (text.startsWith("<?", lt) || text.startsWith("<!", lt)) {
+      const end = findXmlTagClose(text, lt + 2);
+      pos = end < 0 ? text.length : end + 1;
+      continue;
+    }
+    const end = findXmlTagClose(text, lt + 1);
+    if (end < 0) break;
+    const inside = text.slice(lt + 1, end).trim();
+    pos = end + 1;
+    if (!inside) continue;
+
+    if (inside.startsWith("/")) {
+      const closeName = inside.slice(1).trim().toLowerCase();
+      if (currentCase) {
+        if (closeName === "testcase") {
+          finalizeCase();
+        } else if (closeName === "system-out" || closeName === "system-err") {
+          if (ignoredDepth > 0) ignoredDepth -= 1;
+        } else if ((closeName === "failure" || closeName === "error") && ignoredDepth === 0) {
+          inFailureTag = false;
+        }
+      }
+      continue;
+    }
+
+    const selfClosing = inside.endsWith("/");
+    const content = selfClosing ? inside.slice(0, -1).trim() : inside;
+    const nameMatch = /^([A-Za-z_][\w:.-]*)([\s\S]*)$/.exec(content);
+    if (!nameMatch) continue;
+    const tagName = nameMatch[1]!.toLowerCase();
+    const attrText = nameMatch[2] ?? "";
+
+    if (tagName === "testsuite" || tagName === "testsuites") {
+      sawSuite = true;
+      continue;
+    }
+    if (tagName === "testcase" && !currentCase) {
+      const attrs = parseXmlAttributes(attrText);
+      const title = attrs.name || attrs.classname || "";
+      currentCase = {
+        title,
+        statusAttr: (attrs.status ?? "").toLowerCase(),
+        failed: false,
+        skipped: false,
+        visualFailure: false,
+        failureText: "",
+      };
+      if (selfClosing) finalizeCase();
+      continue;
+    }
+    if (currentCase) {
+      if (tagName === "system-out" || tagName === "system-err") {
+        if (!selfClosing) ignoredDepth += 1;
+        continue;
+      }
+      if (ignoredDepth > 0) continue;
+      if (tagName === "skipped") {
+        currentCase.skipped = true;
+      } else if (tagName === "failure" || tagName === "error") {
+        currentCase.failed = true;
+        const attrs = parseXmlAttributes(attrText);
+        if (
+          VISUAL_FAILURE_MESSAGE_RE.test(attrs.message ?? "") ||
+          VISUAL_FAILURE_MESSAGE_RE.test(attrs.type ?? "")
+        ) {
+          currentCase.visualFailure = true;
+        }
+        if (!selfClosing) inFailureTag = true;
+      }
+    }
+  }
+  return sawSuite;
+}
+
+/** Pull a JUnit XML document out of stdout when present. */
+export function extractJunitXmlPayload(text: string): string | null {
+  if (!/<(?:testsuites|testsuite)\b/i.test(text)) return null;
+  const trimmed = text.trim();
+  if (/^(?:<\?xml\b|<(?:testsuites|testsuite)\b)/i.test(trimmed)) return trimmed;
+  const start = trimmed.search(/<(?:testsuites|testsuite)\b/i);
+  if (start < 0) return null;
+  const endSuites = trimmed.lastIndexOf("</testsuites>");
+  const endSuite = trimmed.lastIndexOf("</testsuite>");
+  const end = endSuites >= 0 ? endSuites + "</testsuites>".length : endSuite >= 0 ? endSuite + "</testsuite>".length : trimmed.length;
+  return trimmed.slice(start, Math.max(start, end)).trim() || null;
+}
+
 /** Pull a JSON value out of mixed tool stdout (pnpm logs + reporter). */
 export function extractJsonPayload(text: string): unknown {
   const trimmed = text.trim();
@@ -204,6 +419,8 @@ export function reportFailClosed(input: unknown): boolean {
   if (typeof input === "string") {
     const ndjson: ParsedTest[] = [];
     if (parseNdjson(input, ndjson) && ndjson.length > 0) return false;
+    const junit: ParsedTest[] = [];
+    if (parseJunitXml(input, junit)) return junit.length === 0;
     const payload = extractJsonPayload(input);
     if (payload === null) return true;
     return reportFailClosed(payload);
@@ -221,6 +438,7 @@ export function parseTestReport(input: unknown): ParsedTest[] {
   const acc: ParsedTest[] = [];
   if (typeof input === "string") {
     if (parseNdjson(input, acc)) return acc;
+    if (parseJunitXml(input, acc)) return acc;
     const payload = extractJsonPayload(input);
     if (payload !== null && payload !== input) return parseTestReport(payload);
     return acc;
